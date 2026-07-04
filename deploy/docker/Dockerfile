@@ -24,13 +24,14 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 
 # git (repository cloning) + the Docker CLI and Compose plugin (deploy execution).
 # Uses Docker's official APT repository so `docker compose` tracks upstream.
+# The .NET aspnet:10.0 image is Ubuntu (noble), so we use Docker's Ubuntu repo.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git \
     && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-        https://download.docker.com/linux/debian $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" \
+        https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" \
         > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         docker-ce-cli docker-compose-plugin \
