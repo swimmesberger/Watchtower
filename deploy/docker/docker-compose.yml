@@ -1,0 +1,35 @@
+# Example Watchtower deployment.
+#
+# Watchtower talks to the host Docker daemon to inspect containers and run `docker compose`
+# for your stacks, so it needs the Docker socket mounted and permission to use it.
+#
+#   1. Find the host's docker group GID:  getent group docker | cut -d: -f3
+#   2. Put that value in `group_add` below.
+#   3. docker compose up -d
+#
+# The UI is served on http://localhost:8080. Put it behind an authenticating reverse proxy
+# (e.g. Cloudflare Access, Authelia) — Watchtower itself has no built-in authentication.
+services:
+  watchtower:
+    image: ghcr.io/swimmesberger/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - watchtower-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Optional: expose the host's docker credentials for private image pulls.
+      # - ${HOME}/.docker/config.json:/home/watchtower/.docker/config.json:ro
+    environment:
+      WATCHTOWER__DBPATH: /data/watchtower.db
+      WATCHTOWER__DOCKERAPIVERSION: "1.43"
+      # Enable the background "update available" checkers (opt-in — generate registry traffic):
+      # WATCHTOWER__AUTOCHECKENABLED: "true"
+      # WATCHTOWER__STACKCHECKENABLED: "true"
+    # Replace 999 with the host's docker group GID (see the header comment).
+    group_add:
+      - "999"
+
+volumes:
+  watchtower-data:

@@ -1,0 +1,175 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap');
+
+/*
+ * Watchtower — "Observatory Command Center" theme.
+ * Dark-mode-first with teal accent, Outfit + DM Mono typography.
+ */
+:root {
+  /* ── Surfaces ── */
+  --background: #080b10;
+  --foreground: #e8edf5;
+  --card: #111822;
+  --card-foreground: #e8edf5;
+  --popover: #172030;
+  --popover-foreground: #e8edf5;
+
+  /* ── Brand: Teal ── */
+  --primary: #14b8a6;
+  --primary-foreground: #080b10;
+  --secondary: #172030;
+  --secondary-foreground: #e8edf5;
+
+  /* ── Muted ── */
+  --muted: #172030;
+  --muted-foreground: #8494b0;
+
+  /* ── Accent ── */
+  --accent: #1c2840;
+  --accent-foreground: #e8edf5;
+
+  /* ── Status ── */
+  --destructive: #f43f5e;
+  --destructive-foreground: #e8edf5;
+
+  /* ── Borders & inputs ── */
+  --border: rgba(255, 255, 255, 0.09);
+  --input: rgba(255, 255, 255, 0.09);
+  --ring: #14b8a6;
+
+  /* ── Layout ── */
+  --radius: 0.625rem;
+
+  /* ── Topbar (replaces sidebar) ── */
+  --topbar-background: rgba(8, 11, 16, 0.75);
+  --topbar-border: rgba(255, 255, 255, 0.06);
+
+  /* ── Extended palette ── */
+  --accent-bright: #2dd4bf;
+  --accent-dim: #0d9488;
+  --accent-muted: rgba(20, 184, 166, 0.12);
+  --accent-glow: rgba(20, 184, 166, 0.25);
+  --text-primary: #e8edf5;
+  --text-secondary: #8494b0;
+  --text-tertiary: #4d5e78;
+
+  --success: #10b981;
+  --success-bg: rgba(16, 185, 129, 0.10);
+  --success-border: rgba(16, 185, 129, 0.25);
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.10);
+  --warning-border: rgba(245, 158, 11, 0.25);
+  --running: #3b82f6;
+  --running-bg: rgba(59, 130, 246, 0.10);
+  --running-border: rgba(59, 130, 246, 0.25);
+  --queued: #a78bfa;
+  --queued-bg: rgba(167, 139, 250, 0.10);
+  --queued-border: rgba(167, 139, 250, 0.25);
+  --danger: #f43f5e;
+  --danger-bg: rgba(244, 63, 94, 0.10);
+  --danger-border: rgba(244, 63, 94, 0.25);
+
+  --font-mono: 'DM Mono', 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* ── Form input ── */
+.input {
+  display: block;
+  border-radius: var(--radius);
+  border: 1px solid var(--input);
+  background-color: var(--background);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--foreground);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  font-family: inherit;
+}
+
+.input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.input::placeholder {
+  color: var(--text-tertiary);
+}
+
+select.input {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%234d5e78' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 2rem;
+}
+
+/* ── Animations ── */
+@keyframes wt-card-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes wt-pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.8); }
+}
+
+@keyframes wt-glow-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes wt-searchlight {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}
+
+/* ── Background mesh effect ── */
+#root::before {
+  content: '';
+  position: fixed;
+  top: -40%;
+  left: -20%;
+  width: 80%;
+  height: 80%;
+  background: radial-gradient(ellipse, rgba(20, 184, 166, 0.04) 0%, transparent 70%);
+  animation: wt-mesh-drift 25s ease-in-out infinite alternate;
+  pointer-events: none;
+  z-index: 0;
+}
+#root::after {
+  content: '';
+  position: fixed;
+  bottom: -30%;
+  right: -10%;
+  width: 60%;
+  height: 60%;
+  background: radial-gradient(ellipse, rgba(59, 130, 246, 0.03) 0%, transparent 70%);
+  animation: wt-mesh-drift 20s ease-in-out infinite alternate-reverse;
+  pointer-events: none;
+  z-index: 0;
+}
+@keyframes wt-mesh-drift {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(5%, 8%) scale(1.1); }
+}

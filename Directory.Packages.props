@@ -1,0 +1,29 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- Elarion application framework — consumed from NuGet (github.com/swimmesberger/Elarion). -->
+    <ElarionVersion>0.2.3-preview.54.1</ElarionVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Elarion framework (public NuGet packages) -->
+    <PackageVersion Include="Elarion" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.Abstractions" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.AspNetCore" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.JsonRpc" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.AspNetCore.Mcp" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.EntityFrameworkCore" Version="$(ElarionVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Entity Framework Core — SQLite provider (self-contained single-node persistence) -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9" />
+    <PackageVersion Include="EFCore.NamingConventions" Version="10.0.1" />
+    <!-- Transitive pin: fix GHSA-2m69-gcr7-jv3q (SQLite vuln in the e_sqlite3 native bundled by the
+         SQLite EF Core provider). The native lib package is versioned independently of the managed
+         SQLitePCLRaw layer and is designed to be bumped on its own. -->
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
+  </ItemGroup>
+</Project>

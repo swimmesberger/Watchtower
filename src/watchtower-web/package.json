@@ -1,0 +1,39 @@
+{
+  "name": "watchtower-web",
+  "version": "1.0.0",
+  "description": "Watchtower UI — Docker Compose stack manager",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "generate:rpc": "elarion-jsonrpc-client-generator --schema ../../rpc-schema.json --out src/generated",
+    "prebuild": "npm run generate:rpc",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-router": "^1.163.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.576.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwind-merge": "^3.5.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@swimmesberger/elarion-jsonrpc-client-generator": "0.2.3-preview.54.1",
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "shadcn": "^3.8.5",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vite-tsconfig-paths": "^6.1.1"
+  }
+}

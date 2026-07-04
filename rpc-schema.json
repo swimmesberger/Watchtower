@@ -1,0 +1,1937 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JSON-RPC 2.0 Schema",
+  "methods": {
+    "containers.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "containers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "names": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "image": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "health": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stackName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "names",
+                "image",
+                "state",
+                "status",
+                "health",
+                "stackName"
+              ]
+            }
+          }
+        },
+        "required": [
+          "containers"
+        ]
+      }
+    },
+    "containers.remove": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "containers.restart": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "containers.stop": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "credentials.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "username",
+          "token"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "credential": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "username",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "credential"
+        ]
+      }
+    },
+    "credentials.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "credentials.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "username",
+                "createdAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "credentials"
+        ]
+      }
+    },
+    "credentials.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "username",
+          "token"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "credential": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "username",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "credential"
+        ]
+      }
+    },
+    "deployments.active": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deployments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "stackId": {
+                  "type": "integer"
+                },
+                "stackName": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "triggeredBy": {
+                  "type": "string"
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "stackId",
+                "stackName",
+                "status",
+                "triggeredBy",
+                "startedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "deployments"
+        ]
+      }
+    },
+    "registries.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "url",
+          "credentialId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "registry": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "url",
+              "credentialId",
+              "credentialName",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "registry"
+        ]
+      }
+    },
+    "registries.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "registries.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "registries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "credentialId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "credentialName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "url",
+                "credentialId",
+                "credentialName",
+                "createdAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "registries"
+        ]
+      }
+    },
+    "registries.test": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    },
+    "registries.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "url",
+          "credentialId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "registry": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "url",
+              "credentialId",
+              "credentialName",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "registry"
+        ]
+      }
+    },
+    "stacks.checkUpdates": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "updatesCheckedAt"
+            ]
+          }
+        },
+        "required": [
+          "stack"
+        ]
+      }
+    },
+    "stacks.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "composeProjectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "webhookToken": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "webhookEnabled": {
+            "type": "boolean"
+          },
+          "envVars": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "branch",
+          "composeProjectName",
+          "credentialId",
+          "webhookToken",
+          "webhookEnabled",
+          "envVars"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "updatesCheckedAt"
+            ]
+          }
+        },
+        "required": [
+          "stack"
+        ]
+      }
+    },
+    "stacks.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "stacks.deploy": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deploy": {
+            "type": "object",
+            "properties": {
+              "deployEventId": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployEventId",
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "deploy"
+        ]
+      }
+    },
+    "stacks.events": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "stackId": {
+                  "type": "integer"
+                },
+                "triggeredBy": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "output": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "finishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "stackId",
+                "triggeredBy",
+                "status",
+                "output",
+                "startedAt",
+                "finishedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      }
+    },
+    "stacks.get": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "updatesCheckedAt"
+            ]
+          }
+        },
+        "required": [
+          "stack"
+        ]
+      }
+    },
+    "stacks.getEnv": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "envVars": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "envVars"
+        ]
+      }
+    },
+    "stacks.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stacks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "repositoryUrl": {
+                  "type": "string"
+                },
+                "composeFilePath": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "composeProjectName": {
+                  "type": "string"
+                },
+                "credentialId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "webhookToken": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "webhookEnabled": {
+                  "type": "boolean"
+                },
+                "lastDeployStatus": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "hasUpdates": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "outdatedImages": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "updatesCheckedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "repositoryUrl",
+                "composeFilePath",
+                "branch",
+                "composeProjectName",
+                "credentialId",
+                "webhookToken",
+                "webhookEnabled",
+                "lastDeployStatus",
+                "lastDeployedAt",
+                "createdAt",
+                "hasUpdates",
+                "outdatedImages",
+                "updatesCheckedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "stacks"
+        ]
+      }
+    },
+    "stacks.setEnv": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "vars": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "stackId",
+          "vars"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "envVars": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "envVars"
+        ]
+      }
+    },
+    "stacks.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "composeProjectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "webhookToken": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "webhookEnabled": {
+            "type": "boolean"
+          },
+          "envVars": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "branch",
+          "composeProjectName",
+          "credentialId",
+          "webhookToken",
+          "webhookEnabled",
+          "envVars"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "updatesCheckedAt"
+            ]
+          }
+        },
+        "required": [
+          "stack"
+        ]
+      }
+    },
+    "system.applyUpdate": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      }
+    },
+    "system.check": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "object",
+            "properties": {
+              "imageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "composeFilePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "composeProjectName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedImageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedComposeFilePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedComposeProjectName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isRunningInContainer": {
+                "type": "boolean"
+              },
+              "currentImageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "latestImageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isOutdated": {
+                "type": "boolean"
+              },
+              "lastCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "canApplyUpdate": {
+                "type": "boolean"
+              },
+              "applyStage": {
+                "type": "string"
+              },
+              "applyError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "startedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "isRunningInContainer",
+              "isOutdated",
+              "canApplyUpdate",
+              "applyStage",
+              "startedAt"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    "system.dockerConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "exists": {
+                "type": "boolean"
+              },
+              "path": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "exists",
+              "path",
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ]
+      }
+    },
+    "system.getSelf": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "object",
+            "properties": {
+              "imageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "composeFilePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "composeProjectName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedImageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedComposeFilePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedComposeProjectName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isRunningInContainer": {
+                "type": "boolean"
+              },
+              "currentImageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "latestImageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isOutdated": {
+                "type": "boolean"
+              },
+              "lastCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "canApplyUpdate": {
+                "type": "boolean"
+              },
+              "applyStage": {
+                "type": "string"
+              },
+              "applyError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "startedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "isRunningInContainer",
+              "isOutdated",
+              "canApplyUpdate",
+              "applyStage",
+              "startedAt"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    "system.updateConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "imageName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "composeFilePath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "composeProjectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "imageName",
+          "credentialId",
+          "composeFilePath",
+          "composeProjectName"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "object",
+            "properties": {
+              "imageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "composeFilePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "composeProjectName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedImageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedComposeFilePath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detectedComposeProjectName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isRunningInContainer": {
+                "type": "boolean"
+              },
+              "currentImageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "latestImageId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isOutdated": {
+                "type": "boolean"
+              },
+              "lastCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "canApplyUpdate": {
+                "type": "boolean"
+              },
+              "applyStage": {
+                "type": "string"
+              },
+              "applyError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "startedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "isRunningInContainer",
+              "isOutdated",
+              "canApplyUpdate",
+              "applyStage",
+              "startedAt"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    }
+  }
+}

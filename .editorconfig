@@ -1,0 +1,16 @@
+root = true
+
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.{cs,csx}]
+indent_size = 4
+resharper_log_message_is_sentence_problem_highlighting = suggestion
+
+[*.{sln,csproj,props}]
+indent_size = 2

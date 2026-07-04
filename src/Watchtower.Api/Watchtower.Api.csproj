@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!-- Lean hosting: no IIS/Windows defaults; source-generated JSON is preferred but reflection
+         stays enabled as a safety net for any type not covered by a module JSON context. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Watchtower.Application\Watchtower.Application.csproj" />
+    <!-- Elarion host packages (NuGet). Elarion bundles the bootstrapper generator that emits
+         ElarionBootstrapper; the JSON-RPC transport + ASP.NET glue are their own packages. -->
+    <PackageReference Include="Elarion" />
+    <PackageReference Include="Elarion.AspNetCore" />
+    <PackageReference Include="Elarion.JsonRpc" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Design-time only: enables `dotnet ef migrations` against the Application DbContext. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

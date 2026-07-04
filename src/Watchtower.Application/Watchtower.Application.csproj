@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Watchtower.Api" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Elarion framework (NuGet). The Elarion package bundles the module/handler generator;
+         Elarion.EntityFrameworkCore bundles the DbContext/[EntityConfiguration] generator. -->
+    <PackageReference Include="Elarion" />
+    <PackageReference Include="Elarion.EntityFrameworkCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Entity Framework Core with the SQLite provider (self-contained single-node persistence). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="EFCore.NamingConventions" />
+    <!-- Referenced directly so the pinned e_sqlite3 native version (GHSA-2m69-gcr7-jv3q) actually applies. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Brings the shared framework (Microsoft.Extensions.* hosting/logging/options/DI) used by the
+         background services and the ASP.NET-hosted handler pipeline. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

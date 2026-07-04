@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path=".gitignore" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="README.md" />
+    <File Path="deploy/docker/Dockerfile" />
+    <File Path="deploy/docker/docker-compose.yml" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Watchtower.Application/Watchtower.Application.csproj" />
+    <Project Path="src/Watchtower.Api/Watchtower.Api.csproj" />
+  </Folder>
+</Solution>

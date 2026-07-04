@@ -1,0 +1,423 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
+
+namespace Watchtower.Application.Services;
+
+/// <summary>
+/// Manages Watchtower's self-update lifecycle:
+/// <list type="number">
+///   <item>Auto-detects image name and compose config from the running container's Docker labels.</item>
+///   <item>Allows optional manual overrides for image name, credential, and compose settings.</item>
+///   <item>Checks for updates by comparing the remote manifest digest with the local one.</item>
+///   <item>Applies updates by spawning a coordinator container that re-runs docker compose up -d.</item>
+/// </list>
+/// The running container is identified via the HOSTNAME environment variable. Persisted state
+/// (overrides + cached check result + apply stage) lives in the <c>app_settings</c> table, accessed
+/// through short-lived EF scopes since this service is a singleton.
+/// </summary>
+public sealed class SelfUpdateService : IHostedService, IDisposable {
+    private static readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
+
+    private const string KeyImageName = "self.image_name";
+    private const string KeyCredentialId = "self.credential_id";
+    private const string KeyComposeFilePath = "self.compose_file_path";
+    private const string KeyComposeProjectName = "self.compose_project_name";
+    private const string KeyCurrentImageId = "self.current_image_id";
+    private const string KeyLatestImageId = "self.latest_image_id";
+    private const string KeyIsOutdated = "self.is_outdated";
+    private const string KeyLastCheckedAt = "self.last_checked_at";
+    private const string KeyApplyStage = "self.apply_stage";
+    private const string KeyApplyError = "self.apply_error";
+    private const string KeyCoordinatorId = "self.coordinator_id";
+
+    private const string LabelComposeProject = "com.docker.compose.project";
+    private const string LabelComposeConfigFiles = "com.docker.compose.project.config_files";
+
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly DockerEngineClient _docker;
+    private readonly ComposeCliService _compose;
+    private readonly WatchtowerOptions _options;
+    private readonly ILogger<SelfUpdateService> _logger;
+
+    private readonly CancellationTokenSource _cts = new();
+    private readonly object _applyLock = new();
+    private Task? _applyTask;
+
+    public SelfUpdateService(
+        IServiceScopeFactory scopeFactory,
+        DockerEngineClient docker,
+        ComposeCliService compose,
+        IOptions<WatchtowerOptions> options,
+        ILogger<SelfUpdateService> logger) {
+        _scopeFactory = scopeFactory;
+        _docker = docker;
+        _compose = compose;
+        _options = options.Value;
+        _logger = logger;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken) {
+        // Reconcile any coordinator left behind by an apply that the previous process instance
+        // never saw finish (the container was recreated mid-apply).
+        var stage = GetSetting(KeyApplyStage);
+        if (stage is "pulling" or "restarting")
+            await ReconcileCoordinatorAsync(cancellationToken);
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken) {
+        _cts.Cancel();
+        Task? running;
+        lock (_applyLock) { running = _applyTask; }
+        if (running is not null)
+            await Task.WhenAny(running, Task.Delay(Timeout.Infinite, cancellationToken));
+    }
+
+    public void Dispose() => _cts.Dispose();
+
+    private async Task ReconcileCoordinatorAsync(CancellationToken ct) {
+        var coordinatorId = GetSetting(KeyCoordinatorId);
+        if (coordinatorId is null) {
+            SetStage(SelfUpdateApplyStage.Idle);
+            return;
+        }
+
+        try {
+            var details = await _docker.InspectContainerAsync(coordinatorId, ct);
+
+            if (details.State?.Status == "running") {
+                _logger.LogInformation("Coordinator {Id} is still running; waiting for it to exit", coordinatorId[..12]);
+                await _docker.WaitContainerAsync(coordinatorId, ct);
+                details = await _docker.InspectContainerAsync(coordinatorId, ct);
+            }
+
+            var exitCode = details.State?.ExitCode ?? -1;
+            var logs = await CollectCoordinatorLogsAsync(coordinatorId, ct);
+
+            if (exitCode == 0) {
+                _logger.LogInformation("Coordinator {Id} exited successfully — self-update applied", coordinatorId[..12]);
+                SetStage(SelfUpdateApplyStage.Idle);
+            } else {
+                _logger.LogError("Coordinator {Id} exited with code {Code}:\n{Logs}", coordinatorId[..12], exitCode, logs);
+                SetStage(SelfUpdateApplyStage.Error, $"Coordinator failed (exit {exitCode}):\n{logs.Trim()}");
+            }
+
+            await _docker.RemoveContainerAsync(coordinatorId, ct);
+        } catch (Exception ex) {
+            // Container not found (already removed) most likely means it ran and exited cleanly.
+            _logger.LogDebug(ex, "Could not inspect coordinator container {Id}; assuming update completed", coordinatorId[..12]);
+            SetStage(SelfUpdateApplyStage.Idle);
+        } finally {
+            SetSetting(KeyCoordinatorId, null);
+        }
+    }
+
+    private async Task<string> CollectCoordinatorLogsAsync(string containerId, CancellationToken ct) {
+        try {
+            var sb = new System.Text.StringBuilder();
+            await foreach (var line in _docker.StreamLogsAsync(containerId, tail: 50, follow: false, ct))
+                sb.AppendLine(line);
+            return sb.ToString();
+        } catch {
+            return "(logs unavailable)";
+        }
+    }
+
+    /// <summary>
+    /// Inspects the running container (via HOSTNAME) to auto-detect image and compose config,
+    /// merges with stored manual overrides, and returns the combined status.
+    /// </summary>
+    public async Task<SelfUpdateStatus> GetStatusAsync(CancellationToken ct = default) {
+        var detected = await TryInspectSelfAsync(ct);
+        var liveCurrentDigest = await TryGetLocalDigestAsync(detected.ImageName, ct);
+        return BuildResponse(detected, LoadSettings(), liveCurrentDigest);
+    }
+
+    /// <summary>Persists manual override configuration. Pass null to clear an override and revert to auto-detection.</summary>
+    public void SaveConfig(UpdateSelfConfig request) {
+        SetSettings(
+            new(KeyImageName, string.IsNullOrWhiteSpace(request.ImageName) ? null : request.ImageName),
+            new(KeyCredentialId, request.CredentialId?.ToString()),
+            new(KeyComposeFilePath, string.IsNullOrWhiteSpace(request.ComposeFilePath) ? null : request.ComposeFilePath),
+            new(KeyComposeProjectName, string.IsNullOrWhiteSpace(request.ComposeProjectName) ? null : request.ComposeProjectName),
+            // Invalidate cached check result when config changes.
+            new(KeyCurrentImageId, null),
+            new(KeyLatestImageId, null),
+            new(KeyIsOutdated, null),
+            new(KeyLastCheckedAt, null));
+    }
+
+    /// <summary>
+    /// Fetches the remote manifest digest of the effective image, compares it with the local
+    /// image's digest, caches the result, and returns the updated status.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown when no image name is available or the digest cannot be retrieved.</exception>
+    public async Task<SelfUpdateStatus> CheckForUpdateAsync(CancellationToken ct = default) {
+        var detected = await TryInspectSelfAsync(ct);
+        var effectiveImageName = GetSetting(KeyImageName) ?? detected.ImageName;
+
+        if (string.IsNullOrWhiteSpace(effectiveImageName))
+            throw new InvalidOperationException(
+                "No image name available. Set a manual override or ensure Watchtower is running as a Docker container.");
+
+        var (username, token) = ResolveCredential();
+
+        _logger.LogInformation("Checking self-update image digest for {Image}", effectiveImageName);
+        var latestDigest = await _docker.GetRemoteDigestAsync(effectiveImageName, username, token, ct);
+
+        if (string.IsNullOrWhiteSpace(latestDigest))
+            throw new InvalidOperationException(
+                $"Could not retrieve remote digest for image '{effectiveImageName}'. " +
+                "The registry may not support the OCI Distribution Spec manifest endpoint, or the image does not exist.");
+
+        // Inspect the local image by name to get RepoDigests (reliable across Docker versions).
+        string? currentDigest = null;
+        try {
+            var localImage = await _docker.InspectImageAsync(effectiveImageName, ct);
+            currentDigest = localImage.RepoDigests
+                .Select(rd => rd.Contains('@') ? rd[(rd.IndexOf('@') + 1)..] : null)
+                .FirstOrDefault(d => d is not null);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "Could not inspect local image {Image} for digest comparison", effectiveImageName);
+        }
+
+        var isOutdated = currentDigest is not null && currentDigest != latestDigest;
+
+        SetSettings(
+            new(KeyCurrentImageId, currentDigest),
+            new(KeyLatestImageId, latestDigest),
+            new(KeyIsOutdated, isOutdated ? "true" : "false"),
+            new(KeyLastCheckedAt, DateTimeOffset.UtcNow.ToString("O")));
+
+        _logger.LogInformation(
+            "Self-update check complete. CurrentDigest={Current}, LatestDigest={Latest}, IsOutdated={Outdated}",
+            currentDigest, latestDigest, isOutdated);
+
+        return BuildResponse(detected, LoadSettings(), liveCurrentDigest: currentDigest);
+    }
+
+    /// <summary>
+    /// Validates the compose configuration, then starts the slow pull + coordinator-spawn work
+    /// as a tracked background task. Returns as soon as validation passes.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown when validation fails (not in a container, missing/invalid compose config).</exception>
+    public async Task ApplyUpdateAsync(CancellationToken ct = default) {
+        var detected = await TryInspectSelfAsync(ct);
+        var composeFilePath = GetSetting(KeyComposeFilePath) ?? detected.ComposeFilePath;
+        var composeProjectName = GetSetting(KeyComposeProjectName) ?? detected.ComposeProjectName;
+
+        if (string.IsNullOrWhiteSpace(composeFilePath) || string.IsNullOrWhiteSpace(composeProjectName))
+            throw new InvalidOperationException(
+                "Compose file path and project name are required but could not be auto-detected. " +
+                "Set manual overrides in the self-update configuration.");
+
+        if (!detected.IsRunningInContainer || string.IsNullOrWhiteSpace(detected.ImageName))
+            throw new InvalidOperationException(
+                "Self-update requires Watchtower to be running as a Docker container. Running outside Docker is not supported.");
+
+        if (!File.Exists(composeFilePath))
+            throw new InvalidOperationException(
+                $"Compose file not found at '{composeFilePath}' inside the Watchtower container. " +
+                $"Mount the directory into the container, for example: " +
+                $"-v {Path.GetDirectoryName(composeFilePath)}:{Path.GetDirectoryName(composeFilePath)}:ro");
+
+        var (exitCode, output) = await _compose.ConfigAsync(composeFilePath, composeProjectName, ct);
+        if (exitCode != 0)
+            throw new InvalidOperationException(
+                $"Compose file validation failed (docker compose config exited {exitCode}):\n{output.Trim()}");
+
+        var (username, token) = ResolveCredential();
+
+        lock (_applyLock) {
+            if (_applyTask is not null && !_applyTask.IsCompleted)
+                throw new InvalidOperationException("A self-update is already in progress. Wait for the current pull to finish.");
+
+            SetStage(SelfUpdateApplyStage.Pulling);
+            _applyTask = PullAndSpawnAsync(detected, composeFilePath, composeProjectName, username, token, _cts.Token);
+        }
+    }
+
+    private async Task PullAndSpawnAsync(
+        DetectedSelfInfo detected, string composeFilePath, string composeProjectName,
+        string? username, string? token, CancellationToken ct) {
+        try {
+            _logger.LogInformation("Pulling image {Image} before self-update", detected.ImageName);
+            await _docker.PullImageAsync(detected.ImageName!, username, token, ct);
+            _logger.LogInformation("Pull complete; spawning coordinator: project {Project} at {File}", composeProjectName, composeFilePath);
+
+            SetStage(SelfUpdateApplyStage.Restarting);
+
+            // Clear the stale check result so after the restart the UI shows "Not yet checked".
+            SetSettings(
+                new(KeyCurrentImageId, null),
+                new(KeyLatestImageId, null),
+                new(KeyIsOutdated, null),
+                new(KeyLastCheckedAt, null));
+
+            var composeDir = Path.GetDirectoryName(composeFilePath)!;
+            var coordinatorName = $"watchtower-coordinator-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+
+            var containerId = await _docker.CreateContainerAsync(new DockerCreateContainerBody {
+                Image = detected.ImageName!,
+                Cmd = ["--self-update", "--compose-file", composeFilePath, "--project-name", composeProjectName],
+                Env = [$"WATCHTOWER__DOCKERAPIVERSION={_options.DockerApiVersion}"],
+                HostConfig = new DockerCreateHostConfig {
+                    Binds = [
+                        "/var/run/docker.sock:/var/run/docker.sock",
+                        $"{composeDir}:{composeDir}:ro",
+                    ],
+                    NetworkMode = "none",
+                    GroupAdd = GetCurrentGroupIds(),
+                },
+            }, coordinatorName, ct);
+
+            await _docker.StartContainerAsync(containerId, ct);
+            SetSetting(KeyCoordinatorId, containerId);
+
+            _logger.LogInformation(
+                "Coordinator container {Name} ({ShortId}) started; it will apply the update in ~3 s",
+                coordinatorName, containerId.Length >= 12 ? containerId[..12] : containerId);
+        } catch (OperationCanceledException) {
+            _logger.LogWarning("Self-update pull/spawn was cancelled (host shutting down)");
+            SetStage(SelfUpdateApplyStage.Error, "Update cancelled — host was shutting down.");
+        } catch (Exception ex) {
+            _logger.LogError(ex, "Self-update background task failed");
+            SetStage(SelfUpdateApplyStage.Error, ex.Message);
+        }
+    }
+
+    private void SetStage(SelfUpdateApplyStage stage, string? error = null) =>
+        SetSettings(new(KeyApplyStage, stage.ToString().ToLowerInvariant()), new(KeyApplyError, error));
+
+    private static string[] GetCurrentGroupIds() {
+        try {
+            foreach (var line in File.ReadLines("/proc/self/status")) {
+                if (!line.StartsWith("Groups:", StringComparison.Ordinal)) continue;
+                return line[7..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            }
+        } catch {
+            // Non-Linux or procfs unavailable — fall through and return empty.
+        }
+        return [];
+    }
+
+    private async Task<DetectedSelfInfo> TryInspectSelfAsync(CancellationToken ct = default) {
+        var hostname = Environment.GetEnvironmentVariable("HOSTNAME") ?? "";
+        if (string.IsNullOrWhiteSpace(hostname))
+            return new DetectedSelfInfo();
+
+        try {
+            var details = await _docker.InspectContainerAsync(hostname, ct);
+            var labels = details.Config.Labels;
+
+            var composeConfigFiles = labels.GetValueOrDefault(LabelComposeConfigFiles);
+            var detectedComposePath = composeConfigFiles?.Split(',').FirstOrDefault()?.Trim();
+            var detectedProjectName = labels.GetValueOrDefault(LabelComposeProject);
+
+            return new DetectedSelfInfo {
+                ImageName = details.Config.Image,
+                ComposeFilePath = detectedComposePath,
+                ComposeProjectName = detectedProjectName,
+                IsRunningInContainer = true,
+            };
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "Could not inspect self container via HOSTNAME={Hostname}", hostname);
+            return new DetectedSelfInfo();
+        }
+    }
+
+    private SelfUpdateStatus BuildResponse(
+        DetectedSelfInfo detected, IReadOnlyDictionary<string, string> settings, string? liveCurrentDigest = null) {
+        string? S(string key) => settings.GetValueOrDefault(key);
+
+        var composeFileOverride = S(KeyComposeFilePath);
+        var composeProjectOverride = S(KeyComposeProjectName);
+        var effectiveComposePath = composeFileOverride ?? detected.ComposeFilePath;
+        var effectiveProjectName = composeProjectOverride ?? detected.ComposeProjectName;
+
+        // Prefer the live digest (local image inspect, no registry call) so "Running" is always accurate.
+        var currentImageId = liveCurrentDigest ?? S(KeyCurrentImageId);
+
+        return new SelfUpdateStatus {
+            ImageName = S(KeyImageName),
+            CredentialId = int.TryParse(S(KeyCredentialId), out var cid) ? cid : null,
+            ComposeFilePath = composeFileOverride,
+            ComposeProjectName = composeProjectOverride,
+            DetectedImageName = detected.ImageName,
+            DetectedComposeFilePath = detected.ComposeFilePath,
+            DetectedComposeProjectName = detected.ComposeProjectName,
+            IsRunningInContainer = detected.IsRunningInContainer,
+            CurrentImageId = currentImageId,
+            LatestImageId = S(KeyLatestImageId),
+            IsOutdated = S(KeyIsOutdated) == "true",
+            LastCheckedAt = DateTimeOffset.TryParse(S(KeyLastCheckedAt), out var dt) ? dt : null,
+            CanApplyUpdate = !string.IsNullOrWhiteSpace(effectiveComposePath)
+                             && !string.IsNullOrWhiteSpace(effectiveProjectName),
+            ApplyStage = (Enum.TryParse<SelfUpdateApplyStage>(S(KeyApplyStage), ignoreCase: true, out var stage)
+                ? stage
+                : SelfUpdateApplyStage.Idle).ToString().ToLowerInvariant(),
+            ApplyError = S(KeyApplyError),
+            StartedAt = _startedAt,
+        };
+    }
+
+    private async Task<string?> TryGetLocalDigestAsync(string? imageName, CancellationToken ct) {
+        if (string.IsNullOrWhiteSpace(imageName)) return null;
+        try {
+            var localImage = await _docker.InspectImageAsync(imageName, ct);
+            return localImage.RepoDigests
+                .Select(rd => rd.Contains('@') ? rd[(rd.IndexOf('@') + 1)..] : null)
+                .FirstOrDefault(d => d is not null);
+        } catch {
+            return null;
+        }
+    }
+
+    /// <summary>Resolves the configured registry credential (username/token) for pulls, if any.</summary>
+    private (string? Username, string? Token) ResolveCredential() {
+        if (int.TryParse(GetSetting(KeyCredentialId), out var credentialId)) {
+            var cred = GetCredential(credentialId);
+            if (cred is not null) return cred.Value;
+        }
+        return (null, null);
+    }
+
+    // ── Scoped data access ────────────────────────────────────────────────────
+
+    private string? GetSetting(string key) {
+        using var scope = _scopeFactory.CreateScope();
+        return scope.ServiceProvider.GetRequiredService<SettingsStore>().Get(key);
+    }
+
+    private Dictionary<string, string> LoadSettings() {
+        using var scope = _scopeFactory.CreateScope();
+        return scope.ServiceProvider.GetRequiredService<SettingsStore>().GetAll();
+    }
+
+    private void SetSetting(string key, string? value) => SetSettings(new KeyValuePair<string, string?>(key, value));
+
+    private void SetSettings(params KeyValuePair<string, string?>[] pairs) {
+        using var scope = _scopeFactory.CreateScope();
+        scope.ServiceProvider.GetRequiredService<SettingsStore>().SetMany(pairs);
+    }
+
+    private (string Username, string Token)? GetCredential(int credentialId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Persistence.WatchtowerDbContext>();
+        return db.Credentials.AsNoTracking()
+            .Where(c => c.Id == credentialId)
+            .Select(c => new ValueTuple<string, string>(c.Username, c.Token))
+            .Cast<(string, string)?>()
+            .FirstOrDefault();
+    }
+
+    private sealed record DetectedSelfInfo {
+        public string? ImageName { get; init; }
+        public string? ComposeFilePath { get; init; }
+        public string? ComposeProjectName { get; init; }
+        public bool IsRunningInContainer { get; init; }
+    }
+}

@@ -1,0 +1,79 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio / VS Code
+.vs/
+*.user
+*.suo
+
+# .NET
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+*.nupkg
+*.snupkg
+publish/
+.nuget/
+packages/
+
+# ASP.NET
+appsettings.Development.json
+appsettings.Local.json
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+
+# Frontend build output
+dist/
+.output/
+.vinxi/
+.nitro/
+
+# Generated files
+src/frontend/swerp-web/src/generated/
+
+# Typst temp data files (generated at runtime for PDF compilation)
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Test results
+TestResults/
+coverage/
+*.trx
+
+# PDF output
+*.pdf
+
+# OS
+Thumbs.db
+
+# Built SPA assets (served from wwwroot in the Docker image; built by Vite locally)
+src/Watchtower.Api/wwwroot/
+
+# SQLite database files (runtime data + EF design-time scratch db)
+**/.data/
+*.db
+*.db-shm
+*.db-wal
+
+# Generated JSON-RPC client (regenerated from rpc-schema.json via `npm run generate:rpc`)
+src/watchtower-web/src/generated/
