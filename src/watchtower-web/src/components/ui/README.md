@@ -18,8 +18,12 @@ formatUptime(startedAt: string): string           // "3d 4h" · "5h 12m" · "8m"
 shortDigest(digest?: string | null): string       // "sha256:abc123def456…" · "—" when null
 formatDuration(start: string, end?: string | null): string  // "12s" · "1m 30s"; end null ⇒ now
 useElapsed(startedAt: string): string             // live "2m 14s", re-renders every 1s
+meterTone(pct?: number | null): 'ok'|'warn'|'danger'   // threshold token: ok <80, warn ≥80, danger ≥90
+formatBytes(n?: number | null): string            // "0 B" · "812 MB" · "1.2 GB" (binary units); "—" when null
 ```
 Every relative timestamp should get `title={absoluteTitle(iso)}` and the `tnum` class.
+`meterTone` centralizes the metric thresholds (spec §5.4) shared by `Sparkline`, `Meter`, and
+the host-health strip; `formatBytes` powers volume sizes and container/stack memory (use `tnum`).
 
 ## Theme — `@/lib/theme`
 
@@ -333,6 +337,49 @@ bottom; shows a "Jump to latest ↓" pill otherwise. Header shows a "● live" c
 while streaming, "reconnecting…" on error. aria-live is throttled (start + final status only).
 Dark terminal inset in both themes. Pass `doneEvent` for streams that end with a named event
 (the deploy stream); omit it for plain `onmessage` streams (container logs).
+
+---
+
+## Beacon metrics primitives (volumes / networks / metrics)
+
+### Sparkline — `@/components/ui/sparkline`
+
+```tsx
+<Sparkline data={host.history.map(h => h.cpuPercent ?? 0)} />                 // 60×20 host strip
+<Sparkline data={mem} width={48} height={16} normalize="auto" />             // 48×16 container card, byte series
+<Sparkline data={cpu} tone="brand" aria-label="CPU trend" />
+```
+Props `{ data: number[]; width?=60; height?=20; tone?; normalize?='0-100'|'auto'; 'aria-label'?; className? }`.
+Hand-rolled inline-SVG polyline — **no chart dep**. Oldest → newest. `normalize='0-100'` (default) plots
+on a fixed percentage axis; `normalize='auto'` scales to the series' own min/max (byte/load series). Stroke
+color: omit `tone` to derive from the **last value's** threshold token (`meterTone`: neutral <80, warn ≥80,
+danger ≥90), or pass `tone` (`ok|warn|danger|brand|neutral`) to override. Fewer than 2 points renders a flat
+baseline + a muted "collecting…" caption (server just started). Faint `--surface-2` baseline; static under
+reduced-motion (it only updates on poll). Exports `SparklineTone`.
+
+### Meter — `@/components/ui/meter`
+
+```tsx
+<Meter value={stack.cpuPercent} aria-label="CPU usage" />                     // value is a % (max defaults to 100)
+<Meter value={usedBytes} max={limitBytes} aria-label="Memory" />             // arbitrary scale
+<Meter value={92} tone="danger" />
+```
+Props `{ value: number; max?=100; tone?; 'aria-label'?; className? }`. A 6px horizontal bar (spec §5.4):
+`--surface-2` track, pill-rounded, fill width = `clamp(value/max, 0, 100)%` animated over `--dur-2`. Fill
+color: omit `tone` to derive from the fill % via `meterTone`, else override (`ok|warn|danger|brand|neutral`).
+`role="progressbar"` with aria value/min/max. Used in the Dashboard resource ranking + container mem %.
+Exports `MeterTone`.
+
+### ExposureBadge — `@/components/ui/exposure-badge`
+
+```tsx
+<ExposureBadge exposure={port.exposure} />          // "public" | "localhost" | "none" (from networks.ports)
+```
+Props `{ exposure: string; size?='sm'|'md'; className? }`. Thin wrapper over `Badge` + `Tooltip` that maps the
+server-derived `exposure` → tone + label + tooltip, keeping the danger semantics identical in the stack
+Networks tab and the Infrastructure page: `public` → **danger** "public" ("Reachable from any host…"),
+`localhost` → neutral "localhost", `none` (or unknown) → neutral "internal only". The badge is focusable so the
+tooltip is keyboard-reachable. Exports the `Exposure` type.
 
 ---
 

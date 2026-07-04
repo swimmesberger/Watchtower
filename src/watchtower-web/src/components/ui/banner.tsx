@@ -45,14 +45,19 @@ export function Banner({
     <div
       role="status"
       aria-live="polite"
-      className={cn('flex items-start gap-3 rounded-lg border p-3 text-sm', styles.wrap, className)}
+      className={cn(
+        'flex flex-wrap items-start gap-x-3 gap-y-2 rounded-lg border p-3 text-sm',
+        styles.wrap,
+        className,
+      )}
     >
       <Icon className={cn('mt-0.5 size-4 shrink-0', styles.icon)} aria-hidden />
-      <div className="min-w-0 flex-1">
+      <div className="min-w-[12rem] flex-1">
         {title && <p className="font-medium leading-snug">{title}</p>}
         {children && <div className={cn('text-text-2', title && 'mt-0.5')}>{children}</div>}
       </div>
-      {action && <div className="shrink-0">{action}</div>}
+      {/* Wraps to its own full-width row (aligned under the text) when the line is too narrow. */}
+      {action && <div className="shrink-0 max-sm:w-full max-sm:pl-7">{action}</div>}
       {dismissible && (
         <button
           type="button"

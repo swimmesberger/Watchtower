@@ -160,6 +160,147 @@ public sealed class DockerEngineClient : IDisposable {
         return result.StatusCode;
     }
 
+    // ── Volumes ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Lists all volumes via <c>GET /volumes</c>. Docker wraps the array in an envelope
+    /// <c>{ "Volumes": [...], "Warnings": [...] }</c> where <c>Volumes</c> may be null.
+    /// Labels missing from the API are normalized to an empty dictionary.
+    /// </summary>
+    public async Task<IReadOnlyList<DockerVolumeInfo>> ListVolumesAsync(CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/volumes", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        var envelope = await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerVolumeListResponse, ct);
+        var volumes = envelope?.Volumes;
+        if (volumes is null || volumes.Count == 0) return [];
+        // Normalize null labels to empty so callers never null-check the dictionary.
+        return volumes
+            .Select(v => v.Labels is null ? v with { Labels = [] } : v)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Removes a single volume via <c>DELETE /volumes/{name}</c>. A non-success status
+    /// (notably 409 = volume in use) throws <see cref="HttpRequestException"/> carrying the
+    /// status code; callers surface the message.
+    /// </summary>
+    public async Task RemoveVolumeAsync(string name, CancellationToken ct = default) {
+        var response = await _client.DeleteAsync($"{_apiBase}/volumes/{Uri.EscapeDataString(name)}", ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Returns a map of volume name → size in bytes from <c>GET /system/df</c>. Only volumes
+    /// whose <c>UsageData.Size</c> is known (non-null and ≥ 0) are included; Docker reports
+    /// <c>-1</c> or null for sizes it hasn't computed, which are treated as unknown and omitted.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, long>> GetVolumeSizesAsync(CancellationToken ct = default) {
+        var df = await GetSystemDfAsync(ct);
+        var sizes = new Dictionary<string, long>();
+        foreach (var v in df.Volumes ?? []) {
+            if (v.Name is null) continue;
+            var size = v.UsageData?.Size;
+            if (size is null or < 0) continue;
+            sizes[v.Name] = size.Value;
+        }
+        return sizes;
+    }
+
+    /// <summary>
+    /// Summarizes disk usage from <c>GET /system/df</c>: total image layers size plus the sum of
+    /// container writable-layer sizes plus the sum of known volume sizes. Used as the docker-df
+    /// disk fallback when host rootfs is unavailable.
+    /// </summary>
+    public async Task<DockerDfSummary> GetSystemDfSummaryAsync(CancellationToken ct = default) {
+        var df = await GetSystemDfAsync(ct);
+        var layersSize = df.LayersSize ?? 0;
+        var containersSize = (df.Containers ?? []).Sum(c => c.SizeRw ?? 0);
+        var volumesSize = (df.Volumes ?? [])
+            .Select(v => v.UsageData?.Size ?? 0)
+            .Where(s => s >= 0)
+            .Sum();
+        return new DockerDfSummary(layersSize, containersSize, volumesSize);
+    }
+
+    /// <summary>Single <c>GET /system/df</c> call shared by the volume-sizes and df-summary readers.</summary>
+    private async Task<DockerSystemDfResponse> GetSystemDfAsync(CancellationToken ct) {
+        var response = await _client.GetAsync($"{_apiBase}/system/df", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerSystemDfResponse, ct)
+            ?? new DockerSystemDfResponse();
+    }
+
+    // ── Networks ─────────────────────────────────────────────────────────────
+
+    /// <summary>Lists all networks via <c>GET /networks</c>.</summary>
+    public async Task<IReadOnlyList<DockerNetworkInfo>> ListNetworksAsync(CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/networks", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.ListDockerNetworkInfo, ct)
+            ?? [];
+    }
+
+    /// <summary>
+    /// Inspects a single network via <c>GET /networks/{id}</c>, including its attached-container
+    /// map. Container IPv4 addresses are returned by Docker in CIDR form (e.g. <c>172.18.0.4/16</c>);
+    /// the mask suffix is stripped from <see cref="DockerNetworkContainer.IPv4Address"/> here.
+    /// </summary>
+    public async Task<DockerNetworkInfo> InspectNetworkAsync(string idOrName, CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/networks/{Uri.EscapeDataString(idOrName)}", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        var network = await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerNetworkInfo, ct)
+            ?? throw new InvalidOperationException($"Null response inspecting network {idOrName}");
+        if (network.Containers is null || network.Containers.Count == 0) return network;
+        // Strip the CIDR mask so callers get a bare IP (172.18.0.4, not 172.18.0.4/16).
+        var normalized = network.Containers.ToDictionary(
+            kvp => kvp.Key,
+            kvp => kvp.Value with { IPv4Address = StripCidr(kvp.Value.IPv4Address) });
+        return network with { Containers = normalized };
+    }
+
+    /// <summary>Strips a trailing <c>/mask</c> from a CIDR address; returns null/empty unchanged.</summary>
+    private static string? StripCidr(string? address) {
+        if (string.IsNullOrEmpty(address)) return address;
+        var slash = address.IndexOf('/');
+        return slash < 0 ? address : address[..slash];
+    }
+
+    // ── Containers (all states) + stats ──────────────────────────────────────
+
+    /// <summary>
+    /// Returns all containers (running and stopped) via <c>GET /containers/json?all=true</c>.
+    /// Needed for volume ref-counting, since stopped containers still hold volume references.
+    /// Reuses the same <see cref="DockerContainerInfo"/> DTO as <see cref="ListContainersAsync"/>,
+    /// which now includes each container's <c>Mounts</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<DockerContainerInfo>> ListAllContainersAsync(CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/containers/json?all=true", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.ListDockerContainerInfo, ct)
+            ?? [];
+    }
+
+    /// <summary>
+    /// Reads a single non-streaming stats snapshot for a container via
+    /// <c>GET /containers/{id}/stats?stream=false&amp;one-shot=false</c>. Passing
+    /// <c>one-shot=false</c> (the default) is required: <c>one-shot=true</c> omits
+    /// <c>precpu_stats</c>, without which CPU% is not derivable from a single call.
+    /// The raw counters are returned as-is — CPU% math is done by the sampler.
+    /// </summary>
+    public async Task<DockerContainerStats> GetContainerStatsAsync(string containerId, CancellationToken ct = default) {
+        var response = await _client.GetAsync(
+            $"{_apiBase}/containers/{containerId}/stats?stream=false&one-shot=false", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerContainerStats, ct)
+            ?? throw new InvalidOperationException($"Null stats response for container {containerId}");
+    }
+
     public void Dispose() => _client.Dispose();
 
     // ── Self-update helpers ──────────────────────────────────────────────────
@@ -338,6 +479,46 @@ public sealed record DockerContainerInfo {
     public required string State { get; init; }
     public required string Status { get; init; }
     public required Dictionary<string, string> Labels { get; init; }
+    /// <summary>
+    /// Mounts attached to the container, as returned by GET /containers/json (all states).
+    /// Named-volume mounts have <c>Type == "volume"</c> and a non-empty <c>Name</c>; the
+    /// Volumes module intersects these against the volume list to compute ref-counts / inUseBy.
+    /// May be null/empty for containers with no mounts.
+    /// </summary>
+    public DockerMountInfo[] Mounts { get; init; } = [];
+    /// <summary>
+    /// Published/exposed port bindings, as returned by GET /containers/json. Each entry may or may
+    /// not carry a <c>PublicPort</c>/<c>IP</c> (an exposed-but-unpublished port has neither). The
+    /// Networks module derives the exposure map and host-port conflicts from these. May be
+    /// null/empty for containers that publish no ports.
+    /// </summary>
+    public DockerPortInfo[] Ports { get; init; } = [];
+}
+
+/// <summary>A single entry from a container's <c>Ports</c> array (GET /containers/json).</summary>
+public sealed record DockerPortInfo {
+    /// <summary>Host bind IP (e.g. "0.0.0.0", "127.0.0.1", "::"); null/empty when unpublished.</summary>
+    public string? IP { get; init; }
+    /// <summary>Container-side port.</summary>
+    public int PrivatePort { get; init; }
+    /// <summary>Host-side port; null when the port is exposed but not published.</summary>
+    public int? PublicPort { get; init; }
+    /// <summary>"tcp" or "udp".</summary>
+    public string Type { get; init; } = "tcp";
+}
+
+/// <summary>A single entry from a container's <c>Mounts</c> array (GET /containers/json).</summary>
+public sealed record DockerMountInfo {
+    /// <summary>"volume", "bind", "tmpfs", etc. Named volumes are "volume".</summary>
+    public string Type { get; init; } = "";
+    /// <summary>Volume name for <c>Type == "volume"</c>; empty for anonymous/bind mounts.</summary>
+    public string Name { get; init; } = "";
+    /// <summary>Source on the host (mountpoint for volumes, host path for binds).</summary>
+    public string Source { get; init; } = "";
+    /// <summary>Mount path inside the container.</summary>
+    public string Destination { get; init; } = "";
+    /// <summary>True when the mount is read-write.</summary>
+    public bool RW { get; init; }
 }
 
 /// <summary>Response body from POST /containers/{id}/wait.</summary>
@@ -352,6 +533,8 @@ public sealed record DockerWaitContainerResponse {
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(List<DockerContainerInfo>))]
 [JsonSerializable(typeof(DockerContainerInfo))]
+[JsonSerializable(typeof(DockerMountInfo))]
+[JsonSerializable(typeof(DockerPortInfo))]
 [JsonSerializable(typeof(DockerContainerDetails))]
 [JsonSerializable(typeof(DockerContainerConfig))]
 [JsonSerializable(typeof(DockerContainerState))]
@@ -359,9 +542,166 @@ public sealed record DockerWaitContainerResponse {
 [JsonSerializable(typeof(DockerCreateContainerBody))]
 [JsonSerializable(typeof(DockerCreateContainerResponse))]
 [JsonSerializable(typeof(DockerWaitContainerResponse))]
+[JsonSerializable(typeof(DockerVolumeListResponse))]
+[JsonSerializable(typeof(DockerVolumeInfo))]
+[JsonSerializable(typeof(DockerSystemDfResponse))]
+[JsonSerializable(typeof(DockerDfVolume))]
+[JsonSerializable(typeof(DockerDfVolumeUsage))]
+[JsonSerializable(typeof(DockerDfContainer))]
+[JsonSerializable(typeof(List<DockerNetworkInfo>))]
+[JsonSerializable(typeof(DockerNetworkInfo))]
+[JsonSerializable(typeof(DockerNetworkIpam))]
+[JsonSerializable(typeof(DockerNetworkIpamConfig))]
+[JsonSerializable(typeof(DockerNetworkContainer))]
+[JsonSerializable(typeof(DockerContainerStats))]
+[JsonSerializable(typeof(DockerCpuStats))]
+[JsonSerializable(typeof(DockerCpuUsage))]
+[JsonSerializable(typeof(DockerMemoryStats))]
+[JsonSerializable(typeof(DockerMemoryStatsDetail))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 internal sealed partial class DockerJsonContext : JsonSerializerContext;
+
+// ── Volumes DTOs ─────────────────────────────────────────────────────────────
+
+/// <summary>Envelope from GET /volumes: <c>{ "Volumes": [...], "Warnings": [...] }</c>.</summary>
+public sealed record DockerVolumeListResponse {
+    /// <summary>May be null when the daemon returns no volumes.</summary>
+    public List<DockerVolumeInfo>? Volumes { get; init; }
+    public string[]? Warnings { get; init; }
+}
+
+/// <summary>A single volume from GET /volumes.</summary>
+public sealed record DockerVolumeInfo {
+    public required string Name { get; init; }
+    public string Driver { get; init; } = "";
+    public string Mountpoint { get; init; } = "";
+    /// <summary>ISO-8601 creation timestamp. Present on the list response.</summary>
+    public string? CreatedAt { get; init; }
+    /// <summary>Null in the API when the volume has no labels; normalized to empty by the client.</summary>
+    public Dictionary<string, string>? Labels { get; init; }
+    public string Scope { get; init; } = "";
+}
+
+// ── /system/df DTOs ──────────────────────────────────────────────────────────
+
+/// <summary>Subset of GET /system/df used for volume sizes and the disk-usage summary.</summary>
+public sealed record DockerSystemDfResponse {
+    /// <summary>Total size of all image layers, in bytes. Null when not reported.</summary>
+    public long? LayersSize { get; init; }
+    public List<DockerDfContainer>? Containers { get; init; }
+    public List<DockerDfVolume>? Volumes { get; init; }
+}
+
+/// <summary>A container entry in GET /system/df (only the writable-layer size is read).</summary>
+public sealed record DockerDfContainer {
+    /// <summary>Size of the container's writable layer in bytes. Null when not computed.</summary>
+    public long? SizeRw { get; init; }
+}
+
+/// <summary>A volume entry in GET /system/df.</summary>
+public sealed record DockerDfVolume {
+    public string? Name { get; init; }
+    public DockerDfVolumeUsage? UsageData { get; init; }
+}
+
+/// <summary>Usage block for a df volume entry.</summary>
+public sealed record DockerDfVolumeUsage {
+    /// <summary>Volume size in bytes; Docker reports <c>-1</c> (or null) when unknown.</summary>
+    public long? Size { get; init; }
+    /// <summary>Number of containers referencing the volume; <c>-1</c> when unknown.</summary>
+    public long? RefCount { get; init; }
+}
+
+// ── Networks DTOs ────────────────────────────────────────────────────────────
+
+/// <summary>A network from GET /networks (list) or GET /networks/{id} (inspect, with Containers).</summary>
+public sealed record DockerNetworkInfo {
+    public required string Id { get; init; }
+    public required string Name { get; init; }
+    public string Driver { get; init; } = "";
+    public string Scope { get; init; } = "";
+    public bool Internal { get; init; }
+    /// <summary>Creation timestamp — the API field is "Created" (not "CreatedAt").</summary>
+    [JsonPropertyName("Created")]
+    public string? CreatedAt { get; init; }
+    public Dictionary<string, string>? Labels { get; init; }
+    public DockerNetworkIpam? IPAM { get; init; }
+    /// <summary>
+    /// Attached containers keyed by container ID. Populated only by the inspect endpoint
+    /// (GET /networks/{id}); the list endpoint returns this empty.
+    /// </summary>
+    public Dictionary<string, DockerNetworkContainer>? Containers { get; init; }
+}
+
+/// <summary>IPAM block of a network; the first Config entry carries subnet + gateway.</summary>
+public sealed record DockerNetworkIpam {
+    public List<DockerNetworkIpamConfig>? Config { get; init; }
+}
+
+/// <summary>One IPAM config entry (subnet + gateway).</summary>
+public sealed record DockerNetworkIpamConfig {
+    public string? Subnet { get; init; }
+    public string? Gateway { get; init; }
+}
+
+/// <summary>An attached container in a network inspect response.</summary>
+public sealed record DockerNetworkContainer {
+    public string? Name { get; init; }
+    /// <summary>CIDR form ("172.18.0.4/16") from the API; the client strips the mask.</summary>
+    public string? IPv4Address { get; init; }
+    public string? IPv6Address { get; init; }
+}
+
+// ── Container stats DTOs (snake_case fields → explicit JsonPropertyName) ──────
+
+/// <summary>
+/// Subset of GET /containers/{id}/stats?stream=false. Exposes the raw counters needed to
+/// derive CPU% and real memory usage; the actual math is done by the metrics sampler.
+/// </summary>
+public sealed record DockerContainerStats {
+    [JsonPropertyName("cpu_stats")]
+    public DockerCpuStats? CpuStats { get; init; }
+    [JsonPropertyName("precpu_stats")]
+    public DockerCpuStats? PreCpuStats { get; init; }
+    [JsonPropertyName("memory_stats")]
+    public DockerMemoryStats? MemoryStats { get; init; }
+}
+
+/// <summary>cpu_stats / precpu_stats block.</summary>
+public sealed record DockerCpuStats {
+    [JsonPropertyName("cpu_usage")]
+    public DockerCpuUsage? CpuUsage { get; init; }
+    [JsonPropertyName("system_cpu_usage")]
+    public ulong? SystemCpuUsage { get; init; }
+    [JsonPropertyName("online_cpus")]
+    public int? OnlineCpus { get; init; }
+}
+
+/// <summary>cpu_usage sub-block.</summary>
+public sealed record DockerCpuUsage {
+    [JsonPropertyName("total_usage")]
+    public ulong TotalUsage { get; init; }
+}
+
+/// <summary>memory_stats block. Real usage is <c>usage - stats.inactive_file</c> (guard missing).</summary>
+public sealed record DockerMemoryStats {
+    [JsonPropertyName("usage")]
+    public ulong? Usage { get; init; }
+    [JsonPropertyName("limit")]
+    public ulong? Limit { get; init; }
+    [JsonPropertyName("stats")]
+    public DockerMemoryStatsDetail? Stats { get; init; }
+}
+
+/// <summary>memory_stats.stats sub-block (only inactive_file is read, cgroup v1/v2 name).</summary>
+public sealed record DockerMemoryStatsDetail {
+    [JsonPropertyName("inactive_file")]
+    public ulong? InactiveFile { get; init; }
+}
+
+/// <summary>Aggregated disk-usage summary derived from GET /system/df.</summary>
+public sealed record DockerDfSummary(long LayersSize, long ContainersSizeRw, long VolumesSize);
 
 /// <summary>
 /// Subset of the Docker Engine API GET /containers/{id}/json response.

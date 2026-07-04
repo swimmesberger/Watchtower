@@ -1,5 +1,5 @@
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Boxes, Container, Eye, Key, LayoutDashboard, Moon, Settings, Sun } from 'lucide-react'
+import { Boxes, Container, Eye, Key, LayoutDashboard, Moon, Network, Settings, Sun } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -15,7 +15,19 @@ interface NavItem {
   exact: boolean
 }
 
-const navItems: NavItem[] = [
+// Desktop sidebar: 6 items — Infrastructure (fleet-wide volumes/networks triage) sits
+// directly under Stacks (spec §1). The mobile bottom bar stays hard-capped at 5 (A1),
+// so Infrastructure is desktop-only and reachable on mobile via a Dashboard link.
+const desktopNavItems: NavItem[] = [
+  { to: '/', label: 'Home', icon: LayoutDashboard, exact: true },
+  { to: '/stacks', label: 'Stacks', icon: Boxes, exact: false },
+  { to: '/infrastructure', label: 'Infrastructure', icon: Network, exact: true },
+  { to: '/registries', label: 'Registries', icon: Container, exact: true },
+  { to: '/credentials', label: 'Credentials', icon: Key, exact: true },
+  { to: '/settings', label: 'Settings', icon: Settings, exact: true },
+]
+
+const mobileNavItems: NavItem[] = [
   { to: '/', label: 'Home', icon: LayoutDashboard, exact: true },
   { to: '/stacks', label: 'Stacks', icon: Boxes, exact: false },
   { to: '/registries', label: 'Registries', icon: Container, exact: true },
@@ -76,7 +88,7 @@ export function RootLayout() {
             <Wordmark />
           </div>
           <nav className="flex flex-1 flex-col gap-0.5 px-3">
-            {navItems.map((item) => {
+            {desktopNavItems.map((item) => {
               const active = isActive(currentPath, item)
               const Icon = item.icon
               const showDot = item.to === '/settings' && hasUpdate
@@ -128,7 +140,7 @@ export function RootLayout() {
           className="fixed inset-x-0 bottom-0 z-30 flex h-bottombar border-t border-border bg-surface pb-safe shadow-[var(--sh-md)] md:hidden"
           aria-label="Primary"
         >
-          {navItems.map((item) => {
+          {mobileNavItems.map((item) => {
             const active = isActive(currentPath, item)
             const Icon = item.icon
             const showDot = item.to === '/settings' && hasUpdate

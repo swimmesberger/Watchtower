@@ -56,6 +56,32 @@ export function formatDuration(start: string, end?: string | null): string {
 }
 
 /**
+ * Threshold tone for a 0–100 percentage, shared by Sparkline, Meter, and the
+ * host-health strip (spec §5.4): ok < 80, warn ≥ 80, danger ≥ 90.
+ */
+export function meterTone(pct: number | null | undefined): 'ok' | 'warn' | 'danger' {
+  if (pct == null || Number.isNaN(pct)) return 'ok'
+  if (pct >= 90) return 'danger'
+  if (pct >= 80) return 'warn'
+  return 'ok'
+}
+
+/**
+ * Human-readable byte size with tabular-friendly precision, e.g. "812 MB", "1.2 GB".
+ * Uses binary (1024) units, matching Docker's own reporting. Returns "0 B" for 0.
+ */
+export function formatBytes(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return '—'
+  if (n === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  const exp = Math.min(Math.floor(Math.log(Math.abs(n)) / Math.log(1024)), units.length - 1)
+  const value = n / Math.pow(1024, exp)
+  // Whole numbers and B/KB get no decimals; larger units get one decimal below 100.
+  const decimals = exp <= 1 || value >= 100 ? 0 : 1
+  return `${value.toFixed(decimals)} ${units[exp]}`
+}
+
+/**
  * Live-updating elapsed time since `startedAt`, formatted like "42s" or "2m 14s".
  * Re-renders once per second.
  */

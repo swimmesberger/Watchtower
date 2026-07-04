@@ -172,3 +172,181 @@ export interface DockerConfigStatus {
   /** "WATCHTOWER_DOCKER_CONFIG" | "DOCKER_CONFIG" | "default" */
   source: string
 }
+
+// ── Beacon: Volumes / Networks / Metrics domain types ────────────────────────
+// Hand-maintained mirrors of the generated RPC shapes (camelCase). The three-state
+// `lifecycle` + `refCount` fields are per amendment F4.
+
+/** A volume's lifecycle relative to the running fleet (F4). */
+export type ResourceLifecycle = 'live' | 'declared' | 'orphaned'
+
+export interface VolumeInfo {
+  name: string
+  driver: string
+  /** com.docker.compose.project label, else null. */
+  project: string | null
+  /** com.docker.compose.volume label (the short name in the compose file), else null. */
+  composeVolume: string | null
+  mountpoint: string
+  createdAt: string | null
+  labels: Record<string, string>
+  scope: string
+  /** Container names currently referencing it (running OR stopped). */
+  inUseBy: string[]
+  /** Containers referencing it, running OR stopped. Delete is offered only when 0 (F4). */
+  refCount: number
+  /** live = referenced by ≥1 container · declared = has a project label, no containers · orphaned = neither. */
+  lifecycle: ResourceLifecycle
+}
+
+/** A volume's on-disk size, fetched on demand via `volumes.sizes` (df is expensive). */
+export interface VolumeSize {
+  name: string
+  sizeBytes: number
+  refCount: number
+}
+
+export interface NetworkEndpoint {
+  containerId: string
+  containerName: string
+  /** Resolved from the container's compose project label. */
+  stackName: string | null
+  ipv4: string | null
+  ipv6: string | null
+}
+
+export interface NetworkInfo {
+  id: string
+  name: string
+  /** bridge | host | overlay | none | macvlan */
+  driver: string
+  scope: string
+  /** Internal flag — no outbound route. */
+  internal: boolean
+  project: string | null
+  composeNetwork: string | null
+  createdAt: string | null
+  labels: Record<string, string>
+  ipam: { subnet: string | null; gateway: string | null }
+  attached: NetworkEndpoint[]
+  refCount: number
+  /** live · declared · orphaned (F4). Defaults never report orphaned. */
+  lifecycle: ResourceLifecycle
+  /** name in { bridge, host, none }. */
+  isDefault: boolean
+}
+
+export interface PublishedPort {
+  containerId: string
+  containerName: string
+  stackName: string | null
+  /** Container port. */
+  privatePort: number
+  /** Host port (null = exposed but not published). */
+  publicPort: number | null
+  /** tcp | udp */
+  protocol: string
+  /** "0.0.0.0" | "127.0.0.1" | "::" | specific host IP. */
+  hostIp: string
+  /** Server-derived: "public" (0.0.0.0/::) | "localhost" (127.0.0.1/::1) | "none". */
+  exposure: string
+}
+
+export interface PortConflict {
+  publicPort: number
+  protocol: string
+  hostIp: string
+  /** ≥2 containers claiming the same host ip:port:proto. */
+  containerNames: string[]
+}
+
+export interface HostSample {
+  t: string
+  cpuPercent: number | null
+  memPercent: number | null
+}
+
+export interface HostMetrics {
+  /** false when host /proc isn't mounted; all metric fields are then null. */
+  available: boolean
+  /** "host-proc-not-mounted" when unavailable, else null. */
+  reason: string | null
+  cpuPercent: number | null
+  cpuCores: number | null
+  loadAvg1: number | null
+  loadAvg5: number | null
+  memUsedBytes: number | null
+  memTotalBytes: number | null
+  memPercent: number | null
+  diskUsedBytes: number | null
+  diskTotalBytes: number | null
+  diskPercent: number | null
+  /** "host-rootfs" | "docker-df" | "unavailable" */
+  diskSource: string
+  sampledAt: string
+  /** Ring, oldest → newest, for sparklines. */
+  history: HostSample[]
+}
+
+export interface ContainerSample {
+  t: string
+  cpuPercent: number
+  memUsedBytes: number
+}
+
+export interface ContainerMetrics {
+  containerId: string
+  containerName: string
+  stackName: string | null
+  /** 0–100 (can exceed 100 on multi-core; clamp display at cores*100). */
+  cpuPercent: number
+  memUsedBytes: number
+  /** null when unlimited. */
+  memLimitBytes: number | null
+  memPercent: number | null
+  /** false if the container isn't running (stats unavailable). */
+  online: boolean
+  history: ContainerSample[]
+}
+
+export interface StackSample {
+  t: string
+  cpuPercent: number
+  memUsedBytes: number
+}
+
+export interface StackMetrics {
+  /** compose project. */
+  stackName: string
+  /** Sum of member containers. */
+  cpuPercent: number
+  memUsedBytes: number
+  containerCount: number
+  /** Summed ring. */
+  history: StackSample[]
+}
+
+/** `metrics.stacks` envelope: the ranking (CPU-desc, server-side) + the sample time. */
+export interface StackMetricsResult {
+  stacks: StackMetrics[]
+  sampledAt: string
+}
+
+/** `networks.ports` envelope: the exposure map plus cross-container conflicts. */
+export interface NetworkPortsResult {
+  published: PublishedPort[]
+  conflicts: PortConflict[]
+}
+
+/** `volumes.pruneOrphans` envelope. */
+export interface PruneOrphansResult {
+  removed: string[]
+  reclaimedBytes: number | null
+}
+
+// ── Beacon request types ─────────────────────────────────────────────────────
+
+export interface RecreateVolumesRequest {
+  stackId: number
+  volumeNames: string[]
+}

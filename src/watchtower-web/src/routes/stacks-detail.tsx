@@ -1,12 +1,17 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { getRouteApi, Link, useNavigate, useParams } from '@tanstack/react-router'
 import {
   Boxes,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Copy,
+  Database,
+  HardDrive,
+  Lock,
   MoreHorizontal,
+  Network,
   Play,
   RefreshCw,
   RotateCcw,
@@ -17,22 +22,39 @@ import { api } from '@/lib/api'
 import { apiBase } from '@/lib/config'
 import type {
   Container,
+  ContainerMetrics,
   Credential,
   DeployEvent,
+  NetworkInfo,
+  PortConflict,
+  PublishedPort,
+  ResourceLifecycle,
   Stack,
   StackEnvVar,
   StackEnvVarInput,
   UpdateStackRequest,
+  VolumeInfo,
+  VolumeSize,
 } from '@/lib/types'
-import { absoluteTitle, formatDuration, timeAgo } from '@/lib/format'
+import { absoluteTitle, formatBytes, formatDuration, meterTone, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { ContainerLogs } from '@/components/container-logs'
 import { EnvVarEditor } from '@/components/env-var-editor'
+import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
+import { DataList, type DataListColumn } from '@/components/ui/data-list'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,9 +63,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { EmptyState } from '@/components/ui/empty-state'
+import { ExposureBadge } from '@/components/ui/exposure-badge'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { LiveLog } from '@/components/ui/live-log'
+import { Meter } from '@/components/ui/meter'
 import {
   Select,
   SelectContent,
@@ -54,6 +78,7 @@ import {
 import { SecretField } from '@/components/ui/secret-field'
 import { SectionHeader } from '@/components/ui/section-header'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Sparkline } from '@/components/ui/sparkline'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -62,15 +87,75 @@ import { toast } from '@/components/ui/use-toast'
 
 const NO_CREDENTIAL = 'none'
 
+const routeApi = getRouteApi('/stacks/$id')
+
+type StackDetailTab = 'overview' | 'volumes' | 'networks' | 'settings'
+
+/** Lifecycle chip mapping (F4): live→ok, declared→neutral, orphaned→warn. */
+const LIFECYCLE_META: Record<ResourceLifecycle, { tone: BadgeTone; label: string }> = {
+  live: { tone: 'ok', label: 'live' },
+  declared: { tone: 'neutral', label: 'declared' },
+  orphaned: { tone: 'warn', label: 'orphaned' },
+}
+
+function LifecycleBadge({ lifecycle }: { lifecycle: ResourceLifecycle }) {
+  const meta = LIFECYCLE_META[lifecycle]
+  return (
+    <Badge tone={meta.tone} size="sm">
+      {meta.label}
+    </Badge>
+  )
+}
+
+/** A small "● live" chip reused by rows affected by an active deploy/recreate. */
+function LiveChip({ label = 'live' }: { label?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-run">
+      <span
+        className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]"
+        aria-hidden
+      />
+      {label}
+    </span>
+  )
+}
+
 function webhookUrl(stackId: number): string {
   const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '')
   return `${base}/api/webhooks/stacks/${stackId}/deploy`
+}
+
+/** True while the tab is visible; flips on visibilitychange so polling pauses when hidden (A7). */
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState !== 'hidden',
+  )
+  useEffect(() => {
+    const onChange = () => setVisible(document.visibilityState !== 'hidden')
+    document.addEventListener('visibilitychange', onChange)
+    return () => document.removeEventListener('visibilitychange', onChange)
+  }, [])
+  return visible
 }
 
 export function StackDetailPage() {
   const { id } = useParams({ from: '/stacks/$id' })
   const stackId = Number(id)
   const qc = useQueryClient()
+
+  // Tab state lives in the URL via ?tab= (F9). Default overview; navigate replace:true.
+  const { tab } = routeApi.useSearch()
+  const navigateTab = routeApi.useNavigate()
+  const activeTab: StackDetailTab = tab ?? 'overview'
+  const setTab = useCallback(
+    (next: string) => {
+      navigateTab({
+        search: (prev) => ({ ...prev, tab: next === 'overview' ? undefined : (next as StackDetailTab) }),
+        replace: true,
+      })
+    },
+    [navigateTab],
+  )
 
   // Ref registry: deploy-history rows register a focus/expand handler here so the
   // "View log" action on the failure banner can scroll to + expand the latest failed row.
@@ -106,6 +191,24 @@ export function StackDetailPage() {
   })
 
   const isDeploying = stack?.lastDeployStatus === 'running' || stack?.lastDeployStatus === 'queued'
+
+  // Per-container metrics (§5.3): polled 5s while the Overview tab is visible and the tab is
+  // not hidden (A7 idle-backoff). Keyed by compose project so the server pre-filters.
+  const project = stack?.composeProjectName
+  const documentVisible = useDocumentVisible()
+  const metricsActive = activeTab === 'overview' && documentVisible
+  const { data: containerMetrics = [] } = useQuery({
+    queryKey: ['metrics', 'containers', project],
+    queryFn: () => api.metrics.containers(project ?? null),
+    enabled: !!project && metricsActive,
+    refetchInterval: metricsActive ? 5_000 : false,
+  })
+  const metricsByName = useMemo(() => {
+    const map = new Map<string, ContainerMetrics>()
+    // Normalize the leading slash so lookups match the ContainerCard's stripped name.
+    for (const m of containerMetrics) map.set(m.containerName.replace(/^\//, ''), m)
+    return map
+  }, [containerMetrics])
 
   const { data: events = [] } = useQuery({
     queryKey: ['stacks', stackId, 'events'],
@@ -222,10 +325,12 @@ export function StackDetailPage() {
         />
       ) : null}
 
-      {/* Tabs */}
-      <Tabs defaultValue="overview">
+      {/* Tabs (state in ?tab=, F9) */}
+      <Tabs value={activeTab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="volumes">Volumes</TabsTrigger>
+          <TabsTrigger value="networks">Networks</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -257,7 +362,13 @@ export function StackDetailPage() {
               ) : (
                 <div className="space-y-3">
                   {stackContainers.map((container) => (
-                    <ContainerCard key={container.id} container={container} />
+                    <ContainerCard
+                      key={container.id}
+                      container={container}
+                      metrics={metricsByName.get(
+                        container.names[0]?.replace(/^\//, '') ?? '',
+                      )}
+                    />
                   ))}
                 </div>
               )}
@@ -298,6 +409,14 @@ export function StackDetailPage() {
           </div>
         </TabsContent>
 
+        <TabsContent value="volumes">
+          <VolumesTab stack={stack} isDeploying={isDeploying} />
+        </TabsContent>
+
+        <TabsContent value="networks">
+          <NetworksTab stack={stack} />
+        </TabsContent>
+
         <TabsContent value="settings">
           <SettingsTab
             stackId={stackId}
@@ -327,7 +446,13 @@ export function StackDetailPage() {
 
 // ── Container card ────────────────────────────────────────────────────────────
 
-function ContainerCard({ container }: { container: Container }) {
+function ContainerCard({
+  container,
+  metrics,
+}: {
+  container: Container
+  metrics?: ContainerMetrics
+}) {
   const qc = useQueryClient()
   const [confirmRemove, setConfirmRemove] = useState(false)
   const name = container.names[0]?.replace(/^\//, '') ?? container.id.slice(0, 12)
@@ -439,6 +564,7 @@ function ContainerCard({ container }: { container: Container }) {
           <Meta label="Image" value={container.image} />
           <Meta label="Status" value={container.status} />
         </div>
+        <ContainerMetricsRow metrics={metrics} online={running} />
         <div className="mt-4">
           <ContainerLogs containerId={container.id} containerName={name} />
         </div>
@@ -463,6 +589,87 @@ function Meta({ label, value }: { label: string; value: string }) {
     <div className="min-w-0">
       <p className="text-xs uppercase tracking-[0.04em] text-text-3">{label}</p>
       <p className="mt-0.5 truncate font-mono text-[12.5px] text-text-2">{value}</p>
+    </div>
+  )
+}
+
+// ── Per-container metrics row (§5.3) ─────────────────────────────────────────────
+
+/**
+ * Compact CPU% + Sparkline + mem row inside each ContainerCard. Renders "— · stopped"
+ * when the container isn't running (online=false). Sparkline uses the 48×16 container
+ * spec; mem % drives a threshold-colored Meter.
+ */
+function ContainerMetricsRow({
+  metrics,
+  online,
+}: {
+  metrics?: ContainerMetrics
+  online: boolean
+}) {
+  if (!online || metrics?.online === false) {
+    return (
+      <div className="mt-3 flex items-center gap-2 border-t border-border pt-3 text-[13px] text-text-3">
+        <span className="tnum">—</span>
+        <span>stopped</span>
+      </div>
+    )
+  }
+
+  if (!metrics) {
+    // Metrics not yet loaded (first poll): a thin skeleton line, never a spinner (§5.5).
+    return (
+      <div className="mt-3 border-t border-border pt-3">
+        <Skeleton variant="line" className="h-4 w-2/3" />
+      </div>
+    )
+  }
+
+  const cpuHistory = metrics.history.map((h) => h.cpuPercent)
+  const memPct = metrics.memPercent
+  const memTone = meterTone(memPct)
+
+  return (
+    <div className="mt-3 flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:gap-6">
+      {/* CPU */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs uppercase tracking-[0.04em] text-text-3">CPU</span>
+        <span className="tnum text-[13px] font-medium text-text">
+          {metrics.cpuPercent.toFixed(0)}%
+        </span>
+        <Sparkline
+          data={cpuHistory}
+          width={48}
+          height={16}
+          aria-label="CPU trend"
+          className="shrink-0"
+        />
+      </div>
+
+      {/* Memory */}
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="text-xs uppercase tracking-[0.04em] text-text-3">RAM</span>
+        <span className="tnum whitespace-nowrap text-[13px] text-text-2">
+          {formatBytes(metrics.memUsedBytes)}
+          {metrics.memLimitBytes != null && (
+            <>
+              {' / '}
+              {formatBytes(metrics.memLimitBytes)}
+            </>
+          )}
+          {memPct != null && (
+            <span className="ml-1 text-text-3">({memPct.toFixed(0)}%)</span>
+          )}
+        </span>
+        {memPct != null && (
+          <Meter
+            value={memPct}
+            tone={memTone}
+            aria-label="Memory usage"
+            className="max-w-[120px]"
+          />
+        )}
+      </div>
     </div>
   )
 }
@@ -653,9 +860,16 @@ function DeployEventRow({
           <ChevronRight className="size-4 shrink-0 text-text-3" aria-hidden />
         )}
         <StatusBadge status={event.status} size="sm" />
-        <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
-          {event.triggeredBy}
-        </span>
+        {event.triggeredBy === 'volume-recreate' ? (
+          // Data-wipe deploys read distinctly in history (§3.3): a warn-toned trigger chip.
+          <Badge tone="warn" size="sm">
+            volume-recreate
+          </Badge>
+        ) : (
+          <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
+            {event.triggeredBy}
+          </span>
+        )}
         <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>
           {timeAgo(event.startedAt)}
         </span>
@@ -684,6 +898,743 @@ function DeployEventRow({
           />
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Volumes tab (§3.2–§3.5, F4) ─────────────────────────────────────────────────
+
+/** Small StatusBadge-dot + name chip for a container that references a volume. */
+function UsedByChip({ name }: { name: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-2">
+      <span className="size-1.5 shrink-0 rounded-full bg-ok" aria-hidden />
+      <span className="truncate font-mono">{name}</span>
+    </span>
+  )
+}
+
+function VolumesTab({ stack, isDeploying }: { stack: Stack; isDeploying: boolean }) {
+  const qc = useQueryClient()
+  const project = stack.composeProjectName
+
+  const {
+    data: volumes = [],
+    isLoading,
+    isError,
+    refetch,
+  } = useQuery({
+    queryKey: ['volumes', project],
+    queryFn: () => api.volumes.list(project),
+    // Container backoff (A7): 10s while a deploy is live, else 30s.
+    refetchInterval: isDeploying ? 10_000 : 30_000,
+  })
+
+  // Lazy sizes (§3.5): fetched once on demand, merged into rows. Never polled.
+  const [sizes, setSizes] = useState<Map<string, number> | null>(null)
+  const [sizesAt, setSizesAt] = useState<string | null>(null)
+  const loadSizes = useMutation({
+    mutationFn: () => api.volumes.sizes(project),
+    onSuccess: (result: VolumeSize[]) => {
+      const map = new Map<string, number>()
+      for (const s of result) map.set(s.name, s.sizeBytes)
+      setSizes(map)
+      setSizesAt(new Date().toISOString())
+    },
+    onError: (err: Error) =>
+      toast({
+        tone: 'error',
+        title: "Couldn't read volume sizes",
+        description: err.message,
+        action: { label: 'Retry', onClick: () => loadSizes.mutate() },
+      }),
+  })
+
+  // Recreate flow state.
+  const [recreateOpen, setRecreateOpen] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const recreate = useMutation({
+    mutationFn: (volumeNames: string[]) => api.volumes.recreate(stack.id, volumeNames),
+    onSuccess: () => {
+      // The recreate enqueues on the deploy pipeline (§3.3): the deploy banner + a
+      // volume-recreate history row take over. Stay on the Volumes tab; refresh stack + events.
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      qc.invalidateQueries({ queryKey: ['stacks', stack.id, 'events'] })
+      toast.info(`Recreating volumes for ${stack.name}…`)
+    },
+    onError: (err: Error) => toast.error('Recreate failed', err.message),
+    onSettled: () => {
+      setConfirmOpen(false)
+      setRecreateOpen(false)
+      setSelected(new Set())
+    },
+  })
+
+  const openRecreate = useCallback((preselect?: string) => {
+    setSelected(preselect ? new Set([preselect]) : new Set())
+    setConfirmOpen(false)
+    setRecreateOpen(true)
+  }, [])
+
+  const toggle = useCallback((name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }, [])
+
+  const selectedNames = useMemo(() => [...selected], [selected])
+
+  // While a deploy is active, affected rows show a "● live" chip (§3.3 / §6).
+  const columns: DataListColumn<VolumeInfo>[] = [
+    {
+      key: 'name',
+      header: 'Volume',
+      cell: (v) => (
+        <div className="flex items-center gap-2">
+          <span className="truncate font-mono text-[12.5px] text-text" title={v.mountpoint}>
+            {v.name}
+          </span>
+          {isDeploying && <LiveChip />}
+        </div>
+      ),
+    },
+    {
+      key: 'compose',
+      header: 'Compose name',
+      cell: (v) => (
+        <div className="flex items-center gap-1.5">
+          {v.composeVolume ? (
+            <Badge tone="neutral" size="sm">
+              {v.composeVolume}
+            </Badge>
+          ) : (
+            <span className="text-text-3">—</span>
+          )}
+          {v.driver !== 'local' && (
+            <Badge tone="neutral" size="sm">
+              {v.driver}
+            </Badge>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'lifecycle',
+      header: 'Status',
+      cell: (v) => <LifecycleBadge lifecycle={v.lifecycle} />,
+    },
+    {
+      key: 'usedBy',
+      header: 'Used by',
+      cell: (v) =>
+        v.inUseBy.length === 0 ? (
+          <span className="text-text-3">—</span>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {v.inUseBy.map((n) => (
+              <UsedByChip key={n} name={n} />
+            ))}
+          </div>
+        ),
+    },
+    {
+      key: 'size',
+      header: 'Size',
+      align: 'right',
+      cell: (v) => (
+        <span className="tnum text-[13px] text-text-2">
+          {sizes ? formatBytes(sizes.get(v.name) ?? 0) : '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (v) => (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${v.name}`}>
+              <MoreHorizontal />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem destructive onSelect={() => openRecreate(v.name)}>
+              <RotateCcw /> Recreate…
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                void navigator.clipboard?.writeText(v.mountpoint)
+                toast.success('Copied to clipboard.')
+              }}
+            >
+              <Copy /> Copy mountpoint
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ),
+    },
+  ]
+
+  if (isError) {
+    return (
+      <Banner
+        tone="danger"
+        title="Couldn’t load volumes"
+        action={
+          <Button variant="secondary" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        }
+      >
+        The Docker socket may be unreachable.
+      </Banner>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        title="Volumes"
+        action={
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={loadSizes.isPending}
+              onClick={() => loadSizes.mutate()}
+            >
+              {!loadSizes.isPending && <HardDrive />}
+              {sizes ? 'Refresh sizes' : 'Load sizes'}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => openRecreate()}>
+              <RotateCcw /> Recreate volume…
+            </Button>
+          </div>
+        }
+      />
+      {/* Plain-language lead-in (F10). */}
+      <p className="-mt-2 text-[13px] text-text-2">
+        Volumes hold this stack’s persistent data — they survive deploys until you recreate them.
+      </p>
+      {sizesAt && (
+        <p className="tnum text-xs text-text-3" title={absoluteTitle(sizesAt)}>
+          Sizes as of {new Date(sizesAt).toLocaleTimeString()}
+        </p>
+      )}
+
+      <DataList
+        items={volumes}
+        columns={columns}
+        getKey={(v) => v.name}
+        skeletonRows={isLoading ? 4 : undefined}
+        aria-label="Volumes"
+        emptyState={
+          <EmptyState
+            icon={Database}
+            title="No volumes"
+            description="This stack’s compose file declares no named volumes."
+          />
+        }
+        renderCard={(v) => (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate font-mono text-[13px] text-text">{v.name}</span>
+              <div className="flex items-center gap-2">
+                {isDeploying && <LiveChip />}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${v.name}`}>
+                      <MoreHorizontal />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem destructive onSelect={() => openRecreate(v.name)}>
+                      <RotateCcw /> Recreate…
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void navigator.clipboard?.writeText(v.mountpoint)
+                        toast.success('Copied to clipboard.')
+                      }}
+                    >
+                      <Copy /> Copy mountpoint
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-text-2">
+              {v.composeVolume && (
+                <Badge tone="neutral" size="sm">
+                  {v.composeVolume}
+                </Badge>
+              )}
+              <span>· {v.driver}</span>
+              <LifecycleBadge lifecycle={v.lifecycle} />
+            </div>
+            {v.inUseBy.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {v.inUseBy.map((n) => (
+                  <UsedByChip key={n} name={n} />
+                ))}
+              </div>
+            )}
+            <p className="tnum text-[12px] text-text-3">
+              Size {sizes ? formatBytes(sizes.get(v.name) ?? 0) : '—'}
+            </p>
+          </div>
+        )}
+      />
+
+      {/* Step 1 — select volumes to recreate. */}
+      <RecreateSelectDialog
+        open={recreateOpen}
+        onOpenChange={(o) => {
+          setRecreateOpen(o)
+          if (!o) setSelected(new Set())
+        }}
+        stack={stack}
+        volumes={volumes}
+        sizes={sizes}
+        selected={selected}
+        onToggle={toggle}
+        onContinue={() => {
+          setRecreateOpen(false)
+          setConfirmOpen(true)
+        }}
+      />
+
+      {/* Step 2 — typed-name confirm (A4), tone danger, "Wipe & redeploy". */}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(o) => {
+          setConfirmOpen(o)
+          if (!o) {
+            // Backing out of the confirm returns to the selection dialog.
+            setRecreateOpen(true)
+          }
+        }}
+        title={`Wipe data for ${stack.name}?`}
+        description={
+          <span>
+            This permanently deletes {selectedNames.length} volume(s) and all their data —
+            including any database contents — then redeploys the stack to recreate them empty.{' '}
+            <strong>This cannot be undone.</strong>
+            <span className="mt-2 flex flex-col gap-0.5">
+              {selectedNames.map((n) => (
+                <span key={n} className="font-mono text-[12px] text-text">
+                  {n}
+                </span>
+              ))}
+            </span>
+          </span>
+        }
+        confirmLabel="Wipe & redeploy"
+        tone="danger"
+        requireText={stack.name}
+        loading={recreate.isPending}
+        onConfirm={() => recreate.mutate(selectedNames)}
+      />
+    </div>
+  )
+}
+
+/** Step 1 of the recreate flow: a checkbox list of the stack's named volumes (§3.3). */
+function RecreateSelectDialog({
+  open,
+  onOpenChange,
+  stack,
+  volumes,
+  sizes,
+  selected,
+  onToggle,
+  onContinue,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  stack: Stack
+  volumes: VolumeInfo[]
+  sizes: Map<string, number> | null
+  selected: Set<string>
+  onToggle: (name: string) => void
+  onContinue: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Recreate volumes for {stack.name}</DialogTitle>
+          <DialogDescription>
+            Choose which named volumes to wipe and recreate empty on the next deploy.
+          </DialogDescription>
+        </DialogHeader>
+
+        <Banner tone="danger" title="Recreating deletes data permanently">
+          Watchtower will stop this stack’s containers, delete the selected volumes, then redeploy
+          to recreate them empty. This is how you reset a database to a clean state.
+        </Banner>
+
+        <div className="flex max-h-[40dvh] flex-col gap-1 overflow-y-auto">
+          {volumes.length === 0 ? (
+            <p className="text-sm text-text-3">This stack has no named volumes.</p>
+          ) : (
+            volumes.map((v) => (
+              <label
+                key={v.name}
+                className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 hover:bg-surface-2"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(v.name)}
+                  onChange={() => onToggle(v.name)}
+                  className="size-4 shrink-0 accent-[var(--brand)]"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[12.5px] text-text">{v.name}</span>
+                  <span className="block text-[12px] text-text-2">
+                    {v.composeVolume ?? '—'}
+                    {v.inUseBy.length > 0 && ` · used by ${v.inUseBy.join(', ')}`}
+                    {sizes && ` · ${formatBytes(sizes.get(v.name) ?? 0)}`}
+                  </span>
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" disabled={selected.size === 0} onClick={onContinue}>
+            Continue
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Networks tab (§4.2–§4.3, F10) ────────────────────────────────────────────────
+
+function NetworksTab({ stack }: { stack: Stack }) {
+  const project = stack.composeProjectName
+
+  const {
+    data: networks = [],
+    isLoading: netsLoading,
+    isError: netsError,
+    refetch: refetchNets,
+  } = useQuery({
+    queryKey: ['networks', project],
+    queryFn: () => api.networks.list(project),
+    refetchInterval: 30_000,
+  })
+
+  const {
+    data: ports,
+    isLoading: portsLoading,
+  } = useQuery({
+    queryKey: ['networks', 'ports', project],
+    queryFn: () => api.networks.ports(project),
+    refetchInterval: 30_000,
+  })
+
+  const published = useMemo(() => {
+    const list = ports?.published ?? []
+    // Sort by exposure risk: public first, then localhost, then internal-only.
+    const rank: Record<string, number> = { public: 0, localhost: 1, none: 2 }
+    return [...list].sort((a, b) => (rank[a.exposure] ?? 3) - (rank[b.exposure] ?? 3))
+  }, [ports])
+  const conflicts = ports?.conflicts ?? []
+
+  if (netsError) {
+    return (
+      <Banner
+        tone="danger"
+        title="Couldn’t load networks"
+        action={
+          <Button variant="secondary" size="sm" onClick={() => refetchNets()}>
+            Retry
+          </Button>
+        }
+      >
+        The Docker socket may be unreachable.
+      </Banner>
+    )
+  }
+
+  const netColumns: DataListColumn<NetworkInfo>[] = [
+    {
+      key: 'name',
+      header: 'Network',
+      cell: (n) => <span className="truncate font-mono text-[12.5px] text-text">{n.name}</span>,
+    },
+    {
+      key: 'compose',
+      header: 'Compose name',
+      cell: (n) =>
+        n.composeNetwork ? (
+          <Badge tone="neutral" size="sm">
+            {n.composeNetwork}
+          </Badge>
+        ) : (
+          <span className="text-text-3">—</span>
+        ),
+    },
+    {
+      key: 'driver',
+      header: 'Driver',
+      cell: (n) => (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge tone="neutral" size="sm">
+            {n.driver}
+          </Badge>
+          {n.internal && (
+            <Tooltip label="Internal network — no outbound route.">
+              <Badge tone="warn" size="sm" tabIndex={0}>
+                internal
+              </Badge>
+            </Tooltip>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'ipam',
+      header: 'Subnet',
+      cell: (n) => (
+        <span className="tnum font-mono text-[12px] text-text-2">
+          {n.ipam.subnet ?? '—'}
+          {n.ipam.gateway && <span className="text-text-3"> · gw {n.ipam.gateway}</span>}
+        </span>
+      ),
+    },
+    {
+      key: 'attached',
+      header: 'Attached',
+      cell: (n) =>
+        n.attached.length === 0 ? (
+          <span className="text-text-3">—</span>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {n.attached.map((e) => (
+              <span
+                key={e.containerId}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-2"
+              >
+                <span className="size-1.5 shrink-0 rounded-full bg-ok" aria-hidden />
+                <span className="truncate font-mono">{e.containerName}</span>
+                {e.ipv4 && <span className="tnum text-text-3">· {e.ipv4}</span>}
+              </span>
+            ))}
+          </div>
+        ),
+    },
+  ]
+
+  return (
+    <div className="space-y-8">
+      {/* Block A — networks + attachment strip. */}
+      <section className="space-y-4">
+        <SectionHeader title="Networks" />
+        <p className="-mt-2 text-[13px] text-text-2">
+          How this stack’s services are wired together on the Docker network.
+        </p>
+        <DataList
+          items={networks}
+          columns={netColumns}
+          getKey={(n) => n.id}
+          skeletonRows={netsLoading ? 2 : undefined}
+          aria-label="Networks"
+          emptyState={
+            <EmptyState
+              icon={Network}
+              title="No networks"
+              description="This stack has no dedicated networks."
+            />
+          }
+          renderCard={(n) => (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="min-w-0 truncate font-mono text-[13px] text-text">{n.name}</span>
+                <Badge tone="neutral" size="sm">
+                  {n.driver}
+                </Badge>
+                {n.internal && (
+                  <Badge tone="warn" size="sm">
+                    internal
+                  </Badge>
+                )}
+              </div>
+              {n.ipam.subnet && (
+                <p className="tnum font-mono text-[12px] text-text-2">{n.ipam.subnet}</p>
+              )}
+              {n.attached.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {n.attached.map((e) => (
+                    <span
+                      key={e.containerId}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-text-2"
+                    >
+                      <span className="size-1.5 shrink-0 rounded-full bg-ok" aria-hidden />
+                      <span className="truncate font-mono">{e.containerName}</span>
+                      {e.ipv4 && <span className="tnum text-text-3">· {e.ipv4}</span>}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        />
+
+        {networks.length > 0 && <AttachmentStrip networks={networks} />}
+      </section>
+
+      {/* Block B — published ports exposure map. */}
+      <section className="space-y-4">
+        <SectionHeader title="Published ports" />
+        <p className="-mt-2 text-[13px] text-text-2">
+          What deploying this stack opened to the network.
+        </p>
+
+        {conflicts.map((c) => (
+          <PortConflictBanner key={`${c.hostIp}:${c.publicPort}/${c.protocol}`} conflict={c} />
+        ))}
+
+        {portsLoading ? (
+          <div className="space-y-2 rounded-lg border border-border p-4">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} variant="line" className="h-4 w-2/3" />
+            ))}
+          </div>
+        ) : published.length === 0 ? (
+          <Banner tone="info" title="No published ports">
+            This stack isn’t reachable from the host network.
+          </Banner>
+        ) : (
+          <ExposureTable ports={published} />
+        )}
+      </section>
+    </div>
+  )
+}
+
+function PortConflictBanner({ conflict }: { conflict: PortConflict }) {
+  return (
+    <Banner tone="warn" title="Port conflict">
+      Port {conflict.publicPort}/{conflict.protocol} is claimed by {conflict.containerNames.length}{' '}
+      containers ({conflict.containerNames.join(', ')}).
+    </Banner>
+  )
+}
+
+function ExposureTable({ ports }: { ports: PublishedPort[] }) {
+  const columns: DataListColumn<PublishedPort>[] = [
+    {
+      key: 'container',
+      header: 'Container',
+      cell: (p) => <span className="truncate font-mono text-[12.5px] text-text">{p.containerName}</span>,
+    },
+    {
+      key: 'port',
+      header: 'Port',
+      cell: (p) => (
+        <span className="tnum font-mono text-[12.5px] text-text-2">
+          {p.privatePort}/{p.protocol}
+        </span>
+      ),
+    },
+    {
+      key: 'binding',
+      header: 'Host binding',
+      cell: (p) => (
+        <span className="tnum font-mono text-[12px] text-text-2">
+          {p.publicPort != null ? `${p.hostIp}:${p.publicPort}` : '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'exposure',
+      header: 'Exposure',
+      align: 'right',
+      cell: (p) => <ExposureBadge exposure={p.exposure} />,
+    },
+  ]
+
+  return (
+    <DataList
+      items={ports}
+      columns={columns}
+      getKey={(p) => `${p.containerId}:${p.privatePort}/${p.protocol}:${p.hostIp}:${p.publicPort}`}
+      aria-label="Published ports"
+      renderCard={(p) => (
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate font-mono text-[13px] text-text">{p.containerName}</p>
+            <p className="tnum font-mono text-[12px] text-text-2">
+              {p.privatePort}/{p.protocol}
+              {p.publicPort != null && ` · ${p.hostIp}:${p.publicPort}`}
+            </p>
+          </div>
+          <ExposureBadge exposure={p.exposure} />
+        </div>
+      )}
+    />
+  )
+}
+
+/**
+ * Lightweight topology (§4.3): one row per network, containers as dots on a rail linking to a
+ * central network pill. Internal networks get a lock glyph; the default bridge is de-emphasized.
+ * Collapses to a grouped list on mobile.
+ */
+function AttachmentStrip({ networks }: { networks: NetworkInfo[] }) {
+  const withMembers = networks.filter((n) => n.attached.length > 0)
+  if (withMembers.length === 0) return null
+
+  return (
+    <div className="space-y-3">
+      {withMembers.map((n) => (
+        <div
+          key={n.id}
+          className={cn(
+            'flex flex-col gap-3 rounded-lg border border-border bg-surface p-4 md:flex-row md:items-center md:gap-4',
+            n.isDefault && 'opacity-80',
+          )}
+        >
+          {/* Network pill */}
+          <span
+            className={cn(
+              'inline-flex w-fit items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] font-medium',
+              n.isDefault
+                ? 'border-border bg-surface-2 text-text-3'
+                : 'border-[var(--brand-soft)] bg-brand-soft text-brand',
+            )}
+          >
+            {n.internal && <Lock className="size-3" aria-hidden />}
+            <span className="font-mono">{n.name}</span>
+            <span className="text-text-3">({n.driver})</span>
+          </span>
+
+          {/* Rail of container dots */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 md:border-l md:border-border md:pl-4">
+            {n.attached.map((e) => (
+              <span key={e.containerId} className="inline-flex items-center gap-1.5 text-[12px] text-text-2">
+                <span className="size-1.5 shrink-0 rounded-full bg-ok" aria-hidden />
+                <span className="font-mono">{e.containerName}</span>
+                {e.ipv4 && <span className="tnum text-text-3">{e.ipv4}</span>}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

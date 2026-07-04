@@ -359,6 +359,569 @@
         ]
       }
     },
+    "metrics.containers": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "containers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "containerId": {
+                  "type": "string"
+                },
+                "containerName": {
+                  "type": "string"
+                },
+                "stackName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cpuPercent": {
+                  "type": "number"
+                },
+                "memUsedBytes": {
+                  "type": "integer"
+                },
+                "memLimitBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "memPercent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "online": {
+                  "type": "boolean"
+                },
+                "history": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "t": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "cpuPercent": {
+                        "type": "number"
+                      },
+                      "memUsedBytes": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "t",
+                      "cpuPercent",
+                      "memUsedBytes"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "containerId",
+                "containerName",
+                "stackName",
+                "cpuPercent",
+                "memUsedBytes",
+                "memLimitBytes",
+                "memPercent",
+                "online",
+                "history"
+              ]
+            }
+          }
+        },
+        "required": [
+          "containers"
+        ]
+      }
+    },
+    "metrics.host": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "object",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cpuPercent": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cpuCores": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "loadAvg1": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "loadAvg5": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "memUsedBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "memTotalBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "memPercent": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "diskUsedBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "diskTotalBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "diskPercent": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "diskSource": {
+                "type": "string"
+              },
+              "sampledAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "history": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "t": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "cpuPercent": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "memPercent": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "cpuPercent",
+                    "memPercent"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "available",
+              "reason",
+              "cpuPercent",
+              "cpuCores",
+              "loadAvg1",
+              "loadAvg5",
+              "memUsedBytes",
+              "memTotalBytes",
+              "memPercent",
+              "diskUsedBytes",
+              "diskTotalBytes",
+              "diskPercent",
+              "diskSource",
+              "sampledAt",
+              "history"
+            ]
+          }
+        },
+        "required": [
+          "host"
+        ]
+      }
+    },
+    "metrics.stacks": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stacks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stackName": {
+                  "type": "string"
+                },
+                "cpuPercent": {
+                  "type": "number"
+                },
+                "memUsedBytes": {
+                  "type": "integer"
+                },
+                "containerCount": {
+                  "type": "integer"
+                },
+                "history": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "t": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "cpuPercent": {
+                        "type": "number"
+                      },
+                      "memUsedBytes": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "t",
+                      "cpuPercent",
+                      "memUsedBytes"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "stackName",
+                "cpuPercent",
+                "memUsedBytes",
+                "containerCount",
+                "history"
+              ]
+            }
+          },
+          "sampledAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "stacks",
+          "sampledAt"
+        ]
+      }
+    },
+    "networks.list": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "driver": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "internal": {
+                  "type": "boolean"
+                },
+                "project": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "composeNetwork": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "ipam": {
+                  "type": "object",
+                  "properties": {
+                    "subnet": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "gateway": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "subnet",
+                    "gateway"
+                  ]
+                },
+                "attached": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "containerId": {
+                        "type": "string"
+                      },
+                      "containerName": {
+                        "type": "string"
+                      },
+                      "stackName": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "ipv4": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "ipv6": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "containerId",
+                      "containerName",
+                      "stackName",
+                      "ipv4",
+                      "ipv6"
+                    ]
+                  }
+                },
+                "refCount": {
+                  "type": "integer"
+                },
+                "lifecycle": {
+                  "type": "string"
+                },
+                "isDefault": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "driver",
+                "scope",
+                "internal",
+                "project",
+                "composeNetwork",
+                "createdAt",
+                "labels",
+                "ipam",
+                "attached",
+                "refCount",
+                "lifecycle",
+                "isDefault"
+              ]
+            }
+          }
+        },
+        "required": [
+          "networks"
+        ]
+      }
+    },
+    "networks.ports": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "published": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "containerId": {
+                  "type": "string"
+                },
+                "containerName": {
+                  "type": "string"
+                },
+                "stackName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "privatePort": {
+                  "type": "integer"
+                },
+                "publicPort": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "protocol": {
+                  "type": "string"
+                },
+                "hostIp": {
+                  "type": "string"
+                },
+                "exposure": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "containerId",
+                "containerName",
+                "stackName",
+                "privatePort",
+                "publicPort",
+                "protocol",
+                "hostIp",
+                "exposure"
+              ]
+            }
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "publicPort": {
+                  "type": "integer"
+                },
+                "protocol": {
+                  "type": "string"
+                },
+                "hostIp": {
+                  "type": "string"
+                },
+                "containerNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "publicPort",
+                "protocol",
+                "hostIp",
+                "containerNames"
+              ]
+            }
+          }
+        },
+        "required": [
+          "published",
+          "conflicts"
+        ]
+      }
+    },
     "registries.create": {
       "params": {
         "type": "object",
@@ -1930,6 +2493,238 @@
         },
         "required": [
           "status"
+        ]
+      }
+    },
+    "volumes.list": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "volumes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "driver": {
+                  "type": "string"
+                },
+                "project": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "composeVolume": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mountpoint": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "inUseBy": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "refCount": {
+                  "type": "integer"
+                },
+                "lifecycle": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "driver",
+                "project",
+                "composeVolume",
+                "mountpoint",
+                "createdAt",
+                "labels",
+                "scope",
+                "inUseBy",
+                "refCount",
+                "lifecycle"
+              ]
+            }
+          }
+        },
+        "required": [
+          "volumes"
+        ]
+      }
+    },
+    "volumes.pruneOrphans": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reclaimedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "removed",
+          "reclaimedBytes"
+        ]
+      }
+    },
+    "volumes.recreate": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "volumeNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "stackId",
+          "volumeNames"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deploy": {
+            "type": "object",
+            "properties": {
+              "deployEventId": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployEventId",
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "deploy"
+        ]
+      }
+    },
+    "volumes.remove": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ]
+      }
+    },
+    "volumes.sizes": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "sizes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer"
+                },
+                "refCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "sizeBytes",
+                "refCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "sizes"
         ]
       }
     }

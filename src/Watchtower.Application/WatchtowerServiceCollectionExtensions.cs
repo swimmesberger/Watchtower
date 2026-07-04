@@ -48,6 +48,11 @@ public static class WatchtowerServiceCollectionExtensions {
 
         services.AddSingleton<StackUpdateService>();
 
+        // Metrics — a singleton ring-buffer store fed by one background sampler (amendment F5).
+        // The RPC handlers read only the store, so no Docker fan-out happens on the request path.
+        services.AddSingleton<MetricsStore>();
+        services.AddHostedService<MetricsSampler>();
+
         // Background checkers — opt-in so no outbound registry traffic happens unless enabled.
         if (section.GetValue<bool>("AutoCheckEnabled"))
             services.AddHostedService<SelfUpdateBackgroundService>();

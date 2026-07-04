@@ -30,6 +30,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly GitCloneService _git;
     private readonly ComposeCliService _compose;
+    private readonly DockerEngineClient _docker;
     private readonly DeployOutputBroadcaster _broadcaster;
     private readonly ILogger<DeployQueueService> _logger;
 
@@ -37,11 +38,13 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         IServiceScopeFactory scopeFactory,
         GitCloneService git,
         ComposeCliService compose,
+        DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
         ILogger<DeployQueueService> logger) {
         _scopeFactory = scopeFactory;
         _git = git;
         _compose = compose;
+        _docker = docker;
         _broadcaster = broadcaster;
         _logger = logger;
     }
@@ -73,7 +76,14 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     /// this request was stored as next-to-run), or coalesced (a deploy is running AND one is already
     /// pending — the caller receives the existing pending event id, no new row created).
     /// </remarks>
-    public DeployEnqueueResult Enqueue(int stackId, string triggeredBy) {
+    /// <param name="removeVolumes">
+    /// Optional list of named volumes to delete (via <c>compose down</c> → <c>docker volume rm</c>)
+    /// after clone and BEFORE pull/up — the <c>volumes.recreate</c> data-wipe flow. Null/empty for a
+    /// plain deploy. This payload is threaded through the running AND pending slots: if a recreate is
+    /// coalesced onto a pending plain deploy (or vice-versa), the pending slot keeps the UNION of the
+    /// volume lists so a recreate is never silently downgraded to a plain deploy.
+    /// </param>
+    public DeployEnqueueResult Enqueue(int stackId, string triggeredBy, IReadOnlyList<string>? removeVolumes = null) {
         var slot = _slots.GetOrAdd(stackId, _ => new StackSlot());
 
         lock (slot.Lock) {
@@ -82,7 +92,8 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
                 MarkRunning(eventId);
                 UpdateDeployStatus(stackId, DeployStatus.Running);
                 slot.IsRunning = true;
-                slot.WorkerTask = Task.Run(() => RunSlotAsync(stackId, slot, eventId, triggeredBy, _cts.Token));
+                var volumes = removeVolumes;
+                slot.WorkerTask = Task.Run(() => RunSlotAsync(stackId, slot, eventId, triggeredBy, volumes, _cts.Token));
                 return new DeployEnqueueResult(eventId, "running");
             }
 
@@ -90,20 +101,46 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
                 var eventId = CreateEvent(stackId, triggeredBy);
                 slot.PendingEventId = eventId;
                 slot.PendingTriggeredBy = triggeredBy;
+                slot.PendingRemoveVolumes = Normalize(removeVolumes);
                 UpdateDeployStatus(stackId, DeployStatus.Queued);
                 return new DeployEnqueueResult(eventId, "queued");
             }
 
             // Deploy running AND one already pending — coalesce onto the existing pending event.
+            // Merge rule: the pending slot keeps the UNION of volume lists, and a recreate trigger
+            // supersedes a plain-deploy trigger (a plain deploy must never drop a pending recreate).
+            var merged = UnionVolumes(slot.PendingRemoveVolumes, removeVolumes);
+            slot.PendingRemoveVolumes = merged;
+            if (merged is { Count: > 0 })
+                slot.PendingTriggeredBy = "volume-recreate";
             return new DeployEnqueueResult(slot.PendingEventId.Value, "queued");
         }
     }
 
+    /// <summary>Returns null for a null/empty list, otherwise a defensive copy.</summary>
+    private static IReadOnlyList<string>? Normalize(IReadOnlyList<string>? volumes) =>
+        volumes is { Count: > 0 } ? volumes.Distinct(StringComparer.Ordinal).ToList() : null;
+
+    /// <summary>Union of two volume lists (order-preserving, de-duplicated); null when both are empty.</summary>
+    private static IReadOnlyList<string>? UnionVolumes(IReadOnlyList<string>? a, IReadOnlyList<string>? b) {
+        if ((a is null || a.Count == 0) && (b is null || b.Count == 0)) return null;
+        var set = new List<string>();
+        void Add(IReadOnlyList<string>? src) {
+            if (src is null) return;
+            foreach (var v in src)
+                if (!set.Contains(v, StringComparer.Ordinal)) set.Add(v);
+        }
+        Add(a);
+        Add(b);
+        return set;
+    }
+
     /// <summary>Worker loop for a single stack: runs the deploy, then picks up any pending request.</summary>
     private async Task RunSlotAsync(
-        int stackId, StackSlot slot, int eventId, string triggeredBy, CancellationToken ct) {
+        int stackId, StackSlot slot, int eventId, string triggeredBy,
+        IReadOnlyList<string>? removeVolumes, CancellationToken ct) {
         do {
-            await ExecuteDeployAsync(stackId, eventId, ct);
+            await ExecuteDeployAsync(stackId, eventId, removeVolumes, ct);
 
             lock (slot.Lock) {
                 if (slot.PendingEventId is null) {
@@ -114,14 +151,21 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
 
                 eventId = slot.PendingEventId.Value;
                 triggeredBy = slot.PendingTriggeredBy!;
+                removeVolumes = slot.PendingRemoveVolumes;
                 slot.PendingEventId = null;
                 slot.PendingTriggeredBy = null;
+                slot.PendingRemoveVolumes = null;
             }
         } while (true);
     }
 
-    /// <summary>Runs the full clone → pull → up pipeline for one deploy event.</summary>
-    private async Task ExecuteDeployAsync(int stackId, int eventId, CancellationToken ct) {
+    /// <summary>
+    /// Runs the full clone → [down + volume-rm] → pull → up pipeline for one deploy event.
+    /// When <paramref name="removeVolumes"/> is non-empty, the stack is brought down and each named
+    /// volume is deleted after the clone and before pull/up (the data-wipe recreate flow).
+    /// </summary>
+    private async Task ExecuteDeployAsync(
+        int stackId, int eventId, IReadOnlyList<string>? removeVolumes, CancellationToken ct) {
         var stack = GetStack(stackId);
         if (stack is null) {
             CompleteEvent(eventId, "failed", "[Watchtower] Stack not found — it may have been deleted.");
@@ -162,6 +206,36 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
 
             // TrimStart ensures an accidentally absolute path is treated as relative to the cloned repo root.
             var composePath = Path.Combine(tempRepoDir, stack.ComposeFilePath.TrimStart('/', '\\'));
+
+            // 2b. Volume-recreate flow: bring the stack down (keeps named volumes) then delete each
+            // selected volume before the pull/up recreates them empty. A 409 (still referenced) fails
+            // the deploy, leaving the stack down-but-not-recreated so the operator can re-run.
+            if (removeVolumes is { Count: > 0 }) {
+                WriteHeader($"[Watchtower] Stopping stack '{stack.ComposeProjectName}' to recreate {removeVolumes.Count} volume(s)");
+                UpdateOutput(eventId, output.ToString());
+                var downResult = await _compose.DownAsync(composePath, stack.ComposeProjectName, dockerConfigDir: null, ct);
+                output.Append(downResult.Output);
+                UpdateOutput(eventId, output.ToString());
+                if (downResult.ExitCode != 0) {
+                    WriteHeader("[Watchtower] compose down failed — aborting volume recreate.");
+                    CompleteEvent(eventId, "failed", output.ToString());
+                    UpdateDeployStatus(stackId, DeployStatus.Failed);
+                    return;
+                }
+
+                foreach (var volumeName in removeVolumes) {
+                    WriteHeader($"[Watchtower] Removing volume {volumeName}");
+                    UpdateOutput(eventId, output.ToString());
+                    try {
+                        await _docker.RemoveVolumeAsync(volumeName, ct);
+                    } catch (HttpRequestException ex) {
+                        WriteHeader($"[Watchtower] Failed to remove volume {volumeName}: {ex.Message}");
+                        CompleteEvent(eventId, "failed", output.ToString());
+                        UpdateDeployStatus(stackId, DeployStatus.Failed);
+                        return;
+                    }
+                }
+            }
 
             // 3. Build a scoped DOCKER_CONFIG with all configured registry credentials.
             dockerConfigDir = CreateRegistryConfigDir();
@@ -328,6 +402,8 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         public bool IsRunning;
         public int? PendingEventId;
         public string? PendingTriggeredBy;
+        /// <summary>Volumes to delete for a pending recreate; null for a plain pending deploy.</summary>
+        public IReadOnlyList<string>? PendingRemoveVolumes;
         public Task? WorkerTask;
     }
 }

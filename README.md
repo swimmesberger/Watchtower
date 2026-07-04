@@ -44,7 +44,10 @@ client generated from the exported schema.
   sibling container that runs `docker compose up -d` to recreate it (a container can't restart itself).
 
 See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
-[docs/elarion.md](docs/elarion.md) for how the project consumes the framework, and
+[docs/elarion.md](docs/elarion.md) for how the project consumes the framework,
+[docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
+is no longer enough (Docker Swarm vs k3s),
+[docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip, and
 [docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure
@@ -112,6 +115,11 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
 
 `WATCHTOWER_DOCKER_CONFIG` / `DOCKER_CONFIG` point at a mounted host `config.json` for private pulls.
+
+`WATCHTOWER_HOST_PROC` (e.g. `/host/proc`) enables the Dashboard's host CPU/RAM/load strip by pointing at
+a read-only `/proc` mount; `WATCHTOWER_HOST_ROOTFS` (optional) points at a host-root mount for true disk
+usage (else disk falls back to Docker's `df`). Both are opt-in — see
+[docs/host-metrics.md](docs/host-metrics.md). Container and per-stack metrics need neither.
 
 ## License
 

@@ -8,6 +8,7 @@ import { StackDetailPage } from './routes/stacks-detail'
 import { RegistriesPage } from './routes/registries'
 import { CredentialsPage } from './routes/credentials'
 import { SettingsPage } from './routes/settings'
+import { InfrastructurePage } from './routes/infrastructure'
 
 interface RouterContext {
   queryClient: QueryClient
@@ -43,10 +44,28 @@ const stackNewRoute = createRoute({
   component: StackNewPage,
 })
 
+type StackDetailTab = 'overview' | 'volumes' | 'networks' | 'settings'
+
+interface StackDetailSearch {
+  tab?: StackDetailTab
+}
+
 const stackDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/stacks/$id',
   component: StackDetailPage,
+  validateSearch: (search: Record<string, unknown>): StackDetailSearch => {
+    const tab = search.tab
+    return tab === 'overview' || tab === 'volumes' || tab === 'networks' || tab === 'settings'
+      ? { tab }
+      : {}
+  },
+})
+
+const infrastructureRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/infrastructure',
+  component: InfrastructurePage,
 })
 
 const registriesRoute = createRoute({
@@ -72,6 +91,7 @@ const routeTree = rootRoute.addChildren([
   stacksRoute,
   stackNewRoute,
   stackDetailRoute,
+  infrastructureRoute,
   registriesRoute,
   credentialsRoute,
   settingsRoute,
