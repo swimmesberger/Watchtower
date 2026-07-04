@@ -23,10 +23,18 @@ const indexRoute = createRoute({
   component: DashboardPage,
 })
 
+interface StacksSearch {
+  status?: 'ok' | 'failed'
+}
+
 const stacksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/stacks',
   component: StacksPage,
+  validateSearch: (search: Record<string, unknown>): StacksSearch => {
+    const status = search.status
+    return status === 'ok' || status === 'failed' ? { status } : {}
+  },
 })
 
 const stackNewRoute = createRoute({

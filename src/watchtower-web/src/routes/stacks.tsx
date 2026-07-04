@@ -1,13 +1,54 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { CheckCircle, Clock, Loader2, Play, Plus, Trash2, XCircle } from 'lucide-react'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { getRouteApi, Link } from '@tanstack/react-router'
+import { Boxes, Play, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Stack } from '@/lib/types'
+import { absoluteTitle, timeAgo } from '@/lib/format'
+import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Banner } from '@/components/ui/banner'
+import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { DataList, type DataListColumn } from '@/components/ui/data-list'
+import { EmptyState } from '@/components/ui/empty-state'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { Tooltip } from '@/components/ui/tooltip'
+import { toast } from '@/components/ui/use-toast'
+
+const stacksApi = getRouteApi('/stacks')
+
+const FILTER_LABEL: Record<'ok' | 'failed', string> = {
+  ok: 'Status: healthy',
+  failed: 'Status: failed',
+}
+
+function matchesFilter(stack: Stack, status: 'ok' | 'failed'): boolean {
+  return status === 'ok'
+    ? stack.lastDeployStatus === 'success'
+    : stack.lastDeployStatus === 'failed'
+}
+
+function isDeploying(stack: Stack): boolean {
+  return stack.lastDeployStatus === 'running' || stack.lastDeployStatus === 'queued'
+}
+
+const repoLabel = (url: string) => url.replace(/^https:\/\/github\.com\//, '')
 
 export function StacksPage() {
   const qc = useQueryClient()
+  const { status } = stacksApi.useSearch()
+  const navigate = stacksApi.useNavigate()
 
-  const { data: stacks = [], isLoading } = useQuery({
+  const [pendingDelete, setPendingDelete] = useState<Stack | null>(null)
+
+  const {
+    data: stacks = [],
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['stacks'],
     queryFn: api.stacks.list,
     // Poll every 2s while any stack is actively deploying or waiting in queue.
@@ -15,142 +56,298 @@ export function StacksPage() {
     // first refetch after a deploy mutation will already see the correct status.
     refetchInterval: (q) => {
       const data = q.state.data ?? []
-      return data.some(s => s.lastDeployStatus === 'running' || s.lastDeployStatus === 'queued')
-        ? 2000
-        : false
+      return data.some(isDeploying) ? 2000 : false
     },
   })
 
+  const isFastPolling = stacks.some(isDeploying)
+
   const deploy = useMutation({
-    mutationFn: (id: number) => api.stacks.deploy(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stacks'] }),
+    mutationFn: (stack: Stack) => api.stacks.deploy(stack.id),
+    onSuccess: (_data, stack) => {
+      toast.info(`Deploying ${stack.name}…`)
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+    },
+    onError: (err: Error, stack) => {
+      toast({
+        tone: 'error',
+        title: `Deploy failed for ${stack.name}`,
+        description: err.message,
+        action: { label: 'Retry', onClick: () => deploy.mutate(stack) },
+      })
+    },
   })
 
   const remove = useMutation({
-    mutationFn: (id: number) => api.stacks.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stacks'] }),
+    mutationFn: (stack: Stack) => api.stacks.delete(stack.id),
+    onSuccess: (_data, stack) => {
+      toast.success(`Deleted ${stack.name}.`)
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+    },
+    onError: (err: Error, stack) => {
+      toast.error(`Failed to delete ${stack.name}: ${err.message}`)
+    },
+    onSettled: () => setPendingDelete(null),
   })
 
-  return (
-    <div className="p-6 space-y-4 max-w-[1400px] mx-auto">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-[22px] font-bold tracking-tight">Stacks</h1>
-          <p className="text-[13px] text-[var(--text-tertiary)]">Manage your deployment stacks</p>
-        </div>
-        <Link
-          to="/stacks/new"
-          className="inline-flex items-center gap-1.5 rounded-[10px] bg-gradient-to-br from-[var(--primary)] to-[var(--accent-dim)] text-[var(--primary-foreground)] px-4 py-2 text-[13px] font-semibold hover:shadow-[0_0_20px_var(--accent-glow)] hover:-translate-y-px transition-all"
+  const filtered = status ? stacks.filter((s) => matchesFilter(s, status)) : stacks
+
+  function clearFilter() {
+    navigate({ search: {} })
+  }
+
+  function DeployButton({ stack }: { stack: Stack }) {
+    const pending = deploy.isPending && deploy.variables?.id === stack.id
+    return (
+      <Button
+        size="sm"
+        variant="secondary"
+        loading={pending}
+        disabled={isDeploying(stack)}
+        onClick={() => deploy.mutate(stack)}
+      >
+        <Play /> Deploy
+      </Button>
+    )
+  }
+
+  function DeleteButton({ stack }: { stack: Stack }) {
+    return (
+      <Tooltip label="Delete stack">
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Delete ${stack.name}`}
+          onClick={() => setPendingDelete(stack)}
+          className="text-text-2 hover:text-danger"
         >
-          <Plus className="size-4" /> New Stack
+          <Trash2 />
+        </Button>
+      </Tooltip>
+    )
+  }
+
+  const columns: DataListColumn<Stack>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      cell: (s) => (
+        <Link
+          to="/stacks/$id"
+          params={{ id: String(s.id) }}
+          className="inline-flex items-center gap-2 font-medium text-text hover:text-brand"
+        >
+          <StatusDot status={s.lastDeployStatus} />
+          {s.name}
         </Link>
+      ),
+    },
+    {
+      key: 'repo',
+      header: 'Repository',
+      cell: (s) => (
+        <span className="block max-w-[22ch] truncate font-mono text-[13px] text-text-2">
+          {repoLabel(s.repositoryUrl)}
+        </span>
+      ),
+    },
+    {
+      key: 'branch',
+      header: 'Branch',
+      cell: (s) => <Badge tone="neutral">{s.branch}</Badge>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (s) => <StatusBadge status={s.lastDeployStatus} />,
+    },
+    {
+      key: 'lastDeployed',
+      header: 'Last deployed',
+      cell: (s) =>
+        s.lastDeployedAt ? (
+          <span className="tnum text-[13px] text-text-2" title={absoluteTitle(s.lastDeployedAt)}>
+            {timeAgo(s.lastDeployedAt)}
+          </span>
+        ) : (
+          <span className="text-text-3">—</span>
+        ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (s) => (
+        <div className="flex items-center justify-end gap-1">
+          <DeployButton stack={s} />
+          <DeleteButton stack={s} />
+        </div>
+      ),
+    },
+  ]
+
+  const renderCard = (s: Stack) => (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <Link
+          to="/stacks/$id"
+          params={{ id: String(s.id) }}
+          className="inline-flex items-center gap-2 font-medium text-text hover:text-brand"
+        >
+          <StatusDot status={s.lastDeployStatus} />
+          {s.name}
+        </Link>
+        <StatusBadge status={s.lastDeployStatus} />
       </div>
 
-      {isLoading ? (
-        <div className="flex justify-center py-8">
-          <Loader2 className="size-5 animate-spin text-[var(--text-secondary)]" />
+      <p className="truncate font-mono text-[13px] text-text-2">
+        {repoLabel(s.repositoryUrl)} · {s.branch}
+      </p>
+
+      <p className="text-[13px] text-text-2">
+        Last deployed{' '}
+        {s.lastDeployedAt ? (
+          <span className="tnum" title={absoluteTitle(s.lastDeployedAt)}>
+            {timeAgo(s.lastDeployedAt)}
+          </span>
+        ) : (
+          <span className="text-text-3">never</span>
+        )}
+      </p>
+
+      <div className="flex items-center justify-between border-t border-border pt-3">
+        <DeployButton stack={s} />
+        <DeleteButton stack={s} />
+      </div>
+    </div>
+  )
+
+  const emptyState = (
+    <EmptyState
+      icon={Boxes}
+      title="No stacks yet"
+      description="Register a git repo with a compose file to start deploying."
+      action={
+        <Button asChild variant="primary">
+          <Link to="/stacks/new">
+            <Plus /> New stack
+          </Link>
+        </Button>
+      }
+    />
+  )
+
+  const filteredEmptyState = (
+    <EmptyState
+      icon={Boxes}
+      title="No matching stacks"
+      description={
+        status === 'ok'
+          ? 'No stacks are currently healthy.'
+          : 'No stacks have a failed deploy.'
+      }
+      action={
+        <Button variant="secondary" onClick={clearFilter}>
+          Clear filter
+        </Button>
+      }
+    />
+  )
+
+  return (
+    <div className="mx-auto max-w-[1200px] space-y-6 p-4 md:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Stacks</h1>
+          {status && (
+            <button
+              type="button"
+              onClick={clearFilter}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 py-1 text-xs font-medium text-text-2 hover:bg-surface-3"
+            >
+              {FILTER_LABEL[status]}
+              <X className="size-3.5" aria-label="Clear filter" />
+            </button>
+          )}
+          {isFastPolling && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-run">
+              <span className="size-1.5 rounded-full bg-run motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]" />
+              live
+            </span>
+          )}
         </div>
-      ) : stacks.length === 0 ? (
-        <p className="text-sm text-[var(--text-secondary)] text-center py-8">No stacks configured.</p>
-      ) : (
-        <div className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] overflow-hidden">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--text-tertiary)] bg-[var(--card)]">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Repository</th>
-              <th className="px-4 py-3">Branch</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Last Deployed</th>
-              <th className="px-4 py-3 sr-only">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stacks.map(stack => (
-              <tr key={stack.id} className="border-b border-[rgba(255,255,255,0.06)] hover:bg-[var(--accent)] animate-[wt-card-in_0.4s_ease-out_both]">
-                <td className="px-4 py-3">
-                  <Link
-                    to="/stacks/$id"
-                    params={{ id: String(stack.id) }}
-                    className="font-medium hover:text-[var(--accent-bright)] transition-colors"
-                  >
-                    {stack.name}
-                  </Link>
-                  {stack.hasUpdates === true && (
-                    <span className="ml-2 inline-flex items-center rounded-full text-[var(--warning)] bg-[var(--warning-bg)] border border-[var(--warning-border)] px-2 py-0.5 text-xs font-medium">
-                      Updates available
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-[var(--text-tertiary)] max-w-48 truncate">
-                  {stack.repositoryUrl.replace('https://github.com/', '')}
-                </td>
-                <td className="px-4 py-3 font-[var(--font-mono)] text-xs text-[var(--text-tertiary)]">{stack.branch}</td>
-                <td className="px-4 py-3">
-                  <StatusBadge status={stack.lastDeployStatus} />
-                </td>
-                <td className="px-4 py-3 font-[var(--font-mono)] text-xs text-[var(--text-tertiary)]">
-                  {stack.lastDeployedAt
-                    ? new Date(stack.lastDeployedAt).toLocaleString()
-                    : '—'}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => deploy.mutate(stack.id)}
-                      disabled={deploy.isPending || stack.lastDeployStatus === 'running' || stack.lastDeployStatus === 'queued'}
-                      aria-label={`Deploy ${stack.name}`}
-                      className="size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] disabled:opacity-40 transition-colors"
-                    >
-                      {deploy.isPending && deploy.variables === stack.id
-                        ? <Loader2 className="size-4 animate-spin" />
-                        : <Play className="size-4" />}
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Delete stack "${stack.name}"?`)) remove.mutate(stack.id)
-                      }}
-                      aria-label={`Delete ${stack.name}`}
-                      className="size-7 flex items-center justify-center rounded-md hover:bg-[var(--danger-bg)] text-[var(--danger)] disabled:opacity-40 transition-colors"
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
+        <Button asChild variant="primary">
+          <Link to="/stacks/new">
+            <Plus /> New stack
+          </Link>
+        </Button>
+      </div>
+
+      {isError && (
+        <Banner
+          tone="danger"
+          title="Couldn’t load stacks"
+          action={
+            <Button variant="link" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          {(error as Error)?.message ?? 'An unexpected error occurred.'}
+        </Banner>
       )}
+
+      {!isError && (
+        <DataList
+          items={filtered}
+          getKey={(s) => s.id}
+          columns={columns}
+          renderCard={renderCard}
+          skeletonRows={isLoading ? 5 : undefined}
+          emptyState={stacks.length === 0 ? emptyState : filteredEmptyState}
+          aria-label="Stacks"
+        />
+      )}
+
+      <ConfirmDialog
+        open={pendingDelete != null}
+        onOpenChange={(open) => {
+          if (!open && !remove.isPending) setPendingDelete(null)
+        }}
+        title={pendingDelete ? `Delete ${pendingDelete.name}?` : 'Delete stack?'}
+        description="This permanently deletes the stack and its deployment history. Running containers are not affected."
+        confirmLabel="Delete"
+        tone="danger"
+        loading={remove.isPending}
+        requireText={pendingDelete?.name}
+        onConfirm={() => {
+          if (pendingDelete) remove.mutate(pendingDelete)
+        }}
+      />
     </div>
   )
 }
 
-function StatusBadge({ status }: { status: Stack['lastDeployStatus'] }) {
-  if (status === 'success')
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full text-[var(--success)] bg-[var(--success-bg)]">
-        <CheckCircle className="size-3" /> Success
-      </span>
-    )
-  if (status === 'failed')
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full text-[var(--danger)] bg-[var(--danger-bg)]">
-        <XCircle className="size-3" /> Failed
-      </span>
-    )
-  if (status === 'running')
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full text-[var(--running)] bg-[var(--running-bg)]">
-        <Loader2 className="size-3 animate-spin" /> Running
-      </span>
-    )
-  if (status === 'queued')
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full text-[var(--queued)] bg-[var(--queued-bg)]">
-        <Clock className="size-3" /> Queued
-      </span>
-    )
-  return <span className="text-[11px] text-[var(--text-secondary)]">—</span>
+function StatusDot({ status }: { status: Stack['lastDeployStatus'] }) {
+  const tone =
+    status === 'success'
+      ? 'bg-ok'
+      : status === 'failed'
+        ? 'bg-danger'
+        : status === 'running'
+          ? 'bg-run'
+          : status === 'queued'
+            ? 'bg-queue'
+            : 'bg-neutral'
+  const live = status === 'running' || status === 'queued'
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'size-2 shrink-0 rounded-full',
+        tone,
+        live && 'motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]',
+      )}
+    />
+  )
 }

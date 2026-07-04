@@ -1,27 +1,101 @@
-import { useState, useEffect, useRef } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useParams, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Eye, EyeOff, Loader2, Play, Plus, RefreshCw, RotateCcw, Square, Trash2 } from 'lucide-react'
+import { useCallback, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import {
+  Boxes,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  MoreHorizontal,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Square,
+  Trash2,
+} from 'lucide-react'
 import { api } from '@/lib/api'
 import { apiBase } from '@/lib/config'
-import type { Credential, DeployEvent, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
+import type {
+  Container,
+  Credential,
+  DeployEvent,
+  Stack,
+  StackEnvVar,
+  StackEnvVarInput,
+  UpdateStackRequest,
+} from '@/lib/types'
+import { absoluteTitle, formatDuration, timeAgo } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { ContainerLogs } from '@/components/container-logs'
+import { EnvVarEditor } from '@/components/env-var-editor'
+import { Banner } from '@/components/ui/banner'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { CopyButton } from '@/components/ui/copy-button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Field } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { LiveLog } from '@/components/ui/live-log'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { SecretField } from '@/components/ui/secret-field'
+import { SectionHeader } from '@/components/ui/section-header'
+import { Skeleton } from '@/components/ui/skeleton'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tooltip } from '@/components/ui/tooltip'
+import { toast } from '@/components/ui/use-toast'
 
-type Tab = 'overview' | 'settings'
+const NO_CREDENTIAL = 'none'
+
+function webhookUrl(stackId: number): string {
+  const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '')
+  return `${base}/api/webhooks/stacks/${stackId}/deploy`
+}
 
 export function StackDetailPage() {
   const { id } = useParams({ from: '/stacks/$id' })
   const stackId = Number(id)
   const qc = useQueryClient()
-  const navigate = useNavigate()
-  const [tab, setTab] = useState<Tab>('overview')
 
-  const { data: stack, isLoading: stackLoading } = useQuery({
+  // Ref registry: deploy-history rows register a focus/expand handler here so the
+  // "View log" action on the failure banner can scroll to + expand the latest failed row.
+  const historyControls = useRef(new Map<number, { expand: () => void; scrollTo: () => void }>())
+  const registerHistoryRow = useCallback(
+    (eventId: number, controls: { expand: () => void; scrollTo: () => void }) => {
+      historyControls.current.set(eventId, controls)
+      return () => {
+        historyControls.current.delete(eventId)
+      }
+    },
+    [],
+  )
+
+  const {
+    data: stack,
+    isLoading: stackLoading,
+    isError: stackError,
+    refetch: refetchStack,
+  } = useQuery({
     queryKey: ['stacks', stackId],
     queryFn: () => api.stacks.get(stackId),
     refetchInterval: (q) => {
       const s = q.state.data?.lastDeployStatus
-      return (s === 'running' || s === 'queued') ? 3000 : false
+      return s === 'running' || s === 'queued' ? 3000 : false
     },
   })
 
@@ -54,250 +128,346 @@ export function StackDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['stacks'] })
       qc.invalidateQueries({ queryKey: ['stacks', stackId, 'events'] })
+      toast.info(`Deploying ${stack?.name ?? 'stack'}…`)
     },
+    onError: (err: Error) => toast.error('Deploy failed', err.message),
   })
 
-  const restart = useMutation({
-    mutationFn: (containerId: string) => api.containers.restart(containerId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['containers'] }),
-  })
+  function viewFailedLog() {
+    // Find the most recent failed event and expand + scroll to it.
+    const failed = [...events].find((e) => e.status === 'failed')
+    if (!failed) return
+    const controls = historyControls.current.get(failed.id)
+    controls?.expand()
+    // Let the row render its panel before scrolling.
+    requestAnimationFrame(() => controls?.scrollTo())
+  }
 
-  const stop = useMutation({
-    mutationFn: (containerId: string) => api.containers.stop(containerId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['containers'] }),
-  })
+  if (stackLoading) return <StackDetailSkeleton />
 
-  const remove = useMutation({
-    mutationFn: (containerId: string) => api.containers.remove(containerId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['containers'] }),
-  })
-
-  const deleteStack = useMutation({
-    mutationFn: () => api.stacks.delete(stackId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['stacks'] })
-      navigate({ to: '/stacks' })
-    },
-  })
-
-  if (stackLoading) {
+  if (stackError || !stack) {
     return (
-      <div className="flex items-center justify-center h-full text-[var(--text-secondary)]">
-        <Loader2 className="size-5 animate-spin mr-2" /> Loading…
+      <div className="mx-auto max-w-[1200px]">
+        <Banner
+          tone="danger"
+          title="Couldn’t load this stack"
+          action={
+            <Button variant="secondary" size="sm" onClick={() => refetchStack()}>
+              Retry
+            </Button>
+          }
+        >
+          The stack may have been deleted, or the server is unreachable.
+        </Banner>
       </div>
     )
   }
 
-  if (!stack) {
-    return (
-      <div className="p-6">
-        <p className="text-[var(--danger)]">Stack not found.</p>
-      </div>
-    )
-  }
-
-  const stackContainers = containers.filter(c => c.stackName === stack.composeProjectName)
+  const stackContainers = containers.filter((c) => c.stackName === stack.composeProjectName)
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
-      {/* Back link */}
-      <button
-        onClick={() => navigate({ to: '/stacks' })}
-        className="inline-flex items-center gap-1.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
-        aria-label="Back to stacks"
-      >
-        <ArrowLeft className="size-3.5" />
-        Back to stacks
-      </button>
+    <div className="mx-auto max-w-[1200px] space-y-6 pb-24 md:pb-0">
+      {/* Breadcrumb */}
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-xs text-text-2">
+        <Link
+          to="/stacks"
+          className="inline-flex items-center gap-1 rounded transition-colors hover:text-text focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]"
+        >
+          <ChevronRight className="size-3.5 rotate-180" aria-hidden />
+          Stacks
+        </Link>
+        <span aria-hidden className="text-text-3">
+          /
+        </span>
+        <span className="truncate font-medium text-text">{stack.name}</span>
+      </nav>
 
       {/* Header */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <h1 className="text-[22px] font-bold tracking-tight">{stack.name}</h1>
-          <p className="text-[13px] text-[var(--text-tertiary)] font-[var(--font-mono)] mt-0.5 truncate">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold tracking-tight text-text">{stack.name}</h1>
+          <p className="mt-1 truncate font-mono text-[12.5px] text-text-2">
             {stack.repositoryUrl} · {stack.branch} · {stack.composeFilePath}
           </p>
         </div>
-        <button
-          onClick={() => deploy.mutate()}
+        {/* Desktop deploy button; mobile uses the FAB below. */}
+        <Button
+          variant="primary"
+          loading={deploy.isPending || isDeploying}
           disabled={deploy.isPending || isDeploying}
-          className="rounded-[10px] bg-gradient-to-br from-[var(--primary)] to-[var(--accent-dim)] text-[var(--primary-foreground)] px-4 py-2 text-[13px] font-semibold hover:shadow-[0_0_20px_var(--accent-glow)] hover:-translate-y-px transition-all disabled:opacity-50 inline-flex items-center gap-1.5"
+          onClick={() => deploy.mutate()}
+          className="hidden md:inline-flex"
         >
-          {(deploy.isPending || isDeploying)
-            ? <Loader2 className="size-4 animate-spin" />
-            : <Play className="size-4" />}
+          {!(deploy.isPending || isDeploying) && <Play />}
           Deploy
-        </button>
+        </Button>
       </div>
 
-      {/* Status bar */}
-      {isDeploying && (
-        <div className="rounded-[10px] bg-[var(--running-bg)] border border-[var(--running-border)] px-3.5 py-2.5 text-xs text-[var(--running)] inline-flex items-center gap-2">
-          <Loader2 className="size-3.5 animate-spin" />
-          Deployment in progress…
-        </div>
-      )}
-      {!isDeploying && stack.lastDeployStatus === 'success' && (
-        <div className="rounded-[10px] bg-[var(--success-bg)] border border-[var(--success-border)] px-3.5 py-2.5 text-xs text-[var(--success)] inline-flex items-center gap-2">
-          <CheckCircle2 className="size-3.5" />
-          Last deploy successful
-        </div>
-      )}
-      {!isDeploying && stack.lastDeployStatus === 'failed' && (
-        <div className="rounded-[10px] bg-[var(--danger-bg)] border border-[var(--danger-border)] px-3.5 py-2.5 text-xs text-[var(--danger)] inline-flex items-center gap-2">
-          Last deploy failed
-        </div>
-      )}
-
-      {/* Tab navigation */}
-      <div className="flex gap-0 border-b border-[rgba(255,255,255,0.06)]">
-        {(['overview', 'settings'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2.5 text-[13px] capitalize -mb-px border-b-2 transition-colors ${
-              tab === t
-                ? 'font-semibold text-[var(--primary)] border-[var(--primary)]'
-                : 'font-medium text-[var(--text-tertiary)] border-transparent hover:text-[var(--text-primary)]'
-            }`}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-
-      {/* Overview tab */}
-      {tab === 'overview' && (
-        <div className="space-y-6">
-          {/* Containers */}
-          <section>
-            <h2 className="text-sm font-semibold mb-3">
-              Containers
-              <span className="ml-1.5 font-normal text-[var(--text-tertiary)]">
-                ({stackContainers.length})
-              </span>
-            </h2>
-            {stackContainers.length === 0 ? (
-              <p className="text-sm text-[var(--text-secondary)]">
-                No running containers for project "{stack.composeProjectName}".
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {stackContainers.map(container => {
-                  const name = container.names[0]?.replace(/^\//, '') ?? container.id.slice(0, 12)
-                  const statusColor =
-                    container.health === 'unhealthy'
-                      ? { text: 'text-[var(--danger)]', bg: 'bg-[var(--danger-bg)]', border: 'border-[var(--danger-border)]' }
-                      : container.health === 'starting'
-                        ? { text: 'text-[var(--warning)]', bg: 'bg-[var(--warning-bg)]', border: 'border-[var(--warning-border)]' }
-                        : container.state === 'running'
-                          ? { text: 'text-[var(--running)]', bg: 'bg-[var(--running-bg)]', border: 'border-[var(--running-border)]' }
-                          : { text: 'text-[var(--text-tertiary)]', bg: 'bg-[var(--secondary)]', border: 'border-[var(--border)]' }
-                  return (
-                    <div key={container.id} className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] overflow-hidden animate-[wt-card-in_0.4s_ease-out_both]">
-                      <div className="px-4 py-3 flex items-center justify-between border-b border-[rgba(255,255,255,0.06)]">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="font-semibold text-sm truncate">{name}</span>
-                          <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${statusColor.text} ${statusColor.bg} border ${statusColor.border}`}>
-                            {container.health ?? container.state}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => restart.mutate(container.id)}
-                            disabled={restart.isPending}
-                            aria-label={`Restart ${name}`}
-                            className="size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-40"
-                          >
-                            <RotateCcw className="size-3.5" />
-                          </button>
-                          <button
-                            onClick={() => stop.mutate(container.id)}
-                            disabled={stop.isPending}
-                            aria-label={`Stop ${name}`}
-                            className="size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-40"
-                          >
-                            <Square className="size-3.5" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (confirm(`Remove container "${name}"?`)) remove.mutate(container.id)
-                            }}
-                            aria-label={`Remove ${name}`}
-                            className="size-7 flex items-center justify-center rounded-md hover:bg-[var(--danger-bg)] hover:text-[var(--danger)] transition-colors text-[var(--text-tertiary)] disabled:opacity-40"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-x-6 gap-y-2 px-4 py-3 text-xs">
-                        <div>
-                          <span className="text-[var(--text-tertiary)]">Image</span>
-                          <p className="text-[var(--text-secondary)] font-[var(--font-mono)] text-[11px] truncate">{container.image}</p>
-                        </div>
-                        <div>
-                          <span className="text-[var(--text-tertiary)]">Status</span>
-                          <p className="text-[var(--text-secondary)] font-[var(--font-mono)] text-[11px]">{container.status}</p>
-                        </div>
-                      </div>
-                      <ContainerLogs containerId={container.id} containerName={name} />
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </section>
-
-          {/* Image Updates */}
-          <section>
-            <h2 className="text-sm font-semibold mb-3">Image Updates</h2>
-            <ImageUpdatesPanel stack={stack} onChecked={updated => qc.setQueryData(['stacks', stackId], updated)} />
-          </section>
-
-          {/* Webhook */}
-          {stack.webhookEnabled && (
-            <section>
-              <h2 className="text-sm font-semibold mb-3">Webhook</h2>
-              <div className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] overflow-hidden">
-                <WebhookPanel stackId={stackId} token={stack.webhookToken} />
-              </div>
-            </section>
-          )}
-
-          {/* Deploy history */}
-          <section>
-            <h2 className="text-sm font-semibold mb-3">
-              Deploy History
-              <span className="ml-1.5 font-normal text-[var(--text-tertiary)]">
-                ({events.length})
-              </span>
-            </h2>
-            {events.length === 0 ? (
-              <p className="text-sm text-[var(--text-secondary)]">No deployments yet.</p>
-            ) : (
-              <div className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] overflow-hidden">
-                {events.map(event => (
-                  <DeployEventRow key={event.id} event={event} />
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* Settings tab */}
-      {tab === 'settings' && (
-        <SettingsTab
-          stackId={stackId}
-          stack={stack}
-          envVars={envVars}
-          credentials={credentials}
-          deleteStack={deleteStack}
+      {/* Status banner hero */}
+      {isDeploying ? (
+        <Banner tone="info" title="Deployment in progress…">
+          Watchtower is pulling images and (re)starting containers.
+        </Banner>
+      ) : stack.lastDeployStatus === 'success' ? (
+        <Banner tone="ok" title="Last deploy succeeded" />
+      ) : stack.lastDeployStatus === 'failed' ? (
+        <Banner
+          tone="danger"
+          title="Last deploy failed"
+          action={
+            <Button variant="secondary" size="sm" onClick={viewFailedLog}>
+              View log
+            </Button>
+          }
         />
-      )}
+      ) : null}
+
+      {/* Tabs */}
+      <Tabs defaultValue="overview">
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview">
+          <div className="space-y-8">
+            {/* Containers */}
+            <section>
+              <SectionHeader
+                title="Containers"
+                action={<span className="tnum text-sm text-text-2">{stackContainers.length}</span>}
+              />
+              {stackContainers.length === 0 ? (
+                <EmptyState
+                  icon={Boxes}
+                  title="No containers running"
+                  description="Deploy this stack to see its containers."
+                  action={
+                    <Button
+                      variant="primary"
+                      loading={deploy.isPending || isDeploying}
+                      disabled={deploy.isPending || isDeploying}
+                      onClick={() => deploy.mutate()}
+                    >
+                      {!(deploy.isPending || isDeploying) && <Play />}
+                      Deploy
+                    </Button>
+                  }
+                />
+              ) : (
+                <div className="space-y-3">
+                  {stackContainers.map((container) => (
+                    <ContainerCard key={container.id} container={container} />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Image updates */}
+            <section>
+              <ImageUpdatesPanel
+                stack={stack}
+                onChecked={(updated) => qc.setQueryData(['stacks', stackId], updated)}
+              />
+            </section>
+
+            {/* Webhook */}
+            {stack.webhookEnabled && (
+              <section>
+                <SectionHeader title="Webhook" />
+                <WebhookCard stackId={stackId} token={stack.webhookToken} />
+              </section>
+            )}
+
+            {/* Deploy history */}
+            <section>
+              <SectionHeader
+                title="Deploy history"
+                action={<span className="tnum text-sm text-text-2">{events.length}</span>}
+              />
+              {events.length === 0 ? (
+                <p className="text-sm text-text-3">No deployments yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {events.map((event) => (
+                    <DeployEventRow key={event.id} event={event} register={registerHistoryRow} />
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="settings">
+          <SettingsTab
+            stackId={stackId}
+            stack={stack}
+            envVars={envVars}
+            credentials={credentials}
+          />
+        </TabsContent>
+      </Tabs>
+
+      {/* Mobile Deploy FAB (52px, above the bottom tab bar) */}
+      <div className="fixed bottom-bottombar right-4 z-20 mb-3 md:hidden">
+        <Button
+          variant="primary"
+          aria-label="Deploy stack"
+          loading={deploy.isPending || isDeploying}
+          disabled={deploy.isPending || isDeploying}
+          onClick={() => deploy.mutate()}
+          className="size-[52px] rounded-full p-0 shadow-[var(--sh-lg)]"
+        >
+          {!(deploy.isPending || isDeploying) && <Play />}
+        </Button>
+      </div>
     </div>
   )
 }
+
+// ── Container card ────────────────────────────────────────────────────────────
+
+function ContainerCard({ container }: { container: Container }) {
+  const qc = useQueryClient()
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const name = container.names[0]?.replace(/^\//, '') ?? container.id.slice(0, 12)
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['containers'] })
+
+  const restart = useMutation({
+    mutationFn: () => api.containers.restart(container.id),
+    onSuccess: () => {
+      invalidate()
+      toast.success(`Restarted ${name}.`)
+    },
+    onError: (err: Error) => toast.error('Restart failed', err.message),
+  })
+
+  const stop = useMutation({
+    mutationFn: () => api.containers.stop(container.id),
+    onSuccess: () => {
+      invalidate()
+      toast.success(`Stopped ${name}.`)
+    },
+    onError: (err: Error) => toast.error('Stop failed', err.message),
+  })
+
+  const remove = useMutation({
+    mutationFn: () => api.containers.remove(container.id),
+    onSuccess: () => {
+      invalidate()
+      toast.success(`Removed ${name}.`)
+    },
+    onError: (err: Error) => toast.error('Remove failed', err.message),
+    onSettled: () => setConfirmRemove(false),
+  })
+
+  const statusValue = container.health ?? container.state
+  const running = container.state === 'running'
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between gap-3 border-b border-border p-4 md:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="truncate text-sm font-semibold text-text">{name}</span>
+          <StatusBadge status={statusValue} size="sm" pulse={running || undefined} />
+        </div>
+
+        {/* Desktop icon actions */}
+        <div className="hidden items-center gap-1 md:flex">
+          <Tooltip label="Restart">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Restart ${name}`}
+              loading={restart.isPending}
+              onClick={() => restart.mutate()}
+            >
+              {!restart.isPending && <RotateCcw />}
+            </Button>
+          </Tooltip>
+          <Tooltip label="Stop">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Stop ${name}`}
+              loading={stop.isPending}
+              onClick={() => stop.mutate()}
+            >
+              {!stop.isPending && <Square />}
+            </Button>
+          </Tooltip>
+          <Tooltip label="Remove">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Remove ${name}`}
+              className="text-text-2 hover:text-danger"
+              onClick={() => setConfirmRemove(true)}
+            >
+              <Trash2 />
+            </Button>
+          </Tooltip>
+        </div>
+
+        {/* Mobile overflow menu */}
+        <div className="md:hidden">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${name}`}>
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onSelect={() => restart.mutate()}>
+                <RotateCcw /> Restart
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => stop.mutate()}>
+                <Square /> Stop
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem destructive onSelect={() => setConfirmRemove(true)}>
+                <Trash2 /> Remove
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      <CardContent className="pt-4">
+        <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+          <Meta label="Image" value={container.image} />
+          <Meta label="Status" value={container.status} />
+        </div>
+        <div className="mt-4">
+          <ContainerLogs containerId={container.id} containerName={name} />
+        </div>
+      </CardContent>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onOpenChange={setConfirmRemove}
+        title={`Remove ${name}?`}
+        description="This removes the container. It will be recreated on the next deploy."
+        confirmLabel="Remove"
+        tone="danger"
+        loading={remove.isPending}
+        onConfirm={() => remove.mutate()}
+      />
+    </Card>
+  )
+}
+
+function Meta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs uppercase tracking-[0.04em] text-text-3">{label}</p>
+      <p className="mt-0.5 truncate font-mono text-[12.5px] text-text-2">{value}</p>
+    </div>
+  )
+}
+
+// ── Image updates ─────────────────────────────────────────────────────────────
 
 function ImageUpdatesPanel({
   stack,
@@ -306,149 +476,233 @@ function ImageUpdatesPanel({
   stack: Stack
   onChecked: (updated: Stack) => void
 }) {
-  const checkMutation = useMutation({
+  const check = useMutation({
     mutationFn: () => api.stacks.checkUpdates(stack.id),
-    onSuccess: onChecked,
+    onSuccess: (updated) => {
+      onChecked(updated)
+      toast.success(
+        updated.hasUpdates ? 'Updates available.' : 'All images up to date.',
+      )
+    },
+    onError: (err: Error) => toast.error('Update check failed', err.message),
   })
 
   const checkedAt = stack.updatesCheckedAt
-    ? new Date(stack.updatesCheckedAt).toLocaleString()
-    : null
 
   return (
-    <div className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] overflow-hidden">
-      <div className="px-4 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+    <>
+      <SectionHeader
+        title="Image updates"
+        action={
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={check.isPending}
+            onClick={() => check.mutate()}
+          >
+            {!check.isPending && <RefreshCw />}
+            Check now
+          </Button>
+        }
+      />
+      <Card>
+        <CardContent className="pt-4 md:pt-5">
           {stack.hasUpdates == null && (
-            <span className="text-[var(--text-secondary)] text-xs">Never checked</span>
+            <p className="text-sm text-text-2">Never checked for updates.</p>
           )}
+
           {stack.hasUpdates === false && (
-            <>
-              <CheckCircle2 className="size-4 text-[var(--success)] shrink-0" />
-              <span className="text-[var(--text-secondary)] text-xs">
-                All images up to date
-                {checkedAt && <span className="ml-1 text-[11px] text-[var(--text-tertiary)]">· {checkedAt}</span>}
-              </span>
-            </>
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="size-4 shrink-0 text-ok" aria-hidden />
+              <span className="text-sm text-text-2">All images up to date</span>
+              {checkedAt && (
+                <span className="tnum text-xs text-text-3" title={absoluteTitle(checkedAt)}>
+                  · checked {timeAgo(checkedAt)}
+                </span>
+              )}
+            </div>
           )}
+
           {stack.hasUpdates === true && (
-            <div className="space-y-1.5">
-              <p className="font-medium text-[var(--warning)] text-xs">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm font-medium text-warn">
                 Updates available
-                {checkedAt && <span className="ml-1 text-[11px] font-normal text-[var(--text-tertiary)]">· {checkedAt}</span>}
-              </p>
-              <ul className="space-y-0.5">
-                {(stack.outdatedImages ?? []).map(img => (
-                  <li key={img} className="font-[var(--font-mono)] text-[11px] text-[var(--text-secondary)]">· {img}</li>
+                {checkedAt && (
+                  <span
+                    className="tnum text-xs font-normal text-text-3"
+                    title={absoluteTitle(checkedAt)}
+                  >
+                    · checked {timeAgo(checkedAt)}
+                  </span>
+                )}
+              </div>
+              <ul className="space-y-1.5">
+                {(stack.outdatedImages ?? []).map((img) => (
+                  <li
+                    key={img}
+                    className="flex items-center gap-2 rounded-md border border-warn-bd bg-warn-bg px-3 py-2 font-mono text-[12.5px] text-text"
+                  >
+                    <span className="size-1.5 shrink-0 rounded-full bg-warn" aria-hidden />
+                    {img}
+                  </li>
                 ))}
               </ul>
             </div>
           )}
-        </div>
-        <button
-          onClick={() => checkMutation.mutate()}
-          disabled={checkMutation.isPending}
-          className="rounded-[10px] border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--accent)] hover:text-[var(--text-primary)] transition-all disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-        >
-          {checkMutation.isPending
-            ? <Loader2 className="size-3.5 animate-spin" />
-            : <RefreshCw className="size-3.5" />}
-          Check now
-        </button>
-      </div>
-    </div>
+        </CardContent>
+      </Card>
+    </>
   )
 }
 
-function WebhookPanel({ stackId, token }: { stackId: number; token: string | null }) {
-  const [copiedUrl, setCopiedUrl] = useState(false)
-  const [copiedToken, setCopiedToken] = useState(false)
-  const [showToken, setShowToken] = useState(false)
-  const url = `${(apiBase || window.location.origin)}/api/webhooks/stacks/${stackId}/deploy`
+// ── Webhook ───────────────────────────────────────────────────────────────────
 
-  function copyUrl() {
-    navigator.clipboard.writeText(url)
-    setCopiedUrl(true)
-    setTimeout(() => setCopiedUrl(false), 2000)
-  }
-
-  function copyToken() {
-    if (!token) return
-    navigator.clipboard.writeText(token)
-    setCopiedToken(true)
-    setTimeout(() => setCopiedToken(false), 2000)
-  }
+function WebhookCard({ stackId, token }: { stackId: number; token: string | null }) {
+  const url = webhookUrl(stackId)
+  const curl = token
+    ? `curl -X POST -H "Authorization: Bearer ${token}" \\\n  ${url}`
+    : `curl -X POST ${url}`
 
   return (
-    <div className="p-4 space-y-3 text-sm">
-      {!token && (
-        <p className="text-xs text-[var(--warning)] bg-[var(--warning-bg)] border border-[var(--warning-border)] rounded-[8px] px-3 py-2">
-          ⚠️ No token set — this webhook is public and unauthenticated.
-        </p>
-      )}
-      <div>
-        <p className="text-xs font-semibold text-[var(--text-secondary)] mb-1">URL</p>
-        <div className="flex items-center gap-2">
-          <code className="flex-1 truncate font-[var(--font-mono)] text-[11px] text-[var(--text-secondary)] bg-[rgba(255,255,255,0.03)] px-3 py-2 rounded-[8px]">{url}</code>
-          <button
-            onClick={copyUrl}
-            aria-label="Copy webhook URL"
-            className="shrink-0 size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-          >
-            {copiedUrl ? <Check className="size-3.5 text-[var(--success)]" /> : <Copy className="size-3.5" />}
-          </button>
-        </div>
-      </div>
-      {token && (
-        <div>
-          <p className="text-xs font-semibold text-[var(--text-secondary)] mb-1">Token</p>
+    <Card>
+      <CardContent className="space-y-4 pt-4 md:pt-5">
+        {!token && (
+          <Banner tone="warn" title="No token set">
+            This webhook is public and can be triggered without authentication.
+          </Banner>
+        )}
+
+        <div className="space-y-1.5">
+          <p className="text-xs uppercase tracking-[0.04em] text-text-3">URL</p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 truncate font-[var(--font-mono)] text-[11px] text-[var(--text-secondary)] bg-[rgba(255,255,255,0.03)] px-3 py-2 rounded-[8px]">
-              {showToken ? token : '••••••••••••••••'}
+            <code className="min-w-0 flex-1 truncate rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-text-2">
+              {url}
             </code>
-            <button
-              onClick={() => setShowToken(s => !s)}
-              aria-label={showToken ? 'Hide token' : 'Show token'}
-              className="shrink-0 size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-            >
-              {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-            </button>
-            <button
-              onClick={copyToken}
-              aria-label="Copy token"
-              className="shrink-0 size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-            >
-              {copiedToken ? <Check className="size-3.5 text-[var(--success)]" /> : <Copy className="size-3.5" />}
-            </button>
+            <CopyButton value={url} />
           </div>
         </div>
+
+        {token && (
+          <div className="space-y-1.5">
+            <p className="text-xs uppercase tracking-[0.04em] text-text-3">Token</p>
+            <SecretField value={token} readOnly aria-label="Webhook token" />
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <p className="text-xs uppercase tracking-[0.04em] text-text-3">Example</p>
+          <div className="flex items-start gap-2">
+            <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-md border border-border-strong bg-surface-2 px-3.5 py-3 font-mono text-[12.5px] text-text-2">
+              {curl}
+            </pre>
+            <CopyButton value={curl} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── Deploy history row ──────────────────────────────────────────────────────────
+
+function DeployEventRow({
+  event,
+  register,
+}: {
+  event: DeployEvent
+  register: (
+    eventId: number,
+    controls: { expand: () => void; scrollTo: () => void },
+  ) => () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  // Register expand/scroll controls so the failure banner's "View log" can drive this row.
+  // Ref-callback cleanup (React 19): always returns a cleanup that unregisters.
+  const setNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      const unregister = node
+        ? register(event.id, {
+            expand: () => setExpanded(true),
+            scrollTo: () => node.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+          })
+        : undefined
+      return () => {
+        unregister?.()
+      }
+    },
+    [event.id, register],
+  )
+
+  const isActive = event.status === 'running' || event.status === 'queued'
+
+  return (
+    <div ref={setNode} className="overflow-hidden rounded-lg border border-border bg-surface">
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className={cn(
+          'flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left',
+          'transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+        )}
+      >
+        {expanded ? (
+          <ChevronDown className="size-4 shrink-0 text-text-3" aria-hidden />
+        ) : (
+          <ChevronRight className="size-4 shrink-0 text-text-3" aria-hidden />
+        )}
+        <StatusBadge status={event.status} size="sm" />
+        <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
+          {event.triggeredBy}
+        </span>
+        <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>
+          {timeAgo(event.startedAt)}
+        </span>
+        <span className="tnum ml-auto text-xs text-text-3">
+          {formatDuration(event.startedAt, event.finishedAt)}
+        </span>
+        {isActive && (
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-run">
+            <span
+              className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]"
+              aria-hidden
+            />
+            live
+          </span>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border p-3">
+          <LiveLog
+            url={`${apiBase}/api/stacks/events/${event.id}/stream`}
+            active={expanded}
+            doneEvent="done"
+            label={`deploy ${event.id}`}
+            maxHeight="18rem"
+          />
+        </div>
       )}
-      <div>
-        <p className="text-xs font-semibold text-[var(--text-secondary)] mb-1">Example</p>
-        <pre className="font-[var(--font-mono)] text-[11px] text-[var(--text-tertiary)] bg-[rgba(0,0,0,0.3)] rounded-[8px] px-3.5 py-3 overflow-x-auto whitespace-pre">{
-          token
-            ? `curl -X POST -H "Authorization: Bearer <token>" \\\n  ${url}`
-            : `curl -X POST ${url}`
-        }</pre>
-      </div>
     </div>
   )
 }
+
+// ── Settings tab ────────────────────────────────────────────────────────────────
 
 function SettingsTab({
   stackId,
   stack,
   envVars,
   credentials,
-  deleteStack,
 }: {
   stackId: number
-  stack: { name: string; repositoryUrl: string; composeFilePath: string; branch: string; composeProjectName: string; credentialId: number | null; webhookToken: string | null; webhookEnabled: boolean }
-  envVars: { key: string; value: string }[]
+  stack: Stack
+  envVars: StackEnvVar[]
   credentials: Credential[]
-  deleteStack: { mutate: () => void; isPending: boolean }
 }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
 
   const [form, setForm] = useState<Omit<UpdateStackRequest, 'envVars'>>({
     name: stack.name,
@@ -461,428 +715,281 @@ function SettingsTab({
     webhookEnabled: stack.webhookEnabled,
   })
 
-  const [copied, setCopied] = useState(false)
-
   const [envDraft, setEnvDraft] = useState<StackEnvVarInput[]>([
-    ...envVars.map(v => ({ key: v.key, value: v.value })),
+    ...envVars.map((v) => ({ key: v.key, value: v.value })),
     { key: '', value: '' },
   ])
-  const [envVisible, setEnvVisible] = useState<Set<number>>(new Set())
-  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }))
 
   const update = useMutation({
     mutationFn: (data: UpdateStackRequest) => api.stacks.update(stackId, data),
     onSuccess: (updated) => {
       qc.setQueryData(['stacks', stackId], updated)
       qc.invalidateQueries({ queryKey: ['stacks', stackId, 'env'] })
-      setSaveError(null)
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      toast.success('Settings saved.')
     },
-    onError: (err: Error) => setSaveError(err.message),
+    onError: (err: Error) => toast.error('Save failed', err.message),
   })
 
-  function handle(e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) {
-    const { name, value } = e.target
-    if (e.target instanceof HTMLInputElement && e.target.type === 'checkbox') {
-      setForm(prev => ({ ...prev, [name]: e.target instanceof HTMLInputElement && e.target.checked }))
-      return
-    }
-    setForm(prev => ({
-      ...prev,
-      [name]: name === 'credentialId' ? (value ? Number(value) : null) : value,
-    }))
-  }
-
-  function copyWebhookUrl() {
-    const url = `${(apiBase || window.location.origin)}/api/webhooks/stacks/${stackId}/deploy`
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
-
-  function updateEnvRow(i: number, field: 'key' | 'value', val: string) {
-    setEnvDraft(prev => {
-      const next = prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r)
-      const last = next.at(-1)
-      if (!last || last.key !== '' || last.value !== '') next.push({ key: '', value: '' })
-      return next
-    })
-  }
-
-  function removeEnvRow(i: number) {
-    setEnvDraft(prev => {
-      const next = prev.filter((_, idx) => idx !== i)
-      const tail = next.at(-1)
-      if (!tail || tail.key !== '' || tail.value !== '') next.push({ key: '', value: '' })
-      return next
-    })
-  }
-
-  function toggleEnvVisible(i: number) {
-    setEnvVisible(prev => { const s = new Set(prev); s.has(i) ? s.delete(i) : s.add(i); return s })
-  }
+  const deleteStack = useMutation({
+    mutationFn: () => api.stacks.delete(stackId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      toast.success(`Deleted ${stack.name}.`)
+      navigate({ to: '/stacks' })
+    },
+    onError: (err: Error) => toast.error('Delete failed', err.message),
+    onSettled: () => setConfirmDelete(false),
+  })
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    setSaveError(null)
-    const validEnv = envDraft.filter(v => v.key.trim() !== '')
+    const validEnv = envDraft.filter((v) => v.key.trim() !== '')
     update.mutate({
       ...form,
       composeProjectName: form.composeProjectName || null,
-      // Keep empty string as null (no token); the enabled flag controls whether webhook is active.
       webhookToken: form.webhookToken || null,
       envVars: validEnv,
     })
   }
 
+  const url = webhookUrl(stackId)
+  const curlHint = form.webhookToken
+    ? `curl -X POST -H "Authorization: Bearer <token>" ${url}`
+    : `curl -X POST ${url}`
+
   return (
-    <form onSubmit={handleSave} className="space-y-6 max-w-lg">
-      {/* Stack configuration */}
-      <section className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] p-5 space-y-4">
-        <h2 className="text-sm font-semibold">Configuration</h2>
-
-        <Field label="Stack Name" required>
-          <input name="name" value={form.name} onChange={handle} required className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] font-[var(--font-mono)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full" />
-        </Field>
-
-        <Field label="Repository URL" required>
-          <input
-            name="repositoryUrl"
-            value={form.repositoryUrl}
-            onChange={handle}
-            required
-            placeholder="https://github.com/owner/repo"
-            className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] font-[var(--font-mono)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full"
-          />
-        </Field>
-
-        <Field label="Branch">
-          <input name="branch" value={form.branch} onChange={handle} placeholder="main" className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] font-[var(--font-mono)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full" />
-        </Field>
-
-        <Field label="Compose File Path">
-          <input
-            name="composeFilePath"
-            value={form.composeFilePath}
-            onChange={handle}
-            placeholder="docker-compose.yml"
-            className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] font-[var(--font-mono)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full"
-          />
-        </Field>
-
-        <Field label="Compose Project Name" hint="Defaults to stack name if empty">
-          <input
-            name="composeProjectName"
-            value={form.composeProjectName ?? ''}
-            onChange={handle}
-            className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] font-[var(--font-mono)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full"
-          />
-        </Field>
-
-        <Field label="Credential">
-          <select name="credentialId" value={form.credentialId ?? ''} onChange={handle} className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full">
-            <option value="">None (public repository)</option>
-            {credentials.map(c => (
-              <option key={c.id} value={c.id}>{c.name} ({c.username})</option>
-            ))}
-          </select>
-        </Field>
-
-        <Field label="Webhook" hint={form.webhookEnabled && !form.webhookToken ? '⚠️ No token set — this webhook is public and unauthenticated.' : 'Trigger a deployment from external systems (CI/CD, GitHub Actions, etc.).'}>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              name="webhookEnabled"
-              checked={form.webhookEnabled ?? false}
-              onChange={handle}
-              className="size-4 rounded border-[var(--border)] accent-[var(--primary)]"
-            />
-            <span className="text-[13px] text-[var(--text-primary)]">Enable webhook endpoint</span>
-          </label>
-        </Field>
-
-        {form.webhookEnabled && (
-          <>
-            <Field label="Webhook Token" hint="Optional bearer token to protect the webhook. Leave blank to allow unauthenticated access.">
-              <input
-                name="webhookToken"
-                value={form.webhookToken ?? ''}
-                onChange={handle}
-                type="password"
-                placeholder="Leave blank for unauthenticated access"
-                className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-primary)] font-[var(--font-mono)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent w-full"
-              />
-            </Field>
-
-            <Field label="Webhook URL">
-              <div className="flex gap-2 items-center">
-                <input
-                  readOnly
-                  value={`${typeof window !== 'undefined' ? (apiBase || window.location.origin) : ''}/api/webhooks/stacks/${stackId}/deploy`}
-                  className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-secondary)] font-[var(--font-mono)] focus:outline-none w-full select-all"
-                  aria-label="Webhook URL"
-                  onFocus={e => e.currentTarget.select()}
+    <form onSubmit={handleSave} className="max-w-2xl space-y-8">
+      {/* Configuration */}
+      <section>
+        <SectionHeader
+          title="Configuration"
+          description="Where the compose project lives and how it’s deployed."
+        />
+        <Card>
+          <CardContent className="grid grid-cols-1 gap-4 pt-4 md:grid-cols-2 md:pt-5">
+            <Field label="Stack name" required className="md:col-span-2">
+              {({ id }) => (
+                <Input
+                  id={id}
+                  mono
+                  value={form.name}
+                  onChange={(e) => set('name', e.target.value)}
+                  required
                 />
-                <button
-                  type="button"
-                  onClick={copyWebhookUrl}
-                  aria-label="Copy webhook URL"
-                  className="shrink-0 size-7 flex items-center justify-center rounded-md hover:bg-[var(--accent)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-                  title="Copy URL"
-                >
-                  {copied ? <Check className="size-4 text-[var(--success)]" /> : <Copy className="size-4" />}
-                </button>
-              </div>
-              <p className="text-[11px] text-[var(--text-tertiary)] mt-1 font-[var(--font-mono)]">
-                {form.webhookToken
-                  ? `curl -X POST -H "Authorization: Bearer <token>" \\`
-                  : 'curl -X POST \\'}
-                <br />
-                {`  ${typeof window !== 'undefined' ? (apiBase || window.location.origin) : ''}/api/webhooks/stacks/${stackId}/deploy`}
-              </p>
+              )}
             </Field>
-          </>
-        )}
+
+            <Field label="Repository URL" required className="md:col-span-2">
+              {({ id }) => (
+                <Input
+                  id={id}
+                  mono
+                  value={form.repositoryUrl}
+                  onChange={(e) => set('repositoryUrl', e.target.value)}
+                  placeholder="https://github.com/owner/repo"
+                  required
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Branch"
+              hint="Defaults to main"
+            >
+              {({ id, describedBy }) => (
+                <Input
+                  id={id}
+                  aria-describedby={describedBy}
+                  mono
+                  value={form.branch}
+                  onChange={(e) => set('branch', e.target.value)}
+                  placeholder="main"
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Compose file path"
+              hint="Relative to the repo root, e.g. docker-compose.yml"
+            >
+              {({ id, describedBy }) => (
+                <Input
+                  id={id}
+                  aria-describedby={describedBy}
+                  mono
+                  value={form.composeFilePath}
+                  onChange={(e) => set('composeFilePath', e.target.value)}
+                  placeholder="docker-compose.yml"
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Compose project name"
+              hint="Defaults to the stack name"
+              className="md:col-span-2"
+            >
+              {({ id, describedBy }) => (
+                <Input
+                  id={id}
+                  aria-describedby={describedBy}
+                  mono
+                  value={form.composeProjectName ?? ''}
+                  onChange={(e) => set('composeProjectName', e.target.value)}
+                />
+              )}
+            </Field>
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* Authentication */}
+      <section>
+        <SectionHeader
+          title="Authentication"
+          description="Only needed for private repos or registries."
+        />
+        <Card>
+          <CardContent className="space-y-4 pt-4 md:pt-5">
+            <Field label="Credential" hint="Only needed for private repositories">
+              <Select
+                value={form.credentialId != null ? String(form.credentialId) : NO_CREDENTIAL}
+                onValueChange={(v) => set('credentialId', v === NO_CREDENTIAL ? null : Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="None (public repository)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_CREDENTIAL}>None (public repository)</SelectItem>
+                  {credentials.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {c.name} ({c.username})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <Field label="Webhook">
+              <label className="flex items-center gap-3">
+                <Switch
+                  checked={form.webhookEnabled ?? false}
+                  onCheckedChange={(v) => set('webhookEnabled', v)}
+                />
+                <span className="text-sm text-text">Enable webhook endpoint</span>
+              </label>
+            </Field>
+
+            {form.webhookEnabled && (
+              <>
+                {!form.webhookToken && (
+                  <Banner tone="warn" title="No token set">
+                    This webhook is public and can be triggered without authentication.
+                  </Banner>
+                )}
+
+                <Field
+                  label="Webhook token"
+                  hint="Sent as a Bearer token by your CI. Leave blank to allow unauthenticated deploys (not recommended)."
+                >
+                  <SecretField
+                    value={form.webhookToken ?? ''}
+                    onChange={(v) => set('webhookToken', v)}
+                    aria-label="Webhook token"
+                  />
+                </Field>
+
+                <Field label="Webhook URL">
+                  <div className="flex items-center gap-2">
+                    <Input mono readOnly value={url} aria-label="Webhook URL" />
+                    <CopyButton value={url} />
+                  </div>
+                </Field>
+
+                <p className="font-mono text-[12px] text-text-3">{curlHint}</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
       </section>
 
       {/* Environment variables */}
-      <section className="rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] p-5 space-y-4">
-        <h2 className="text-sm font-semibold">Environment Variables</h2>
-        <div className="rounded-[10px] border border-[rgba(255,255,255,0.06)] overflow-hidden">
-          <div className="grid grid-cols-[1fr_1fr_2.5rem] bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] border-b border-[rgba(255,255,255,0.06)]">
-            <span>Key</span>
-            <span>Value</span>
-            <span />
-          </div>
-          <div className="divide-y divide-[rgba(255,255,255,0.06)]">
-            {envDraft.map((row, i) => {
-              const isBlankTrailer = i === envDraft.length - 1
-              return (
-                <div key={i} className="grid grid-cols-[1fr_1fr_2.5rem] items-center">
-                  <input
-                    value={row.key}
-                    onChange={e => updateEnvRow(i, 'key', e.target.value)}
-                    placeholder={isBlankTrailer ? 'NEW_KEY' : ''}
-                    spellCheck={false}
-                    className="font-[var(--font-mono)] text-[11px] text-[var(--text-primary)] px-3 py-2 bg-transparent border-r border-[rgba(255,255,255,0.06)] focus:outline-none focus:bg-[var(--accent-muted)] placeholder:text-[var(--text-tertiary)] w-full"
-                    aria-label={`Key for variable ${i + 1}`}
-                  />
-                  <div className="flex items-center border-r border-[rgba(255,255,255,0.06)] relative">
-                    <input
-                      value={row.value}
-                      onChange={e => updateEnvRow(i, 'value', e.target.value)}
-                      placeholder={isBlankTrailer ? 'value' : ''}
-                      spellCheck={false}
-                      type={envVisible.has(i) ? 'text' : 'password'}
-                      className="font-[var(--font-mono)] text-[11px] text-[var(--text-primary)] px-3 py-2 bg-transparent focus:outline-none focus:bg-[var(--accent-muted)] placeholder:text-[var(--text-tertiary)] w-full pr-8"
-                      aria-label={`Value for variable ${i + 1}`}
-                    />
-                    {(row.value !== '' || !isBlankTrailer) && (
-                      <button
-                        type="button"
-                        onClick={() => toggleEnvVisible(i)}
-                        aria-label={envVisible.has(i) ? 'Hide value' : 'Show value'}
-                        className="absolute right-2 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
-                      >
-                        {envVisible.has(i) ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-center">
-                    {!isBlankTrailer ? (
-                      <button
-                        type="button"
-                        onClick={() => removeEnvRow(i)}
-                        aria-label={`Remove ${row.key}`}
-                        className="size-7 flex items-center justify-center rounded-md hover:bg-[var(--danger-bg)] hover:text-[var(--danger)] transition-colors text-[var(--text-tertiary)]"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    ) : (
-                      <Plus className="size-3.5 text-[var(--text-tertiary)]" aria-hidden />
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-        <p className="text-xs text-[var(--text-tertiary)]">
-          Injected via <code className="font-[var(--font-mono)]">--env-file</code> on every deploy.
-          Use <code className="font-[var(--font-mono)]">{'${KEY}'}</code> in your compose file to reference them.
-        </p>
+      <section>
+        <SectionHeader
+          title="Environment variables"
+          description="Injected via --env-file on every deploy. Reference them as ${KEY} in your compose file."
+        />
+        <EnvVarEditor value={envDraft} onChange={setEnvDraft} />
       </section>
 
       {/* Save */}
       <div className="flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={update.isPending}
-          className="rounded-[10px] bg-gradient-to-br from-[var(--primary)] to-[var(--accent-dim)] text-[var(--primary-foreground)] px-4 py-2 text-[13px] font-semibold hover:shadow-[0_0_20px_var(--accent-glow)] hover:-translate-y-px transition-all disabled:opacity-50 inline-flex items-center gap-1.5"
-        >
-          {update.isPending && <Loader2 className="size-4 animate-spin" />}
-          Save Settings
-        </button>
-        {update.isSuccess && !update.isPending && (
-          <span className="text-xs text-[var(--success)]">Saved</span>
-        )}
+        <Button type="submit" variant="primary" loading={update.isPending}>
+          Save settings
+        </Button>
       </div>
-      {saveError && (
-        <p role="alert" className="text-sm text-[var(--danger)]">{saveError}</p>
-      )}
 
       {/* Danger zone */}
-      <section className="rounded-[14px] border border-[var(--danger-border)] bg-[var(--danger-bg)] p-5 space-y-3">
-        <h2 className="text-sm font-semibold text-[var(--danger)]">Danger Zone</h2>
-        <p className="text-xs text-[var(--text-secondary)]">
-          Permanently deletes this stack and all its deployment history. Running containers are not affected.
-        </p>
-        <button
-          type="button"
-          onClick={() => {
-            if (confirm('Delete this stack? This cannot be undone.')) deleteStack.mutate()
-          }}
-          disabled={deleteStack.isPending}
-          className="rounded-[10px] bg-[var(--danger)] text-white px-4 py-2 text-[13px] font-semibold hover:shadow-[0_0_12px_rgba(244,63,94,0.3)] transition-all disabled:opacity-50"
-        >
-          {deleteStack.isPending ? 'Deleting…' : 'Delete Stack'}
-        </button>
+      <section>
+        <SectionHeader title="Danger zone" />
+        <Card className="border-danger-bd">
+          <CardContent className="flex flex-col gap-4 pt-4 sm:flex-row sm:items-center sm:justify-between md:pt-5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-text">Delete stack</p>
+              <p className="mt-0.5 text-[13px] text-text-2">
+                This permanently deletes the stack and its deployment history. Running containers
+                are not affected.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="danger"
+              className="shrink-0"
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete stack
+            </Button>
+          </CardContent>
+        </Card>
       </section>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete ${stack.name}?`}
+        description="This permanently deletes the stack and its deployment history. Running containers are not affected."
+        confirmLabel="Delete stack"
+        tone="danger"
+        requireText={stack.name}
+        loading={deleteStack.isPending}
+        onConfirm={() => deleteStack.mutate()}
+      />
     </form>
   )
 }
 
-function Field({
-  label,
-  hint,
-  required,
-  children,
-}: {
-  label: string
-  hint?: string
-  required?: boolean
-  children: React.ReactNode
-}) {
+// ── Loading skeleton ─────────────────────────────────────────────────────────────
+
+function StackDetailSkeleton() {
   return (
-    <div className="space-y-1">
-      <label className="block text-xs font-semibold text-[var(--text-secondary)]">
-        {label}
-        {required && <span className="text-[var(--danger)] ml-0.5" aria-hidden>*</span>}
-      </label>
-      {children}
-      {hint && <p className="text-xs text-[var(--text-tertiary)]">{hint}</p>}
+    <div className="mx-auto max-w-[1200px] space-y-6">
+      <Skeleton variant="line" className="h-4 w-32" />
+      <div className="space-y-2">
+        <Skeleton variant="line" className="h-8 w-56" />
+        <Skeleton variant="line" className="h-4 w-80 max-w-full" />
+      </div>
+      <Skeleton variant="rect" className="h-14 w-full" />
+      <Skeleton variant="line" className="h-9 w-48" />
+      <div className="space-y-3">
+        <Skeleton variant="rect" className="h-40 w-full" />
+        <Skeleton variant="rect" className="h-40 w-full" />
+      </div>
     </div>
   )
 }
-
-function DeployEventRow({ event }: { event: DeployEvent }) {
-  const [expanded, setExpanded] = useState(false)
-  const [liveLines, setLiveLines] = useState<string[]>([])
-  const [streaming, setStreaming] = useState(false)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const esRef = useRef<EventSource | null>(null)
-
-  const isActive = event.status === 'running' || event.status === 'queued'
-
-  // Connect to SSE when the row is expanded and the deploy is (or was) active.
-  // For completed events the SSE endpoint replays stored output then sends event:done.
-  useEffect(() => {
-    if (!expanded) {
-      esRef.current?.close()
-      esRef.current = null
-      setLiveLines([])
-      setStreaming(false)
-      return
-    }
-
-    // Only use SSE when there is something to stream (active) or we want a clean replay.
-    // For finished events with no output stored, fall through to the static display.
-    setLiveLines([])
-    setStreaming(true)
-
-    const es = new EventSource(`${apiBase}/api/stacks/events/${event.id}/stream`)
-    esRef.current = es
-
-    es.onmessage = e => {
-      setLiveLines(prev => [...prev, e.data])
-    }
-    es.addEventListener('done', () => {
-      setStreaming(false)
-      es.close()
-    })
-    es.onerror = () => {
-      setStreaming(false)
-      es.close()
-    }
-
-    return () => {
-      es.close()
-    }
-  }, [expanded, event.id])
-
-  // Auto-scroll to the bottom as new lines arrive.
-  useEffect(() => {
-    if (expanded && streaming) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [liveLines, expanded, streaming])
-
-  const statusIcon =
-    event.status === 'success'
-      ? <CheckCircle2 className="size-3.5 text-[var(--success)]" />
-      : event.status === 'failed'
-        ? <span className="size-3.5 text-[var(--danger)]">✕</span>
-        : <Loader2 className="size-3.5 animate-spin text-[var(--running)]" />
-
-  return (
-    <div className="overflow-hidden">
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="flex w-full items-center gap-3 px-4 py-3 border-b border-[rgba(255,255,255,0.06)] text-sm hover:bg-[var(--accent)] transition-colors text-left cursor-pointer"
-      >
-        {expanded
-          ? <ChevronDown className="size-4 shrink-0 text-[var(--text-tertiary)]" />
-          : <ChevronRight className="size-4 shrink-0 text-[var(--text-tertiary)]" />}
-        {statusIcon}
-        <span className={`text-[11px] font-semibold ${
-          event.status === 'success' ? 'text-[var(--success)]'
-            : event.status === 'failed' ? 'text-[var(--danger)]'
-              : 'text-[var(--running)]'
-        }`}>
-          {event.status}
-        </span>
-        <span className="font-[var(--font-mono)] text-[11px] text-[var(--text-tertiary)]">
-          {new Date(event.startedAt).toLocaleString()}
-        </span>
-        <span className="text-xs text-[var(--text-tertiary)]">via {event.triggeredBy}</span>
-        {event.finishedAt && (
-          <span className="ml-auto font-[var(--font-mono)] text-[11px] text-[var(--text-tertiary)]">
-            {Math.round(
-              (new Date(event.finishedAt).getTime() - new Date(event.startedAt).getTime()) / 1000,
-            )}s
-          </span>
-        )}
-        {isActive && !event.finishedAt && (
-          <span className="ml-auto text-[11px] text-[var(--running)] animate-pulse font-semibold">live</span>
-        )}
-      </button>
-      {expanded && (
-        <div className="bg-[rgba(0,0,0,0.3)] rounded-[8px] px-3.5 py-3 mx-4 my-3 overflow-hidden">
-          {streaming && isActive && (
-            <div className="flex items-center gap-1.5 mb-2 text-[10px] font-semibold text-[var(--running)]">
-              <span className="size-1.5 rounded-full bg-[var(--running)] inline-block animate-[wt-pulse-dot_2s_ease-in-out_infinite]" aria-hidden />
-              streaming
-            </div>
-          )}
-          <pre className="font-[var(--font-mono)] text-[11px] text-[var(--text-tertiary)] overflow-x-auto whitespace-pre-wrap max-h-[300px] overflow-y-auto">
-            {liveLines.length > 0
-              ? liveLines.map((line, i) => <span key={i}>{line || '\u00A0'}{'\n'}</span>)
-              : isActive
-                ? '⏳ Waiting for output…'
-                : '(no output)'}
-            <div ref={bottomRef} />
-          </pre>
-        </div>
-      )}
-    </div>
-  )
-}
-

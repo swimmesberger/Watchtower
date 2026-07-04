@@ -1,26 +1,57 @@
-import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, Play, XCircle, Loader2, Plus, Clock, Box } from 'lucide-react'
+import {
+  Boxes,
+  Container as ContainerIcon,
+  Play,
+  Plus,
+  XCircle,
+} from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ActiveDeployment, Stack } from '@/lib/types'
+import { absoluteTitle, timeAgo, useElapsed } from '@/lib/format'
+import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Banner } from '@/components/ui/banner'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
+import { SectionHeader } from '@/components/ui/section-header'
+import { Skeleton } from '@/components/ui/skeleton'
+import { StatCard } from '@/components/ui/stat-card'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { toast } from '@/components/ui/use-toast'
 
 export function DashboardPage() {
   const qc = useQueryClient()
-  const { data: stacks = [], isLoading } = useQuery({
+
+  const stacksQuery = useQuery({
     queryKey: ['stacks'],
     queryFn: api.stacks.list,
   })
+  const stacks = stacksQuery.data ?? []
+
+  const activeDeploymentsQuery = useQuery({
+    queryKey: ['deployments', 'active'],
+    queryFn: api.deployments.active,
+    // A7: fast poll (2.5s) while there are active deployments, slow (10s) when idle.
+    refetchInterval: (query) =>
+      (query.state.data?.length ?? 0) > 0 ? 2_500 : 10_000,
+  })
+  const activeDeployments = activeDeploymentsQuery.data ?? []
+
+  // A7: containers poll 10s while anything is active/live, 30s when everything is idle.
+  const hasLiveWork =
+    activeDeployments.length > 0 ||
+    stacks.some(
+      (s) => s.lastDeployStatus === 'running' || s.lastDeployStatus === 'queued',
+    )
   const { data: containers = [] } = useQuery({
     queryKey: ['containers'],
     queryFn: api.containers.list,
-    refetchInterval: 10_000,
+    refetchInterval: hasLiveWork ? 10_000 : 30_000,
   })
-  const { data: activeDeployments = [] } = useQuery({
-    queryKey: ['deployments', 'active'],
-    queryFn: api.deployments.active,
-    refetchInterval: 3_000,
-  })
+
   const { data: selfStatus } = useQuery({
     queryKey: ['system', 'self'],
     queryFn: api.system.getSelf,
@@ -29,185 +60,212 @@ export function DashboardPage() {
   })
 
   const deploy = useMutation({
-    mutationFn: (id: number) => api.stacks.deploy(id),
-    onSuccess: () => {
+    mutationFn: (stack: Stack) => api.stacks.deploy(stack.id),
+    onSuccess: (_data, stack) => {
+      toast.info(`Deploying ${stack.name}…`)
       qc.invalidateQueries({ queryKey: ['stacks'] })
       qc.invalidateQueries({ queryKey: ['deployments', 'active'] })
     },
+    onError: (err: unknown, stack) => {
+      toast.error(`Failed to deploy ${stack.name}: ${errMessage(err)}`)
+    },
   })
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full text-[var(--text-secondary)]">
-        <Loader2 className="size-5 animate-spin mr-2" /> Loading…
-      </div>
-    )
-  }
+  // A7: the "● live" chip only shows while the fast (2.5s) deployment interval is active.
+  const isFastPolling = activeDeployments.length > 0
+
+  const containerCountFor = (stack: Stack) =>
+    containers.filter((c) => c.stackName === stack.composeProjectName).length
+
+  const healthy = stacks.filter((s) => s.lastDeployStatus === 'success').length
+  const failed = stacks.filter((s) => s.lastDeployStatus === 'failed').length
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
-      {/* Watchtower update banner */}
-      {selfStatus?.isOutdated && (
-        <div className="flex items-center gap-3 rounded-[10px] border border-[var(--warning-border)] bg-[var(--warning-bg)] px-4 py-3 animate-[wt-card-in_0.5s_ease-out]">
-          <AlertTriangle className="size-[18px] text-[var(--warning)] shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-semibold text-[var(--warning)]">Watchtower update available</p>
-            <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-              A newer version of <code className="font-[var(--font-mono)] text-[11px]">{selfStatus.imageName}</code> was detected.
-            </p>
-          </div>
-          <Link to="/settings" className="shrink-0 text-xs font-semibold text-[var(--warning)] hover:opacity-80 transition-opacity">
-            Go to Settings →
+    <div className="space-y-6">
+      {/* Page header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <h1 className="text-2xl font-semibold tracking-tight text-text">Dashboard</h1>
+          {isFastPolling && <LiveChip />}
+        </div>
+        {/* Desktop primary action; on mobile this becomes the FAB below. */}
+        <Button asChild variant="primary" className="hidden md:inline-flex">
+          <Link to="/stacks/new">
+            <Plus /> New stack
           </Link>
-        </div>
-      )}
+        </Button>
+      </div>
 
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-[22px] font-bold tracking-tight">Dashboard</h1>
-          <p className="text-[13px] text-[var(--text-tertiary)] mt-0.5">Fleet status at a glance</p>
-        </div>
-        <Link
-          to="/stacks/new"
-          className="inline-flex items-center gap-1.5 rounded-[10px] bg-gradient-to-br from-[var(--primary)] to-[var(--accent-dim)] text-[var(--primary-foreground)] px-4 py-2 text-[13px] font-semibold hover:shadow-[0_0_20px_var(--accent-glow)] hover:-translate-y-px transition-all"
+      {/* Query load error → in-panel danger Banner with Retry (§5). */}
+      {stacksQuery.isError && (
+        <Banner
+          tone="danger"
+          title="Couldn't load stacks"
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => stacksQuery.refetch()}
+              loading={stacksQuery.isFetching}
+            >
+              Retry
+            </Button>
+          }
         >
-          <Plus className="size-[15px]" /> New Stack
-        </Link>
-      </div>
-
-      {/* Summary stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Total Stacks" value={stacks.length} accent="teal" delay={0.05} />
-        <StatCard
-          label="Healthy"
-          value={stacks.filter(s => s.lastDeployStatus === 'success').length}
-          accent="green"
-          delay={0.10}
-        />
-        <StatCard
-          label="Failed"
-          value={stacks.filter(s => s.lastDeployStatus === 'failed').length}
-          accent="red"
-          delay={0.15}
-        />
-        <StatCard label="Containers" value={containers.length} accent="blue" delay={0.20} />
-      </div>
-
-      {/* Active deployments live feed */}
-      {activeDeployments.length > 0 && (
-        <ActiveDeploymentsPanel deployments={activeDeployments} />
+          {errMessage(stacksQuery.error)}
+        </Banner>
       )}
 
-      {/* Stack cards */}
-      {stacks.length === 0 ? (
-        <EmptyState />
+      {/* Self-update banner (dismissible, links to /settings). */}
+      {selfStatus?.isOutdated && (
+        <Banner
+          tone="warn"
+          title="Watchtower update available"
+          dismissible
+          action={
+            <Button asChild variant="link" size="sm">
+              <Link to="/settings">Review →</Link>
+            </Button>
+          }
+        >
+          A newer version of Watchtower has been detected.
+        </Banner>
+      )}
+
+      {/* Loading skeletons match the page shape (§5). */}
+      {stacksQuery.isLoading ? (
+        <DashboardSkeleton />
       ) : (
         <>
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
-            All Stacks
-            <div className="flex-1 h-px bg-[rgba(255,255,255,0.06)]" />
+          {/* Stat cards — 2×2 on mobile, 4-up on desktop (A5 links). */}
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <StatCard label="Total stacks" value={stacks.length} accent="brand" to="/stacks" />
+            <StatCard
+              label="Healthy"
+              value={healthy}
+              accent="ok"
+              dotTone="ok"
+              to="/stacks"
+              search={{ status: 'ok' }}
+            />
+            <StatCard
+              label="Failed"
+              value={failed}
+              accent="danger"
+              dotTone="danger"
+              to="/stacks"
+              search={{ status: 'failed' }}
+            />
+            <StatCard
+              label="Containers"
+              value={containers.length}
+              accent="neutral"
+              icon={ContainerIcon}
+            />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {stacks.map((stack, i) => (
-              <StackCard
-                key={stack.id}
-                stack={stack}
-                containerCount={containers.filter(c => c.stackName === stack.composeProjectName).length}
-                onDeploy={() => deploy.mutate(stack.id)}
-                deploying={deploy.isPending && deploy.variables === stack.id}
-                delay={0.30 + i * 0.05}
+
+          {/* Active deployments — only when non-empty. */}
+          {activeDeployments.length > 0 && (
+            <section>
+              <SectionHeader
+                title="Active deployments"
+                action={<LiveChip />}
               />
-            ))}
-          </div>
+              <Card>
+                <ul className="divide-y divide-border">
+                  {activeDeployments.map((d) => (
+                    <ActiveDeploymentRow key={d.id} deployment={d} />
+                  ))}
+                </ul>
+              </Card>
+            </section>
+          )}
+
+          {/* Stacks grid or empty state. */}
+          {stacks.length === 0 ? (
+            <EmptyState
+              icon={Boxes}
+              title="No stacks yet"
+              description="Register a git repo with a compose file to start deploying."
+              action={
+                <Button asChild variant="primary">
+                  <Link to="/stacks/new">
+                    <Plus /> New stack
+                  </Link>
+                </Button>
+              }
+            />
+          ) : (
+            <section>
+              <SectionHeader title="Stacks" />
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {stacks.map((stack) => (
+                  <StackCard
+                    key={stack.id}
+                    stack={stack}
+                    containerCount={containerCountFor(stack)}
+                    onDeploy={() => deploy.mutate(stack)}
+                    deploying={deploy.isPending && deploy.variables?.id === stack.id}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
         </>
       )}
+
+      {/* Mobile FAB → New stack (sticky above the bottom tab bar). */}
+      <Link
+        to="/stacks/new"
+        aria-label="New stack"
+        className={cn(
+          'fixed bottom-[calc(var(--bottombar-h)+env(safe-area-inset-bottom)+16px)] right-4 z-20',
+          'flex size-14 items-center justify-center rounded-full bg-brand text-brand-fg shadow-[var(--sh-lg)]',
+          'transition-colors hover:bg-[var(--brand-hover)] active:translate-y-px',
+          'focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+          'md:hidden',
+        )}
+      >
+        <Plus className="size-6" />
+      </Link>
     </div>
   )
 }
 
-function ActiveDeploymentsPanel({ deployments }: { deployments: ActiveDeployment[] }) {
+/** "● live" chip signalling an active fast-polling interval (A7). */
+function LiveChip() {
   return (
-    <div className="rounded-[14px] border border-[var(--running-border)] bg-[var(--running-bg)] overflow-hidden animate-[wt-card-in_0.4s_ease-out_0.25s_both]">
-      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-[var(--running-border)]">
-        <div className="size-3.5 border-2 border-transparent border-t-[var(--running)] rounded-full animate-spin" />
-        <span className="text-[13px] font-semibold text-[var(--running)]">Active Deployments</span>
-        <span className="text-[11px] font-semibold text-[var(--running)] bg-[rgba(59,130,246,0.15)] px-2 py-0.5 rounded-full">{deployments.length}</span>
-      </div>
-      <div>
-        {deployments.map(d => (
-          <ActiveDeploymentRow key={d.id} deployment={d} />
-        ))}
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-run-bg px-2 py-0.5 text-[11px] font-medium text-run">
+      <span className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]" aria-hidden />
+      live
+    </span>
   )
 }
 
 function ActiveDeploymentRow({ deployment: d }: { deployment: ActiveDeployment }) {
   const elapsed = useElapsed(d.startedAt)
-  const isRunning = d.status === 'running'
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-[rgba(59,130,246,0.06)] transition-colors border-t border-[rgba(59,130,246,0.08)] first:border-t-0">
-      <div className={`size-7 flex items-center justify-center rounded-md shrink-0 ${isRunning ? 'bg-[rgba(59,130,246,0.15)]' : 'bg-[var(--queued-bg)]'}`}>
-        {isRunning
-          ? <div className="size-3 border-[1.5px] border-transparent border-t-[var(--running)] rounded-full animate-spin" />
-          : <Clock className="size-3.5 text-[var(--queued)]" />
-        }
-      </div>
-      <div className="flex-1 min-w-0">
+    <li className="flex items-center gap-3 p-4 md:px-5">
+      <StatusBadge status={d.status} size="sm" />
+      <div className="min-w-0 flex-1">
         <Link
           to="/stacks/$id"
           params={{ id: String(d.stackId) }}
-          className="text-[13px] font-semibold hover:text-[var(--accent-bright)] transition-colors truncate block"
+          className="block truncate text-sm font-medium text-text transition-colors hover:text-brand"
         >
           {d.stackName}
         </Link>
-        <p className="text-[11px] text-[var(--text-tertiary)] font-[var(--font-mono)] mt-px">
-          triggered {d.triggeredBy} · {elapsed}
+        <p className="mt-0.5 truncate text-xs text-text-3">
+          triggered by {d.triggeredBy}
         </p>
       </div>
-      <span className="text-xs font-[var(--font-mono)] text-[var(--text-tertiary)] tabular-nums w-[4.5em] text-right shrink-0">{elapsed}</span>
-      <span className={`shrink-0 text-[11px] font-semibold px-2.5 py-0.5 rounded-full uppercase tracking-wide ${
-        isRunning
-          ? 'text-[var(--running)] bg-[rgba(59,130,246,0.15)] border border-[rgba(59,130,246,0.2)]'
-          : 'text-[var(--queued)] bg-[var(--queued-bg)] border border-[var(--queued-border)]'
-      }`}>
-        {d.status}
+      <span
+        className="tnum shrink-0 font-mono text-[13px] text-text-2"
+        title={absoluteTitle(d.startedAt)}
+      >
+        {elapsed}
       </span>
-    </div>
-  )
-}
-
-function useElapsed(startedAt: string): string {
-  const [now, setNow] = React.useState(() => Date.now())
-  React.useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1_000)
-    return () => clearInterval(id)
-  }, [])
-  const seconds = Math.floor((now - new Date(startedAt).getTime()) / 1_000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const secs = seconds % 60
-  return `${minutes}m ${secs}s`
-}
-
-const accentColors = {
-  teal: { bar: 'bg-[var(--primary)]', value: 'text-[var(--accent-bright)]' },
-  green: { bar: 'bg-[var(--success)]', value: 'text-[var(--success)]' },
-  red: { bar: 'bg-[var(--danger)]', value: 'text-[var(--danger)]' },
-  blue: { bar: 'bg-[var(--running)]', value: 'text-[var(--running)]' },
-} as const
-
-function StatCard({ label, value, accent, delay }: { label: string; value: number; accent: keyof typeof accentColors; delay: number }) {
-  const colors = accentColors[accent]
-  return (
-    <div
-      className="relative rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] p-5 overflow-hidden hover:border-[var(--border)] hover:bg-[var(--secondary)] transition-all"
-      style={{ animation: `wt-card-in 0.4s ease-out ${delay}s both` }}
-    >
-      <div className={`absolute top-0 left-0 right-0 h-0.5 rounded-t ${colors.bar}`} />
-      <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--text-tertiary)] mb-2">{label}</p>
-      <p className={`text-[32px] font-extrabold tracking-tight leading-none ${colors.value}`}>{value}</p>
-    </div>
+    </li>
   )
 }
 
@@ -216,124 +274,140 @@ function StackCard({
   containerCount,
   onDeploy,
   deploying,
-  delay,
 }: {
   stack: Stack
   containerCount: number
   onDeploy: () => void
   deploying: boolean
-  delay: number
 }) {
-  const statusClass = stack.lastDeployStatus === 'success'
-    ? 'success' : stack.lastDeployStatus === 'failed'
-    ? 'failed' : stack.lastDeployStatus === 'running'
-    ? 'running' : stack.lastDeployStatus === 'queued'
-    ? 'queued' : 'none'
+  const dotTone = describeDot(stack.lastDeployStatus)
+  const updateCount = stack.outdatedImages?.length ?? 0
+  const isDeploying = stack.lastDeployStatus === 'running'
+  const repo = stack.repositoryUrl.replace(/^https?:\/\//, '')
 
   return (
-    <div
-      className="relative rounded-[14px] border border-[rgba(255,255,255,0.06)] bg-[var(--card)] p-5 hover:border-[rgba(255,255,255,0.14)] hover:bg-[var(--secondary)] hover:-translate-y-0.5 hover:shadow-[0_8px_30px_rgba(0,0,0,0.5)] transition-all cursor-pointer overflow-hidden"
-      style={{ animation: `wt-card-in 0.4s ease-out ${delay}s both` }}
-    >
-      {/* Status glow stripe */}
-      {statusClass === 'success' && <div className="absolute top-0 left-5 right-5 h-px bg-gradient-to-r from-transparent via-[var(--success)] to-transparent shadow-[0_0_12px_var(--success)]" />}
-      {statusClass === 'failed' && <div className="absolute top-0 left-5 right-5 h-px bg-gradient-to-r from-transparent via-[var(--danger)] to-transparent shadow-[0_0_12px_var(--danger)]" />}
-      {statusClass === 'running' && <div className="absolute top-0 left-5 right-5 h-px bg-gradient-to-r from-transparent via-[var(--running)] to-transparent shadow-[0_0_12px_var(--running)] animate-[wt-glow-pulse_2s_ease-in-out_infinite]" />}
-
-      <div className="flex items-start justify-between gap-2 mb-3.5">
-        <div className="flex gap-2.5 items-start flex-1 min-w-0">
-          <StatusIndicator status={stack.lastDeployStatus} />
-          <div className="min-w-0">
-            <Link
-              to="/stacks/$id"
-              params={{ id: String(stack.id) }}
-              className="text-[15px] font-bold tracking-tight hover:text-[var(--accent-bright)] transition-colors truncate block"
-            >
-              {stack.name}
-            </Link>
-            <p className="text-xs font-[var(--font-mono)] text-[var(--text-tertiary)] mt-0.5 truncate">
-              {stack.repositoryUrl.replace('https://github.com/', '')}
-            </p>
-          </div>
+    <Card interactive className="flex flex-col p-4 md:p-5">
+      {/* Header: dot + name + repo */}
+      <div className="flex items-start gap-2.5">
+        <span
+          className={cn('mt-1.5 size-2 shrink-0 rounded-full', dotTone)}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <Link
+            to="/stacks/$id"
+            params={{ id: String(stack.id) }}
+            className="block truncate text-[15px] font-semibold tracking-tight text-text transition-colors hover:text-brand"
+          >
+            {stack.name}
+          </Link>
+          <p className="mt-0.5 truncate font-mono text-xs text-text-3" title={repo}>
+            {repo}
+          </p>
         </div>
-        <button
-          onClick={e => { e.stopPropagation(); onDeploy() }}
-          disabled={deploying || stack.lastDeployStatus === 'running'}
-          className="inline-flex items-center gap-1 rounded-md bg-[var(--accent-muted)] border border-[rgba(20,184,166,0.2)] text-[var(--primary)] px-3 py-1.5 text-xs font-semibold hover:bg-[rgba(20,184,166,0.2)] hover:border-[rgba(20,184,166,0.35)] hover:shadow-[0_0_12px_rgba(20,184,166,0.15)] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+      </div>
+
+      {/* Meta line */}
+      <div className="mt-3.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-text-2">
+        <span className="inline-flex items-center gap-1">
+          <ContainerIcon className="size-3.5 text-text-3" aria-hidden />
+          {containerCount} container{containerCount === 1 ? '' : 's'}
+        </span>
+        {updateCount > 0 && (
+          <Badge tone="warn" size="sm">
+            {updateCount} update{updateCount === 1 ? '' : 's'}
+          </Badge>
+        )}
+      </div>
+
+      {/* Footer: last deployed + Deploy */}
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-xs text-text-3">
+          {stack.lastDeployStatus === 'failed' && stack.lastDeployedAt ? (
+            <span
+              className="tnum inline-flex items-center gap-1 text-danger"
+              title={absoluteTitle(stack.lastDeployedAt)}
+            >
+              <XCircle className="size-3.5" aria-hidden />
+              Failed {timeAgo(stack.lastDeployedAt)}
+            </span>
+          ) : isDeploying ? (
+            <span className="text-run">Deploying…</span>
+          ) : stack.lastDeployedAt ? (
+            <span className="tnum" title={absoluteTitle(stack.lastDeployedAt)}>
+              Deployed {timeAgo(stack.lastDeployedAt)}
+            </span>
+          ) : (
+            <span className="italic">Never deployed</span>
+          )}
+        </span>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={onDeploy}
+          loading={deploying}
+          disabled={isDeploying}
+          className="shrink-0"
           aria-label={`Deploy ${stack.name}`}
         >
-          {deploying ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3 fill-current" />}
+          {!deploying && <Play className="fill-current" />}
           Deploy
-        </button>
+        </Button>
       </div>
-
-      {stack.hasUpdates === true && (
-        <div className="inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--warning)] bg-[var(--warning-bg)] border border-[var(--warning-border)] px-2 py-0.5 rounded-full mb-3">
-          <AlertTriangle className="size-[11px]" />
-          {(stack.outdatedImages?.length ?? 0)} image update{(stack.outdatedImages?.length ?? 0) !== 1 ? 's' : ''} available
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 text-xs text-[var(--text-tertiary)]">
-        <span className="flex items-center gap-1">
-          <Box className="size-[13px] opacity-60" />
-          {containerCount} container{containerCount !== 1 ? 's' : ''}
-        </span>
-        {stack.lastDeployStatus === 'running' && (
-          <span className="text-[var(--running)]">deploying…</span>
-        )}
-        {stack.lastDeployStatus === 'failed' && stack.lastDeployedAt && (
-          <span className="flex items-center gap-1 text-[var(--danger)]">
-            <XCircle className="size-[13px]" />
-            Failed {timeAgo(stack.lastDeployedAt)}
-          </span>
-        )}
-        {stack.lastDeployStatus === 'success' && stack.lastDeployedAt && (
-          <span className="flex items-center gap-1">
-            <Clock className="size-[13px] opacity-60" />
-            {timeAgo(stack.lastDeployedAt)}
-          </span>
-        )}
-        {!stack.lastDeployStatus && (
-          <span className="italic">never deployed</span>
-        )}
-      </div>
-    </div>
+    </Card>
   )
 }
 
-function StatusIndicator({ status }: { status: Stack['lastDeployStatus'] }) {
-  if (status === 'success') return <div className="size-2.5 rounded-full bg-[var(--success)] shadow-[0_0_8px_rgba(16,185,129,0.5)] shrink-0 mt-1.5" />
-  if (status === 'failed') return <div className="size-2.5 rounded-full bg-[var(--danger)] shadow-[0_0_8px_rgba(244,63,94,0.5)] shrink-0 mt-1.5" />
-  if (status === 'running') return <div className="size-2.5 rounded-full bg-[var(--running)] shadow-[0_0_8px_rgba(59,130,246,0.5)] shrink-0 mt-1.5 animate-[wt-pulse-dot_1.5s_ease-in-out_infinite]" />
-  if (status === 'queued') return <div className="size-2.5 rounded-full bg-[var(--queued)] shadow-[0_0_8px_rgba(167,139,250,0.4)] shrink-0 mt-1.5 animate-[wt-pulse-dot_2s_ease-in-out_infinite]" />
-  return <div className="size-2.5 rounded-full bg-[var(--text-tertiary)] opacity-40 shrink-0 mt-1.5" />
+function describeDot(status: Stack['lastDeployStatus']): string {
+  switch (status) {
+    case 'success':
+      return 'bg-ok'
+    case 'failed':
+      return 'bg-danger'
+    case 'running':
+      return 'bg-run motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]'
+    case 'queued':
+      return 'bg-queue motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]'
+    default:
+      return 'bg-neutral'
+  }
 }
 
-function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
-
-function EmptyState() {
+function DashboardSkeleton() {
   return (
-    <div className="flex flex-col items-center justify-center rounded-[20px] border border-dashed border-[var(--border)] py-16 text-center animate-[wt-card-in_0.5s_ease-out_0.3s_both]">
-      <div className="size-14 flex items-center justify-center bg-[var(--accent-muted)] rounded-[14px] mb-4">
-        <Box className="size-7 text-[var(--primary)]" />
+    <>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i} className="p-4">
+            <Skeleton variant="line" className="h-3 w-16" />
+            <Skeleton variant="line" className="mt-3 h-7 w-10" />
+          </Card>
+        ))}
       </div>
-      <p className="text-base font-semibold mb-1.5">No stacks yet</p>
-      <p className="text-[13px] text-[var(--text-tertiary)] mb-5">Create your first Docker Compose deployment</p>
-      <Link
-        to="/stacks/new"
-        className="inline-flex items-center gap-1.5 rounded-[10px] bg-gradient-to-br from-[var(--primary)] to-[var(--accent-dim)] text-[var(--primary-foreground)] px-4 py-2 text-[13px] font-semibold hover:shadow-[0_0_20px_var(--accent-glow)] transition-all"
-      >
-        <Plus className="size-4" /> Create Stack
-      </Link>
-    </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Card key={i} className="p-4 md:p-5">
+            <div className="flex items-start gap-2.5">
+              <Skeleton variant="circle" className="mt-1 size-2" />
+              <div className="flex-1">
+                <Skeleton variant="line" className="h-4 w-28" />
+                <Skeleton variant="line" className="mt-2 h-3 w-40" />
+              </div>
+            </div>
+            <Skeleton variant="line" className="mt-4 h-3 w-24" />
+            <div className="mt-4 flex items-center justify-between">
+              <Skeleton variant="line" className="h-3 w-20" />
+              <Skeleton variant="rect" className="h-[30px] w-20" />
+            </div>
+          </Card>
+        ))}
+      </div>
+    </>
   )
+}
+
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  return 'Unexpected error'
 }
