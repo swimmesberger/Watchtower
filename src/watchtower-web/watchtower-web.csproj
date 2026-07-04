@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.Build.NoTargets/3.7.134">
+
+  <!--
+    Wrapper that surfaces the Vite + React SPA (watchtower-web) in the .NET solution for IDE visibility
+    and grouping. It produces no .NET assembly and is not packed; the SPA is built by npm/Vite, not by
+    `dotnet build`. The Aspire AppHost runs it in development; the Docker image builds it in a node stage.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- Not a C# project: opt out of the implicit global usings inherited from Directory.Build.props,
+         which would otherwise emit a GlobalUsings.g.cs the IDE flags (no framework references behind it). -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!--
+      Opt-in: build the SPA as part of `dotnet build` (requires Node/npm on PATH). Off by default so a
+      normal .NET build needs no Node. Enable per build with `-p:BuildJsClient=true`.
+    -->
+    <BuildJsClient Condition="'$(BuildJsClient)' == ''">false</BuildJsClient>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="package.json" />
+    <None Include="package-lock.json" />
+    <None Include="tsconfig.json" />
+    <None Include="vite.config.ts" />
+    <None Include="components.json" />
+    <None Include="index.html" />
+    <None Include="src/**/*.ts" Exclude="src/generated/**" />
+    <None Include="src/**/*.tsx" Exclude="src/generated/**" />
+    <None Include="src/**/*.css" />
+  </ItemGroup>
+
+  <!-- Install dependencies once (clean, lockfile-based) when opted in and node_modules is absent. -->
+  <Target Name="RestoreWatchtowerWeb"
+          Condition="'$(BuildJsClient)' == 'true' and !Exists('$(MSBuildProjectDirectory)/node_modules')">
+    <Message Importance="high" Text="watchtower-web: npm ci" />
+    <Exec Command="npm ci" WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+
+  <!-- Build the SPA (generate RPC client → tsc → vite) after the (no-op) .NET build when opted in. -->
+  <Target Name="BuildWatchtowerWeb"
+          Condition="'$(BuildJsClient)' == 'true'"
+          DependsOnTargets="RestoreWatchtowerWeb"
+          AfterTargets="Build"
+          Inputs="@(None)"
+          Outputs="$(MSBuildProjectDirectory)/dist/index.html">
+    <Message Importance="high" Text="watchtower-web: npm run build" />
+    <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+
+</Project>

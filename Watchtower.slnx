@@ -13,11 +13,8 @@
     <Project Path="src/Watchtower.Application/Watchtower.Application.csproj" />
     <Project Path="src/Watchtower.Api/Watchtower.Api.csproj" />
     <Project Path="src/Watchtower.AppHost/Watchtower.AppHost.csproj" />
-  </Folder>
-  <!-- The web frontend is a Vite app orchestrated by the Aspire AppHost (AddViteApp); shown here for IDE access. -->
-  <Folder Name="/web/">
-    <File Path="src/watchtower-web/package.json" />
-    <File Path="src/watchtower-web/vite.config.ts" />
-    <File Path="src/watchtower-web/tsconfig.json" />
+    <!-- The Vite + React SPA, wrapped as a NoTargets project for solution visibility. The Aspire AppHost
+         runs it via AddViteApp; the Docker image builds it in a node stage. -->
+    <Project Path="src/watchtower-web/watchtower-web.csproj" />
   </Folder>
 </Solution>
