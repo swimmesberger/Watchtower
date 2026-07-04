@@ -26,4 +26,13 @@
          SQLitePCLRaw layer and is designed to be bumped on its own. -->
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- .NET Aspire — dev-time orchestration only (the AppHost runs the API + Vite web together).
+         Not part of the shipped Docker image. -->
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.4.6" />
+    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.4.6" />
+    <!-- Direct pin for the Aspire/DCP transitive dependency vulnerable below MessagePack 2.5.301. -->
+    <PackageVersion Include="MessagePack" Version="3.1.7" />
+  </ItemGroup>
 </Project>

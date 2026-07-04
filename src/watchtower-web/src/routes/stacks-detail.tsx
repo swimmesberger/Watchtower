@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Eye, EyeOff, Loader2, Play, Plus, RefreshCw, RotateCcw, Square, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { apiBase } from '@/lib/config'
 import type { Credential, DeployEvent, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
 import { ContainerLogs } from '@/components/container-logs'
 
@@ -363,7 +364,7 @@ function WebhookPanel({ stackId, token }: { stackId: number; token: string | nul
   const [copiedUrl, setCopiedUrl] = useState(false)
   const [copiedToken, setCopiedToken] = useState(false)
   const [showToken, setShowToken] = useState(false)
-  const url = `${window.location.origin}/api/webhooks/stacks/${stackId}/deploy`
+  const url = `${(apiBase || window.location.origin)}/api/webhooks/stacks/${stackId}/deploy`
 
   function copyUrl() {
     navigator.clipboard.writeText(url)
@@ -492,7 +493,7 @@ function SettingsTab({
   }
 
   function copyWebhookUrl() {
-    const url = `${window.location.origin}/api/webhooks/stacks/${stackId}/deploy`
+    const url = `${(apiBase || window.location.origin)}/api/webhooks/stacks/${stackId}/deploy`
     navigator.clipboard.writeText(url).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
@@ -617,7 +618,7 @@ function SettingsTab({
               <div className="flex gap-2 items-center">
                 <input
                   readOnly
-                  value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/webhooks/stacks/${stackId}/deploy`}
+                  value={`${typeof window !== 'undefined' ? (apiBase || window.location.origin) : ''}/api/webhooks/stacks/${stackId}/deploy`}
                   className="bg-[var(--secondary)] border border-[var(--border)] rounded-[10px] px-3 py-2.5 text-[13px] text-[var(--text-secondary)] font-[var(--font-mono)] focus:outline-none w-full select-all"
                   aria-label="Webhook URL"
                   onFocus={e => e.currentTarget.select()}
@@ -637,7 +638,7 @@ function SettingsTab({
                   ? `curl -X POST -H "Authorization: Bearer <token>" \\`
                   : 'curl -X POST \\'}
                 <br />
-                {`  ${typeof window !== 'undefined' ? window.location.origin : ''}/api/webhooks/stacks/${stackId}/deploy`}
+                {`  ${typeof window !== 'undefined' ? (apiBase || window.location.origin) : ''}/api/webhooks/stacks/${stackId}/deploy`}
               </p>
             </Field>
           </>
@@ -799,7 +800,7 @@ function DeployEventRow({ event }: { event: DeployEvent }) {
     setLiveLines([])
     setStreaming(true)
 
-    const es = new EventSource(`/api/stacks/events/${event.id}/stream`)
+    const es = new EventSource(`${apiBase}/api/stacks/events/${event.id}/stream`)
     esRef.current = es
 
     es.onmessage = e => {

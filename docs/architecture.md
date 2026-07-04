@@ -1,12 +1,16 @@
 # Architecture
 
-Two backend projects plus the SPA:
+Two backend projects, a dev-only Aspire orchestrator, and the SPA:
 
 - **`Watchtower.Application`** — the Elarion app library (`[assembly: UseElarion]`). Holds the modules
   and handlers, the EF entities + `WatchtowerDbContext`, and the service layer. Referenced by the host.
 - **`Watchtower.Api`** — the ASP.NET host (`[assembly: GenerateModuleBootstrapper]`). Wires transport,
   the database, the plain HTTP endpoints, and process-entry concerns (coordinator + schema export).
-- **`watchtower-web`** — the React SPA, served from `wwwroot/` in production.
+- **`Watchtower.AppHost`** — a .NET Aspire host that runs the API + the Vite web app together in
+  development (`AddViteApp`, injecting the API URL as `VITE_API_URL`). Not part of the shipped image.
+- **`watchtower-web`** — the React SPA, served from `wwwroot/` in production. Its API base comes from
+  `VITE_API_URL` (absolute, under Aspire) or is empty (same-origin: production wwwroot, or the Vite proxy
+  during a standalone `npm run dev`).
 
 ## Modules & the API surface
 

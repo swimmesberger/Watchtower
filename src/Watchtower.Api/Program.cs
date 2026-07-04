@@ -48,6 +48,13 @@ builder.Services.ConfigureHttpJsonOptions(o => {
     o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
 
+// CORS for development: when the SPA runs on the Vite dev server (a different origin — e.g. under the
+// Aspire AppHost, which injects the API URL as VITE_API_URL) it calls /rpc, /api/* and the SSE streams
+// cross-origin. In production the SPA is served same-origin from wwwroot, so no CORS is applied.
+const string DevCorsPolicy = "watchtower-dev-frontend";
+builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
+    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+
 // Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
 // git service layer, the deploy engine, and the optional background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
@@ -62,6 +69,10 @@ var app = builder.Build();
 
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
+
+// Allow the cross-origin Vite dev server to call the API (development only).
+if (app.Environment.IsDevelopment())
+    app.UseCors(DevCorsPolicy);
 
 // Serve the built React SPA from wwwroot/ (index.html is the SPA entry point).
 app.UseDefaultFiles();

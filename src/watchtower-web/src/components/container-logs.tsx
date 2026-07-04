@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Loader2, X } from 'lucide-react'
+import { apiBase } from '@/lib/config'
 import { cn } from '@/lib/utils'
 
 interface ContainerLogsProps {
@@ -31,7 +32,7 @@ export function ContainerLogs({ containerId, containerName, tail = 100 }: Contai
     }
 
     const es = new EventSource(
-      `/api/containers/${containerId}/logs?tail=${tail}&follow=true`,
+      `${apiBase}/api/containers/${containerId}/logs?tail=${tail}&follow=true`,
     )
     esRef.current = es
 

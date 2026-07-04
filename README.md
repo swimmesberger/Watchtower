@@ -57,6 +57,7 @@ Watchtower/
 │   │   ├── Services/             #   Docker/compose/git clients, the deploy engine, self/stack update
 │   │   └── Modules/              #   one folder per module: Credentials, Registries, Stacks, …
 │   ├── Watchtower.Api/           # ASP.NET host: Program.cs, coordinator mode, webhook + SSE endpoints
+│   ├── Watchtower.AppHost/       # .NET Aspire orchestration (runs the API + web together in dev)
 │   └── watchtower-web/           # React SPA (generated RPC client in src/generated/)
 ├── deploy/docker/                # Dockerfile + example docker-compose.yml
 ├── rpc-schema.json               # exported JSON-RPC schema (source for the frontend client generator)
@@ -68,14 +69,21 @@ Watchtower/
 Prerequisites: [.NET 10 SDK](https://dotnet.microsoft.com/), [Node.js 22+](https://nodejs.org/), and
 Docker (the daemon must be reachable at `/var/run/docker.sock` for container/deploy features).
 
-```bash
-# 1. Run the API (http://localhost:5080). Creates ./.data/watchtower.db on first run.
-dotnet run --project src/Watchtower.Api
+**Run everything with .NET Aspire (recommended).** The `Watchtower.AppHost` runs the API and the web
+frontend as one unit and opens a dashboard with logs, traces, and endpoints. It injects the API URL into
+the frontend as `VITE_API_URL`, so there's no separate frontend/backend wiring to manage.
 
-# 2. In another terminal, run the SPA dev server (proxies /rpc, /api, /health to the API).
-cd src/watchtower-web
-npm install
-npm run dev            # http://localhost:5173
+```bash
+(cd src/watchtower-web && npm install)   # once
+dotnet run --project src/Watchtower.AppHost
+```
+
+**Or run them separately:**
+
+```bash
+dotnet run --project src/Watchtower.Api                 # API on http://localhost:5080
+# in another terminal — Vite proxies /rpc, /api, /health to the API:
+(cd src/watchtower-web && npm install && npm run dev)   # http://localhost:5173
 ```
 
 The frontend's typed RPC client is generated from `rpc-schema.json` on every build (`prebuild` →

@@ -12,5 +12,12 @@
   <Folder Name="/src/">
     <Project Path="src/Watchtower.Application/Watchtower.Application.csproj" />
     <Project Path="src/Watchtower.Api/Watchtower.Api.csproj" />
+    <Project Path="src/Watchtower.AppHost/Watchtower.AppHost.csproj" />
+  </Folder>
+  <!-- The web frontend is a Vite app orchestrated by the Aspire AppHost (AddViteApp); shown here for IDE access. -->
+  <Folder Name="/web/">
+    <File Path="src/watchtower-web/package.json" />
+    <File Path="src/watchtower-web/vite.config.ts" />
+    <File Path="src/watchtower-web/tsconfig.json" />
   </Folder>
 </Solution>
