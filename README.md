@@ -43,8 +43,9 @@ client generated from the exported schema.
 - **Self-update:** Watchtower can pull its own newer image and spawn a short-lived *coordinator*
   sibling container that runs `docker compose up -d` to recreate it (a container can't restart itself).
 
-See [docs/architecture.md](docs/architecture.md) for the module/handler layout and
-[docs/elarion.md](docs/elarion.md) for how the project consumes the framework.
+See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
+[docs/elarion.md](docs/elarion.md) for how the project consumes the framework, and
+[docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure
 
