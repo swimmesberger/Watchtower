@@ -1,10 +1,9 @@
-import { createContext, useCallback, useContext, useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useParams } from '@tanstack/react-router'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
 import { ChevronRight, Play } from 'lucide-react'
-import type { LooseNavigate } from '@/platform/routing'
-import { stackDetailTabs } from '@/platform/points'
+import { stackDetailTabs, type HistoryRowControls } from '@/platform/points'
 import { api } from '@/lib/api'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -13,27 +12,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/use-toast'
 
 const routeApi = getRouteApi('/stacks/$id')
-
-/** Controls a deploy-history row exposes so the failure hero's "View log" can jump to it. */
-export interface HistoryRowControls {
-  expand: () => void
-  scrollTo: () => void
-}
-
-export type RegisterHistoryRow = (eventId: number, controls: HistoryRowControls) => () => void
-
-/**
- * Bridges the page hero's "View log" to the deploy-history rows that now live inside the
- * Overview tab. The tab component receives only `{ stack }` per the extension-point contract,
- * so the register function is passed via context instead of props. Defaults to a no-op so the
- * Overview tab renders standalone (e.g. in isolation) without the page provider.
- */
-export const HistoryRowRegistryContext = createContext<RegisterHistoryRow>(() => () => {})
-
-/** Consumed by deploy-history rows (in OverviewTab) to register their expand/scroll controls. */
-export function useRegisterHistoryRow(): RegisterHistoryRow {
-  return useContext(HistoryRowRegistryContext)
-}
 
 export function StackDetailPage() {
   const { id } = useParams({ from: '/stacks/$id' })
@@ -45,8 +23,8 @@ export function StackDetailPage() {
 
   // Tab state lives in the URL via ?tab= (F9). Default to the first contributed tab's
   // value ('overview'); navigate replace:true.
-  const { tab } = routeApi.useSearch() as { tab?: string }
-  const navigateTab = routeApi.useNavigate() as unknown as LooseNavigate
+  const { tab } = routeApi.useSearch()
+  const navigateTab = routeApi.useNavigate()
   const defaultTab = tabs[0]?.value ?? 'overview'
   const activeTab = tab ?? defaultTab
   const setTab = useCallback(
@@ -195,25 +173,24 @@ export function StackDetailPage() {
         />
       ) : null}
 
-      {/* Tabs (state in ?tab=, F9) — driven by the stackDetailTabs extension point. The
-          Overview tab's deploy-history rows reach the "View log" hero via this registry. */}
-      <HistoryRowRegistryContext.Provider value={registerHistoryRow}>
-        <Tabs value={activeTab} onValueChange={setTab}>
-          <TabsList>
-            {tabs.map((t) => (
-              <TabsTrigger key={t.id} value={t.value}>
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-
+      {/* Tabs (state in ?tab=, F9) — driven by the stackDetailTabs extension point. Each tab receives
+          the slot context declared by the point: the stack plus registerHistoryRow, which the Overview
+          tab's deploy-history rows use to wire the "View log" hero to the right row. */}
+      <Tabs value={activeTab} onValueChange={setTab}>
+        <TabsList>
           {tabs.map((t) => (
-            <TabsContent key={t.id} value={t.value}>
-              <t.component stack={stack} />
-            </TabsContent>
+            <TabsTrigger key={t.id} value={t.value}>
+              {t.label}
+            </TabsTrigger>
           ))}
-        </Tabs>
-      </HistoryRowRegistryContext.Provider>
+        </TabsList>
+
+        {tabs.map((t) => (
+          <TabsContent key={t.id} value={t.value}>
+            <t.component stack={stack} registerHistoryRow={registerHistoryRow} />
+          </TabsContent>
+        ))}
+      </Tabs>
 
       {/* Mobile Deploy FAB (52px, above the bottom tab bar) */}
       <div className="fixed bottom-bottombar right-4 z-20 mb-3 md:hidden">

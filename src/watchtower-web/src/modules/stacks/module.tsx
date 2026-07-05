@@ -19,7 +19,9 @@ export const stacksManifest = defineModule({
         label: 'Overview',
         value: 'overview',
         order: 10,
-        component: ({ stack }) => <OverviewTab stack={stack} />,
+        component: ({ stack, registerHistoryRow }) => (
+          <OverviewTab stack={stack} registerHistoryRow={registerHistoryRow} />
+        ),
       },
       {
         id: 'settings',
@@ -54,10 +56,10 @@ export const stackNewRoute = createRoute({
   component: lazyRouteComponent(() => import('./StackNewPage'), 'StackNewPage'),
 })
 
-type StackDetailTabValue = 'overview' | 'volumes' | 'networks' | 'settings'
-
 interface StackDetailSearch {
-  tab?: StackDetailTabValue
+  // Tab values are open — any module may contribute a stack-detail tab — so this is `string`, not a
+  // closed union of the tabs this module happens to know about.
+  tab?: string
 }
 
 export const stackDetailRoute = createRoute({
@@ -65,10 +67,6 @@ export const stackDetailRoute = createRoute({
   path: '/stacks/$id',
   beforeLoad: redirectUnless({ module: 'Stacks' }, '/'),
   component: lazyRouteComponent(() => import('./StackDetailPage'), 'StackDetailPage'),
-  validateSearch: (search: Record<string, unknown>): StackDetailSearch => {
-    const tab = search.tab
-    return tab === 'overview' || tab === 'volumes' || tab === 'networks' || tab === 'settings'
-      ? { tab }
-      : {}
-  },
+  validateSearch: (search: Record<string, unknown>): StackDetailSearch =>
+    typeof search.tab === 'string' ? { tab: search.tab } : {},
 })

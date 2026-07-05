@@ -22,14 +22,36 @@ export interface SidebarItem {
 }
 export const sidebarItems = defineExtensionPoint<SidebarItem>('platform.sidebar')
 
-/** A tab on the stack-detail page. The slot supplies the current stack to each tab's component. */
+/** What a deploy-history row exposes so the failure hero's "View log" can jump to it. */
+export interface HistoryRowControls {
+  expand: () => void
+  scrollTo: () => void
+}
+
+/** Registers a history row's controls; returns an unregister cleanup. */
+export type RegisterHistoryRow = (eventId: number, controls: HistoryRowControls) => () => void
+
+/**
+ * The slot context a stack-detail tab receives: the current stack, plus a registry the Overview tab's
+ * deploy-history rows use to wire the page hero's "View log" to the right row. Declaring it here (rather
+ * than smuggling the registry through a separate React context) is what the delivered `TContext` fix
+ * enables — the tab's component signature is type-checked against exactly this (Elarion #71).
+ */
+export interface StackDetailTabContext {
+  readonly stack: Stack
+  readonly registerHistoryRow: RegisterHistoryRow
+}
+
+/** A tab on the stack-detail page. The slot supplies {@link StackDetailTabContext} to each tab's component. */
 export interface StackDetailTab {
   readonly label: string
   /** Stable `?tab=` value; also the active-tab key. */
   readonly value: string
-  readonly component: ComponentType<{ stack: Stack }>
+  readonly component: ComponentType<StackDetailTabContext>
 }
-export const stackDetailTabs = defineExtensionPoint<StackDetailTab, { stack: Stack }>('stacks.detailTabs')
+export const stackDetailTabs = defineExtensionPoint<StackDetailTab, StackDetailTabContext>(
+  'stacks.detailTabs',
+)
 
 /** A section on the dashboard. Sections are self-contained (they fetch their own data). */
 export interface DashboardSection {

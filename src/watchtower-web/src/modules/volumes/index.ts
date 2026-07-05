@@ -1,6 +1,6 @@
 import type { AppModule } from '@/platform/app-module'
 import { volumesManifest } from './module'
 
-const volumesModule: AppModule = { manifest: volumesManifest }
+const volumesModule = { manifest: volumesManifest, routes: [] } satisfies AppModule
 
 export default volumesModule

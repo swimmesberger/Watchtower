@@ -5,9 +5,12 @@ import tsConfigPaths from 'vite-tsconfig-paths'
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), tsConfigPaths()],
-  // The elarion-contributions React adapter creates its own React context; it must share the app's
-  // single React instance (dedupe) and be pre-bundled against it (optimizeDeps) or hooks resolve twice.
-  resolve: { dedupe: ['react', 'react-dom'] },
+  // Hook-using libraries must resolve to this app's single instance. Vite's dep optimizer otherwise
+  // pre-bundles a second React — surfacing as "Invalid hook call" at the first useContributions — and
+  // this hits published installs of @swimmesberger/elarion-contributions too (not just linked ones), so
+  // the dedupe + optimizeDeps below stay required (Elarion #71). @tanstack/react-router is deduped for
+  // the same reason now that the statically-typed router relies on a single router instance.
+  resolve: { dedupe: ['react', 'react-dom', '@tanstack/react-router'] },
   optimizeDeps: {
     include: [
       '@swimmesberger/elarion-contributions',

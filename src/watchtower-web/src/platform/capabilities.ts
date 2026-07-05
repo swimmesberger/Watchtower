@@ -1,25 +1,8 @@
-// The capability snapshot resolution reads. Watchtower ships every module and has no authentication,
-// so every module is enabled and every auth-gated check is satisfied. If a backend capabilities/session
-// endpoint is ever added, replace this with a reader built from it (the interface is what the Elarion
-// client generator's `SessionCapabilities` class structurally satisfies).
-import type { CapabilityReader } from '@swimmesberger/elarion-contributions'
-import type { ModuleName } from './vocabulary'
+// The capability snapshot resolution reads. Watchtower ships every module and has no authentication, so
+// modules/permissions/roles are all enabled (flags default off — there are none). `createStaticCapabilities`
+// is the no-session reader the framework ships for exactly this self-hosted/no-auth case (Elarion #71); if
+// a backend capabilities/session endpoint is ever added, swap in the generated `SessionCapabilities` (same
+// structural interface, nothing else changes).
+import { createStaticCapabilities } from '@swimmesberger/elarion-contributions'
 
-const enabledModules = new Set<ModuleName>([
-  'Credentials',
-  'Registries',
-  'Stacks',
-  'Deployments',
-  'Containers',
-  'System',
-  'Volumes',
-  'Networks',
-  'Metrics',
-])
-
-export const capabilities: CapabilityReader = {
-  isModuleEnabled: (name) => enabledModules.has(name as ModuleName),
-  hasPermission: () => true,
-  hasRole: () => true,
-  isFlagEnabled: () => true,
-}
+export const capabilities = createStaticCapabilities()

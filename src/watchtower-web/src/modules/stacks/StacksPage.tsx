@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
-import type { LooseNavigate } from '@/platform/routing'
 import { Boxes, Play, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Stack } from '@/lib/types'
@@ -38,8 +37,8 @@ const repoLabel = (url: string) => url.replace(/^https:\/\/github\.com\//, '')
 
 export function StacksPage() {
   const qc = useQueryClient()
-  const { status } = stacksApi.useSearch() as { status?: 'ok' | 'failed' }
-  const navigate = stacksApi.useNavigate() as unknown as LooseNavigate
+  const { status } = stacksApi.useSearch()
+  const navigate = stacksApi.useNavigate()
 
   const [pendingDelete, setPendingDelete] = useState<Stack | null>(null)
 
