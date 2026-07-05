@@ -1,8 +1,10 @@
 import { createRoute, lazyRouteComponent } from '@tanstack/react-router'
 import { Boxes } from 'lucide-react'
 import { defineModule, contribute, redirectUnless } from '@/platform/contributions'
-import { sidebarItems } from '@/platform/points'
+import { sidebarItems, stackDetailTabs } from '@/platform/points'
 import { rootRoute } from '@/platform/root-route'
+import { OverviewTab } from './OverviewTab'
+import { SettingsTab } from './SettingsTab'
 
 export const stacksManifest = defineModule({
   name: 'Stacks',
@@ -10,6 +12,22 @@ export const stacksManifest = defineModule({
   contributes: [
     contribute(sidebarItems, [
       { id: 'stacks', label: 'Stacks', icon: Boxes, to: '/stacks', order: 20 },
+    ]),
+    contribute(stackDetailTabs, [
+      {
+        id: 'overview',
+        label: 'Overview',
+        value: 'overview',
+        order: 10,
+        component: ({ stack }) => <OverviewTab stack={stack} />,
+      },
+      {
+        id: 'settings',
+        label: 'Settings',
+        value: 'settings',
+        order: 40,
+        component: ({ stack }) => <SettingsTab stack={stack} />,
+      },
     ]),
   ],
 })
