@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
-import { type RegisterHistoryRow, useRegisterHistoryRow } from './StackDetailPage'
 import {
   Boxes,
   CheckCircle2,
@@ -19,7 +18,7 @@ import { apiBase } from '@/lib/config'
 import type { Container, DeployEvent, Stack } from '@/lib/types'
 import { absoluteTitle, formatDuration, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { containerCardExtras } from '@/platform/points'
+import { containerCardExtras, type RegisterHistoryRow } from '@/platform/points'
 import { ContainerLogs } from '@/components/container-logs'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -47,14 +46,19 @@ function webhookUrl(stackId: number): string {
   return `${base}/api/webhooks/stacks/${stackId}/deploy`
 }
 
-export function OverviewTab({ stack }: { stack: Stack }) {
+export function OverviewTab({
+  stack,
+  registerHistoryRow,
+}: {
+  stack: Stack
+  registerHistoryRow: RegisterHistoryRow
+}) {
   const qc = useQueryClient()
   const stackId = stack.id
 
-  // The page provides this via context so the failure-banner hero's "View log" can expand +
-  // scroll to the latest failed deploy-history row (which now lives in this tab). Defaults to
-  // a no-op when rendered without the page provider.
-  const register = useRegisterHistoryRow()
+  // registerHistoryRow arrives as the stackDetailTabs slot context declared by the point: the
+  // failure-banner hero's "View log" uses it to expand + scroll to the latest failed deploy-history
+  // row, which lives in this tab.
 
   const { data: containers = [] } = useQuery({
     queryKey: ['containers'],
@@ -144,7 +148,7 @@ export function OverviewTab({ stack }: { stack: Stack }) {
         ) : (
           <div className="space-y-2">
             {events.map((event) => (
-              <DeployEventRow key={event.id} event={event} register={register} />
+              <DeployEventRow key={event.id} event={event} register={registerHistoryRow} />
             ))}
           </div>
         )}

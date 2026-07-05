@@ -2,7 +2,9 @@
 // these unions are generated into `session-client.ts` (ModuleName/PermissionName/FlagName/RoleName).
 // Watchtower has no authentication (it runs behind an authenticating reverse proxy — see README) and
 // no session-client generator, so we hand-author the module vocabulary to mirror the backend
-// `[AppModule]` names and leave the auth axes empty.
+// `[AppModule]` names and omit the auth axes entirely. The kit's `Vocabulary` axes are optional, so an
+// omitted axis reduces its `when` type to `never` — a stray `permission`/`flag`/`role` clause is a
+// compile error here, not a silently accepted string (Elarion #71).
 
 /** Mirrors the backend Elarion module names (the `[AppModule("…")]` markers). */
 export type ModuleName =
@@ -18,8 +20,6 @@ export type ModuleName =
 
 export interface AppVocabulary {
   module: ModuleName
-  // Watchtower has no permission/role/flag model; these axes are intentionally empty.
-  permission: never
-  flag: never
-  role: never
+  // permission/flag/role are intentionally omitted — Watchtower has no auth model, and omitting them
+  // makes any use of those axes in a `when` clause a compile error.
 }

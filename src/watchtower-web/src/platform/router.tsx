@@ -1,12 +1,24 @@
-// The composition root. It discovers feature modules by glob — a new module is a new folder under
-// `src/modules/`, with no edit here — builds the contribution registry from their manifests, and
-// assembles the route tree from the routes they own. No central list of modules exists.
-import { createRouter, type AnyRouter } from '@tanstack/react-router'
-import { createContributionRegistry, type ModuleManifest } from '@swimmesberger/elarion-contributions'
+// The composition root. Manifests are DISCOVERED — the import.meta.glob below feeds every module's
+// contributions to the registry, so a new contribution, sidebar item, or UI-only module needs no edit
+// here. Routes are REGISTERED — one typed line per route-owning module in `addChildren`, the same grain
+// as a backend host adding a ProjectReference — because a glob-composed route tree types as `AnyRoute[]`,
+// which silently degrades `Link to`, `useParams`, and `useSearch` to untyped fallbacks app-wide (Elarion
+// #71). UI-only modules (metrics, networks, volumes) own no routes and are discovered by glob only.
+import { createRouter } from '@tanstack/react-router'
+import { createContributionRegistry } from '@swimmesberger/elarion-contributions'
 import { rootRoute } from './root-route'
 import { capabilities } from './capabilities'
 import type { AppModule } from './app-module'
+import credentials from '@/modules/credentials'
+import dashboard from '@/modules/dashboard'
+import infrastructure from '@/modules/infrastructure'
+import registries from '@/modules/registries'
+import settings from '@/modules/settings'
+import stacks from '@/modules/stacks'
 
+// Vite expands the glob at build time into static imports, so manifest discovery stays compile-time,
+// bundled, and deterministic (keys come back sorted). Used only for `.manifest` — routes come from the
+// typed static imports above.
 const discovered = import.meta.glob<AppModule>('../modules/*/index.ts', {
   eager: true,
   import: 'default',
@@ -15,20 +27,22 @@ const appModules = Object.values(discovered)
 
 /** The resolved contribution registry, provided to the tree via `ContributionProvider` in the entry. */
 export const registry = createContributionRegistry(
-  appModules.map((m) => m.manifest as ModuleManifest),
+  appModules.map((m) => m.manifest),
   capabilities,
 )
 
-// Routes are composed dynamically from the discovered modules, so the tree can't be statically typed
-// the way a hand-written tree is — TanStack's precise route-literal inference is traded for the
-// no-central-edits module model. `to`/`params` on <Link> fall back to string typing.
-const moduleRoutes = appModules.flatMap((m) => m.routes ?? [])
-const routeTree = rootRoute.addChildren(moduleRoutes as never[])
+// Each `satisfies AppModule` module keeps its concrete route tuple, so the tree is statically typed and
+// TanStack infers `Link`/`params`/`search` across the app.
+const routeTree = rootRoute.addChildren([
+  ...credentials.routes,
+  ...dashboard.routes,
+  ...infrastructure.routes,
+  ...registries.routes,
+  ...settings.routes,
+  ...stacks.routes,
+])
 
-// Typed as AnyRouter on purpose: with a runtime-composed tree there is no static route-literal union,
-// so `<Link to>` / `useParams({ from })` fall back to string typing rather than erroring against an
-// empty concrete tree. This is the deliberate trade for the no-central-edits module model.
-export const router: AnyRouter = createRouter({
+export const router = createRouter({
   routeTree,
   context: { queryClient: undefined!, caps: capabilities },
 })

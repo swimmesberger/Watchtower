@@ -1,8 +1,9 @@
 import type { AppModule } from '@/platform/app-module'
 import { metricsManifest } from './module'
 
-const metricsModule: AppModule = {
+const metricsModule = {
   manifest: metricsManifest,
-}
+  routes: [],
+} satisfies AppModule
 
 export default metricsModule
