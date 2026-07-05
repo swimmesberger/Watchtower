@@ -1,42 +1,18 @@
+// The app shell renders the navigation from `sidebarItems` contributions — it never imports a feature
+// module. Adding a destination is a contribution in the owning module; the shell doesn't change.
 import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Boxes, Container, Eye, Key, LayoutDashboard, Moon, Network, Settings, Sun } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { Eye, Moon, Sun } from 'lucide-react'
+import { useContributions } from '@swimmesberger/elarion-contributions/react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/theme'
 import { Toaster } from '@/components/ui/toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { sidebarItems, type SidebarItem } from './points'
 
-interface NavItem {
-  to: string
-  label: string
-  icon: LucideIcon
-  exact: boolean
-}
-
-// Desktop sidebar: 6 items — Infrastructure (fleet-wide volumes/networks triage) sits
-// directly under Stacks (spec §1). The mobile bottom bar stays hard-capped at 5 (A1),
-// so Infrastructure is desktop-only and reachable on mobile via a Dashboard link.
-const desktopNavItems: NavItem[] = [
-  { to: '/', label: 'Home', icon: LayoutDashboard, exact: true },
-  { to: '/stacks', label: 'Stacks', icon: Boxes, exact: false },
-  { to: '/infrastructure', label: 'Infrastructure', icon: Network, exact: true },
-  { to: '/registries', label: 'Registries', icon: Container, exact: true },
-  { to: '/credentials', label: 'Credentials', icon: Key, exact: true },
-  { to: '/settings', label: 'Settings', icon: Settings, exact: true },
-]
-
-const mobileNavItems: NavItem[] = [
-  { to: '/', label: 'Home', icon: LayoutDashboard, exact: true },
-  { to: '/stacks', label: 'Stacks', icon: Boxes, exact: false },
-  { to: '/registries', label: 'Registries', icon: Container, exact: true },
-  { to: '/credentials', label: 'Credentials', icon: Key, exact: true },
-  { to: '/settings', label: 'Settings', icon: Settings, exact: true },
-]
-
-function isActive(currentPath: string, item: NavItem): boolean {
-  return item.exact ? currentPath === item.to : currentPath.startsWith(item.to)
+function isActive(currentPath: string, item: SidebarItem): boolean {
+  if (item.exact) return currentPath === item.to
+  if (item.to === '/') return currentPath === '/'
+  return currentPath.startsWith(item.to)
 }
 
 function ThemeToggle({ className }: { className?: string }) {
@@ -68,16 +44,10 @@ function Wordmark() {
   )
 }
 
-export function RootLayout() {
+export function AppShell() {
   const currentPath = useRouterState({ select: (s) => s.location.pathname })
-
-  const { data: selfStatus } = useQuery({
-    queryKey: ['system', 'self'],
-    queryFn: api.system.getSelf,
-    staleTime: 5 * 60_000,
-    retry: false,
-  })
-  const hasUpdate = selfStatus?.isOutdated === true
+  const items = useContributions(sidebarItems)
+  const mobileItems = items.filter((i) => i.mobile !== false)
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -88,13 +58,13 @@ export function RootLayout() {
             <Wordmark />
           </div>
           <nav className="flex flex-1 flex-col gap-0.5 px-3">
-            {desktopNavItems.map((item) => {
+            {items.map((item) => {
               const active = isActive(currentPath, item)
               const Icon = item.icon
-              const showDot = item.to === '/settings' && hasUpdate
+              const Badge = item.badge
               return (
                 <Link
-                  key={item.to}
+                  key={item.id}
                   to={item.to}
                   aria-current={active ? 'page' : undefined}
                   className={cn(
@@ -106,13 +76,7 @@ export function RootLayout() {
                 >
                   <Icon className="size-[18px] shrink-0" />
                   <span className="flex-1">{item.label}</span>
-                  {showDot && (
-                    <span
-                      aria-label="Update available"
-                      role="img"
-                      className="size-1.5 rounded-full bg-warn"
-                    />
-                  )}
+                  {Badge && <Badge placement="sidebar" />}
                 </Link>
               )
             })}
@@ -135,18 +99,18 @@ export function RootLayout() {
           </main>
         </div>
 
-        {/* ── Mobile bottom tab bar (all 5 destinations, no More sheet — A1) ── */}
+        {/* ── Mobile bottom tab bar (items with mobile !== false) ── */}
         <nav
           className="fixed inset-x-0 bottom-0 z-30 flex h-bottombar border-t border-border bg-surface pb-safe shadow-[var(--sh-md)] md:hidden"
           aria-label="Primary"
         >
-          {mobileNavItems.map((item) => {
+          {mobileItems.map((item) => {
             const active = isActive(currentPath, item)
             const Icon = item.icon
-            const showDot = item.to === '/settings' && hasUpdate
+            const Badge = item.badge
             return (
               <Link
-                key={item.to}
+                key={item.id}
                 to={item.to}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
@@ -158,13 +122,7 @@ export function RootLayout() {
               >
                 <span className="relative">
                   <Icon className="size-[22px]" />
-                  {showDot && (
-                    <span
-                      aria-label="Update available"
-                      role="img"
-                      className="absolute -right-1 -top-0.5 size-1.5 rounded-full bg-warn ring-2 ring-surface"
-                    />
-                  )}
+                  {Badge && <Badge placement="tab" />}
                 </span>
                 {item.label}
               </Link>

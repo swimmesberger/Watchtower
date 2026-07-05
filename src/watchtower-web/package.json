@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@swimmesberger/elarion-contributions": "^0.2.3-preview.71.1",
     "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-router": "^1.163.3",
     "class-variance-authority": "^0.7.1",

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useParams } from '@tanstack/react-router'
+import type { LooseNavigate } from '@/platform/routing'
 import {
   Boxes,
   CheckCircle2,
@@ -144,8 +145,8 @@ export function StackDetailPage() {
   const qc = useQueryClient()
 
   // Tab state lives in the URL via ?tab= (F9). Default overview; navigate replace:true.
-  const { tab } = routeApi.useSearch()
-  const navigateTab = routeApi.useNavigate()
+  const { tab } = routeApi.useSearch() as { tab?: StackDetailTab }
+  const navigateTab = routeApi.useNavigate() as unknown as LooseNavigate
   const activeTab: StackDetailTab = tab ?? 'overview'
   const setTab = useCallback(
     (next: string) => {
