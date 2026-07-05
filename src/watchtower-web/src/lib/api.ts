@@ -5,7 +5,9 @@
 import { rpc } from './rpc-client'
 import type {
   ActiveDeployment,
+  AutomationConfig,
   Container,
+  ContainerMetrics,
   CreateCredentialRequest,
   CreateRegistryRequest,
   CreateStackRequest,
@@ -13,15 +15,22 @@ import type {
   DeployAccepted,
   DeployEvent,
   DockerConfigStatus,
+  HostMetrics,
+  NetworkInfo,
+  NetworkPortsResult,
+  PruneOrphansResult,
   Registry,
   SelfUpdateStatus,
   Stack,
   StackEnvVar,
   StackEnvVarInput,
+  StackMetricsResult,
   UpdateCredentialRequest,
   UpdateRegistryRequest,
   UpdateSelfConfigRequest,
   UpdateStackRequest,
+  VolumeInfo,
+  VolumeSize,
 } from './types'
 
 export const api = {
@@ -122,6 +131,31 @@ export const api = {
     active: async () => (await rpc('deployments.active', {})).deployments as ActiveDeployment[],
   },
 
+  volumes: {
+    list: async (project?: string | null) =>
+      (await rpc('volumes.list', { project: project ?? null })).volumes as VolumeInfo[],
+    sizes: async (project?: string | null) =>
+      (await rpc('volumes.sizes', { project: project ?? null })).sizes as VolumeSize[],
+    recreate: async (stackId: number, volumeNames: string[]) =>
+      (await rpc('volumes.recreate', { stackId, volumeNames })).deploy as DeployAccepted,
+    remove: async (name: string) => (await rpc('volumes.remove', { name })).removed,
+    pruneOrphans: async () => (await rpc('volumes.pruneOrphans', {})) as PruneOrphansResult,
+  },
+
+  networks: {
+    list: async (project?: string | null) =>
+      (await rpc('networks.list', { project: project ?? null })).networks as NetworkInfo[],
+    ports: async (project?: string | null) =>
+      (await rpc('networks.ports', { project: project ?? null })) as NetworkPortsResult,
+  },
+
+  metrics: {
+    host: async () => (await rpc('metrics.host', {})).host as HostMetrics,
+    containers: async (project?: string | null) =>
+      (await rpc('metrics.containers', { project: project ?? null })).containers as ContainerMetrics[],
+    stacks: async () => (await rpc('metrics.stacks', {})) as StackMetricsResult,
+  },
+
   system: {
     getSelf: async () => (await rpc('system.getSelf', {})).status as SelfUpdateStatus,
     updateConfig: async (data: UpdateSelfConfigRequest) =>
@@ -136,5 +170,13 @@ export const api = {
       await rpc('system.applyUpdate', {})
     },
     dockerConfig: async () => (await rpc('system.dockerConfig', {})).config as DockerConfigStatus,
+    getAutomation: async () => (await rpc('system.getAutomation', {})) as AutomationConfig,
+    updateAutomation: async (data: AutomationConfig) =>
+      (await rpc('system.updateAutomation', {
+        autoCheckEnabled: data.autoCheckEnabled,
+        autoCheckIntervalMinutes: data.autoCheckIntervalMinutes,
+        stackCheckEnabled: data.stackCheckEnabled,
+        stackCheckIntervalMinutes: data.stackCheckIntervalMinutes,
+      })) as AutomationConfig,
   },
 }

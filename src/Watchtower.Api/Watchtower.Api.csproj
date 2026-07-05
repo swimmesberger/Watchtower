@@ -13,6 +13,7 @@
     <PackageReference Include="Elarion" />
     <PackageReference Include="Elarion.AspNetCore" />
     <PackageReference Include="Elarion.JsonRpc" />
+    <PackageReference Include="Elarion.Settings.Configuration" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,3 +1,5 @@
+using Elarion.Settings;
+using Elarion.Settings.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,7 +37,12 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();
-        services.AddScoped<SettingsStore>();
+
+        // Elarion settings — typed key/value store backed by the EF Setting entity. Replaces the
+        // hand-rolled SettingsStore; used for self-update config/runtime state and the runtime-editable
+        // automation toggles.
+        services.AddElarionSettings();
+        services.AddElarionSettingsEntityFrameworkCore<WatchtowerDbContext>();
 
         // Deploy queue — singleton for enqueuing; hosted for graceful shutdown.
         services.AddSingleton<DeployQueueService>();
@@ -48,11 +55,16 @@ public static class WatchtowerServiceCollectionExtensions {
 
         services.AddSingleton<StackUpdateService>();
 
-        // Background checkers — opt-in so no outbound registry traffic happens unless enabled.
-        if (section.GetValue<bool>("AutoCheckEnabled"))
-            services.AddHostedService<SelfUpdateBackgroundService>();
-        if (section.GetValue<bool>("StackCheckEnabled"))
-            services.AddHostedService<StackUpdateBackgroundService>();
+        // Metrics — a singleton ring-buffer store fed by one background sampler (amendment F5).
+        // The RPC handlers read only the store, so no Docker fan-out happens on the request path.
+        services.AddSingleton<MetricsStore>();
+        services.AddHostedService<MetricsSampler>();
+
+        // Background checkers — always registered. Each loops on a short poll and reads its
+        // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the
+        // settings-configuration provider), so the toggles are runtime-editable without a restart.
+        services.AddHostedService<SelfUpdateBackgroundService>();
+        services.AddHostedService<StackUpdateBackgroundService>();
 
         return services;
     }

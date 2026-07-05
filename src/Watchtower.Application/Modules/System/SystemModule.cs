@@ -21,6 +21,8 @@ public sealed record DockerConfigStatus(bool Exists, string Path, string Source)
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(SelfUpdateStatus))]
+[JsonSerializable(typeof(SelfUpdateConfig))]
+[JsonSerializable(typeof(SelfUpdateRuntime))]
 [JsonSerializable(typeof(DockerConfigStatus))]
 [JsonSerializable(typeof(GetSelf.Query), TypeInfoPropertyName = "GetSelfQuery")]
 [JsonSerializable(typeof(GetSelf.Response), TypeInfoPropertyName = "GetSelfResponse")]
@@ -32,4 +34,8 @@ public sealed record DockerConfigStatus(bool Exists, string Path, string Source)
 [JsonSerializable(typeof(ApplySelfUpdate.Response), TypeInfoPropertyName = "ApplySelfUpdateResponse")]
 [JsonSerializable(typeof(GetDockerConfig.Query), TypeInfoPropertyName = "GetDockerConfigQuery")]
 [JsonSerializable(typeof(GetDockerConfig.Response), TypeInfoPropertyName = "GetDockerConfigResponse")]
+[JsonSerializable(typeof(GetAutomation.Query), TypeInfoPropertyName = "GetAutomationQuery")]
+[JsonSerializable(typeof(GetAutomation.Response), TypeInfoPropertyName = "GetAutomationResponse")]
+[JsonSerializable(typeof(UpdateAutomation.Command), TypeInfoPropertyName = "UpdateAutomationCommand")]
+[JsonSerializable(typeof(UpdateAutomation.Response), TypeInfoPropertyName = "UpdateAutomationResponse")]
 public sealed partial class SystemJsonContext : JsonSerializerContext;

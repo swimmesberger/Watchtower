@@ -21,12 +21,16 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Optional: expose the host's docker credentials for private image pulls.
       # - ${HOME}/.docker/config.json:/home/watchtower/.docker/config.json:ro
+      # Optional: host CPU/RAM/load on the Dashboard (opt-in) — see docs/host-metrics.md.
+      # - /proc:/host/proc:ro
     environment:
       WATCHTOWER__DBPATH: /data/watchtower.db
       WATCHTOWER__DOCKERAPIVERSION: "1.43"
       # Enable the background "update available" checkers (opt-in — generate registry traffic):
       # WATCHTOWER__AUTOCHECKENABLED: "true"
       # WATCHTOWER__STACKCHECKENABLED: "true"
+      # Host metrics (opt-in) — needs the /proc mount above; see docs/host-metrics.md.
+      # WATCHTOWER_HOST_PROC: /host/proc
     # Replace 999 with the host's docker group GID (see the header comment).
     group_add:
       - "999"

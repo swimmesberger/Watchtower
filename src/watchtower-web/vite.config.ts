@@ -5,6 +5,16 @@ import tsConfigPaths from 'vite-tsconfig-paths'
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), tsConfigPaths()],
+  // The elarion-contributions React adapter creates its own React context; it must share the app's
+  // single React instance (dedupe) and be pre-bundled against it (optimizeDeps) or hooks resolve twice.
+  resolve: { dedupe: ['react', 'react-dom'] },
+  optimizeDeps: {
+    include: [
+      '@swimmesberger/elarion-contributions',
+      '@swimmesberger/elarion-contributions/react',
+      '@swimmesberger/elarion-contributions/tanstack-router',
+    ],
+  },
   server: {
     // During development, proxy API calls to the .NET backend (see launchSettings.json).
     proxy: {

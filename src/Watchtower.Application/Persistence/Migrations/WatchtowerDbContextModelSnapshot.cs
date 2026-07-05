@@ -17,21 +17,40 @@ namespace Watchtower.Application.Persistence.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
 
-            modelBuilder.Entity("Watchtower.Application.Entities.AppSetting", b =>
+            modelBuilder.Entity("Elarion.Settings.EntityFrameworkCore.Setting", b =>
                 {
+                    b.Property<string>("Kind")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Owner")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT")
+                        .HasColumnName("owner");
+
                     b.Property<string>("Key")
+                        .HasMaxLength(512)
                         .HasColumnType("TEXT")
                         .HasColumnName("key");
 
+                    b.Property<DateTimeOffset>("UpdatedOnUtc")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("updated_on_utc");
+
                     b.Property<string>("Value")
-                        .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("value");
 
-                    b.HasKey("Key")
-                        .HasName("pk_app_settings");
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("version");
 
-                    b.ToTable("app_settings", (string)null);
+                    b.HasKey("Kind", "Owner", "Key")
+                        .HasName("pk_elarion_settings");
+
+                    b.ToTable("elarion_settings", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Credential", b =>

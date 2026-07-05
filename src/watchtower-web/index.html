@@ -2,8 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0c0d10" media="(prefers-color-scheme: dark)" />
     <title>Watchtower</title>
+    <script>
+      // Pre-paint theme boot — sets .dark on <html> before first paint (no FOUC).
+      // Reads localStorage 'wt-theme' ('light' | 'dark' | 'system' | null => system).
+      (function () {
+        try {
+          var stored = localStorage.getItem('wt-theme')
+          var mode = stored === 'light' || stored === 'dark' ? stored : 'system'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -15,12 +15,12 @@ public sealed class UpdateSelfConfiguration(SelfUpdateService selfUpdate)
     public sealed record Response(SelfUpdateStatus Status);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        selfUpdate.SaveConfig(new UpdateSelfConfig {
+        await selfUpdate.SaveConfigAsync(new UpdateSelfConfig {
             ImageName = command.ImageName,
             CredentialId = command.CredentialId,
             ComposeFilePath = command.ComposeFilePath,
             ComposeProjectName = command.ComposeProjectName,
-        });
+        }, ct);
         return new Response(await selfUpdate.GetStatusAsync(ct));
     }
 }
