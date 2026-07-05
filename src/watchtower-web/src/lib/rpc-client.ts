@@ -1,6 +1,7 @@
 import { rpcResultSchemas } from '@/generated/rpc-schemas'
 import type { RpcMethods } from '@/generated/rpc-types'
 import { apiBase } from './config'
+import { randomUuid } from './utils'
 
 /**
  * A JSON-RPC error returned by the Watchtower API. The numeric codes map to Elarion's
@@ -41,7 +42,7 @@ export async function rpc<M extends keyof RpcMethods>(
   const response = await fetch(`${apiBase}/rpc`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', method, params, id: crypto.randomUUID() }),
+    body: JSON.stringify({ jsonrpc: '2.0', method, params, id: randomUuid() }),
   })
 
   if (!response.ok) {

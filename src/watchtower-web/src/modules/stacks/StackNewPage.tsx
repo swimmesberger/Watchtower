@@ -22,12 +22,13 @@ import {
 } from '@/components/ui/select'
 import { EnvVarEditor } from '@/components/env-var-editor'
 import { toast } from '@/components/ui/use-toast'
+import { randomUuid } from '@/lib/utils'
 
 const NO_CREDENTIAL = 'none'
 
-/** Two crypto UUIDs, hyphens stripped — the same recipe used in stack settings (A12). */
+/** Two random UUIDs, hyphens stripped — the same recipe used in stack settings (A12). */
 function generateWebhookToken() {
-  return (crypto.randomUUID() + crypto.randomUUID()).replaceAll('-', '')
+  return (randomUuid() + randomUuid()).replaceAll('-', '')
 }
 
 export function StackNewPage() {
