@@ -190,23 +190,53 @@ metrics-server; k3s ≥1.32 ships Traefik v3)*. Add **cert-manager** for automat
 This replaces the "authenticating reverse proxy in front of Watchtower" pattern — you now terminate TLS
 and route at the ingress, and put auth (oauth2-proxy/Authelia) there as middleware.
 
-### Storage for stateful apps: **Longhorn**
+### Storage: local disk for Postgres, nothing for the apps
 
-This is where k3s pulls decisively ahead of Swarm. k3s's default **local-path-provisioner** is
-node-local and **not for multi-node production** *(verified)* — a pod rescheduled to another node loses
-its data, the exact Swarm problem.
+The right storage answer depends entirely on where your state lives, so start from the workload. A
+realistic 5-node layout for this app: **1 Postgres primary (writes) + 2 read replicas** (add a third if
+read load demands), and **3–5 stateless HTTP pods.** The apps keep **no state on the filesystem** —
+everything durable is in Postgres, which replicates itself via streaming WAL. That shape decides
+everything below, and it means you do **not** need a distributed/clustered volume system at all.
 
-**[Longhorn](https://longhorn.io/)** *(verified: CNCF Incubating; the k3s-native distributed-storage
-choice from the same lineage)* gives you replicated block storage: each volume is synchronously
-replicated across nodes, so a PVC survives a node failure, plus snapshots and S3/NFS backups. It also
-offers **RWX** volumes via NFS share-manager pods when you need shared filesystems. For 5 nodes with
-databases, Longhorn is the recommended pick. (NFS to an external server is a valid simpler alternative
-if you already run reliable NFS; local-path only for genuinely disposable/cache data.)
+**Stateless apps → no volumes.** They're plain `Deployment`s: scale replicas freely, reschedule them
+anywhere, add an `HorizontalPodAutoscaler` if you like. No PVC, no StorageClass, nothing to persist.
+This is the easy 80% and k3s handles it out of the box.
 
-The **"recreate a database volume" concern maps to PVC lifecycle.** In compose you `docker volume rm`
-and redeploy; in Kubernetes a PersistentVolumeClaim's `reclaimPolicy` and `Retain`/`Delete` semantics
-decide whether deleting the claim destroys the data. It's more ceremony but far safer — you stop
-accidentally nuking a database by re-running a deploy.
+**Postgres → local disk, and let Postgres do the replicating.** The one trap here is putting a
+replicating database on top of replicating storage. Because Postgres already streams WAL to its
+replicas, running it on **Longhorn/Ceph** means the same bytes are replicated **twice** — a 3-instance
+cluster on 3-way Longhorn writes every byte **9×** (3 DB replicas × 3 storage replicas), adds
+synchronous replication latency into Postgres's fsync path, and leaves two systems arguing over
+durability. This is CloudNativePG's own guidance *(verified)*. So use **node-local storage**: k3s's
+built-in **local-path-provisioner** or statically-provisioned **local PersistentVolumes**, one Postgres
+pod pinned per node. Local disk is a shared-nothing design — the highest and most predictable database
+performance, and exactly what heavy/transactional Postgres wants.
+
+**Run it with a Postgres operator — [CloudNativePG](https://cloudnative-pg.io/)** *(verified: CNCF
+Sandbox, accepted Jan 2025)*. It's built for precisely this primary/standby model: native streaming
+replication, automated failover, and pod **anti-affinity** so your 3 instances land on 3 different
+physical nodes (a node dies → a replica is promoted, no data-layer heroics). It exposes two Services —
+**`<cluster>-rw`** (always routes to the current primary) and **`<cluster>-ro`** (round-robins the
+replicas) — which map one-to-one onto your "1 write node / 2 read nodes" split: the app points writes at
+`-rw` and reads at `-ro`. Alternatives exist (Zalando's postgres-operator, Crunchy PGO); CNPG is the
+modern default and the one that most explicitly recommends local storage.
+
+**Backups are a separate concern from replication.** WAL streaming to replicas gives you HA and
+read-scaling, but it is **not a backup** — a bad migration or a `DROP TABLE` replicates to every replica
+instantly. Add **continuous WAL archiving + base backups to object storage** (MinIO on the cluster, or
+external S3); CNPG does this natively and gives you **point-in-time recovery**. That archive, not the
+replicas, is what saves you from human error.
+
+**The "recreate a database volume" concern maps to cluster re-bootstrap, not `volume rm`.** In
+single-node Watchtower you wipe a database by deleting its volume and redeploying. Under CNPG you either
+re-create the `Cluster` with a fresh `initdb` bootstrap (clean slate) or restore from a backup to a
+known point-in-time — both explicit, auditable operations, with no way to nuke the database by
+accidentally re-running a deploy.
+
+**Clustered/RWX volumes — skip them unless a specific app needs a shared POSIX filesystem** (e.g. one
+service writing user uploads that several replicas must read). With all state in Postgres you don't, so
+there's no reason to run Longhorn or NFS as a platform default. If that need ever appears for a single
+workload, reach for **NFS** or **Longhorn RWX** *for that one app*, not for the whole cluster.
 
 ### Secrets: **Sealed Secrets** (or SOPS)
 
@@ -230,11 +260,12 @@ portability. Pick Sealed Secrets to start; reach for SOPS if those needs appear.
 
 k3s is real Kubernetes with the training wheels of a small distro, but it is **not** Watchtower-simple.
 You take on: YAML manifests instead of one compose file; cluster networking (CNI, ingress, DNS) as
-concepts you must understand; PVC/StorageClass lifecycle; etcd backups and control-plane upgrades;
-certificate rotation; and more moving parts (Argo CD, a UI, cert-manager, Longhorn, maybe Prometheus)
-that each need care. Watchtower is one container and a SQLite file; this is a *platform*. The payoff —
-HA, rolling deploys, real distributed storage, drift-correcting GitOps, and a converging ecosystem — is
-worth it **when you genuinely need those things**, and pure overhead when you don't.
+concepts you must understand; a Postgres operator and local-PV/StorageClass lifecycle; etcd backups and
+control-plane upgrades; certificate rotation; and more moving parts (Argo CD, a UI, cert-manager,
+CloudNativePG, maybe Prometheus) that each need care. Watchtower is one container and a SQLite file;
+this is a *platform*. The payoff — HA, rolling deploys, operator-managed Postgres with automated
+failover, drift-correcting GitOps, and a converging ecosystem — is worth it **when you genuinely need
+those things**, and pure overhead when you don't.
 
 ## 4. Others, briefly
 
@@ -257,7 +288,7 @@ worth it **when you genuinely need those things**, and pure overhead when you do
 | **CD** | Built-in: webhook + UI `compose up`; image checks | Webhook → `docker stack deploy`; Shepherd for image updates | Argo CD (GitOps, drift-correcting) + Image Updater |
 | **Management UI** | Watchtower itself | Portainer (Swarmpit dead) | Rancher / Headlamp (k9s for triage) |
 | **Monitoring** | Container list + live logs | Roll your own (Prometheus/Grafana stack) | metrics-server → kube-prometheus-stack; Rancher-integrated |
-| **Storage** | Host volumes (trivial) | No multi-node volumes; NFS/Gluster DIY | Longhorn (replicated) / NFS; local-path for scratch |
+| **Storage** | Host volumes (trivial) | No multi-node volumes; NFS/Gluster DIY | Stateless apps: none. Postgres: local disk + CNPG operator (let the DB replicate); RWX only if truly needed |
 | **HA** | None (single host) | Yes, if you solve storage | Yes: 3 embedded-etcd servers + agents |
 | **Rolling deploys** | No (in-place recreate) | Yes (`deploy.update_config`) | Yes (native, health-gated) |
 | **Ops burden** | Lowest — one container + SQLite | Low-moderate; upgrade choreography (v29 pain) | Highest — a platform to run |
@@ -269,9 +300,9 @@ worth it **when you genuinely need those things**, and pure overhead when you do
 **For a new 5-node, self-hosted, small-app deployment that needs HA + continuous deployment: choose
 k3s.** Swarm saves you learning cost this quarter and repays it as friction later — its vendor roadmap,
 best UI, and every serious tool around it point at Kubernetes, and its storage/HA story you have to
-assemble yourself. k3s gives you an HA control plane, real distributed storage (Longhorn), rolling
-deploys, and drift-correcting GitOps (Argo CD) with a friendly web UI (Rancher/Headlamp) — the honest
-successor to what Watchtower does, at cluster scale.
+assemble yourself. k3s gives you an HA control plane, operator-managed Postgres with automated failover
+on plain local disk (CloudNativePG), rolling deploys, and drift-correcting GitOps (Argo CD) with a
+friendly web UI (Rancher/Headlamp) — the honest successor to what Watchtower does, at cluster scale.
 
 **But first, re-read §1.** If you don't have a hard HA requirement or a real horizontal-scale need, the
 correct answer is still **a bigger box running Watchtower.** Don't pay the k3s tax for deploy
@@ -282,12 +313,18 @@ aesthetics or "someday."
 1. **Stand up the cluster.** 3 servers (embedded etcd) + 2 agents. Confirm HA by killing a server.
 2. **Ingress + TLS.** Keep k3s's Traefik; add cert-manager; move auth to the ingress
    (oauth2-proxy/Authelia) — the reverse-proxy role Watchtower relied on.
-3. **Storage.** Install Longhorn; validate a snapshot + restore before trusting it with a database.
-4. **GitOps.** Install Argo CD; put one *stateless* app's manifests in git and let Argo CD own it.
-5. **A management UI + metrics.** Add Rancher or Headlamp; start with metrics-server, add
+3. **GitOps + a stateless app first.** Install Argo CD; put one *stateless* HTTP app's manifests in git
+   (Deployment + Service + Ingress, no PVC) and let Argo CD own it. Prove the whole loop with the easy
+   case before any database is involved.
+4. **A management UI + metrics.** Add Rancher or Headlamp; start with metrics-server, add
    kube-prometheus-stack when you want alerts.
-6. **Migrate stateful apps last**, one at a time (kompose → Helm/Kustomize, wire PVCs to Longhorn),
-   running Watchtower for the remainder in parallel until the last stack is cut over.
+5. **Postgres via CloudNativePG on local disk.** Install the CNPG operator; define a `Cluster` (1
+   primary + 2 replicas) on a local-path/local-PV StorageClass with pod anti-affinity; wire apps to the
+   `-rw`/`-ro` Services. Configure WAL archiving to object storage and **test a point-in-time restore**
+   before you trust it.
+6. **Migrate the remaining apps**, one at a time, running Watchtower for the not-yet-moved stacks in
+   parallel until the last one is cut over. (Most are stateless — the hard part is just the database in
+   step 5.)
 7. **Secrets + image automation.** Add Sealed Secrets and Argo CD Image Updater to close the loop back
    to Watchtower's `checkUpdates` ergonomics.
 
@@ -307,7 +344,9 @@ Checked mid-2026; these facts drift — re-verify before acting.
 - Argo CD vs Flux (UI recommendation): northflank.com/blog/flux-vs-argo-cd
 - k3s packaged components (Traefik/ServiceLB/local-path/metrics-server; Traefik v3 on ≥1.32): docs.k3s.io/networking/networking-services, docs.k3s.io/installation/packaged-components
 - k3s HA embedded etcd (odd servers, quorum): docs.k3s.io/datastore/ha-embedded
-- Longhorn (CNCF Incubating; replicated, RWX via NFS): longhorn.io; docs.k3s.io/storage
+- CloudNativePG (CNCF Sandbox, accepted Jan 2025; primary/standby, streaming replication, `-rw`/`-ro` Services, WAL archiving/PITR): cloudnative-pg.io; cncf.io/projects/cloudnativepg
+- CNPG storage guidance — prefer local storage; block-level replication under a replicating DB causes write amplification (single block replica + pod anti-affinity): cloudnative-pg.io/documentation/current/storage
+- Longhorn (CNCF Incubating; replicated block + RWX via NFS) — only if a workload genuinely needs shared/replicated volumes: longhorn.io; docs.k3s.io/storage
 - Headlamp (CNCF Sandbox, SIG-UI recommended): headlamp.dev
 - Rancher active (SUSE, Vai engine v2.12): rancher.com; documentation.suse.com
 - Sealed Secrets vs SOPS for small clusters: stackharbor.com/en/knowledge-base/gitops-secrets-sealed-sops-external
