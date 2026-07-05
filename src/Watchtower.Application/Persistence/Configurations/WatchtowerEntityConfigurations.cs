@@ -110,12 +110,3 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
-
-[EntityConfiguration]
-public sealed class AppSettingConfiguration : IEntityTypeConfiguration<AppSetting> {
-    public void Configure(EntityTypeBuilder<AppSetting> b) {
-        b.ToTable("app_settings");
-        b.HasKey(x => x.Key);
-        b.Property(x => x.Value).IsRequired();
-    }
-}

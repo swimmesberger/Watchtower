@@ -13,6 +13,9 @@
     <PackageVersion Include="Elarion.JsonRpc" Version="$(ElarionVersion)" />
     <PackageVersion Include="Elarion.AspNetCore.Mcp" Version="$(ElarionVersion)" />
     <PackageVersion Include="Elarion.EntityFrameworkCore" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.Settings" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.Settings.EntityFrameworkCore" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.Settings.Configuration" Version="$(ElarionVersion)" />
   </ItemGroup>
 
   <ItemGroup>

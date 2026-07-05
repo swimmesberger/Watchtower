@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Elarion.AspNetCore;
 using Elarion.JsonRpc;
+using Elarion.Settings.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
 using Watchtower.Api.Endpoints;
@@ -56,8 +57,13 @@ builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
     p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 // Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
-// git service layer, the deploy engine, and the optional background update checkers.
+// git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
+
+// Layer the Elarion settings store into IConfiguration ABOVE env/appsettings (added last → wins).
+// Global-scope settings under "Watchtower:*" (e.g. the automation toggles) live-reload here, so
+// IOptionsMonitor<WatchtowerOptions> re-binds when they change — no restart required.
+builder.AddElarionSettingsConfiguration();
 
 // Elarion framework composition:
 //   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.

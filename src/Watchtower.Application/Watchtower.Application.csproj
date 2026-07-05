@@ -9,6 +9,8 @@
          Elarion.EntityFrameworkCore bundles the DbContext/[EntityConfiguration] generator. -->
     <PackageReference Include="Elarion" />
     <PackageReference Include="Elarion.EntityFrameworkCore" />
+    <PackageReference Include="Elarion.Settings" />
+    <PackageReference Include="Elarion.Settings.EntityFrameworkCore" />
   </ItemGroup>
 
   <ItemGroup>

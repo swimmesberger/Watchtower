@@ -10,7 +10,7 @@ import {
   Timer,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { SelfUpdateStatus, UpdateSelfConfigRequest } from '@/lib/types'
+import type { AutomationConfig, SelfUpdateStatus, UpdateSelfConfigRequest } from '@/lib/types'
 import { absoluteTitle, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 
 const NO_CREDENTIAL = 'none' // Radix Select has no empty-string value.
@@ -109,6 +110,148 @@ export function SettingsPage() {
           saving={saveConfig.isPending}
           checkError={checkUpdate.error instanceof Error ? checkUpdate.error.message : null}
         />
+      )}
+
+      <AutomationCard />
+    </div>
+  )
+}
+
+// ── Automation card (runtime-editable background checks) ────────────────────────
+
+function AutomationCard() {
+  const qc = useQueryClient()
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['system', 'automation'],
+    queryFn: api.system.getAutomation,
+    staleTime: 60_000,
+  })
+
+  const [draft, setDraft] = useState<AutomationConfig | null>(null)
+  // Seed the local form once the query resolves.
+  const form = draft ?? data ?? null
+  const dirty = draft != null && data != null && JSON.stringify(draft) !== JSON.stringify(data)
+
+  const save = useMutation({
+    mutationFn: (next: AutomationConfig) => api.system.updateAutomation(next),
+    onSuccess: next => {
+      qc.setQueryData(['system', 'automation'], next)
+      setDraft(null)
+      toast.success('Automation settings saved.')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Failed to save.'),
+  })
+
+  function set<K extends keyof AutomationConfig>(key: K, value: AutomationConfig[K]) {
+    if (!form) return
+    setDraft({ ...form, [key]: value })
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-text">Automation</h2>
+        <p className="mt-0.5 text-[13px] text-text-2">
+          Periodic background checks. Changes apply immediately — no restart needed.
+        </p>
+      </div>
+
+      {isLoading || !form ? (
+        <Card>
+          <CardContent className="flex flex-col gap-4 p-5">
+            <Skeleton variant="line" className="w-2/3" />
+            <Skeleton variant="line" className="w-1/2" />
+          </CardContent>
+        </Card>
+      ) : isError ? (
+        <Banner
+          tone="danger"
+          title="Couldn't load automation settings"
+          action={
+            <Button size="sm" variant="secondary" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          The background-check configuration is unavailable.
+        </Banner>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col gap-5 p-5">
+            <ToggleRow
+              label="Check for Watchtower updates"
+              hint="Periodically compares the running image with its registry so the update badge stays fresh."
+              enabled={form.autoCheckEnabled}
+              minutes={form.autoCheckIntervalMinutes}
+              onToggle={v => set('autoCheckEnabled', v)}
+              onMinutes={v => set('autoCheckIntervalMinutes', v)}
+            />
+            <div className="h-px bg-border" />
+            <ToggleRow
+              label="Check stacks for image updates"
+              hint="Periodically checks each stack's images for newer versions in their registries."
+              enabled={form.stackCheckEnabled}
+              minutes={form.stackCheckIntervalMinutes}
+              onToggle={v => set('stackCheckEnabled', v)}
+              onMinutes={v => set('stackCheckIntervalMinutes', v)}
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!dirty || save.isPending}
+                loading={save.isPending}
+                onClick={() => draft && save.mutate(draft)}
+              >
+                Save automation
+              </Button>
+              {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  )
+}
+
+function ToggleRow({
+  label,
+  hint,
+  enabled,
+  minutes,
+  onToggle,
+  onMinutes,
+}: {
+  label: string
+  hint: string
+  enabled: boolean
+  minutes: number
+  onToggle: (v: boolean) => void
+  onMinutes: (v: number) => void
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-[13px] font-medium text-text">{label}</span>
+          <span className="mt-0.5 block text-[13px] text-text-2">{hint}</span>
+        </span>
+        <Switch checked={enabled} onCheckedChange={onToggle} aria-label={label} />
+      </label>
+      {enabled && (
+        <div className="flex items-center gap-2 pl-0.5">
+          <span className="text-[13px] text-text-2">Every</span>
+          <Input
+            type="number"
+            min={1}
+            max={1440}
+            value={minutes}
+            onChange={e => onMinutes(Math.max(1, Math.min(1440, Number(e.target.value) || 1)))}
+            className="w-20 tnum"
+            aria-label={`${label} interval in minutes`}
+          />
+          <span className="text-[13px] text-text-2">minutes</span>
+        </div>
       )}
     </div>
   )

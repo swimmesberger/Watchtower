@@ -350,3 +350,11 @@ export interface RecreateVolumesRequest {
   stackId: number
   volumeNames: string[]
 }
+
+/** Runtime-editable background-check toggles (Elarion settings-backed, live via IOptionsMonitor). */
+export interface AutomationConfig {
+  autoCheckEnabled: boolean
+  autoCheckIntervalMinutes: number
+  stackCheckEnabled: boolean
+  stackCheckIntervalMinutes: number
+}

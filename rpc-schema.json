@@ -2248,6 +2248,34 @@
         ]
       }
     },
+    "system.getAutomation": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "autoCheckEnabled": {
+            "type": "boolean"
+          },
+          "autoCheckIntervalMinutes": {
+            "type": "integer"
+          },
+          "stackCheckEnabled": {
+            "type": "boolean"
+          },
+          "stackCheckIntervalMinutes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "autoCheckEnabled",
+          "autoCheckIntervalMinutes",
+          "stackCheckEnabled",
+          "stackCheckIntervalMinutes"
+        ]
+      }
+    },
     "system.getSelf": {
       "params": {
         "type": "object"
@@ -2353,6 +2381,54 @@
         },
         "required": [
           "status"
+        ]
+      }
+    },
+    "system.updateAutomation": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "autoCheckEnabled": {
+            "type": "boolean"
+          },
+          "autoCheckIntervalMinutes": {
+            "type": "integer"
+          },
+          "stackCheckEnabled": {
+            "type": "boolean"
+          },
+          "stackCheckIntervalMinutes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "autoCheckEnabled",
+          "autoCheckIntervalMinutes",
+          "stackCheckEnabled",
+          "stackCheckIntervalMinutes"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "autoCheckEnabled": {
+            "type": "boolean"
+          },
+          "autoCheckIntervalMinutes": {
+            "type": "integer"
+          },
+          "stackCheckEnabled": {
+            "type": "boolean"
+          },
+          "stackCheckIntervalMinutes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "autoCheckEnabled",
+          "autoCheckIntervalMinutes",
+          "stackCheckEnabled",
+          "stackCheckIntervalMinutes"
         ]
       }
     },

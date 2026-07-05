@@ -5,6 +5,7 @@
 import { rpc } from './rpc-client'
 import type {
   ActiveDeployment,
+  AutomationConfig,
   Container,
   ContainerMetrics,
   CreateCredentialRequest,
@@ -169,5 +170,13 @@ export const api = {
       await rpc('system.applyUpdate', {})
     },
     dockerConfig: async () => (await rpc('system.dockerConfig', {})).config as DockerConfigStatus,
+    getAutomation: async () => (await rpc('system.getAutomation', {})) as AutomationConfig,
+    updateAutomation: async (data: AutomationConfig) =>
+      (await rpc('system.updateAutomation', {
+        autoCheckEnabled: data.autoCheckEnabled,
+        autoCheckIntervalMinutes: data.autoCheckIntervalMinutes,
+        stackCheckEnabled: data.stackCheckEnabled,
+        stackCheckIntervalMinutes: data.stackCheckIntervalMinutes,
+      })) as AutomationConfig,
   },
 }
