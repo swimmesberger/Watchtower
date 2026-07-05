@@ -190,6 +190,44 @@ metrics-server; k3s ≥1.32 ships Traefik v3)*. Add **cert-manager** for automat
 This replaces the "authenticating reverse proxy in front of Watchtower" pattern — you now terminate TLS
 and route at the ingress, and put auth (oauth2-proxy/Authelia) there as middleware.
 
+### Load balancing: the HA entry point (Strato and friends)
+
+An HA control plane is only half of HA. If clients reach the cluster through a **single node's IP**, that
+node is still a single point of failure — kill it and the site is down no matter how many replicas are
+running. You need a **load balancer in front of the nodes** that health-checks them and stops routing to
+a dead one. On rented vservers, a **provider load balancer** is the clean way to get it.
+
+**Why not the in-cluster options here.** k3s's bundled **ServiceLB (Klipper)** doesn't give you a real
+floating VIP — it just binds the LoadBalancer service's ports (Traefik's 80/443) on *every* node and
+reports the node IPs *(verified)*. **MetalLB** and **kube-vip** *can* hand out a true VIP, but they need
+**Layer-2 ARP or BGP** on the network — which you usually don't control on rented vservers (the provider
+won't let a VM claim an arbitrary floating IP by ARP, and BGP is rarely offered). Rolling your own
+nginx/HAProxy on one box just moves the SPoF onto *that* box (you'd then need keepalived/VRRP + a
+failover IP to make it HA). So the tidy answer on Strato-style hosting is the provider's **managed load
+balancer**, which lives *outside* the cluster and the provider keeps redundant.
+
+**The pattern with Strato's Load Balancer** *(verified against Strato's docs)*. It balances TCP/HTTP/
+HTTPS with health checks, gives you a **public IP you point DNS at**, and — conveniently — **does not
+terminate TLS** (SSL passthrough only). That keeps the cert-manager story from the previous section
+intact: TLS stays in the cluster.
+
+1. Create the LB (Cloud Panel → *Network → Load Balancer*) and **assign all k3s nodes** as targets.
+2. **Data plane:** listeners on **:80 (HTTP)** and **:443 (TCP / SSL passthrough)** → the nodes' 80/443,
+   where k3s's ServiceLB has Traefik listening; health-check those ports so a dead node is dropped. Point
+   your domain's DNS at the LB's public IP. cert-manager/Traefik keep terminating TLS *inside* the
+   cluster (ACME HTTP-01 challenges work because :80 is forwarded).
+3. **Control plane (recommended):** a listener on **:6443 (TCP)** → the *server* nodes, so `kubectl` and
+   node joins survive a server failure. Add the LB's address to every server's **`--tls-san`** so the API
+   certificate is valid for it, and use it as the k3s **fixed registration address** *(verified pattern)*.
+
+For your concrete **3-Strato-vserver** case: run all three as k3s servers (embedded etcd, quorum = 2, so
+it survives one failure), put the Strato LB in front on 80/443 (and 6443), DNS → LB. Any single node can
+die and both the API and your apps stay reachable.
+
+**Caveat — client IPs.** With TCP/SSL passthrough on :443 the app sees the *LB's* address as the source,
+not the client's. If you need real client IPs (rate-limiting, geo, audit logs), enable **PROXY protocol**
+if the LB supports it, or rely on **X-Forwarded-For** on the HTTP (:80) listener; otherwise it's moot.
+
 ### Storage: local disk for Postgres, nothing for the apps
 
 The right storage answer depends entirely on where your state lives, so start from the workload. A
@@ -289,7 +327,7 @@ those things**, and pure overhead when you don't.
 | **Management UI** | Watchtower itself | Portainer (Swarmpit dead) | Rancher / Headlamp (k9s for triage) |
 | **Monitoring** | Container list + live logs | Roll your own (Prometheus/Grafana stack) | metrics-server → kube-prometheus-stack; Rancher-integrated |
 | **Storage** | Host volumes (trivial) | No multi-node volumes; NFS/Gluster DIY | Stateless apps: none. Postgres: local disk + CNPG operator (let the DB replicate); RWX only if truly needed |
-| **HA** | None (single host) | Yes, if you solve storage | Yes: 3 embedded-etcd servers + agents |
+| **HA** | None (single host) | Yes, if you solve storage | Yes: 3 embedded-etcd servers + agents, fronted by an external/provider LB so the entry point isn't a SPoF |
 | **Rolling deploys** | No (in-place recreate) | Yes (`deploy.update_config`) | Yes (native, health-gated) |
 | **Ops burden** | Lowest — one container + SQLite | Low-moderate; upgrade choreography (v29 pain) | Highest — a platform to run |
 | **Migration from compose** | — (native) | Very low (stack ≈ compose) | Moderate (kompose→Helm/Kustomize, rework storage) |
@@ -311,8 +349,11 @@ aesthetics or "someday."
 **Suggested incremental migration order (once you've decided on k3s):**
 
 1. **Stand up the cluster.** 3 servers (embedded etcd) + 2 agents. Confirm HA by killing a server.
-2. **Ingress + TLS.** Keep k3s's Traefik; add cert-manager; move auth to the ingress
-   (oauth2-proxy/Authelia) — the reverse-proxy role Watchtower relied on.
+2. **Ingress + TLS + the load balancer.** Keep k3s's Traefik; add cert-manager; move auth to the ingress
+   (oauth2-proxy/Authelia) — the reverse-proxy role Watchtower relied on. Provision an external/provider
+   load balancer (e.g. Strato's) in front of all nodes on 80/443 (and 6443 for the API), health-checked,
+   with DNS pointed at it — so a dead node never blackholes traffic. Confirm HA again by killing a node
+   while curling the site.
 3. **GitOps + a stateless app first.** Install Argo CD; put one *stateless* HTTP app's manifests in git
    (Deployment + Service + Ingress, no PVC) and let Argo CD own it. Prove the whole loop with the easy
    case before any database is involved.
@@ -344,6 +385,9 @@ Checked mid-2026; these facts drift — re-verify before acting.
 - Argo CD vs Flux (UI recommendation): northflank.com/blog/flux-vs-argo-cd
 - k3s packaged components (Traefik/ServiceLB/local-path/metrics-server; Traefik v3 on ≥1.32): docs.k3s.io/networking/networking-services, docs.k3s.io/installation/packaged-components
 - k3s HA embedded etcd (odd servers, quorum): docs.k3s.io/datastore/ha-embedded
+- k3s external load balancer for the API (L4 → :6443, `--tls-san`, fixed registration address): docs.k3s.io/datastore/cluster-loadbalancer; docs.k3s.io/datastore/ha
+- ServiceLB (Klipper) exposes on node IPs, not a real VIP; MetalLB/kube-vip need L2 ARP or BGP: docs.k3s.io/networking/networking-services; github.com/k3s-io/k3s/discussions/9255
+- Strato Load Balancer (TCP/HTTP/HTTPS, health checks, SSL passthrough — no TLS termination, public IP for DNS): strato.de/faq/server/wie-nutze-ich-den-load-balancer
 - CloudNativePG (CNCF Sandbox, accepted Jan 2025; primary/standby, streaming replication, `-rw`/`-ro` Services, WAL archiving/PITR): cloudnative-pg.io; cncf.io/projects/cloudnativepg
 - CNPG storage guidance — prefer local storage; block-level replication under a replicating DB causes write amplification (single block replica + pod anti-affinity): cloudnative-pg.io/documentation/current/storage
 - Longhorn (CNCF Incubating; replicated block + RWX via NFS) — only if a workload genuinely needs shared/replicated volumes: longhorn.io; docs.k3s.io/storage
