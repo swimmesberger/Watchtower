@@ -11,7 +11,7 @@
 # (e.g. Cloudflare Access, Authelia) — Watchtower itself has no built-in authentication.
 services:
   watchtower:
-    image: ghcr.io/swimmesberger/watchtower:latest
+    image: swimmes/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     ports:

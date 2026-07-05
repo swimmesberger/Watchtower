@@ -101,7 +101,7 @@ dotnet run --project src/Watchtower.Api -- --export-schema rpc-schema.json
 
 Build/pull the image and run it with the Docker socket mounted — see
 [`deploy/docker/docker-compose.yml`](deploy/docker/docker-compose.yml). CI publishes
-`ghcr.io/swimmesberger/watchtower:latest` on every push to `main`.
+[`swimmes/watchtower:latest`](https://hub.docker.com/r/swimmes/watchtower) on every push to `main`.
 
 ### Configuration
 

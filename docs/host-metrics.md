@@ -43,7 +43,7 @@ Add the `/proc` mount and `WATCHTOWER_HOST_PROC` to the Watchtower service. The 
 ```yaml
 services:
   watchtower:
-    image: ghcr.io/swimmesberger/watchtower:latest
+    image: swimmes/watchtower:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
