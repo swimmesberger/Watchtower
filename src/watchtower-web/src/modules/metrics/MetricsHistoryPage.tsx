@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRight, Info } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { MetricsRange } from '@/lib/types'
+import type { MetricsRange, StackMetrics } from '@/lib/types'
 import { formatBytes } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Banner } from '@/components/ui/banner'
@@ -142,6 +142,8 @@ export function MetricsHistoryPage() {
             <TimeSeriesChart series={stackSeries} format={pct} aria-label="Per-stack CPU history" />
           </ChartCard>
 
+          <StackBreakdown rangeId={rangeId} seconds={seconds} stacks={stacks.data?.stacks ?? []} />
+
           <p className="text-xs text-text-3">
             Memory shown as {formatBytes(host.data?.memUsedBytes ?? 0)} of {formatBytes(host.data?.memTotalBytes ?? 0)} at
             the latest sample. Disk and per-container history are on the Dashboard.
@@ -155,19 +157,21 @@ export function MetricsHistoryPage() {
 function ChartCard({
   title,
   subtitle,
+  action,
   query,
   empty,
   children,
 }: {
   title: string
   subtitle: string
+  action?: ReactNode
   query: { isError: boolean; isLoading: boolean; isFetching: boolean; refetch: () => void }
   empty: boolean
   children: ReactNode
 }) {
   return (
     <section>
-      <SectionHeader title={title} />
+      <SectionHeader title={title} action={action} />
       <p className="-mt-1 mb-2 text-xs text-text-3">{subtitle}</p>
       <Card className="p-4 md:p-5">
         {query.isError ? (
@@ -191,6 +195,97 @@ function ChartCard({
         )}
       </Card>
     </section>
+  )
+}
+
+/** Per-stack drill-down: pick a stack, chart each of its containers' CPU or RAM over the range. */
+function StackBreakdown({
+  rangeId,
+  seconds,
+  stacks,
+}: {
+  rangeId: RangeId
+  seconds: number
+  stacks: StackMetrics[]
+}) {
+  const [pick, setPick] = useState<string | null>(null)
+  const [dim, setDim] = useState<'cpu' | 'ram'>('cpu')
+  const selected = pick ?? stacks[0]?.stackName ?? null
+
+  const q = useQuery({
+    queryKey: ['metrics', 'containers', 'history', rangeId, selected],
+    queryFn: () => api.metrics.containers(selected, buildRange(seconds)),
+    enabled: !!selected,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+  })
+
+  if (stacks.length === 0) return null
+
+  const containers = q.data ?? []
+  const series: ChartSeries[] = containers.map((c, i) => ({
+    label: c.containerName,
+    color: STACK_COLORS[i % STACK_COLORS.length] ?? 'var(--brand)',
+    points: c.history.map((h) => ({ t: Date.parse(h.t), v: dim === 'cpu' ? h.cpuPercent : h.memUsedBytes })),
+  }))
+
+  return (
+    <ChartCard
+      title="Stack breakdown"
+      subtitle={`Which container in ${selected ?? 'the stack'} is using the most ${dim === 'cpu' ? 'CPU' : 'memory'}.`}
+      action={
+        <div className="flex items-center gap-2">
+          <select
+            aria-label="Stack"
+            value={selected ?? ''}
+            onChange={(e) => setPick(e.target.value)}
+            className="rounded-md border border-border bg-surface-2 px-2 py-1 text-xs text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-ring)]"
+          >
+            {stacks.map((s) => (
+              <option key={s.stackName} value={s.stackName}>
+                {s.stackName}
+              </option>
+            ))}
+          </select>
+          <DimensionToggle value={dim} onChange={setDim} />
+        </div>
+      }
+      query={q}
+      empty={containers.length === 0}
+    >
+      <TimeSeriesChart
+        series={series}
+        format={dim === 'cpu' ? pct : formatBytes}
+        aria-label={`Per-container ${dim === 'cpu' ? 'CPU' : 'memory'} in ${selected ?? 'stack'}`}
+      />
+    </ChartCard>
+  )
+}
+
+/** CPU | RAM segmented toggle for the stack breakdown. */
+function DimensionToggle({ value, onChange }: { value: 'cpu' | 'ram'; onChange: (d: 'cpu' | 'ram') => void }) {
+  return (
+    <div
+      role="group"
+      aria-label="Dimension"
+      className="inline-flex items-center gap-0.5 rounded-md border border-border bg-surface-2 p-0.5"
+    >
+      {(['cpu', 'ram'] as const).map((d) => (
+        <button
+          key={d}
+          type="button"
+          aria-pressed={value === d}
+          onClick={() => onChange(d)}
+          className={cn(
+            'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-ring)]',
+            value === d ? 'bg-surface text-text shadow-[var(--sh-sm)]' : 'text-text-3 hover:text-text-2',
+          )}
+        >
+          {d === 'cpu' ? 'CPU' : 'RAM'}
+        </button>
+      ))}
+    </div>
   )
 }
 
