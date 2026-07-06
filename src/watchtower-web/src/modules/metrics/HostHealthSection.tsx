@@ -43,7 +43,7 @@ export function HostHealthSection() {
 
   const hostMetricsQuery = useQuery({
     queryKey: ['metrics', 'host'],
-    queryFn: api.metrics.host,
+    queryFn: () => api.metrics.host(),
     refetchInterval: metricsInterval,
     refetchIntervalInBackground: false,
   })

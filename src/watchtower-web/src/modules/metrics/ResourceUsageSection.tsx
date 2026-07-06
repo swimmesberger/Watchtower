@@ -42,7 +42,7 @@ export function ResourceUsageSection() {
 
   const stackMetricsQuery = useQuery({
     queryKey: ['metrics', 'stacks'],
-    queryFn: api.metrics.stacks,
+    queryFn: () => api.metrics.stacks(),
     refetchInterval: metricsInterval,
     refetchIntervalInBackground: false,
   })

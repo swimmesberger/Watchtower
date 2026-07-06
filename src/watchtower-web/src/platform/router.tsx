@@ -12,6 +12,7 @@ import type { AppModule } from './app-module'
 import credentials from '@/modules/credentials'
 import dashboard from '@/modules/dashboard'
 import infrastructure from '@/modules/infrastructure'
+import metrics from '@/modules/metrics'
 import registries from '@/modules/registries'
 import settings from '@/modules/settings'
 import stacks from '@/modules/stacks'
@@ -37,6 +38,7 @@ const routeTree = rootRoute.addChildren([
   ...credentials.routes,
   ...dashboard.routes,
   ...infrastructure.routes,
+  ...metrics.routes,
   ...registries.routes,
   ...settings.routes,
   ...stacks.routes,
