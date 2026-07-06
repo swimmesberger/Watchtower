@@ -126,6 +126,12 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
             return [];
         }
 
+        // Optional per-stack lookup: container name → compose project. Kept out of the metrics query's
+        // pivot rowKey on purpose — a pivot rowKey column must exist in every series, and points from
+        // before the collector started emitting the tag would fail the whole query. keep() here simply
+        // omits the column when absent, so a partial/failed lookup only leaves StackName null.
+        var projects = await LookupProjectsAsync(rangeStart, rangeStop, ct);
+
         // Group flat rows into per-container rings, keyed by container name (stable across restarts,
         // unlike the container id).
         var byContainer = new Dictionary<string, ContainerAccumulator>(StringComparer.Ordinal);
@@ -136,8 +142,7 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
 
             if (!byContainer.TryGetValue(name, out var acc)) {
                 acc = new ContainerAccumulator();
-                if (_composeProjectTag is not null && r.TryGetValue(_composeProjectTag, out var project) && !string.IsNullOrEmpty(project))
-                    acc.Project = project;
+                if (projects is not null && projects.TryGetValue(name, out var project)) acc.Project = project;
                 byContainer[name] = acc;
             }
             var cpu = TryDouble(r, Schema.ContainerCpuMeasurement) ?? 0;
@@ -179,21 +184,49 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
 
     /// <summary>
     /// Per-container CPU% (already 0–100) + memory bytes/percent/limit, downsampled to
-    /// <paramref name="every"/> and pivoted so each row carries the measurements alongside the
-    /// container-name (and, when configured, compose-project) tags.
+    /// <paramref name="every"/> and pivoted by container name. The compose-project tag is intentionally
+    /// not in the rowKey (see <see cref="LookupProjectsAsync"/>).
     /// </summary>
-    private string ContainerFlux(string rangeStart, string rangeStop, string every) {
-        // Only reference the compose-project tag when configured — a missing rowKey tag is a Flux error.
-        var composeCol = _composeProjectTag is null ? "" : $", \"{_composeProjectTag}\"";
-        return $$"""
+    private string ContainerFlux(string rangeStart, string rangeStop, string every) =>
+        $$"""
         from(bucket: "{{_bucket}}")
           |> range(start: {{rangeStart}}, stop: {{rangeStop}})
           |> filter(fn: (r) => r._measurement == "{{Schema.ContainerCpuMeasurement}}" or r._measurement == "{{Schema.ContainerMemMeasurement}}" or r._measurement == "{{Schema.ContainerMemPercentMeasurement}}" or r._measurement == "{{Schema.ContainerMemLimitMeasurement}}")
           |> filter(fn: (r) => r._field == "{{Schema.FieldKeyGauge}}")
           |> aggregateWindow(every: {{every}}, fn: mean, createEmpty: false)
-          |> pivot(rowKey: ["_time", "{{Schema.ContainerNameTag}}"{{composeCol}}], columnKey: ["_measurement"], valueColumn: "_value")
-          |> keep(columns: ["_time", "{{Schema.ContainerNameTag}}"{{composeCol}}, "{{Schema.ContainerCpuMeasurement}}", "{{Schema.ContainerMemMeasurement}}", "{{Schema.ContainerMemPercentMeasurement}}", "{{Schema.ContainerMemLimitMeasurement}}"])
+          |> pivot(rowKey: ["_time", "{{Schema.ContainerNameTag}}"], columnKey: ["_measurement"], valueColumn: "_value")
+          |> keep(columns: ["_time", "{{Schema.ContainerNameTag}}", "{{Schema.ContainerCpuMeasurement}}", "{{Schema.ContainerMemMeasurement}}", "{{Schema.ContainerMemPercentMeasurement}}", "{{Schema.ContainerMemLimitMeasurement}}"])
         """;
+
+    /// <summary>
+    /// Resolves the container-name → compose-project map for the per-stack rollup, or null when no
+    /// compose tag is configured. Uses <c>last()</c> + <c>keep()</c> (not a pivot rowKey) so series that
+    /// lack the tag are simply omitted rather than failing the query. A failure returns null (StackName
+    /// stays unset) rather than dropping container metrics.
+    /// </summary>
+    private async Task<Dictionary<string, string>?> LookupProjectsAsync(string rangeStart, string rangeStop, CancellationToken ct) {
+        if (_composeProjectTag is null) return null;
+        var flux = $$"""
+        from(bucket: "{{_bucket}}")
+          |> range(start: {{rangeStart}}, stop: {{rangeStop}})
+          |> filter(fn: (r) => r._measurement == "{{Schema.ContainerCpuMeasurement}}" and r._field == "{{Schema.FieldKeyGauge}}")
+          |> last()
+          |> keep(columns: ["{{Schema.ContainerNameTag}}", "{{_composeProjectTag}}"])
+          |> group()
+        """;
+        try {
+            var rows = await QueryAsync(flux, ct);
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var r in rows) {
+                if (r.TryGetValue(Schema.ContainerNameTag, out var name) && !string.IsNullOrEmpty(name)
+                    && r.TryGetValue(_composeProjectTag, out var project) && !string.IsNullOrEmpty(project))
+                    map[name] = project;
+            }
+            return map;
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            _logger.LogWarning(ex, "InfluxDB container-project lookup failed; per-stack rollup skipped this tick");
+            return null;
+        }
     }
 
     /// <summary>
