@@ -110,4 +110,13 @@ public sealed record InfluxOptions {
     /// work).
     /// </summary>
     public string ComposeProjectTag { get; init; } = "";
+
+    /// <summary>
+    /// Filesystem mount point reported for the host-disk cell, matched against the
+    /// <c>system.filesystem.usage</c> <c>mountpoint</c> tag. Defaults to <c>/</c> (the conventional root,
+    /// matching the in-memory backend). On multi-volume hosts (e.g. Synology, where <c>/</c> is a small
+    /// system partition) point this at the data volume, e.g. <c>/volume2</c>. Unmatched ⇒ disk
+    /// unavailable.
+    /// </summary>
+    public string DiskMountpoint { get; init; } = "/";
 }

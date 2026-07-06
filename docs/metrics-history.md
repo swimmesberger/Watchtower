@@ -35,6 +35,7 @@ Bind via the `Watchtower:Metrics` config section or `WATCHTOWER__METRICS__*` env
 | `WATCHTOWER__METRICS__INFLUX__BUCKET` | `watchtower` | Bucket the collector writes into. |
 | `WATCHTOWER__METRICS__INFLUX__TOKEN` | `‹token›` | API token with **read** access to the bucket (a secret — never logged). |
 | `WATCHTOWER__METRICS__INFLUX__COMPOSEPROJECTTAG` | *(empty)* | **Opt-in** tag for the per-stack rollup. Empty ⇒ no per-stack grouping (per-container + host still work). Set to `compose_project` only after the collector emits it — see below. |
+| `WATCHTOWER__METRICS__INFLUX__DISKMOUNTPOINT` | `/` | Mount point for the host-disk cell (matched against the `mountpoint` tag). On multi-volume hosts (e.g. Synology, where `/` is a small system partition) point at the data volume, e.g. `/volume2`. |
 
 All four `INFLUX__*` connection values are required when the backend is `influxdb`; Watchtower fails fast
 at startup if any is missing.
@@ -65,10 +66,11 @@ live OTel `hostmetrics`+`docker_stats` collector**. If your collector differs, a
 | Host CPU % | `system.cpu.time` (counter, by `state`+`cpu`) | `1 − Δidle/Δtotal` across cores |
 | Host memory % / bytes | `system.memory.usage` (gauge, by `state`) | `used / Σstates` |
 | Host load 1m / 5m | `system.cpu.load_average.1m` / `.5m` (gauge) | direct |
+| Host disk % / bytes | `system.filesystem.usage` (gauge, by `state`+`mountpoint`) | `used / (used+free+reserved)` for the configured mount point |
 
 > The default hostmetrics scrapers emit **no** `system.cpu.utilization` or `system.memory.utilization`,
-> so host CPU%/RAM% are derived in Flux from the counter/state series above. Host **disk** isn't mapped
-> yet (the disk cell shows unavailable in this backend).
+> so host CPU%/RAM% are derived in Flux from the counter/state series above. Host disk uses the mount
+> point set by `DISKMOUNTPOINT` (default `/`).
 
 **Per-stack history needs the compose-project label carried into InfluxDB** as a tag. On the `docker_stats`
 receiver:

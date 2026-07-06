@@ -35,6 +35,7 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
     private readonly ILogger<InfluxMetricsSource> _logger;
     private readonly string _bucket;
     private readonly string? _composeProjectTag;
+    private readonly string _diskMountpoint;
 
     public MetricsCapabilities Capabilities { get; } = new("influxdb", HistoryAvailable: true);
 
@@ -55,6 +56,7 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
         // Opt-in: only reference the compose-project tag when the operator configured one (and thus told
         // the collector to emit it). Referencing a non-existent tag in a Flux pivot rowKey is a hard error.
         _composeProjectTag = string.IsNullOrWhiteSpace(influx.ComposeProjectTag) ? null : influx.ComposeProjectTag;
+        _diskMountpoint = string.IsNullOrWhiteSpace(influx.DiskMountpoint) ? "/" : influx.DiskMountpoint;
 
         var baseUrl = influx.Url!.TrimEnd('/');
         _http = new HttpClient { BaseAddress = new Uri($"{baseUrl}/api/v2/query?org={Uri.EscapeDataString(influx.Org!)}") };
@@ -94,6 +96,8 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
             ? (long)(used / (lastMemPct.Value / 100.0))
             : null;
 
+        var (diskUsed, diskTotal) = await LookupDiskAsync(rangeStart, rangeStop, ct);
+
         var snapshot = new HostSnapshot {
             Available = true,
             Reason = null,
@@ -104,10 +108,10 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
             MemUsedBytes = memUsedBytes,
             MemTotalBytes = memTotalBytes,
             MemPercent = lastMemPct,
-            DiskUsedBytes = null,
-            DiskTotalBytes = null,
-            DiskPercent = null,
-            DiskSource = "unavailable", // host filesystem series need per-mount resolution — deferred (ADR-0007).
+            DiskUsedBytes = diskUsed,
+            DiskTotalBytes = diskTotal,
+            DiskPercent = diskUsed is { } du && diskTotal is > 0 ? (double)du / diskTotal.Value * 100.0 : null,
+            DiskSource = diskUsed is not null ? "influx" : "unavailable",
             SampledAt = history.Count > 0 ? history[^1].T : DateTimeOffset.UtcNow,
         };
         return new HostReadout(snapshot, history);
@@ -275,6 +279,33 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
         """;
 
     /// <summary>
+    /// Latest used/total bytes for the configured disk mount point (<c>system.filesystem.usage</c> summed
+    /// over its <c>used</c>/<c>free</c>/<c>reserved</c> states). Returns (null, null) when the mount point
+    /// isn't present or the query fails, so the disk cell degrades rather than erroring the host read.
+    /// </summary>
+    private async Task<(long? Used, long? Total)> LookupDiskAsync(string rangeStart, string rangeStop, CancellationToken ct) {
+        var flux = $$"""
+        from(bucket: "{{_bucket}}")
+          |> range(start: {{rangeStart}}, stop: {{rangeStop}})
+          |> filter(fn: (r) => r._measurement == "{{Schema.HostFsUsageMeasurement}}" and r._field == "{{Schema.FieldKeyGauge}}" and r.mountpoint == "{{_diskMountpoint}}")
+          |> last()
+          |> pivot(rowKey: ["mountpoint"], columnKey: ["state"], valueColumn: "_value")
+          |> map(fn: (r) => ({ _time: now(), used: float(v: r.used), total: float(v: r.used + r.free + r.reserved) }))
+          |> keep(columns: ["used", "total"])
+        """;
+        try {
+            var rows = await QueryAsync(flux, ct);
+            if (rows.Count == 0) return (null, null);
+            var used = TryDouble(rows[^1], "used");
+            var total = TryDouble(rows[^1], "total");
+            return (used is { } u ? (long)u : null, total is { } t ? (long)t : null);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            _logger.LogWarning(ex, "InfluxDB disk lookup failed for mount point {Mount}", _diskMountpoint);
+            return (null, null);
+        }
+    }
+
+    /// <summary>
     /// Resolves a <see cref="MetricsWindow"/> to Flux <c>range()</c> bounds and an <c>aggregateWindow</c>
     /// step. Live ⇒ the last 15 minutes at 10s (≈90 points, matching the in-memory ring's sparkline).
     /// </summary>
@@ -383,5 +414,6 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
         public const string HostMemUsageMeasurement = "system.memory.usage";       // bytes, by state
         public const string HostLoad1Measurement = "system.cpu.load_average.1m";
         public const string HostLoad5Measurement = "system.cpu.load_average.5m";
+        public const string HostFsUsageMeasurement = "system.filesystem.usage"; // bytes, by state+mountpoint
     }
 }
