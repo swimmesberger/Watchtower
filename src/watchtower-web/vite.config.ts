@@ -29,5 +29,9 @@ export default defineConfig({
   build: {
     // Output to dist/ which is copied to wwwroot/ in the Docker image.
     outDir: 'dist',
+    // Match tsconfig's ES2022 target (Vite's default 'modules' baseline is ~es2020, which rejects
+    // syntax tsc accepts — e.g. top-level await). ES2022 is our minimum browser floor: modern
+    // evergreen browsers only, which suits a self-hosted admin tool behind an auth proxy.
+    target: 'es2022',
   },
 })
