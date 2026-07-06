@@ -26,3 +26,4 @@ live here.
 - [ADR-0004: Singleton services access EF Core through `IServiceScopeFactory`](0004-singleton-ef-scopes.md)
 - [ADR-0005: Development orchestration with a .NET Aspire AppHost](0005-aspire-dev-orchestration.md)
 - [ADR-0006: The web frontend is a NoTargets project in the solution](0006-frontend-notargets-project.md)
+- [ADR-0007: Pluggable metrics backend — in-memory by default, InfluxDB opt-in](0007-pluggable-metrics-backend.md)

@@ -359,6 +359,26 @@
         ]
       }
     },
+    "metrics.capabilities": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "historyAvailable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "historyAvailable"
+        ]
+      }
+    },
     "metrics.containers": {
       "params": {
         "type": "object",
@@ -367,6 +387,31 @@
             "type": [
               "string",
               "null"
+            ],
+            "default": null
+          },
+          "range": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stepSeconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "stepSeconds"
             ],
             "default": null
           }
@@ -458,7 +503,34 @@
     },
     "metrics.host": {
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "range": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stepSeconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "stepSeconds"
+            ],
+            "default": null
+          }
+        }
       },
       "result": {
         "type": "object",
@@ -598,7 +670,34 @@
     },
     "metrics.stacks": {
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "range": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stepSeconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "stepSeconds"
+            ],
+            "default": null
+          }
+        }
       },
       "result": {
         "type": "object",

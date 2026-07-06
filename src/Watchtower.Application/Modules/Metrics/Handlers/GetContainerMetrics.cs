@@ -3,17 +3,19 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.Metrics.Handlers;
 
 /// <summary>
-/// Returns per-container CPU/memory readouts (with sparkline history) from the in-memory
-/// <see cref="MetricsStore"/>. Optionally filtered to a single compose project. No Docker calls.
+/// Returns per-container CPU/memory readouts (with history) from the active <see cref="IMetricsSource"/>
+/// (ADR-0007) — the in-memory ring by default, or InfluxDB when configured. Optionally filtered to a
+/// single compose project. A <see cref="MetricsRange"/> requests an explicit historical window; omit it
+/// for the backend's live window. No Docker calls happen on the RPC path.
 /// </summary>
 [Handler("metrics.containers")]
-public sealed class GetContainerMetrics(MetricsStore store)
+public sealed class GetContainerMetrics(IMetricsSource source)
     : IHandler<GetContainerMetrics.Query, Result<GetContainerMetrics.Response>> {
-    public sealed record Query(string? Project = null);
+    public sealed record Query(string? Project = null, MetricsRange? Range = null);
     public sealed record Response(IReadOnlyList<ContainerMetrics> Containers);
 
-    public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        var readouts = store.GetContainers();
+    public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
+        var readouts = await source.GetContainersAsync(query.Range.ToWindow(), ct);
         var items = readouts
             .Where(r => query.Project is null || r.Latest.StackName == query.Project)
             .Select(r => new ContainerMetrics(
@@ -29,6 +31,6 @@ public sealed class GetContainerMetrics(MetricsStore store)
             .OrderByDescending(c => c.CpuPercent)
             .ThenBy(c => c.ContainerName, StringComparer.Ordinal)
             .ToList();
-        return ValueTask.FromResult<Result<Response>>(new Response(items));
+        return new Response(items);
     }
 }
