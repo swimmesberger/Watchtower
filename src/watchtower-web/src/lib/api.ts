@@ -16,6 +16,7 @@ import type {
   DeployEvent,
   DockerConfigStatus,
   HostMetrics,
+  MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
   PruneOrphansResult,
@@ -150,10 +151,13 @@ export const api = {
   },
 
   metrics: {
-    host: async () => (await rpc('metrics.host', {})).host as HostMetrics,
-    containers: async (project?: string | null) =>
-      (await rpc('metrics.containers', { project: project ?? null })).containers as ContainerMetrics[],
-    stacks: async () => (await rpc('metrics.stacks', {})) as StackMetricsResult,
+    host: async (range?: MetricsRange | null) =>
+      (await rpc('metrics.host', { range: range ?? null })).host as HostMetrics,
+    containers: async (project?: string | null, range?: MetricsRange | null) =>
+      (await rpc('metrics.containers', { project: project ?? null, range: range ?? null }))
+        .containers as ContainerMetrics[],
+    stacks: async (range?: MetricsRange | null) =>
+      (await rpc('metrics.stacks', { range: range ?? null })) as StackMetricsResult,
   },
 
   system: {

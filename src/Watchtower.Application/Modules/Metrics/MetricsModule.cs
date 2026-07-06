@@ -1,17 +1,42 @@
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Watchtower.Application.Modules.Metrics.Handlers;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Metrics;
 
 /// <summary>
-/// Host and container resource metrics. All handlers read the in-memory ring buffers populated by the
-/// background <c>MetricsSampler</c> — no Docker calls happen on the RPC path (amendment F5).
+/// Host and container resource metrics. All handlers read the active <c>IMetricsSource</c> backend
+/// (ADR-0007) — no Docker calls happen on the RPC path (amendment F5).
 /// </summary>
+/// <remarks>
+/// Exposes the <c>metrics-history</c> client flag (ADR-0030): true when the active metrics backend can
+/// answer historical time ranges (the InfluxDB backend). Resolved by <c>MetricsFeatureFlagService</c> from
+/// <c>IMetricsSource.Capabilities</c> and surfaced to the frontend via the <c>elarion.session</c> snapshot,
+/// which gates the History view.
+/// </remarks>
 [AppModule("Metrics")]
+[ClientFeatures("metrics-history")]
 public static partial class MetricsModule {
     /// <summary>Returns the JSON type info resolver for Metrics module types.</summary>
     public static IJsonTypeInfoResolver GetJsonTypeInfoResolver() => MetricsJsonContext.Default;
+}
+
+// ── Range + capabilities ─────────────────────────────────────────────────────
+
+/// <summary>
+/// An explicit historical range on a metrics query (ADR-0007). Omitted (null) ⇒ the backend's live
+/// window. <paramref name="StepSeconds"/> is the server-side downsample bucket that bounds the returned
+/// point count. Only honored when the active backend reports <c>historyAvailable</c>.
+/// </summary>
+public sealed record MetricsRange(DateTimeOffset From, DateTimeOffset To, int StepSeconds);
+
+/// <summary>Maps the RPC-facing <see cref="MetricsRange"/> to the service-layer <see cref="MetricsWindow"/>.</summary>
+internal static class MetricsRangeExtensions {
+    public static MetricsWindow ToWindow(this MetricsRange? range) =>
+        range is null
+            ? MetricsWindow.Live
+            : MetricsWindow.History(range.From, range.To, TimeSpan.FromSeconds(Math.Max(1, range.StepSeconds)));
 }
 
 // ── Host ─────────────────────────────────────────────────────────────────────
@@ -81,6 +106,7 @@ public sealed record StackSample(DateTimeOffset T, double CpuPercent, long MemUs
 [JsonSerializable(typeof(ContainerSample))]
 [JsonSerializable(typeof(StackMetrics))]
 [JsonSerializable(typeof(StackSample))]
+[JsonSerializable(typeof(MetricsRange))]
 [JsonSerializable(typeof(GetHostMetrics.Query), TypeInfoPropertyName = "GetHostMetricsQuery")]
 [JsonSerializable(typeof(GetHostMetrics.Response), TypeInfoPropertyName = "GetHostMetricsResponse")]
 [JsonSerializable(typeof(GetContainerMetrics.Query), TypeInfoPropertyName = "GetContainerMetricsQuery")]

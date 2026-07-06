@@ -5,17 +5,18 @@ namespace Watchtower.Application.Modules.Metrics.Handlers;
 /// <summary>
 /// Pre-aggregated per-stack rollup for the Dashboard "who eats the resources" ranking. Sums member
 /// container metrics by compose project, sorted CPU-desc server-side, so the Dashboard renders one
-/// already-ordered query. Reads only the in-memory <see cref="MetricsStore"/> (no Docker calls).
-/// Non-compose (stackless) containers are excluded — the ranking is per-stack.
+/// already-ordered query. Reads only the active <see cref="IMetricsSource"/> (ADR-0007) — no Docker
+/// calls. Non-compose (stackless) containers are excluded — the ranking is per-stack. A
+/// <see cref="MetricsRange"/> requests an explicit historical window; omit it for the live window.
 /// </summary>
 [Handler("metrics.stacks")]
-public sealed class GetStackMetrics(MetricsStore store)
+public sealed class GetStackMetrics(IMetricsSource source)
     : IHandler<GetStackMetrics.Query, Result<GetStackMetrics.Response>> {
-    public sealed record Query;
+    public sealed record Query(MetricsRange? Range = null);
     public sealed record Response(IReadOnlyList<StackMetrics> Stacks, DateTimeOffset SampledAt);
 
-    public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        var readouts = store.GetContainers();
+    public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
+        var readouts = await source.GetContainersAsync(query.Range.ToWindow(), ct);
 
         var stacks = readouts
             .Where(r => r.Latest.StackName is not null && r.Latest.Online)
@@ -30,11 +31,11 @@ public sealed class GetStackMetrics(MetricsStore store)
             .ThenBy(s => s.StackName, StringComparer.Ordinal)
             .ToList();
 
-        return ValueTask.FromResult<Result<Response>>(new Response(stacks, DateTimeOffset.UtcNow));
+        return new Response(stacks, DateTimeOffset.UtcNow);
     }
 
     /// <summary>
-    /// Sums the member containers' sparkline rings into one stack ring, bucketed by sample timestamp
+    /// Sums the member containers' history rings into one stack ring, bucketed by sample timestamp
     /// (rings share the sampler tick cadence, but individual containers may have shorter histories).
     /// Emits oldest→newest.
     /// </summary>

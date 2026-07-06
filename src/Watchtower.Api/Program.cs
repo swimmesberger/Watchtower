@@ -1,7 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Elarion.Abstractions.Modules;
 using Elarion.AspNetCore;
 using Elarion.JsonRpc;
+using Elarion.Session;
 using Elarion.Settings.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
@@ -28,10 +30,19 @@ if (args is ["--export-schema", var schemaOutputPath]) {
         o.ValidateScopes = false;
     });
     schemaBuilder.Services.AddElarion(schemaBuilder.Configuration);
-    schemaBuilder.Services.AddElarionJsonRpc(ElarionBootstrapper.RegisterHandlers);
+    // Session bootstrap (ADR-0030) joins the schema so the client generator emits session-client.ts, and the
+    // capability vocabulary (modules + [ClientFeatures]) rides the exported schema's capabilities block (ADR-0032).
+    schemaBuilder.Services.AddElarionSession(schemaBuilder.Configuration.GetClientCapabilityManifest());
+    schemaBuilder.Services.AddElarionJsonRpc((dispatcher, configuration) =>
+        ElarionBootstrapper.RegisterHandlers(dispatcher, configuration).MapElarionSession());
     using var schemaApp = schemaBuilder.Build();
     var schemaDispatcher = schemaApp.Services.GetRequiredService<JsonRpcDispatcher>();
-    File.WriteAllText(schemaOutputPath, JsonRpcSchemaExporter.Generate(schemaDispatcher));
+    File.WriteAllText(
+        schemaOutputPath,
+        JsonRpcSchemaExporter.Generate(schemaDispatcher, jsonOptions: null, new JsonRpcSchemaExportOptions {
+            // Registered by AddElarionSession above — modules + their [ClientFeatures] (ADR-0032).
+            ClientCapabilities = schemaApp.Services.GetRequiredService<ClientCapabilityManifest>(),
+        }));
     Console.WriteLine(
         $"JSON-RPC schema written to {schemaOutputPath} ({schemaDispatcher.MethodNames.Count} methods)");
     return;
@@ -67,9 +78,16 @@ builder.AddElarionSettingsConfiguration();
 
 // Elarion framework composition:
 //   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.
+//   AddElarionSession  — the client-capability bootstrap (ADR-0030): module map + [ClientFeatures] flags
+//                        (e.g. Metrics' "metrics-history") for the frontend's contribution gating.
 //   AddElarionJsonRpc  — the JSON-RPC transport + shared handler dispatcher.
 builder.Services.AddElarion(builder.Configuration);
-builder.Services.AddElarionJsonRpc(ElarionBootstrapper.RegisterHandlers);
+// The session bootstrap composes ICurrentUser; Watchtower is unauthenticated (reverse-proxy auth — see
+// README), so a fixed anonymous user stands in: isAuthenticated=false, no roles/grants.
+builder.Services.AddSingleton<Elarion.Abstractions.Identity.ICurrentUser, AnonymousCurrentUser>();
+builder.Services.AddElarionSession(builder.Configuration.GetClientCapabilityManifest());
+builder.Services.AddElarionJsonRpc((dispatcher, configuration) =>
+    ElarionBootstrapper.RegisterHandlers(dispatcher, configuration).MapElarionSession());
 
 var app = builder.Build();
 

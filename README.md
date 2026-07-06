@@ -47,7 +47,8 @@ See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/elarion.md](docs/elarion.md) for how the project consumes the framework,
 [docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
 is no longer enough (Docker Swarm vs k3s),
-[docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip, and
+[docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip,
+[docs/metrics-history.md](docs/metrics-history.md) for switching metrics to a durable InfluxDB backend, and
 [docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure
@@ -113,6 +114,7 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | `DockerApiVersion` | `WATCHTOWER__DOCKERAPIVERSION` | `1.43` | Docker Engine API version used for direct calls and `docker compose`. |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
+| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `memory` | Metrics source: `memory` (in-process sampler) or `influxdb` (read a durable store) — see [docs/metrics-history.md](docs/metrics-history.md). |
 
 `WATCHTOWER_DOCKER_CONFIG` / `DOCKER_CONFIG` point at a mounted host `config.json` for private pulls.
 

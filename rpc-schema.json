@@ -359,6 +359,75 @@
         ]
       }
     },
+    "elarion.session": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isAuthenticated": {
+                "type": "boolean"
+              },
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "isAuthenticated",
+              "roles",
+              "permissions"
+            ]
+          },
+          "modules": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "flags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "variants": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "user",
+          "modules",
+          "flags",
+          "variants"
+        ]
+      }
+    },
     "metrics.containers": {
       "params": {
         "type": "object",
@@ -367,6 +436,31 @@
             "type": [
               "string",
               "null"
+            ],
+            "default": null
+          },
+          "range": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stepSeconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "stepSeconds"
             ],
             "default": null
           }
@@ -458,7 +552,34 @@
     },
     "metrics.host": {
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "range": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stepSeconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "stepSeconds"
+            ],
+            "default": null
+          }
+        }
       },
       "result": {
         "type": "object",
@@ -598,7 +719,34 @@
     },
     "metrics.stacks": {
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "range": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stepSeconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "stepSeconds"
+            ],
+            "default": null
+          }
+        }
       },
       "result": {
         "type": "object",
@@ -2802,6 +2950,39 @@
         "required": [
           "sizes"
         ]
+      }
+    }
+  },
+  "capabilities": {
+    "modules": {
+      "Containers": {
+        "features": []
+      },
+      "Credentials": {
+        "features": []
+      },
+      "Deployments": {
+        "features": []
+      },
+      "Metrics": {
+        "features": [
+          "metrics-history"
+        ]
+      },
+      "Networks": {
+        "features": []
+      },
+      "Registries": {
+        "features": []
+      },
+      "Stacks": {
+        "features": []
+      },
+      "System": {
+        "features": []
+      },
+      "Volumes": {
+        "features": []
       }
     }
   }

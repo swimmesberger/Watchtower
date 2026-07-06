@@ -332,6 +332,16 @@ export interface StackMetricsResult {
   sampledAt: string
 }
 
+/** A historical time range for the `metrics.*` queries. Omit for the backend's live window. */
+export interface MetricsRange {
+  /** ISO-8601 start. */
+  from: string
+  /** ISO-8601 end. */
+  to: string
+  /** Server-side downsample bucket (bounds the returned point count). */
+  stepSeconds: number
+}
+
 /** `networks.ports` envelope: the exposure map plus cross-container conflicts. */
 export interface NetworkPortsResult {
   published: PublishedPort[]

@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Features;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -55,10 +56,24 @@ public static class WatchtowerServiceCollectionExtensions {
 
         services.AddSingleton<StackUpdateService>();
 
-        // Metrics — a singleton ring-buffer store fed by one background sampler (amendment F5).
-        // The RPC handlers read only the store, so no Docker fan-out happens on the request path.
-        services.AddSingleton<MetricsStore>();
-        services.AddHostedService<MetricsSampler>();
+        // Metrics backend (ADR-0007) — pluggable and mutually exclusive, so exactly one collector runs.
+        // Default ("memory"): the in-memory ring buffer fed by the background sampler (amendment F5),
+        // zero external dependency; the RPC handlers read only the store, no Docker fan-out on the path.
+        // Opt-in ("influxdb"): read host + container series (incl. history) from an InfluxDB an external
+        // collector populates — the sampler/store are NOT registered, so Watchtower runs no collector of
+        // its own and InfluxDB is the single source of truth. Switching backends requires a restart.
+        var metricsBackend = section.GetValue<string>("Metrics:Backend");
+        if (string.Equals(metricsBackend, "influxdb", StringComparison.OrdinalIgnoreCase)) {
+            services.AddSingleton<IMetricsSource, InfluxMetricsSource>();
+        } else {
+            services.AddSingleton<MetricsStore>();
+            services.AddHostedService<MetricsSampler>();
+            services.AddSingleton<IMetricsSource, InMemoryMetricsSource>();
+        }
+
+        // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates the Metrics module's
+        // [ClientFeatures] names through this service — "metrics-history" reflects the backend chosen above.
+        services.AddSingleton<IFeatureFlagService, MetricsFeatureFlagService>();
 
         // Background checkers — always registered. Each loops on a short poll and reads its
         // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the
