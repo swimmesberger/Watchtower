@@ -6,10 +6,17 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.Metrics;
 
 /// <summary>
-/// Host and container resource metrics. All handlers read the in-memory ring buffers populated by the
-/// background <c>MetricsSampler</c> — no Docker calls happen on the RPC path (amendment F5).
+/// Host and container resource metrics. All handlers read the active <c>IMetricsSource</c> backend
+/// (ADR-0007) — no Docker calls happen on the RPC path (amendment F5).
 /// </summary>
+/// <remarks>
+/// Exposes the <c>metrics-history</c> client flag (ADR-0030): true when the active metrics backend can
+/// answer historical time ranges (the InfluxDB backend). Resolved by <c>MetricsFeatureFlagService</c> from
+/// <c>IMetricsSource.Capabilities</c> and surfaced to the frontend via the <c>elarion.session</c> snapshot,
+/// which gates the History view.
+/// </remarks>
 [AppModule("Metrics")]
+[ClientFeatures("metrics-history")]
 public static partial class MetricsModule {
     /// <summary>Returns the JSON type info resolver for Metrics module types.</summary>
     public static IJsonTypeInfoResolver GetJsonTypeInfoResolver() => MetricsJsonContext.Default;
@@ -100,8 +107,6 @@ public sealed record StackSample(DateTimeOffset T, double CpuPercent, long MemUs
 [JsonSerializable(typeof(StackMetrics))]
 [JsonSerializable(typeof(StackSample))]
 [JsonSerializable(typeof(MetricsRange))]
-[JsonSerializable(typeof(GetMetricsCapabilities.Query), TypeInfoPropertyName = "GetMetricsCapabilitiesQuery")]
-[JsonSerializable(typeof(GetMetricsCapabilities.Response), TypeInfoPropertyName = "GetMetricsCapabilitiesResponse")]
 [JsonSerializable(typeof(GetHostMetrics.Query), TypeInfoPropertyName = "GetHostMetricsQuery")]
 [JsonSerializable(typeof(GetHostMetrics.Response), TypeInfoPropertyName = "GetHostMetricsResponse")]
 [JsonSerializable(typeof(GetContainerMetrics.Query), TypeInfoPropertyName = "GetContainerMetricsQuery")]

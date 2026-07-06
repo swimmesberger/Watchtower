@@ -16,7 +16,6 @@ import type {
   DeployEvent,
   DockerConfigStatus,
   HostMetrics,
-  MetricsCapabilities,
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
@@ -152,7 +151,6 @@ export const api = {
   },
 
   metrics: {
-    capabilities: async () => (await rpc('metrics.capabilities', {})) as MetricsCapabilities,
     host: async (range?: MetricsRange | null) =>
       (await rpc('metrics.host', { range: range ?? null })).host as HostMetrics,
     containers: async (project?: string | null, range?: MetricsRange | null) =>

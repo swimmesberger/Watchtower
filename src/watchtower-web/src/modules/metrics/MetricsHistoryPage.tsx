@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { getRouteApi } from '@tanstack/react-router'
 import { ArrowRight, Info } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { MetricsRange, StackMetrics } from '@/lib/types'
@@ -40,20 +41,20 @@ function buildRange(seconds: number): MetricsRange {
 
 const pct = (v: number) => `${Math.round(v)}%`
 
+const routeApi = getRouteApi('/metrics/history')
+
 /**
  * The metrics history page (ADR-0007). A time-range picker over durable host + per-stack utilization,
- * available only when the InfluxDB backend is active; otherwise an info banner explains how to enable it.
+ * available only when the InfluxDB backend is active. Availability comes from the boot capability
+ * snapshot's `metrics-history` flag (ADR-0030) via the router context — the nav item is `when`-gated on
+ * the same flag, so this page's banner only shows on a direct URL hit with the flag off.
  */
 export function MetricsHistoryPage() {
   const [rangeId, setRangeId] = useState<RangeId>('6h')
   const seconds = RANGES.find((r) => r.id === rangeId)!.seconds
 
-  const caps = useQuery({
-    queryKey: ['metrics', 'capabilities'],
-    queryFn: api.metrics.capabilities,
-    staleTime: 5 * 60_000,
-  })
-  const historyAvailable = caps.data?.historyAvailable ?? false
+  const { caps } = routeApi.useRouteContext()
+  const historyAvailable = caps.isFlagEnabled('metrics-history')
 
   const host = useQuery({
     queryKey: ['metrics', 'host', 'history', rangeId],
@@ -95,12 +96,7 @@ export function MetricsHistoryPage() {
         {historyAvailable && <RangePicker value={rangeId} onChange={setRangeId} />}
       </div>
 
-      {caps.isLoading ? (
-        <Card className="p-5">
-          <Skeleton variant="line" className="h-4 w-40" />
-          <Skeleton variant="rect" className="mt-4 h-[240px] w-full" />
-        </Card>
-      ) : !historyAvailable ? (
+      {!historyAvailable ? (
         <Card className="p-4 md:p-5">
           <Banner
             tone="info"
@@ -116,10 +112,8 @@ export function MetricsHistoryPage() {
               </a>
             }
           >
-            The active metrics backend is{' '}
-            <code className="font-mono text-[12px]">{caps.data?.source ?? 'memory'}</code>, which keeps only a
-            short in-memory window. Point Watchtower at an InfluxDB an external collector fills to unlock durable
-            history. The live Dashboard strip works either way.
+            The active metrics backend keeps only a short in-memory window. Point Watchtower at an InfluxDB an
+            external collector fills to unlock durable history. The live Dashboard strip works either way.
           </Banner>
         </Card>
       ) : (

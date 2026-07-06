@@ -102,6 +102,14 @@ schema.measurementTagKeys(bucket: "watchtower", measurement: "container.cpu.util
 If the measurement names or the `gauge` field key differ from the table above, update
 `InfluxMetricsSource.Schema` to match.
 
+## How the UI knows
+
+The frontend learns whether history is available from the framework's `elarion.session` capability
+snapshot: the Metrics module exposes a **`metrics-history`** client flag (`[ClientFeatures]`, Elarion
+ADR-0030) that is true exactly when the InfluxDB backend is active. The History nav item is gated on that
+flag — on the in-memory backend it doesn't render at all, and a direct URL hit shows an "enable history"
+banner linking here.
+
 ## Degradation
 
 The InfluxDB backend fails soft, reusing the same `available`/`reason` path as host metrics:

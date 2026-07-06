@@ -359,23 +359,72 @@
         ]
       }
     },
-    "metrics.capabilities": {
+    "elarion.session": {
       "params": {
         "type": "object"
       },
       "result": {
         "type": "object",
         "properties": {
-          "source": {
-            "type": "string"
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "email": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isAuthenticated": {
+                "type": "boolean"
+              },
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "isAuthenticated",
+              "roles",
+              "permissions"
+            ]
           },
-          "historyAvailable": {
-            "type": "boolean"
+          "modules": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "flags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "variants": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "required": [
-          "source",
-          "historyAvailable"
+          "user",
+          "modules",
+          "flags",
+          "variants"
         ]
       }
     },
@@ -2901,6 +2950,39 @@
         "required": [
           "sizes"
         ]
+      }
+    }
+  },
+  "capabilities": {
+    "modules": {
+      "Containers": {
+        "features": []
+      },
+      "Credentials": {
+        "features": []
+      },
+      "Deployments": {
+        "features": []
+      },
+      "Metrics": {
+        "features": [
+          "metrics-history"
+        ]
+      },
+      "Networks": {
+        "features": []
+      },
+      "Registries": {
+        "features": []
+      },
+      "Stacks": {
+        "features": []
+      },
+      "System": {
+        "features": []
+      },
+      "Volumes": {
+        "features": []
       }
     }
   }

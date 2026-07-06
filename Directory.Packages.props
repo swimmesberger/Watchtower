@@ -2,7 +2,7 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <!-- Elarion application framework — consumed from NuGet (github.com/swimmesberger/Elarion). -->
-    <ElarionVersion>0.2.3-preview.54.1</ElarionVersion>
+    <ElarionVersion>0.2.3-preview.79.1</ElarionVersion>
   </PropertyGroup>
 
   <ItemGroup>

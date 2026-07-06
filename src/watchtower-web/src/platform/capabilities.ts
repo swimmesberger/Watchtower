@@ -1,8 +1,31 @@
-// The capability snapshot resolution reads. Watchtower ships every module and has no authentication, so
-// modules/permissions/roles are all enabled (flags default off — there are none). `createStaticCapabilities`
-// is the no-session reader the framework ships for exactly this self-hosted/no-auth case (Elarion #71); if
-// a backend capabilities/session endpoint is ever added, swap in the generated `SessionCapabilities` (same
-// structural interface, nothing else changes).
-import { createStaticCapabilities } from '@swimmesberger/elarion-contributions'
+// The capability snapshot resolution reads — fetched once at boot from the backend's `elarion.session`
+// bootstrap (ADR-0030) and wrapped in the generated typed accessors. Watchtower is unauthenticated, so the
+// snapshot is the anonymous one: every shipped module enabled, no grants, plus the [ClientFeatures] flags
+// the deployment resolves (e.g. `metrics-history` — true only on the InfluxDB metrics backend, ADR-0007).
+//
+// This is a read-only UX projection, not an enforcement boundary — hiding a nav item secures nothing.
+import {
+  createSessionCapabilities,
+  type ClientSnapshot,
+} from '@/generated/session-client'
+import type { CapabilityReader } from '@swimmesberger/elarion-contributions'
+import { rpc } from '@/lib/rpc-client'
 
-export const capabilities = createStaticCapabilities()
+// Fail closed: when the API is unreachable the shell still renders, with every gated contribution hidden.
+const OFFLINE: ClientSnapshot = {
+  user: { id: '', isAuthenticated: false, roles: [], permissions: [] },
+  modules: {},
+  flags: {},
+  variants: {},
+}
+
+/** Fetches the boot snapshot; called once in `main.tsx` before the contribution registry is built. */
+export async function loadCapabilities(): Promise<CapabilityReader> {
+  try {
+    const snapshot = (await rpc('elarion.session', {})) as ClientSnapshot
+    return createSessionCapabilities(snapshot)
+  } catch (error) {
+    console.error('Failed to load the capability snapshot — rendering with everything off.', error)
+    return createSessionCapabilities(OFFLINE)
+  }
+}

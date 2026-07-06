@@ -41,9 +41,13 @@ The backend is selected by `WATCHTOWER__METRICS__BACKEND` (`memory` | `influxdb`
 InfluxDB's collector is the single source of truth. Switching backends requires a restart — consistent
 with how the host-metrics mounts already do.
 
-A `metrics.capabilities` readout (source name, whether history is available, availability + reason) is
-surfaced to the frontend so the time-range view is gated and failures degrade gracefully — the same
-`available`/`reason` pattern host metrics already use.
+Whether history is available is surfaced to the frontend as the **`metrics-history` client flag** on the
+framework's `elarion.session` capability snapshot (Elarion ADR-0030): the Metrics module declares it via
+`[ClientFeatures]`, and an `IFeatureFlagService` resolves it from the active backend's capabilities. The
+frontend gates the History view with a `when: { flag: 'metrics-history' }` contribution clause — on the
+in-memory backend the nav item simply doesn't render. Runtime failures (Influx unreachable, no recent
+samples) still degrade through the same `available`/`reason` pattern host metrics already use; the flag
+carries only the boot-fixed deployment capability.
 
 ## Consequences
 

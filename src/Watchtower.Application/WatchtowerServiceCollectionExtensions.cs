@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Features;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -69,6 +70,10 @@ public static class WatchtowerServiceCollectionExtensions {
             services.AddHostedService<MetricsSampler>();
             services.AddSingleton<IMetricsSource, InMemoryMetricsSource>();
         }
+
+        // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates the Metrics module's
+        // [ClientFeatures] names through this service — "metrics-history" reflects the backend chosen above.
+        services.AddSingleton<IFeatureFlagService, MetricsFeatureFlagService>();
 
         // Background checkers — always registered. Each loops on a short poll and reads its
         // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the

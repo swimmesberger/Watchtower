@@ -18,9 +18,19 @@ export const metricsManifest = defineModule({
     contribute(containerCardExtras, [
       { id: 'metrics-container', order: 10, component: ContainerMetricsRow },
     ]),
-    // Desktop-only nav entry to the historical view (the live strip stays on the Dashboard).
+    // Desktop-only nav entry to the historical view (the live strip stays on the Dashboard). Gated on the
+    // `metrics-history` session flag (ADR-0030): the item only renders when the active metrics backend can
+    // answer historical ranges (the InfluxDB backend, ADR-0007) — on the in-memory backend it disappears.
     contribute(sidebarItems, [
-      { id: 'metrics-history', label: 'History', icon: LineChart, to: '/metrics/history', order: 25, mobile: false },
+      {
+        id: 'metrics-history',
+        label: 'History',
+        icon: LineChart,
+        to: '/metrics/history',
+        order: 25,
+        mobile: false,
+        when: { flag: 'metrics-history' },
+      },
     ]),
   ],
 })

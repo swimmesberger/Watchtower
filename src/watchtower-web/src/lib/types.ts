@@ -332,14 +332,6 @@ export interface StackMetricsResult {
   sampledAt: string
 }
 
-/** `metrics.capabilities`: which backend is active and whether it can answer historical ranges. */
-export interface MetricsCapabilities {
-  /** "memory" | "influxdb" */
-  source: string
-  /** True when the backend can serve explicit time ranges (the InfluxDB backend). */
-  historyAvailable: boolean
-}
-
 /** A historical time range for the `metrics.*` queries. Omit for the backend's live window. */
 export interface MetricsRange {
   /** ISO-8601 start. */
