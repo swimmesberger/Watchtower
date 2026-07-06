@@ -13,19 +13,24 @@ const queryClient = new QueryClient({
 })
 
 // One capability snapshot per boot (ADR-0030) gates contributions (the registry) and routes (the router
-// context) alike. Refreshing after a context change means fetching again and rebuilding both.
-const caps = await loadCapabilities()
-const registry = createContributionRegistry(appManifests, caps)
+// context) alike. Wrapped in an async bootstrap (not top-level await) so the production bundle stays within
+// the configured browser target — refreshing after a context change means fetching again and rebuilding both.
+async function bootstrap() {
+  const caps = await loadCapabilities()
+  const registry = createContributionRegistry(appManifests, caps)
 
-const rootEl = document.getElementById('root')
-if (!rootEl) throw new Error('Root element not found')
+  const rootEl = document.getElementById('root')
+  if (!rootEl) throw new Error('Root element not found')
 
-createRoot(rootEl).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ContributionProvider registry={registry}>
-        <RouterProvider router={router} context={{ queryClient, caps }} />
-      </ContributionProvider>
-    </QueryClientProvider>
-  </StrictMode>,
-)
+  createRoot(rootEl).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <ContributionProvider registry={registry}>
+          <RouterProvider router={router} context={{ queryClient, caps }} />
+        </ContributionProvider>
+      </QueryClientProvider>
+    </StrictMode>,
+  )
+}
+
+void bootstrap()
