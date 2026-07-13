@@ -53,19 +53,30 @@ public sealed class TestRegistry(WatchtowerDbContext db)
         startInfo.ArgumentList.Add("--password-stdin");
         startInfo.ArgumentList.Add(url);
 
-        using var process = new Process { StartInfo = startInfo };
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
+        // Scope credential persistence to a throwaway DOCKER_CONFIG: without it the CLI
+        // writes to $HOME/.docker, which may not exist or be writable (non-root containers),
+        // failing the test even though authentication succeeded.
+        var tempConfigDir = Path.Combine(Path.GetTempPath(), $"watchtower-login-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempConfigDir);
+        startInfo.Environment["DOCKER_CONFIG"] = tempConfigDir;
 
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        try {
+            using var process = new Process { StartInfo = startInfo };
+            process.OutputDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
 
-        // Write the token to stdin and close it so docker login can proceed.
-        await process.StandardInput.WriteAsync(token);
-        process.StandardInput.Close();
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
 
-        await process.WaitForExitAsync(ct);
-        return (process.ExitCode, output.ToString());
+            // Write the token to stdin and close it so docker login can proceed.
+            await process.StandardInput.WriteAsync(token);
+            process.StandardInput.Close();
+
+            await process.WaitForExitAsync(ct);
+            return (process.ExitCode, output.ToString());
+        } finally {
+            try { Directory.Delete(tempConfigDir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
     }
 }
