@@ -38,6 +38,7 @@ import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 
 const NONE = 'none'
+const DOCKER_CONFIG_WARNING_DISMISSED_KEY = 'watchtower.docker-config-warning-dismissed'
 
 export function RegistriesPage() {
   const qc = useQueryClient()
@@ -210,7 +211,7 @@ export function RegistriesPage() {
       </div>
 
       {/* docker-config detection */}
-      {dockerConfig && <DockerConfigBanner status={dockerConfig} />}
+      {dockerConfig && <DockerConfigBanner status={dockerConfig} registries={registries} />}
 
       {/* Query load error → danger Banner with Retry (not a toast) */}
       {registriesQuery.isError && (
@@ -301,7 +302,16 @@ export function RegistriesPage() {
   )
 }
 
-function DockerConfigBanner({ status }: { status: DockerConfigStatus }) {
+function DockerConfigBanner({
+  status,
+  registries,
+}: {
+  status: DockerConfigStatus
+  registries: Registry[]
+}) {
+  const [dismissed, setDismissed] = useState(
+    () => localStorage.getItem(DOCKER_CONFIG_WARNING_DISMISSED_KEY) === 'true',
+  )
   const configDir = status.path.replace(/\/config\.json$/, '')
 
   if (status.exists) {
@@ -315,17 +325,30 @@ function DockerConfigBanner({ status }: { status: DockerConfigStatus }) {
     )
   }
 
+  // The host config is only an optional base layer: once a registry has a Watchtower-managed
+  // credential attached, in-app credentials cover private pulls and the warning is noise.
+  if (dismissed || registries.some((r) => r.credentialName)) return null
+
   const mountFlag =
     status.source === 'WATCHTOWER_DOCKER_CONFIG'
       ? `-v $HOME/.docker:${configDir}:ro`
       : `-v $HOME/.docker:${configDir}:ro\n-e WATCHTOWER_DOCKER_CONFIG=${configDir}`
 
   return (
-    <Banner tone="warn" title="No Docker credentials file found">
+    <Banner
+      tone="warn"
+      title="No Docker credentials file found"
+      dismissible
+      onDismiss={() => {
+        localStorage.setItem(DOCKER_CONFIG_WARNING_DISMISSED_KEY, 'true')
+        setDismissed(true)
+      }}
+    >
       <div className="space-y-2">
         <p>
-          Private image pulls will fail unless credentials are available. If Watchtower runs inside
-          a container, mount the host Docker config and set the env var:
+          Private image pulls will fail unless credentials are available. Add a credential under
+          Credentials and attach it to a registry here — or, if Watchtower runs inside a container,
+          mount the host Docker config and set the env var:
         </p>
         <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-surface-2 px-2.5 py-1.5 font-mono text-[12px] text-text">
           {mountFlag}
