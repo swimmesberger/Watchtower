@@ -19,6 +19,7 @@ import type { Container, DeployEvent, Stack } from '@/lib/types'
 import { absoluteTitle, formatDuration, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { containerCardExtras, type RegisterHistoryRow } from '@/platform/points'
+import { ContainerEnv } from '@/components/container-env'
 import { ContainerLogs } from '@/components/container-logs'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -278,7 +279,8 @@ function ContainerCard({ container }: { container: Container }) {
         {extras.map((e) => (
           <e.component key={e.id} container={container} />
         ))}
-        <div className="mt-4">
+        <div className="mt-4 space-y-2">
+          <ContainerEnv containerId={container.id} containerName={name} />
           <ContainerLogs containerId={container.id} containerName={name} />
         </div>
       </CardContent>

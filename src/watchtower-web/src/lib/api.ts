@@ -7,6 +7,7 @@ import type {
   ActiveDeployment,
   AutomationConfig,
   Container,
+  ContainerEnvVar,
   ContainerMetrics,
   CreateCredentialRequest,
   CreateRegistryRequest,
@@ -117,6 +118,7 @@ export const api = {
 
   containers: {
     list: async () => (await rpc('containers.list', {})).containers as Container[],
+    env: async (id: string) => (await rpc('containers.env', { id })).envVars as ContainerEnvVar[],
     restart: async (id: string) => {
       await rpc('containers.restart', { id })
     },

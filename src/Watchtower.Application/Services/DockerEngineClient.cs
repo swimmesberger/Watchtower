@@ -731,6 +731,8 @@ public sealed record DockerContainerState {
 public sealed record DockerContainerConfig {
     /// <summary>The image name/tag used to start the container (e.g. "ghcr.io/org/app:latest").</summary>
     public required string Image { get; init; }
+    /// <summary>Environment variables in "KEY=VALUE" form; null when the API omits them.</summary>
+    public string[]? Env { get; init; }
     /// <summary>
     /// Container labels. For Compose-managed containers this includes
     /// <c>com.docker.compose.project</c> and <c>com.docker.compose.project.config_files</c>.
