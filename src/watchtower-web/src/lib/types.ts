@@ -164,6 +164,12 @@ export interface StackEnvVarInput {
   value: string
 }
 
+/** One env var a container is actually running with (from Docker inspect). */
+export interface ContainerEnvVar {
+  key: string
+  value: string
+}
+
 export interface DockerConfigStatus {
   /** True when config.json exists at the resolved path inside the container. */
   exists: boolean

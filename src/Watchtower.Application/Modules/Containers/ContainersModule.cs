@@ -15,12 +15,18 @@ public static partial class ContainersModule {
 public sealed record ContainerDto(
     string Id, string[] Names, string Image, string State, string Status, string? Health, string? StackName);
 
+/// <summary>One environment variable of a running container, parsed from Docker's "KEY=VALUE" form.</summary>
+public sealed record ContainerEnvVarDto(string Key, string Value);
+
 /// <summary>JSON serializer context for Containers module request/response types.</summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(ContainerDto))]
+[JsonSerializable(typeof(ContainerEnvVarDto))]
+[JsonSerializable(typeof(GetContainerEnv.Query), TypeInfoPropertyName = "GetContainerEnvQuery")]
+[JsonSerializable(typeof(GetContainerEnv.Response), TypeInfoPropertyName = "GetContainerEnvResponse")]
 [JsonSerializable(typeof(ListContainers.Query), TypeInfoPropertyName = "ListContainersQuery")]
 [JsonSerializable(typeof(ListContainers.Response), TypeInfoPropertyName = "ListContainersResponse")]
 [JsonSerializable(typeof(RestartContainer.Command), TypeInfoPropertyName = "RestartContainerCommand")]

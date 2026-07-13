@@ -36,7 +36,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
   const navigate = useNavigate()
   const stackId = stack.id
 
-  const { data: envVars = [] } = useQuery({
+  const envQuery = useQuery({
     queryKey: ['stacks', stackId, 'env'],
     queryFn: () => api.stacks.getEnv(stackId),
   })
@@ -57,10 +57,14 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     webhookEnabled: stack.webhookEnabled,
   })
 
-  const [envDraft, setEnvDraft] = useState<StackEnvVarInput[]>([
-    ...envVars.map((v) => ({ key: v.key, value: v.value })),
+  // Draft is null until the user edits; displayed rows fall back to the loaded server vars.
+  // Seeding useState from the query raced the fetch — on a cold cache the editor rendered
+  // empty and stayed empty even after the vars arrived.
+  const [envDraft, setEnvDraft] = useState<StackEnvVarInput[] | null>(null)
+  const envRows: StackEnvVarInput[] = envDraft ?? [
+    ...(envQuery.data ?? []).map((v) => ({ key: v.key, value: v.value })),
     { key: '', value: '' },
-  ])
+  ]
 
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -91,12 +95,13 @@ export function SettingsTab({ stack }: { stack: Stack }) {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    const validEnv = envDraft.filter((v) => v.key.trim() !== '')
     update.mutate({
       ...form,
       composeProjectName: form.composeProjectName || null,
       webhookToken: form.webhookToken || null,
-      envVars: validEnv,
+      // Only replace env vars when the user actually edited them — sending the fallback
+      // rows while the env query is unresolved would silently wipe the stored vars.
+      envVars: envDraft?.filter((v) => v.key.trim() !== ''),
     })
   }
 
@@ -264,7 +269,18 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           title="Environment variables"
           description="Injected via --env-file on every deploy. Reference them as ${KEY} in your compose file."
         />
-        <EnvVarEditor value={envDraft} onChange={setEnvDraft} />
+        {envQuery.isPending && (
+          <p className="rounded-md border border-border px-3 py-2.5 text-sm text-text-3">
+            Loading environment variables…
+          </p>
+        )}
+        {envQuery.isError && (
+          // No editor on error: editing on top of unseen vars would replace them on save.
+          <Banner tone="warn" title="Couldn’t load environment variables">
+            {envQuery.error.message} — saving will leave the stored variables unchanged.
+          </Banner>
+        )}
+        {envQuery.isSuccess && <EnvVarEditor value={envRows} onChange={setEnvDraft} />}
       </section>
 
       {/* Save */}
