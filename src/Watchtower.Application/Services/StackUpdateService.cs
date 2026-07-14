@@ -6,16 +6,22 @@ using Watchtower.Application.Persistence;
 
 namespace Watchtower.Application.Services;
 
-/// <summary>Result of a single stack image update check (detached from EF tracking).</summary>
-public sealed record StackUpdateResult(int StackId, bool HasUpdates, string[] OutdatedImages, DateTimeOffset CheckedAt);
+/// <summary>Result of a single stack update check (detached from EF tracking).</summary>
+public sealed record StackUpdateResult(
+    int StackId, bool HasUpdates, string[] OutdatedImages, string? NewCommitSha, DateTimeOffset CheckedAt) {
+    /// <summary>True when a redeploy would pick up something new (newer image or new commit).</summary>
+    public bool HasChanges => HasUpdates || NewCommitSha is not null;
+}
 
 /// <summary>
-/// Checks whether any container image in a Docker Compose stack has a newer version available
-/// in the registry, using the same HEAD-manifest digest approach as <see cref="SelfUpdateService"/>.
+/// Checks whether a Docker Compose stack has something new to deploy: a newer container image in
+/// the registry (same HEAD-manifest digest approach as <see cref="SelfUpdateService"/>) or a new
+/// commit on the tracked git branch (<c>git ls-remote</c> vs. the last deployed commit).
 /// Results are persisted to the <c>stack_update_checks</c> table via short-lived EF scopes.
 /// </summary>
 public sealed class StackUpdateService(
     DockerEngineClient docker,
+    GitCloneService git,
     IServiceScopeFactory scopeFactory,
     ILogger<StackUpdateService> logger) {
 
@@ -47,6 +53,10 @@ public sealed class StackUpdateService(
             if (cred is not null) (username, token) = cred.Value;
         }
 
+        // Git: does the tracked branch have a commit newer than the last deploy? Runs even when
+        // no containers are up — a compose-file change should still be detected and deployable.
+        var newCommitSha = await CheckForNewCommitAsync(stack, token, ct);
+
         // List all running containers belonging to this compose project.
         var allContainers = await docker.ListContainersAsync(ct);
         var projectContainers = allContainers
@@ -56,7 +66,7 @@ public sealed class StackUpdateService(
 
         if (projectContainers.Count == 0) {
             logger.LogDebug("No running containers found for stack {StackName}", stack.Name);
-            return Upsert(stack.Id, hasUpdates: false, []);
+            return Upsert(stack.Id, hasUpdates: false, [], newCommitSha);
         }
 
         // Deduplicate image names (multiple replicas may share the same image).
@@ -78,7 +88,32 @@ public sealed class StackUpdateService(
             }
         }
 
-        return Upsert(stack.Id, outdatedImages.Count > 0, [.. outdatedImages]);
+        return Upsert(stack.Id, outdatedImages.Count > 0, [.. outdatedImages], newCommitSha);
+    }
+
+    /// <summary>
+    /// Returns the remote branch head SHA when it differs from the stack's last deployed commit,
+    /// otherwise null. Also null when the stack was never deployed (no baseline to compare against)
+    /// or the remote can't be reached — a check failure must not trigger a deploy.
+    /// </summary>
+    private async Task<string?> CheckForNewCommitAsync(Stack stack, string? token, CancellationToken ct) {
+        if (string.IsNullOrEmpty(stack.LastDeployedCommit)) return null;
+        try {
+            var remoteHead = await git.GetRemoteHeadAsync(stack.RepositoryUrl, stack.Branch, token, ct);
+            if (remoteHead is null) {
+                logger.LogDebug("Could not resolve remote head for stack {StackName} ({Branch})", stack.Name, stack.Branch);
+                return null;
+            }
+            if (string.Equals(remoteHead, stack.LastDeployedCommit, StringComparison.OrdinalIgnoreCase))
+                return null;
+            logger.LogInformation(
+                "New commit detected for stack {StackName}: {Remote} (deployed: {Deployed})",
+                stack.Name, remoteHead, stack.LastDeployedCommit);
+            return remoteHead;
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            logger.LogWarning(ex, "Git head check failed for stack {StackName}", stack.Name);
+            return null;
+        }
     }
 
     /// <summary>On-demand check for a single stack by id.</summary>
@@ -132,21 +167,23 @@ public sealed class StackUpdateService(
             .FirstOrDefault();
     }
 
-    private StackUpdateResult Upsert(int stackId, bool hasUpdates, string[] outdatedImages) {
+    private StackUpdateResult Upsert(int stackId, bool hasUpdates, string[] outdatedImages, string? newCommitSha) {
         var checkedAt = DateTimeOffset.UtcNow;
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var existing = db.StackUpdateChecks.FirstOrDefault(c => c.StackId == stackId);
         if (existing is null) {
             db.StackUpdateChecks.Add(new StackUpdateCheck {
-                StackId = stackId, HasUpdates = hasUpdates, OutdatedImages = outdatedImages, CheckedAt = checkedAt,
+                StackId = stackId, HasUpdates = hasUpdates, OutdatedImages = outdatedImages,
+                NewCommitSha = newCommitSha, CheckedAt = checkedAt,
             });
         } else {
             existing.HasUpdates = hasUpdates;
             existing.OutdatedImages = outdatedImages;
+            existing.NewCommitSha = newCommitSha;
             existing.CheckedAt = checkedAt;
         }
         db.SaveChanges();
-        return new StackUpdateResult(stackId, hasUpdates, outdatedImages, checkedAt);
+        return new StackUpdateResult(stackId, hasUpdates, outdatedImages, newCommitSha, checkedAt);
     }
 }

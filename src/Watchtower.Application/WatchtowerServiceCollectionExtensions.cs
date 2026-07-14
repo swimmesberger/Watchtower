@@ -80,6 +80,9 @@ public static class WatchtowerServiceCollectionExtensions {
         // settings-configuration provider), so the toggles are runtime-editable without a restart.
         services.AddHostedService<SelfUpdateBackgroundService>();
         services.AddHostedService<StackUpdateBackgroundService>();
+        // Pull-based deployment — per-stack opt-in (AutoDeployMode), so no global toggle: the
+        // minute tick is a single cheap SQLite query when nothing is configured.
+        services.AddHostedService<AutoDeployBackgroundService>();
 
         return services;
     }

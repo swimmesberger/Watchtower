@@ -204,6 +204,11 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
                 return;
             }
 
+            // Record which commit this deploy runs so pull-based checks can compare against it later.
+            var deployedCommit = await _git.GetHeadCommitAsync(tempRepoDir, ct);
+            if (deployedCommit is not null)
+                WriteHeader($"[Watchtower] Checked out commit {deployedCommit[..8]}");
+
             // TrimStart ensures an accidentally absolute path is treated as relative to the cloned repo root.
             var composePath = Path.Combine(tempRepoDir, stack.ComposeFilePath.TrimStart('/', '\\'));
 
@@ -278,9 +283,13 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             var finalStatus = upResult.ExitCode == 0 ? "success" : "failed";
             CompleteEvent(eventId, finalStatus, output.ToString());
             UpdateDeployStatus(stackId, upResult.ExitCode == 0 ? DeployStatus.Success : DeployStatus.Failed);
-            // A successful deploy may have pulled new images; clear the cached check.
-            if (upResult.ExitCode == 0)
+            // A successful deploy may have pulled new images; clear the cached check and remember
+            // the deployed commit as the new baseline for git-based update detection.
+            if (upResult.ExitCode == 0) {
                 DeleteUpdateCheck(stackId);
+                if (deployedCommit is not null)
+                    RecordDeployedCommit(stackId, deployedCommit);
+            }
         } catch (OperationCanceledException) {
             output.AppendLine("[Watchtower] Deploy cancelled (server shutting down).");
             CompleteEvent(eventId, "failed", output.ToString());
@@ -374,6 +383,13 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             .OrderBy(v => v.Key)
             .Select(v => new ValueTuple<string, string>(v.Key, v.Value))
             .ToList();
+    }
+
+    private void RecordDeployedCommit(int stackId, string commitSha) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.Stacks.Where(s => s.Id == stackId)
+            .ExecuteUpdate(s => s.SetProperty(x => x.LastDeployedCommit, commitSha));
     }
 
     private void DeleteUpdateCheck(int stackId) {

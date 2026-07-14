@@ -1406,6 +1406,15 @@
               "webhookEnabled": {
                 "type": "boolean"
               },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -1418,6 +1427,12 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "createdAt": {
                 "type": "string",
@@ -1438,6 +1453,12 @@
                   "type": "string"
                 }
               },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "updatesCheckedAt": {
                 "type": [
                   "string",
@@ -1456,11 +1477,15 @@
               "credentialId",
               "webhookToken",
               "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
               "lastDeployStatus",
               "lastDeployedAt",
+              "lastDeployedCommit",
               "createdAt",
               "hasUpdates",
               "outdatedImages",
+              "newCommitSha",
               "updatesCheckedAt"
             ]
           }
@@ -1507,6 +1532,18 @@
           "webhookEnabled": {
             "type": "boolean"
           },
+          "autoDeployMode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "autoDeployTime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "envVars": {
             "type": [
               "array",
@@ -1538,6 +1575,8 @@
           "credentialId",
           "webhookToken",
           "webhookEnabled",
+          "autoDeployMode",
+          "autoDeployTime",
           "envVars"
         ]
       },
@@ -1580,6 +1619,15 @@
               "webhookEnabled": {
                 "type": "boolean"
               },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -1592,6 +1640,12 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "createdAt": {
                 "type": "string",
@@ -1612,6 +1666,12 @@
                   "type": "string"
                 }
               },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "updatesCheckedAt": {
                 "type": [
                   "string",
@@ -1630,11 +1690,15 @@
               "credentialId",
               "webhookToken",
               "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
               "lastDeployStatus",
               "lastDeployedAt",
+              "lastDeployedCommit",
               "createdAt",
               "hasUpdates",
               "outdatedImages",
+              "newCommitSha",
               "updatesCheckedAt"
             ]
           }
@@ -1822,6 +1886,15 @@
               "webhookEnabled": {
                 "type": "boolean"
               },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -1834,6 +1907,12 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "createdAt": {
                 "type": "string",
@@ -1854,6 +1933,12 @@
                   "type": "string"
                 }
               },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "updatesCheckedAt": {
                 "type": [
                   "string",
@@ -1872,11 +1957,15 @@
               "credentialId",
               "webhookToken",
               "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
               "lastDeployStatus",
               "lastDeployedAt",
+              "lastDeployedCommit",
               "createdAt",
               "hasUpdates",
               "outdatedImages",
+              "newCommitSha",
               "updatesCheckedAt"
             ]
           }
@@ -1974,6 +2063,15 @@
                 "webhookEnabled": {
                   "type": "boolean"
                 },
+                "autoDeployMode": {
+                  "type": "string"
+                },
+                "autoDeployTime": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "lastDeployStatus": {
                   "type": [
                     "string",
@@ -1986,6 +2084,12 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "lastDeployedCommit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "createdAt": {
                   "type": "string",
@@ -2006,6 +2110,12 @@
                     "type": "string"
                   }
                 },
+                "newCommitSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "updatesCheckedAt": {
                   "type": [
                     "string",
@@ -2024,11 +2134,15 @@
                 "credentialId",
                 "webhookToken",
                 "webhookEnabled",
+                "autoDeployMode",
+                "autoDeployTime",
                 "lastDeployStatus",
                 "lastDeployedAt",
+                "lastDeployedCommit",
                 "createdAt",
                 "hasUpdates",
                 "outdatedImages",
+                "newCommitSha",
                 "updatesCheckedAt"
               ]
             }
@@ -2141,6 +2255,18 @@
           "webhookEnabled": {
             "type": "boolean"
           },
+          "autoDeployMode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "autoDeployTime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "envVars": {
             "type": [
               "array",
@@ -2173,6 +2299,8 @@
           "credentialId",
           "webhookToken",
           "webhookEnabled",
+          "autoDeployMode",
+          "autoDeployTime",
           "envVars"
         ]
       },
@@ -2215,6 +2343,15 @@
               "webhookEnabled": {
                 "type": "boolean"
               },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -2227,6 +2364,12 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "createdAt": {
                 "type": "string",
@@ -2247,6 +2390,12 @@
                   "type": "string"
                 }
               },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "updatesCheckedAt": {
                 "type": [
                   "string",
@@ -2265,11 +2414,15 @@
               "credentialId",
               "webhookToken",
               "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
               "lastDeployStatus",
               "lastDeployedAt",
+              "lastDeployedCommit",
               "createdAt",
               "hasUpdates",
               "outdatedImages",
+              "newCommitSha",
               "updatesCheckedAt"
             ]
           }

@@ -50,6 +50,8 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         b.Property(x => x.ComposeProjectName).IsRequired();
         // Stored as the enum name (e.g. "Success"); the API maps it to lowercase for the client.
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
+        // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
+        b.Property(x => x.AutoDeployMode).HasConversion<string>();
         b.HasIndex(x => x.Name).IsUnique();
         b.HasOne(x => x.Credential)
             .WithMany()

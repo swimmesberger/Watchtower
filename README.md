@@ -2,8 +2,10 @@
 
 A self-hosted **Docker Compose GitOps deployer**. Register a stack (a git repository + a compose
 file), and Watchtower clones it, pulls images, and runs `docker compose up -d` — on demand from the
-UI, or via an authenticated webhook from your CI. It also inspects running containers, streams logs
-and deploy output live, checks registries for newer images, and can update itself.
+UI, via an authenticated webhook from your CI, or **pull-based** for hosts your CI can't reach:
+per stack, deploy as soon as polling finds a newer image or a new commit on the branch, or once per
+day at a fixed time (e.g. 02:00). It also inspects running containers, streams logs and deploy
+output live, checks registries for newer images, and can update itself.
 
 Watchtower is built on **[Elarion](https://github.com/swimmesberger/Elarion)** — an opinionated .NET
 application framework for module-based handler pipelines with compile-time registration and JSON-RPC
