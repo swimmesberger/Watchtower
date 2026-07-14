@@ -13,11 +13,12 @@
 # Built-in reverse proxy (optional): set WATCHTOWER__PROXY__ENABLED=true and Watchtower manages a
 # Caddy container itself (over the Docker socket) that publishes host ports 80/443, terminates TLS
 # with automatic certificates, and routes the domains you add under "Routes" to services inside your
-# stacks over a private edge network. Requirements when enabled:
+# stacks over private per-stack networks. Requirements when enabled:
 #   * host ports 80 and 443 must be free (don't run another proxy on them),
 #   * set WATCHTOWER__PROXY__ADMINEMAIL for Let's Encrypt expiry notices (recommended).
 # Watchtower creates the caddy_data / caddy_config volumes and the proxy networks automatically —
 # no changes to this file are needed. Leave the flag unset to run your own proxy instead.
+# See docs/reverse-proxy/README.md for details and operational notes.
 services:
   watchtower:
     image: swimmes/watchtower:latest
