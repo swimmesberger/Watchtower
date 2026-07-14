@@ -3244,6 +3244,639 @@
         ]
       }
     },
+    "templates.addTenant": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "envOverrides": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "templateId",
+          "slug",
+          "envOverrides"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "tenantSlug": {
+                "type": "string"
+              },
+              "stackName": {
+                "type": "string"
+              },
+              "domain": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "stackId",
+              "tenantSlug",
+              "stackName",
+              "domain",
+              "lastDeployStatus",
+              "lastDeployedAt"
+            ]
+          }
+        },
+        "required": [
+          "tenant"
+        ]
+      }
+    },
+    "templates.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "domainPattern": {
+            "type": "string"
+          },
+          "targetServiceName": {
+            "type": "string"
+          },
+          "targetPort": {
+            "type": "integer"
+          },
+          "baseEnvVars": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "branch",
+          "credentialId",
+          "domainPattern",
+          "targetServiceName",
+          "targetPort",
+          "baseEnvVars"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "domainPattern": {
+                "type": "string"
+              },
+              "targetServiceName": {
+                "type": "string"
+              },
+              "targetPort": {
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "instanceCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "credentialId",
+              "domainPattern",
+              "targetServiceName",
+              "targetPort",
+              "createdAt",
+              "instanceCount"
+            ]
+          }
+        },
+        "required": [
+          "template"
+        ]
+      }
+    },
+    "templates.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "templates.deployAll": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ]
+      }
+    },
+    "templates.get": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "domainPattern": {
+                "type": "string"
+              },
+              "targetServiceName": {
+                "type": "string"
+              },
+              "targetPort": {
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "instanceCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "credentialId",
+              "domainPattern",
+              "targetServiceName",
+              "targetPort",
+              "createdAt",
+              "instanceCount"
+            ]
+          },
+          "baseEnvVars": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "template",
+          "baseEnvVars"
+        ]
+      }
+    },
+    "templates.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "repositoryUrl": {
+                  "type": "string"
+                },
+                "composeFilePath": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "credentialId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "domainPattern": {
+                  "type": "string"
+                },
+                "targetServiceName": {
+                  "type": "string"
+                },
+                "targetPort": {
+                  "type": "integer"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "instanceCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "repositoryUrl",
+                "composeFilePath",
+                "branch",
+                "credentialId",
+                "domainPattern",
+                "targetServiceName",
+                "targetPort",
+                "createdAt",
+                "instanceCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "templates"
+        ]
+      }
+    },
+    "templates.listTenants": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tenants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stackId": {
+                  "type": "integer"
+                },
+                "tenantSlug": {
+                  "type": "string"
+                },
+                "stackName": {
+                  "type": "string"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployStatus": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "stackId",
+                "tenantSlug",
+                "stackName",
+                "domain",
+                "lastDeployStatus",
+                "lastDeployedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "tenants"
+        ]
+      }
+    },
+    "templates.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "domainPattern": {
+            "type": "string"
+          },
+          "targetServiceName": {
+            "type": "string"
+          },
+          "targetPort": {
+            "type": "integer"
+          },
+          "baseEnvVars": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "branch",
+          "credentialId",
+          "domainPattern",
+          "targetServiceName",
+          "targetPort",
+          "baseEnvVars"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "domainPattern": {
+                "type": "string"
+              },
+              "targetServiceName": {
+                "type": "string"
+              },
+              "targetPort": {
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "instanceCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "credentialId",
+              "domainPattern",
+              "targetServiceName",
+              "targetPort",
+              "createdAt",
+              "instanceCount"
+            ]
+          }
+        },
+        "required": [
+          "template"
+        ]
+      }
+    },
     "volumes.list": {
       "params": {
         "type": "object",
@@ -3506,6 +4139,9 @@
         "features": []
       },
       "System": {
+        "features": []
+      },
+      "Tenancy": {
         "features": []
       },
       "Volumes": {

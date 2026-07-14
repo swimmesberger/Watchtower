@@ -28,7 +28,9 @@ namespace Watchtower.Application.Services;
 /// </summary>
 public sealed class CaddyManager : IHostedService, IDisposable {
     public const string ControlNetwork = "watchtower-control";
-    public const string EdgeNetwork = "watchtower-edge";
+    // Each stack gets its own ingress network shared only with Caddy, so tenants are isolated at L2
+    // (a compromised tenant cannot reach another tenant's containers).
+    private const string IngressNetworkPrefix = "watchtower-ingress-";
     private const string CaddyContainerName = "watchtower-caddy";
     private const string CaddyAlias = "watchtower-caddy";
     private const string SelfAlias = "watchtower";
@@ -89,7 +91,6 @@ public sealed class CaddyManager : IHostedService, IDisposable {
     private async Task ReconcileAsync(CancellationToken ct) {
         try {
             await EnsureNetworkAsync(ControlNetwork, ct);
-            await EnsureNetworkAsync(EdgeNetwork, ct);
             await JoinSelfToControlAsync(ct);
             await EnsureCaddyContainerAsync(ct);
             await ConnectAllRoutedContainersAsync(ct);
@@ -112,7 +113,10 @@ public sealed class CaddyManager : IHostedService, IDisposable {
         if (!_proxy.Enabled) return;
         try {
             var sites = await LoadSitesAsync(ct);
-            var caddyfile = CaddyConfigBuilder.Build(sites, new CaddyGlobals(_proxy.AdminEmail, AdminPort));
+            // Caddy reaches Watchtower over the control network by the "watchtower" alias; the app listens
+            // on :8080 inside the container. The ask endpoint gates on-demand certs to known domains.
+            var askUrl = $"http://{SelfAlias}:8080/api/proxy/ask";
+            var caddyfile = CaddyConfigBuilder.Build(sites, new CaddyGlobals(_proxy.AdminEmail, AdminPort, askUrl));
             await PushConfigAsync(caddyfile, ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to apply Caddy config; will be retried on the next change.");
@@ -138,9 +142,9 @@ public sealed class CaddyManager : IHostedService, IDisposable {
                     .ToListAsync(ct);
             }
             foreach (var (project, service) in targets)
-                await ConnectServiceAsync(project, service, ct);
+                await ConnectServiceAsync(stackId, project, service, ct);
         } catch (Exception ex) {
-            _logger.LogWarning(ex, "Failed to connect stack {StackId} services to the edge network.", stackId);
+            _logger.LogWarning(ex, "Failed to connect stack {StackId} services to its ingress network.", stackId);
         }
     }
 
@@ -218,29 +222,33 @@ public sealed class CaddyManager : IHostedService, IDisposable {
         };
 
         var id = await _docker.CreateContainerAsync(body, CaddyContainerName, ct);
-        // Edge network carries ingress traffic to service containers; Caddy needs no alias there.
-        await _docker.ConnectContainerAsync(EdgeNetwork, id, aliases: null, ct);
+        // Caddy joins each stack's ingress network on demand (EnsureStackNetworkAsync); it starts on the
+        // control network only.
         await _docker.StartContainerAsync(id, ct);
         _logger.LogInformation("Started managed Caddy container {ShortId}", id.Length >= 12 ? id[..12] : id);
     }
 
     private async Task ConnectAllRoutedContainersAsync(CancellationToken ct) {
-        List<(string Project, string Service)> targets;
+        List<(int StackId, string Project, string Service)> targets;
         await using (var scope = _scopeFactory.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             targets = await db.Routes.AsNoTracking()
                 .Include(r => r.Stack)
-                .Select(r => new { r.Stack!.ComposeProjectName, r.ServiceName })
+                .Select(r => new { r.StackId, r.Stack!.ComposeProjectName, r.ServiceName })
                 .Distinct()
-                .Select(x => new ValueTuple<string, string>(x.ComposeProjectName, x.ServiceName))
+                .Select(x => new ValueTuple<int, string, string>(x.StackId, x.ComposeProjectName, x.ServiceName))
                 .ToListAsync(ct);
         }
-        foreach (var (project, service) in targets)
-            await ConnectServiceAsync(project, service, ct);
+        foreach (var (stackId, project, service) in targets)
+            await ConnectServiceAsync(stackId, project, service, ct);
     }
 
-    /// <summary>Connects every container of a compose service to the edge network with a stable alias.</summary>
-    private async Task ConnectServiceAsync(string project, string service, CancellationToken ct) {
+    /// <summary>
+    /// Ensures the stack's ingress network exists and Caddy is on it, then connects every container of a
+    /// compose service to it under a stable alias.
+    /// </summary>
+    private async Task ConnectServiceAsync(int stackId, string project, string service, CancellationToken ct) {
+        var network = await EnsureStackNetworkAsync(stackId, ct);
         var alias = EdgeAlias(project, service);
         var containers = await _docker.ListContainersByLabelsAsync(
             [$"{ComposeProjectLabel}={project}", $"{ComposeServiceLabel}={service}"], ct);
@@ -250,12 +258,25 @@ public sealed class CaddyManager : IHostedService, IDisposable {
         }
         foreach (var c in containers) {
             try {
-                await _docker.ConnectContainerAsync(EdgeNetwork, c.Id, [alias], ct);
+                await _docker.ConnectContainerAsync(network, c.Id, [alias], ct);
             } catch (Exception ex) {
                 var shortId = c.Id.Length >= 12 ? c.Id[..12] : c.Id;
-                _logger.LogWarning(ex, "Failed to connect {Container} ({Alias}) to the edge network", shortId, alias);
+                _logger.LogWarning(ex, "Failed to connect {Container} ({Alias}) to {Network}", shortId, alias, network);
             }
         }
+    }
+
+    /// <summary>Creates the stack's ingress network if missing and joins Caddy to it; returns its name.</summary>
+    private async Task<string> EnsureStackNetworkAsync(int stackId, CancellationToken ct) {
+        var network = IngressNetworkPrefix + stackId;
+        var networks = await _docker.ListNetworksAsync(ct);
+        if (networks.All(n => n.Name != network)) {
+            _logger.LogInformation("Creating ingress network {Network}", network);
+            await _docker.CreateNetworkAsync(network, new Dictionary<string, string> { [ManagedLabelKey] = "ingress" }, ct);
+        }
+        // Idempotent: a 403 (already connected) is treated as success by ConnectContainerAsync.
+        await _docker.ConnectContainerAsync(network, CaddyContainerName, aliases: null, ct);
+        return network;
     }
 
     // ── Config rendering + push ────────────────────────────────────────────────
@@ -272,7 +293,9 @@ public sealed class CaddyManager : IHostedService, IDisposable {
                 r.Domain,
                 EdgeAlias(r.Stack!.ComposeProjectName, r.ServiceName),
                 r.ContainerPort,
-                r.TlsEnabled))
+                r.TlsEnabled,
+                // Customer-owned domains use on-demand TLS; managed subdomains are issued proactively.
+                OnDemand: r.Kind == DomainKind.Custom))
             .ToList();
     }
 

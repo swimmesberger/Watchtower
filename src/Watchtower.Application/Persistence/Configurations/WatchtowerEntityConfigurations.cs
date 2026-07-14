@@ -55,6 +55,48 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
             .WithMany()
             .HasForeignKey(x => x.CredentialId)
             .OnDelete(DeleteBehavior.SetNull);
+        // Tenant instances link back to their template; deleting a template detaches (not deletes) them.
+        // (TemplateId, TenantSlug) is unique — SQLite treats NULLs as distinct, so standalone stacks
+        // (both null) never collide.
+        b.HasOne(x => x.Template)
+            .WithMany(t => t.Instances)
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.SetNull);
+        b.HasIndex(x => new { x.TemplateId, x.TenantSlug }).IsUnique();
+    }
+}
+
+[EntityConfiguration]
+public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackTemplate> {
+    public void Configure(EntityTypeBuilder<StackTemplate> b) {
+        b.ToTable("stack_templates");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.RepositoryUrl).IsRequired();
+        b.Property(x => x.ComposeFilePath).IsRequired();
+        b.Property(x => x.Branch).IsRequired();
+        b.Property(x => x.DomainPattern).IsRequired();
+        b.Property(x => x.TargetServiceName).IsRequired();
+        b.HasIndex(x => x.Name).IsUnique();
+        b.HasOne(x => x.Credential)
+            .WithMany()
+            .HasForeignKey(x => x.CredentialId)
+            .OnDelete(DeleteBehavior.SetNull);
+    }
+}
+
+[EntityConfiguration]
+public sealed class StackTemplateEnvVarConfiguration : IEntityTypeConfiguration<StackTemplateEnvVar> {
+    public void Configure(EntityTypeBuilder<StackTemplateEnvVar> b) {
+        b.ToTable("stack_template_env_vars");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Key).IsRequired();
+        b.Property(x => x.Value).IsRequired();
+        b.HasIndex(x => new { x.TemplateId, x.Key }).IsUnique();
+        b.HasOne(x => x.Template)
+            .WithMany(t => t.BaseEnvVars)
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 

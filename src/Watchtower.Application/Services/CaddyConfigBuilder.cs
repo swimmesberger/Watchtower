@@ -4,12 +4,17 @@ namespace Watchtower.Application.Services;
 
 /// <summary>
 /// A single site the proxy serves: a public <paramref name="Domain"/> forwarded to an internal
-/// upstream. <paramref name="UpstreamHost"/> is the container's DNS alias on the edge network.
+/// upstream. <paramref name="UpstreamHost"/> is the container's DNS alias on the ingress network.
+/// <paramref name="OnDemand"/> requests a certificate lazily on first request (for customer-owned
+/// custom domains), gated by the ask endpoint in <see cref="CaddyGlobals"/>.
 /// </summary>
-public sealed record CaddySite(string Domain, string UpstreamHost, int UpstreamPort, bool Tls);
+public sealed record CaddySite(string Domain, string UpstreamHost, int UpstreamPort, bool Tls, bool OnDemand = false);
 
-/// <summary>Global Caddy options that apply to every site.</summary>
-public sealed record CaddyGlobals(string? Email, int AdminPort = 2019);
+/// <summary>
+/// Global Caddy options that apply to every site. When <paramref name="AskUrl"/> is set, on-demand TLS
+/// is enabled and gated by that endpoint (which must return 2xx only for domains Watchtower knows).
+/// </summary>
+public sealed record CaddyGlobals(string? Email, int AdminPort = 2019, string? AskUrl = null);
 
 /// <summary>
 /// Renders a Caddyfile from Watchtower's route table. Pure and side-effect free so it is trivial to
@@ -26,6 +31,11 @@ public static class CaddyConfigBuilder {
         sb.Append($"\tadmin 0.0.0.0:{globals.AdminPort}\n");
         if (!string.IsNullOrWhiteSpace(globals.Email))
             sb.Append($"\temail {globals.Email}\n");
+        if (!string.IsNullOrWhiteSpace(globals.AskUrl)) {
+            sb.Append("\ton_demand_tls {\n");
+            sb.Append($"\t\task {globals.AskUrl}\n");
+            sb.Append("\t}\n");
+        }
         sb.Append("}\n");
 
         foreach (var site in sites.OrderBy(s => s.Domain, StringComparer.Ordinal)) {
@@ -33,6 +43,9 @@ public static class CaddyConfigBuilder {
             var address = site.Tls ? site.Domain : $"http://{site.Domain}";
             sb.Append('\n');
             sb.Append($"{address} {{\n");
+            // On-demand: fetch the cert lazily on first request (customer-owned domains), gated by `ask`.
+            if (site.Tls && site.OnDemand)
+                sb.Append("\ttls {\n\t\ton_demand\n\t}\n");
             sb.Append($"\treverse_proxy {site.UpstreamHost}:{site.UpstreamPort}\n");
             sb.Append("}\n");
         }

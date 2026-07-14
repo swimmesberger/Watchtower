@@ -16,8 +16,24 @@ public static class WatchtowerHttpEndpoints {
         MapWebhook(app);
         MapDeployOutputStream(app);
         MapContainerLogStream(app);
+        MapProxyAsk(app);
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
+    }
+
+    /// <summary>
+    /// On-demand TLS gate for Caddy (custom domains). Caddy calls this before issuing a certificate for
+    /// a requested host; we return 200 only for domains that exist in the route table, so a stray domain
+    /// pointed at this host can never trigger unbounded certificate issuance. Reachable only on the
+    /// internal control network.
+    /// </summary>
+    private static void MapProxyAsk(WebApplication app) {
+        app.MapGet("/api/proxy/ask", async (string? domain, WatchtowerDbContext db, CancellationToken ct) => {
+            if (string.IsNullOrWhiteSpace(domain)) return Results.BadRequest();
+            var known = await db.Routes.AsNoTracking()
+                .AnyAsync(r => r.Domain == domain.Trim().ToLower(), ct);
+            return known ? Results.Ok() : Results.StatusCode(StatusCodes.Status403Forbidden);
+        });
     }
 
     /// <summary>

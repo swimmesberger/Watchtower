@@ -15,6 +15,7 @@ import proxy from '@/modules/proxy'
 import registries from '@/modules/registries'
 import settings from '@/modules/settings'
 import stacks from '@/modules/stacks'
+import templates from '@/modules/templates'
 
 // Vite expands the glob at build time into static imports, so manifest discovery stays compile-time,
 // bundled, and deterministic (keys come back sorted). Used only for `.manifest` — routes come from the
@@ -43,6 +44,7 @@ const routeTree = rootRoute.addChildren([
   ...registries.routes,
   ...settings.routes,
   ...stacks.routes,
+  ...templates.routes,
 ])
 
 // Context values are supplied at render time by `RouterProvider` in the entry (after the capability

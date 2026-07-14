@@ -425,3 +425,59 @@ export interface ProxyStatus {
   caddyRunning: boolean
   routeCount: number
 }
+
+// ── Multi-tenancy (stack templates) ─────────────────────────────────────────
+
+export interface StackTemplate {
+  id: number
+  name: string
+  repositoryUrl: string
+  composeFilePath: string
+  branch: string
+  credentialId: number | null
+  domainPattern: string
+  targetServiceName: string
+  targetPort: number
+  createdAt: string
+  instanceCount: number
+}
+
+export interface TemplateEnvVar {
+  id: number
+  key: string
+  value: string
+}
+
+export interface TemplateEnvVarInput {
+  key: string
+  value: string
+}
+
+export interface Tenant {
+  stackId: number
+  tenantSlug: string
+  stackName: string
+  domain: string | null
+  lastDeployStatus: string | null
+  lastDeployedAt: string | null
+}
+
+export interface CreateTemplateRequest {
+  name: string
+  repositoryUrl: string
+  composeFilePath: string
+  branch: string
+  credentialId?: number | null
+  domainPattern: string
+  targetServiceName: string
+  targetPort: number
+  baseEnvVars?: TemplateEnvVarInput[] | null
+}
+
+export type UpdateTemplateRequest = CreateTemplateRequest
+
+export interface AddTenantRequest {
+  templateId: number
+  slug: string
+  envOverrides?: TemplateEnvVarInput[] | null
+}
