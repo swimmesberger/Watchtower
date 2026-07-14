@@ -57,6 +57,12 @@ public sealed class Stack {
     public DeployStatus? LastDeployStatus { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
+    /// <summary>Set when this stack is a tenant instance of a <see cref="StackTemplate"/>; null for standalone stacks.</summary>
+    public int? TemplateId { get; set; }
+    public StackTemplate? Template { get; set; }
+    /// <summary>The tenant identifier within the template (unique per template); null for standalone stacks.</summary>
+    public string? TenantSlug { get; set; }
+
     public ICollection<DeployEvent> DeployEvents { get; set; } = [];
     public ICollection<StackEnvVar> EnvVars { get; set; } = [];
     public StackUpdateCheck? UpdateCheck { get; set; }

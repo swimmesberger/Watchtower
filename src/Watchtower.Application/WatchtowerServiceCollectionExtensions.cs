@@ -54,6 +54,11 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
+        // Reverse proxy (Caddy) — singleton for handler/deploy triggers; hosted so the proxy topology
+        // (networks + container + routes) is reconciled on startup. No-op unless Proxy:Enabled.
+        services.AddSingleton<CaddyManager>();
+        services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
+
         services.AddSingleton<StackUpdateService>();
 
         // Metrics backend (ADR-0007) — pluggable and mutually exclusive, so exactly one collector runs.

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Watchtower.Application.Persistence;
 
@@ -10,9 +11,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260714113517_AddStackTemplates")]
+    partial class AddStackTemplates
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -245,15 +248,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("id");
 
-                    b.Property<string>("AutoDeployMode")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("auto_deploy_mode");
-
-                    b.Property<string>("AutoDeployTime")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("auto_deploy_time");
-
                     b.Property<string>("Branch")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -284,10 +278,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Property<DateTimeOffset?>("LastDeployedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("last_deployed_at");
-
-                    b.Property<string>("LastDeployedCommit")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("last_deployed_commit");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -469,10 +459,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Property<bool>("HasUpdates")
                         .HasColumnType("INTEGER")
                         .HasColumnName("has_updates");
-
-                    b.Property<string>("NewCommitSha")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("new_commit_sha");
 
                     b.Property<string>("OutdatedImages")
                         .IsRequired()

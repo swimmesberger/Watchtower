@@ -390,3 +390,110 @@ export interface AutomationConfig {
   stackCheckEnabled: boolean
   stackCheckIntervalMinutes: number
 }
+
+// ── Reverse proxy (routes) ──────────────────────────────────────────────────
+
+export type RouteStatus = 'pending' | 'awaitingdns' | 'active' | 'error'
+export type DomainKind = 'managed' | 'custom'
+
+export interface Route {
+  id: number
+  stackId: number
+  stackName: string | null
+  domain: string
+  serviceName: string
+  containerPort: number
+  tlsEnabled: boolean
+  isPrimary: boolean
+  kind: DomainKind
+  status: RouteStatus
+  statusDetail: string | null
+  /** ISO timestamp of the certificate expiry, when known. */
+  certNotAfter: string | null
+  createdAt: string
+}
+
+export interface CreateRouteRequest {
+  stackId: number
+  domain: string
+  serviceName: string
+  containerPort: number
+  tlsEnabled: boolean
+  isPrimary: boolean
+  kind?: DomainKind | null
+}
+
+export interface UpdateRouteRequest {
+  domain: string
+  serviceName: string
+  containerPort: number
+  tlsEnabled: boolean
+  isPrimary: boolean
+}
+
+export interface DnsCheckResult {
+  resolves: boolean
+  addresses: string[]
+}
+
+export interface ProxyStatus {
+  enabled: boolean
+  caddyRunning: boolean
+  routeCount: number
+}
+
+// ── Multi-tenancy (stack templates) ─────────────────────────────────────────
+
+export interface StackTemplate {
+  id: number
+  name: string
+  repositoryUrl: string
+  composeFilePath: string
+  branch: string
+  credentialId: number | null
+  domainPattern: string
+  targetServiceName: string
+  targetPort: number
+  createdAt: string
+  instanceCount: number
+}
+
+export interface TemplateEnvVar {
+  id: number
+  key: string
+  value: string
+}
+
+export interface TemplateEnvVarInput {
+  key: string
+  value: string
+}
+
+export interface Tenant {
+  stackId: number
+  tenantSlug: string
+  stackName: string
+  domain: string | null
+  lastDeployStatus: string | null
+  lastDeployedAt: string | null
+}
+
+export interface CreateTemplateRequest {
+  name: string
+  repositoryUrl: string
+  composeFilePath: string
+  branch: string
+  credentialId?: number | null
+  domainPattern: string
+  targetServiceName: string
+  targetPort: number
+  baseEnvVars?: TemplateEnvVarInput[] | null
+}
+
+export type UpdateTemplateRequest = CreateTemplateRequest
+
+export interface AddTenantRequest {
+  templateId: number
+  slug: string
+  envOverrides?: TemplateEnvVarInput[] | null
+}

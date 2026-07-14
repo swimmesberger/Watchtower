@@ -57,6 +57,48 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
             .WithMany()
             .HasForeignKey(x => x.CredentialId)
             .OnDelete(DeleteBehavior.SetNull);
+        // Tenant instances link back to their template; deleting a template detaches (not deletes) them.
+        // (TemplateId, TenantSlug) is unique — SQLite treats NULLs as distinct, so standalone stacks
+        // (both null) never collide.
+        b.HasOne(x => x.Template)
+            .WithMany(t => t.Instances)
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.SetNull);
+        b.HasIndex(x => new { x.TemplateId, x.TenantSlug }).IsUnique();
+    }
+}
+
+[EntityConfiguration]
+public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackTemplate> {
+    public void Configure(EntityTypeBuilder<StackTemplate> b) {
+        b.ToTable("stack_templates");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.RepositoryUrl).IsRequired();
+        b.Property(x => x.ComposeFilePath).IsRequired();
+        b.Property(x => x.Branch).IsRequired();
+        b.Property(x => x.DomainPattern).IsRequired();
+        b.Property(x => x.TargetServiceName).IsRequired();
+        b.HasIndex(x => x.Name).IsUnique();
+        b.HasOne(x => x.Credential)
+            .WithMany()
+            .HasForeignKey(x => x.CredentialId)
+            .OnDelete(DeleteBehavior.SetNull);
+    }
+}
+
+[EntityConfiguration]
+public sealed class StackTemplateEnvVarConfiguration : IEntityTypeConfiguration<StackTemplateEnvVar> {
+    public void Configure(EntityTypeBuilder<StackTemplateEnvVar> b) {
+        b.ToTable("stack_template_env_vars");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Key).IsRequired();
+        b.Property(x => x.Value).IsRequired();
+        b.HasIndex(x => new { x.TemplateId, x.Key }).IsUnique();
+        b.HasOne(x => x.Template)
+            .WithMany(t => t.BaseEnvVars)
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -86,6 +128,25 @@ public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnv
         b.HasIndex(x => new { x.StackId, x.Key }).IsUnique();
         b.HasOne(x => x.Stack)
             .WithMany(s => s.EnvVars)
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
+    public void Configure(EntityTypeBuilder<Route> b) {
+        b.ToTable("routes");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Domain).IsRequired();
+        b.Property(x => x.ServiceName).IsRequired();
+        // Stored as the enum name (e.g. "Active"/"Managed"); the API maps Status to lowercase for the client.
+        b.Property(x => x.Status).HasConversion<string>();
+        b.Property(x => x.Kind).HasConversion<string>();
+        b.HasIndex(x => x.Domain).IsUnique();
+        b.HasIndex(x => x.StackId);
+        b.HasOne(x => x.Stack)
+            .WithMany()
             .HasForeignKey(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
     }

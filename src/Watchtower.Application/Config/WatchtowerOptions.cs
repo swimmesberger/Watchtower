@@ -59,6 +59,35 @@ public sealed record WatchtowerOptions {
     /// <c>WATCHTOWER__METRICS__INFLUX__URL=…</c>).
     /// </summary>
     public MetricsOptions Metrics { get; init; } = new();
+
+    /// <summary>
+    /// Built-in reverse proxy (Caddy) settings. Bound from <c>WATCHTOWER__PROXY__*</c>
+    /// (e.g. <c>WATCHTOWER__PROXY__ENABLED=true</c>, <c>WATCHTOWER__PROXY__ADMINEMAIL=…</c>).
+    /// </summary>
+    public ProxyOptions Proxy { get; init; } = new();
+}
+
+/// <summary>
+/// Settings for the built-in Caddy reverse proxy. Watchtower manages the Caddy container itself over
+/// the Docker socket: it publishes host ports 80/443, terminates TLS with automatic certificates, and
+/// forwards each configured <c>Route</c> to a service inside a stack over a private edge network.
+/// Disabled by default so nothing binds 80/443 or spawns a container unless the operator opts in.
+/// </summary>
+public sealed record ProxyOptions {
+    /// <summary>
+    /// When true, Watchtower ensures a managed Caddy container is running and reconciles routes into it.
+    /// Requires host ports 80 and 443 to be free. Set via <c>WATCHTOWER__PROXY__ENABLED=true</c>.
+    /// </summary>
+    public bool Enabled { get; init; } = false;
+
+    /// <summary>
+    /// Email registered with the ACME CA (Let's Encrypt/ZeroSSL) for expiry notices. Optional but
+    /// recommended. When empty, Caddy issues certificates without an account email.
+    /// </summary>
+    public string? AdminEmail { get; init; }
+
+    /// <summary>Caddy image to run. Defaults to the official <c>caddy:2</c>.</summary>
+    public string CaddyImage { get; init; } = "caddy:2";
 }
 
 /// <summary>

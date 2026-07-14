@@ -9,26 +9,37 @@ import type {
   Container,
   ContainerEnvVar,
   ContainerMetrics,
+  AddTenantRequest,
   CreateCredentialRequest,
   CreateRegistryRequest,
+  CreateRouteRequest,
   CreateStackRequest,
+  CreateTemplateRequest,
   Credential,
   DeployAccepted,
   DeployEvent,
+  DnsCheckResult,
   DockerConfigStatus,
   HostMetrics,
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
   PruneOrphansResult,
+  ProxyStatus,
   Registry,
+  Route,
   SelfUpdateStatus,
   Stack,
+  StackTemplate,
+  Tenant,
+  TemplateEnvVar,
+  UpdateTemplateRequest,
   StackEnvVar,
   StackEnvVarInput,
   StackMetricsResult,
   UpdateCredentialRequest,
   UpdateRegistryRequest,
+  UpdateRouteRequest,
   UpdateSelfConfigRequest,
   UpdateStackRequest,
   VolumeInfo,
@@ -154,6 +165,80 @@ export const api = {
       (await rpc('networks.list', { project: project ?? null })).networks as NetworkInfo[],
     ports: async (project?: string | null) =>
       (await rpc('networks.ports', { project: project ?? null })) as NetworkPortsResult,
+  },
+
+  proxy: {
+    listRoutes: async () => (await rpc('proxy.listRoutes', {})).routes as Route[],
+    getRoute: async (id: number) => (await rpc('proxy.getRoute', { id })).route as Route,
+    createRoute: async (data: CreateRouteRequest) =>
+      (await rpc('proxy.createRoute', {
+        stackId: data.stackId,
+        domain: data.domain,
+        serviceName: data.serviceName,
+        containerPort: data.containerPort,
+        tlsEnabled: data.tlsEnabled,
+        isPrimary: data.isPrimary,
+        kind: data.kind ?? null,
+      })).route as Route,
+    updateRoute: async (id: number, data: UpdateRouteRequest) =>
+      (await rpc('proxy.updateRoute', {
+        id,
+        domain: data.domain,
+        serviceName: data.serviceName,
+        containerPort: data.containerPort,
+        tlsEnabled: data.tlsEnabled,
+        isPrimary: data.isPrimary,
+      })).route as Route,
+    deleteRoute: async (id: number) => {
+      await rpc('proxy.deleteRoute', { id })
+    },
+    checkDns: async (domain: string) =>
+      (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
+    getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
+  },
+
+  templates: {
+    list: async () => (await rpc('templates.list', {})).templates as StackTemplate[],
+    get: async (id: number) =>
+      (await rpc('templates.get', { id })) as { template: StackTemplate; baseEnvVars: TemplateEnvVar[] },
+    create: async (data: CreateTemplateRequest) =>
+      (await rpc('templates.create', {
+        name: data.name,
+        repositoryUrl: data.repositoryUrl,
+        composeFilePath: data.composeFilePath,
+        branch: data.branch,
+        credentialId: data.credentialId ?? null,
+        domainPattern: data.domainPattern,
+        targetServiceName: data.targetServiceName,
+        targetPort: data.targetPort,
+        baseEnvVars: data.baseEnvVars ?? null,
+      })).template as StackTemplate,
+    update: async (id: number, data: UpdateTemplateRequest) =>
+      (await rpc('templates.update', {
+        id,
+        name: data.name,
+        repositoryUrl: data.repositoryUrl,
+        composeFilePath: data.composeFilePath,
+        branch: data.branch,
+        credentialId: data.credentialId ?? null,
+        domainPattern: data.domainPattern,
+        targetServiceName: data.targetServiceName,
+        targetPort: data.targetPort,
+        baseEnvVars: data.baseEnvVars ?? null,
+      })).template as StackTemplate,
+    delete: async (id: number) => {
+      await rpc('templates.delete', { id })
+    },
+    addTenant: async (data: AddTenantRequest) =>
+      (await rpc('templates.addTenant', {
+        templateId: data.templateId,
+        slug: data.slug,
+        envOverrides: data.envOverrides ?? null,
+      })).tenant as Tenant,
+    listTenants: async (templateId: number) =>
+      (await rpc('templates.listTenants', { templateId })).tenants as Tenant[],
+    deployAll: async (templateId: number) =>
+      (await rpc('templates.deployAll', { templateId })).count as number,
   },
 
   metrics: {
