@@ -49,10 +49,16 @@ public sealed record NetworkDto(
     bool IsDefault);
 
 /// <summary>A single published (or exposed-but-unpublished) container port with derived exposure.</summary>
+/// <param name="ServiceName">
+/// The compose service (<c>com.docker.compose.service</c> label) this container belongs to, or null
+/// for non-compose containers. This is the name routes forward to, so it drives the route form's
+/// service dropdown.
+/// </param>
 public sealed record PublishedPortDto(
     string ContainerId,
     string ContainerName,
     string? StackName,
+    string? ServiceName,
     int PrivatePort,
     int? PublicPort,
     string Protocol,
