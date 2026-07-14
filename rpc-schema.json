@@ -1042,6 +1042,12 @@
                     "null"
                   ]
                 },
+                "serviceName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "privatePort": {
                   "type": "integer"
                 },
@@ -1065,6 +1071,7 @@
                 "containerId",
                 "containerName",
                 "stackName",
+                "serviceName",
                 "privatePort",
                 "publicPort",
                 "protocol",

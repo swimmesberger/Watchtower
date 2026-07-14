@@ -262,6 +262,8 @@ export interface PublishedPort {
   containerId: string
   containerName: string
   stackName: string | null
+  /** Compose service (com.docker.compose.service), or null for non-compose containers. */
+  serviceName: string | null
   /** Container port. */
   privatePort: number
   /** Host port (null = exposed but not published). */

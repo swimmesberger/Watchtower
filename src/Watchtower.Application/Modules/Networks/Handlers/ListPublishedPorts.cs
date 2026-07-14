@@ -12,6 +12,7 @@ namespace Watchtower.Application.Modules.Networks.Handlers;
 public sealed class ListPublishedPorts(DockerEngineClient docker)
     : IHandler<ListPublishedPorts.Query, Result<ListPublishedPorts.Response>> {
     private const string ComposeProjectLabel = "com.docker.compose.project";
+    private const string ComposeServiceLabel = "com.docker.compose.service";
 
     public sealed record Query(string? Project);
     public sealed record Response(
@@ -29,6 +30,7 @@ public sealed class ListPublishedPorts(DockerEngineClient docker)
                     continue;
 
                 var containerName = PrimaryName(c.Names);
+                var service = c.Labels.TryGetValue(ComposeServiceLabel, out var svc) ? svc : null;
                 foreach (var port in c.Ports) {
                     var hostIp = port.IP ?? "";
                     var exposure = DeriveExposure(hostIp, port.PublicPort);
@@ -36,6 +38,7 @@ public sealed class ListPublishedPorts(DockerEngineClient docker)
                         c.Id,
                         containerName,
                         project,
+                        service,
                         port.PrivatePort,
                         port.PublicPort,
                         NormalizeProtocol(port.Type),

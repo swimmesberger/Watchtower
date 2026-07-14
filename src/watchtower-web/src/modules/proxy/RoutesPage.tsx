@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -12,7 +12,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
+import { Input, type InputProps } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SectionHeader } from '@/components/ui/section-header'
 import {
@@ -46,6 +46,96 @@ const emptyForm = {
   serviceName: '',
   containerPort: '',
   tlsEnabled: true,
+  // True once the user opts out of the discovered-value dropdown to type a custom value.
+  serviceManual: false,
+  portManual: false,
+}
+
+const MANUAL = '__manual__'
+
+/**
+ * A select populated from discovered values with a manual-entry escape hatch. Renders a plain text
+ * input when there's nothing to choose from (no live containers) or the user opts to type a custom
+ * value, and a disabled placeholder while the options are still loading.
+ */
+function ComboField({
+  id,
+  describedBy,
+  value,
+  onChange,
+  options,
+  manual,
+  onManualChange,
+  loading,
+  placeholder,
+  inputProps,
+}: {
+  id?: string
+  describedBy?: string
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+  manual: boolean
+  onManualChange: (manual: boolean) => void
+  loading?: boolean
+  placeholder: string
+  inputProps?: InputProps
+}) {
+  if (loading) {
+    return <Input {...inputProps} id={id} aria-describedby={describedBy} disabled placeholder="Loading…" />
+  }
+
+  if (manual || options.length === 0) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <Input
+          {...inputProps}
+          id={id}
+          aria-describedby={describedBy}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        {options.length > 0 && (
+          <button
+            type="button"
+            className="self-start text-xs text-text-3 transition-colors hover:text-text-2"
+            onClick={() => {
+              onManualChange(false)
+              onChange('')
+            }}
+          >
+            Choose from list
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <Select
+      value={value}
+      onValueChange={(v) => {
+        if (v === MANUAL) {
+          onManualChange(true)
+          onChange('')
+        } else {
+          onChange(v)
+        }
+      }}
+    >
+      <SelectTrigger id={id} aria-describedby={describedBy}>
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((o) => (
+          <SelectItem key={o} value={o}>
+            {o}
+          </SelectItem>
+        ))}
+        <SelectItem value={MANUAL}>Enter manually…</SelectItem>
+      </SelectContent>
+    </Select>
+  )
 }
 
 export function RoutesPage() {
@@ -73,6 +163,35 @@ export function RoutesPage() {
   })
 
   const { data: stacks = [] } = useQuery({ queryKey: ['stacks'], queryFn: api.stacks.list })
+
+  const selectedStack = stacks.find((s) => String(s.id) === form.stackId)
+  const stackProject = selectedStack?.composeProjectName
+
+  // The selected stack's live containers, used to drive the service + port dropdowns.
+  const { data: portsData, isFetching: portsFetching } = useQuery({
+    queryKey: ['stack-ports', stackProject],
+    queryFn: () => api.networks.ports(stackProject),
+    enabled: !!stackProject,
+  })
+  const portsLoading = !!stackProject && portsFetching && !portsData
+
+  // Compose service → its distinct container ports, from the stack's running containers.
+  const portsByService = useMemo(() => {
+    const map = new Map<string, Set<number>>()
+    for (const p of portsData?.published ?? []) {
+      if (!p.serviceName) continue
+      let ports = map.get(p.serviceName)
+      if (!ports) map.set(p.serviceName, (ports = new Set()))
+      ports.add(p.privatePort)
+    }
+    return map
+  }, [portsData])
+
+  const serviceOptions = useMemo(() => [...portsByService.keys()].sort(), [portsByService])
+  const portOptions = useMemo(() => {
+    const ports = portsByService.get(form.serviceName)
+    return ports ? [...ports].sort((a, b) => a - b).map(String) : []
+  }, [portsByService, form.serviceName])
 
   const dns = useMutation({ mutationFn: (domain: string) => api.proxy.checkDns(domain) })
 
@@ -293,7 +412,17 @@ export function RoutesPage() {
                   {({ id, describedBy }) => (
                     <Select
                       value={form.stackId}
-                      onValueChange={(v) => setForm((f) => ({ ...f, stackId: v }))}
+                      onValueChange={(v) =>
+                        // Switching stacks invalidates the service/port chosen for the old one.
+                        setForm((f) => ({
+                          ...f,
+                          stackId: v,
+                          serviceName: '',
+                          containerPort: '',
+                          serviceManual: false,
+                          portManual: false,
+                        }))
+                      }
                     >
                       <SelectTrigger id={id} aria-describedby={describedBy}>
                         <SelectValue placeholder="Choose a stack" />
@@ -312,30 +441,48 @@ export function RoutesPage() {
                 <div className="grid grid-cols-2 gap-4">
                   <Field label="Service" required hint="Compose service name">
                     {({ id, describedBy }) => (
-                      <Input
+                      <ComboField
                         id={id}
-                        aria-describedby={describedBy}
-                        mono
+                        describedBy={describedBy}
                         value={form.serviceName}
-                        onChange={(e) => setForm((f) => ({ ...f, serviceName: e.target.value }))}
-                        placeholder="web"
-                        autoComplete="off"
-                        spellCheck={false}
+                        onChange={(v) =>
+                          setForm((f) => {
+                            const next = { ...f, serviceName: v }
+                            // Picking a different known service invalidates the previous one's port.
+                            if (portsByService.has(v)) {
+                              next.containerPort = ''
+                              next.portManual = false
+                            }
+                            return next
+                          })
+                        }
+                        options={serviceOptions}
+                        manual={form.serviceManual}
+                        onManualChange={(m) => setForm((f) => ({ ...f, serviceManual: m }))}
+                        loading={portsLoading}
+                        placeholder="Choose a service"
+                        inputProps={{
+                          mono: true,
+                          placeholder: 'web',
+                          autoComplete: 'off',
+                          spellCheck: false,
+                        }}
                       />
                     )}
                   </Field>
                   <Field label="Port" required hint="Container port">
                     {({ id, describedBy }) => (
-                      <Input
+                      <ComboField
                         id={id}
-                        aria-describedby={describedBy}
-                        mono
-                        type="number"
-                        min={1}
-                        max={65535}
+                        describedBy={describedBy}
                         value={form.containerPort}
-                        onChange={(e) => setForm((f) => ({ ...f, containerPort: e.target.value }))}
-                        placeholder="3000"
+                        onChange={(v) => setForm((f) => ({ ...f, containerPort: v }))}
+                        options={portOptions}
+                        manual={form.portManual}
+                        onManualChange={(m) => setForm((f) => ({ ...f, portManual: m }))}
+                        loading={portsLoading}
+                        placeholder="Choose a port"
+                        inputProps={{ mono: true, type: 'number', min: 1, max: 65535, placeholder: '3000' }}
                       />
                     )}
                   </Field>
