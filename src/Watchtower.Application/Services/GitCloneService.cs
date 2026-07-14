@@ -28,6 +28,29 @@ public sealed class GitCloneService {
     }
 
     /// <summary>
+    /// Resolves the commit SHA at the head of <paramref name="branch"/> on the remote without cloning
+    /// (via <c>git ls-remote</c>). Returns null when the branch doesn't exist or the remote is unreachable.
+    /// </summary>
+    public async Task<string?> GetRemoteHeadAsync(
+        string repositoryUrl, string branch, string? token, CancellationToken ct) {
+        var authenticatedUrl = token is null ? repositoryUrl : EmbedToken(repositoryUrl, token);
+        var (exitCode, output) = await RunGitAsync(
+            ["ls-remote", authenticatedUrl, $"refs/heads/{branch}"], onLine: null, ct);
+        if (exitCode != 0) return null;
+        // Output shape: "<sha>\trefs/heads/<branch>\n" — empty when the branch doesn't exist.
+        var sha = output.Split('\t', '\n')[0].Trim();
+        return sha.Length == 40 ? sha : null;
+    }
+
+    /// <summary>Returns the checked-out HEAD commit SHA of a local clone, or null when it can't be read.</summary>
+    public async Task<string?> GetHeadCommitAsync(string repoDir, CancellationToken ct) {
+        var (exitCode, output) = await RunGitAsync(["-C", repoDir, "rev-parse", "HEAD"], onLine: null, ct);
+        if (exitCode != 0) return null;
+        var sha = output.Trim();
+        return sha.Length == 40 ? sha : null;
+    }
+
+    /// <summary>
     /// Embeds a token into an HTTPS URL for authenticated git operations.
     /// E.g. https://github.com/owner/repo → https://{token}@github.com/owner/repo
     /// </summary>

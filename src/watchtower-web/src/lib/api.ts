@@ -101,6 +101,8 @@ export const api = {
         credentialId: data.credentialId ?? null,
         webhookToken: data.webhookToken ?? null,
         webhookEnabled: data.webhookEnabled ?? false,
+        autoDeployMode: data.autoDeployMode ?? 'off',
+        autoDeployTime: data.autoDeployTime ?? null,
         envVars: data.envVars ?? null,
       })).stack as Stack,
     update: async (id: number, data: UpdateStackRequest) =>
@@ -114,6 +116,8 @@ export const api = {
         credentialId: data.credentialId ?? null,
         webhookToken: data.webhookToken ?? null,
         webhookEnabled: data.webhookEnabled ?? false,
+        autoDeployMode: data.autoDeployMode ?? 'off',
+        autoDeployTime: data.autoDeployTime ?? null,
         envVars: data.envVars ?? null,
       })).stack as Stack,
     delete: async (id: number) => {

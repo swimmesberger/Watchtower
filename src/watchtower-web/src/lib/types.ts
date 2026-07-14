@@ -26,16 +26,26 @@ export interface Stack {
   credentialId: number | null
   webhookToken: string | null
   webhookEnabled: boolean
+  /** Pull-based deployment: redeploy automatically when polling detects something new. */
+  autoDeployMode: AutoDeployMode
+  /** Local time of day ("HH:mm") for scheduled auto-deploy. Null unless mode is 'scheduled'. */
+  autoDeployTime: string | null
   lastDeployStatus: 'success' | 'failed' | 'running' | 'queued' | null
   lastDeployedAt: string | null
+  /** Commit SHA checked out by the last successful deploy. Null until a deploy succeeds. */
+  lastDeployedCommit: string | null
   createdAt: string
   /** True when at least one container image has a newer version available. Null when never checked. */
   hasUpdates: boolean | null
   /** Image names that have a newer version available. Null when never checked. */
   outdatedImages: string[] | null
+  /** Remote branch head SHA when a commit newer than the last deploy exists. Null otherwise. */
+  newCommitSha: string | null
   /** ISO timestamp of the last update check. Null when never checked. */
   updatesCheckedAt: string | null
 }
+
+export type AutoDeployMode = 'off' | 'onChange' | 'scheduled'
 
 export interface DeployEvent {
   id: number
@@ -130,6 +140,9 @@ export interface CreateStackRequest {
   credentialId?: number | null
   webhookToken?: string | null
   webhookEnabled?: boolean
+  autoDeployMode?: AutoDeployMode
+  /** Required ("HH:mm") when autoDeployMode is 'scheduled'. */
+  autoDeployTime?: string | null
   envVars?: StackEnvVarInput[]
 }
 
@@ -142,6 +155,9 @@ export interface UpdateStackRequest {
   credentialId?: number | null
   webhookToken?: string | null
   webhookEnabled?: boolean
+  autoDeployMode?: AutoDeployMode
+  /** Required ("HH:mm") when autoDeployMode is 'scheduled'. */
+  autoDeployTime?: string | null
   /** When provided, atomically replaces all env vars. Pass [] to clear. Omit to leave unchanged. */
   envVars?: StackEnvVarInput[]
 }

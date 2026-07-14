@@ -5,7 +5,7 @@ public sealed class DeployEvent {
     public int Id { get; set; }
     public int StackId { get; set; }
     public Stack? Stack { get; set; }
-    /// <summary>Who triggered the deploy: "manual" or "webhook".</summary>
+    /// <summary>Who triggered the deploy: "manual", "webhook", "volume-recreate", "auto-update" (pull-based on-change), or "schedule" (pull-based daily window).</summary>
     public required string TriggeredBy { get; set; }
     /// <summary>"queued", "running", "success", or "failed".</summary>
     public required string Status { get; set; }

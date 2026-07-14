@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Watchtower.Application.Persistence;
 
@@ -10,9 +11,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260713224604_PullBasedDeployment")]
+    partial class PullBasedDeployment
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -170,74 +173,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("registries", (string)null);
                 });
 
-            modelBuilder.Entity("Watchtower.Application.Entities.Route", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset?>("CertNotAfter")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("cert_not_after");
-
-                    b.Property<int>("ContainerPort")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("container_port");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("Domain")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("domain");
-
-                    b.Property<bool>("IsPrimary")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("is_primary");
-
-                    b.Property<string>("Kind")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("kind");
-
-                    b.Property<string>("ServiceName")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("service_name");
-
-                    b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("stack_id");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("status");
-
-                    b.Property<string>("StatusDetail")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("status_detail");
-
-                    b.Property<bool>("TlsEnabled")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("tls_enabled");
-
-                    b.HasKey("Id")
-                        .HasName("pk_routes");
-
-                    b.HasIndex("Domain")
-                        .IsUnique()
-                        .HasDatabaseName("ix_routes_domain");
-
-                    b.HasIndex("StackId")
-                        .HasDatabaseName("ix_routes_stack_id");
-
-                    b.ToTable("routes", (string)null);
-                });
-
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
                 {
                     b.Property<int>("Id")
@@ -299,14 +234,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("repository_url");
 
-                    b.Property<int?>("TemplateId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("template_id");
-
-                    b.Property<string>("TenantSlug")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("tenant_slug");
-
                     b.Property<bool>("WebhookEnabled")
                         .HasColumnType("INTEGER")
                         .HasColumnName("webhook_enabled");
@@ -324,10 +251,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.HasIndex("Name")
                         .IsUnique()
                         .HasDatabaseName("ix_stacks_name");
-
-                    b.HasIndex("TemplateId", "TenantSlug")
-                        .IsUnique()
-                        .HasDatabaseName("ix_stacks_template_id_tenant_slug");
 
                     b.ToTable("stacks", (string)null);
                 });
@@ -361,99 +284,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_stack_env_vars_stack_id_key");
 
                     b.ToTable("stack_env_vars", (string)null);
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Branch")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("branch");
-
-                    b.Property<string>("ComposeFilePath")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("compose_file_path");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("created_at");
-
-                    b.Property<int?>("CredentialId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("credential_id");
-
-                    b.Property<string>("DomainPattern")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("domain_pattern");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("name");
-
-                    b.Property<string>("RepositoryUrl")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("repository_url");
-
-                    b.Property<int>("TargetPort")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("target_port");
-
-                    b.Property<string>("TargetServiceName")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("target_service_name");
-
-                    b.HasKey("Id")
-                        .HasName("pk_stack_templates");
-
-                    b.HasIndex("CredentialId")
-                        .HasDatabaseName("ix_stack_templates_credential_id");
-
-                    b.HasIndex("Name")
-                        .IsUnique()
-                        .HasDatabaseName("ix_stack_templates_name");
-
-                    b.ToTable("stack_templates", (string)null);
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.StackTemplateEnvVar", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("key");
-
-                    b.Property<int>("TemplateId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("template_id");
-
-                    b.Property<string>("Value")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("value");
-
-                    b.HasKey("Id")
-                        .HasName("pk_stack_template_env_vars");
-
-                    b.HasIndex("TemplateId", "Key")
-                        .IsUnique()
-                        .HasDatabaseName("ix_stack_template_env_vars_template_id_key");
-
-                    b.ToTable("stack_template_env_vars", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackUpdateCheck", b =>
@@ -508,18 +338,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("Credential");
                 });
 
-            modelBuilder.Entity("Watchtower.Application.Entities.Route", b =>
-                {
-                    b.HasOne("Watchtower.Application.Entities.Stack", "Stack")
-                        .WithMany()
-                        .HasForeignKey("StackId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_routes_stacks_stack_id");
-
-                    b.Navigation("Stack");
-                });
-
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
@@ -528,15 +346,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_stacks_credentials_credential_id");
 
-                    b.HasOne("Watchtower.Application.Entities.StackTemplate", "Template")
-                        .WithMany("Instances")
-                        .HasForeignKey("TemplateId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_stacks_stack_templates_template_id");
-
                     b.Navigation("Credential");
-
-                    b.Navigation("Template");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackEnvVar", b =>
@@ -549,29 +359,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_stack_env_vars_stacks_stack_id");
 
                     b.Navigation("Stack");
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
-                {
-                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
-                        .WithMany()
-                        .HasForeignKey("CredentialId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_stack_templates_credentials_credential_id");
-
-                    b.Navigation("Credential");
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.StackTemplateEnvVar", b =>
-                {
-                    b.HasOne("Watchtower.Application.Entities.StackTemplate", "Template")
-                        .WithMany("BaseEnvVars")
-                        .HasForeignKey("TemplateId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_stack_template_env_vars_stack_templates_template_id");
-
-                    b.Navigation("Template");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackUpdateCheck", b =>
@@ -593,13 +380,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("EnvVars");
 
                     b.Navigation("UpdateCheck");
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
-                {
-                    b.Navigation("BaseEnvVars");
-
-                    b.Navigation("Instances");
                 });
 #pragma warning restore 612, 618
         }

@@ -321,17 +321,20 @@ function ImageUpdatesPanel({
     mutationFn: () => api.stacks.checkUpdates(stack.id),
     onSuccess: (updated) => {
       onChecked(updated)
-      toast.success(updated.hasUpdates ? 'Updates available.' : 'All images up to date.')
+      toast.success(
+        updated.hasUpdates || updated.newCommitSha ? 'Updates available.' : 'Everything up to date.',
+      )
     },
     onError: (err: Error) => toast.error('Update check failed', err.message),
   })
 
   const checkedAt = stack.updatesCheckedAt
+  const hasAnyUpdate = stack.hasUpdates === true || stack.newCommitSha != null
 
   return (
     <>
       <SectionHeader
-        title="Image updates"
+        title="Updates"
         action={
           <Button
             variant="secondary"
@@ -346,14 +349,14 @@ function ImageUpdatesPanel({
       />
       <Card>
         <CardContent className="pt-4 md:pt-5">
-          {stack.hasUpdates == null && (
+          {stack.hasUpdates == null && !hasAnyUpdate && (
             <p className="text-sm text-text-2">Never checked for updates.</p>
           )}
 
-          {stack.hasUpdates === false && (
+          {stack.hasUpdates === false && !hasAnyUpdate && (
             <div className="flex items-center gap-2">
               <CheckCircle2 className="size-4 shrink-0 text-ok" aria-hidden />
-              <span className="text-sm text-text-2">All images up to date</span>
+              <span className="text-sm text-text-2">Images and branch up to date</span>
               {checkedAt && (
                 <span className="tnum text-xs text-text-3" title={absoluteTitle(checkedAt)}>
                   · checked {timeAgo(checkedAt)}
@@ -362,7 +365,7 @@ function ImageUpdatesPanel({
             </div>
           )}
 
-          {stack.hasUpdates === true && (
+          {hasAnyUpdate && (
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium text-warn">
                 Updates available
@@ -385,6 +388,17 @@ function ImageUpdatesPanel({
                     {img}
                   </li>
                 ))}
+                {stack.newCommitSha && (
+                  <li className="flex items-center gap-2 rounded-md border border-warn-bd bg-warn-bg px-3 py-2 font-mono text-[12.5px] text-text">
+                    <span className="size-1.5 shrink-0 rounded-full bg-warn" aria-hidden />
+                    New commit on {stack.branch}: {stack.newCommitSha.slice(0, 8)}
+                    {stack.lastDeployedCommit && (
+                      <span className="text-text-3">
+                        (deployed: {stack.lastDeployedCommit.slice(0, 8)})
+                      </span>
+                    )}
+                  </li>
+                )}
               </ul>
             </div>
           )}

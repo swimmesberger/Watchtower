@@ -45,8 +45,13 @@ Streaming and externally-facing operations stay as plain HTTP (`Watchtower.Api/E
   configured registry credentials.
 - **`DeployQueueService`** — the per-stack deploy queue with coalescing (one running + one pending slot).
 - **`DeployOutputBroadcaster`** — fans deploy output out to SSE subscribers in real time.
-- **`SelfUpdateService`** / **`StackUpdateService`** (+ their background schedulers) — image update
-  checks and the self-update lifecycle.
+- **`SelfUpdateService`** / **`StackUpdateService`** (+ their background schedulers) — update checks
+  (registry image digests + git branch head vs. last deployed commit) and the self-update lifecycle.
+- **`AutoDeployBackgroundService`** — pull-based deployment for hosts an inbound webhook can't reach.
+  Per-stack opt-in (`Stack.AutoDeployMode`): `OnChange` redeploys as soon as a poll (on the stack
+  check interval) finds a newer image or commit; `Scheduled` checks once per day at
+  `Stack.AutoDeployTime` (server-local) and deploys only when something new is available. Deploys are
+  enqueued through `DeployQueueService` (`triggered by auto-update` / `schedule`).
 
 ### Scoping model
 

@@ -138,7 +138,13 @@ export function StackDetailPage() {
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold tracking-tight text-text">{stack.name}</h1>
           <p className="mt-1 truncate font-mono text-[12.5px] text-text-2">
-            {stack.repositoryUrl} · {stack.branch} · {stack.composeFilePath}
+            {stack.repositoryUrl} · {stack.branch}
+            {stack.lastDeployedCommit && (
+              <span title={`Deployed commit ${stack.lastDeployedCommit}`}>
+                @{stack.lastDeployedCommit.slice(0, 8)}
+              </span>
+            )}{' '}
+            · {stack.composeFilePath}
           </p>
         </div>
         {/* Desktop deploy button; mobile uses the FAB below. */}

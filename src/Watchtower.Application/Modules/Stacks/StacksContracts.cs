@@ -13,11 +13,15 @@ public sealed record StackDto(
     int? CredentialId,
     string? WebhookToken,
     bool WebhookEnabled,
+    string AutoDeployMode,
+    string? AutoDeployTime,
     string? LastDeployStatus,
     DateTimeOffset? LastDeployedAt,
+    string? LastDeployedCommit,
     DateTimeOffset CreatedAt,
     bool? HasUpdates,
     string[]? OutdatedImages,
+    string? NewCommitSha,
     DateTimeOffset? UpdatesCheckedAt);
 
 /// <summary>A single deploy event for history display.</summary>
@@ -39,8 +43,32 @@ public static class StackMapping {
     public static StackDto ToDto(Stack s, StackUpdateCheck? check) => new(
         s.Id, s.Name, s.RepositoryUrl, s.ComposeFilePath, s.Branch, s.ComposeProjectName,
         s.CredentialId, s.WebhookToken, s.WebhookEnabled,
-        s.LastDeployStatus?.ToString().ToLowerInvariant(), s.LastDeployedAt, s.CreatedAt,
-        check?.HasUpdates, check?.OutdatedImages, check?.CheckedAt);
+        ModeToDto(s.AutoDeployMode), s.AutoDeployTime,
+        s.LastDeployStatus?.ToString().ToLowerInvariant(), s.LastDeployedAt, s.LastDeployedCommit, s.CreatedAt,
+        check?.HasUpdates, check?.OutdatedImages, check?.NewCommitSha, check?.CheckedAt);
+
+    /// <summary>Enum → camelCase wire value: "off", "onChange", "scheduled".</summary>
+    public static string ModeToDto(AutoDeployMode mode) =>
+        char.ToLowerInvariant(mode.ToString()[0]) + mode.ToString()[1..];
+
+    /// <summary>Parses the camelCase wire value; null/empty means Off. Returns null when invalid.</summary>
+    public static AutoDeployMode? ParseMode(string? mode) =>
+        string.IsNullOrEmpty(mode) ? AutoDeployMode.Off
+        : Enum.TryParse<AutoDeployMode>(mode, ignoreCase: true, out var parsed) ? parsed : null;
+
+    /// <summary>
+    /// Validates the auto-deploy pair and normalizes the time (null unless scheduled).
+    /// Returns an error message, or null when valid.
+    /// </summary>
+    public static string? ValidateAutoDeploy(AutoDeployMode mode, ref string? time) {
+        if (mode != AutoDeployMode.Scheduled) {
+            time = null;
+            return null;
+        }
+        return TimeOnly.TryParseExact(time, "HH:mm", out _)
+            ? null
+            : "Scheduled auto-deploy requires a time in HH:mm format (e.g. \"02:00\").";
+    }
 
     public static DeployEventDto ToDto(DeployEvent e) =>
         new(e.Id, e.StackId, e.TriggeredBy, e.Status, e.Output, e.StartedAt, e.FinishedAt);
