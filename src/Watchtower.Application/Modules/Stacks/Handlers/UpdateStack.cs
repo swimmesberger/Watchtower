@@ -18,6 +18,8 @@ public sealed class UpdateStack(WatchtowerDbContext db)
         int? CredentialId,
         string? WebhookToken,
         bool WebhookEnabled,
+        string? AutoDeployMode,
+        string? AutoDeployTime,
         IReadOnlyList<StackEnvVarInput>? EnvVars);
 
     public sealed record Response(StackDto Stack);
@@ -30,6 +32,12 @@ public sealed class UpdateStack(WatchtowerDbContext db)
         if (command.EnvVars is not null && StackMapping.FirstDuplicateKey(command.EnvVars) is { } dup)
             return AppError.Validation($"Duplicate env var key: '{dup}'");
 
+        if (StackMapping.ParseMode(command.AutoDeployMode) is not { } autoDeployMode)
+            return AppError.Validation($"Invalid auto-deploy mode: '{command.AutoDeployMode}'");
+        var autoDeployTime = command.AutoDeployTime;
+        if (StackMapping.ValidateAutoDeploy(autoDeployMode, ref autoDeployTime) is { } autoDeployError)
+            return AppError.Validation(autoDeployError);
+
         stack.Name = command.Name;
         stack.RepositoryUrl = command.RepositoryUrl;
         stack.ComposeFilePath = command.ComposeFilePath;
@@ -38,6 +46,8 @@ public sealed class UpdateStack(WatchtowerDbContext db)
         stack.CredentialId = command.CredentialId;
         stack.WebhookToken = command.WebhookToken;
         stack.WebhookEnabled = command.WebhookEnabled;
+        stack.AutoDeployMode = autoDeployMode;
+        stack.AutoDeployTime = autoDeployTime;
 
         if (command.EnvVars is not null) {
             await using var tx = await db.Database.BeginTransactionAsync(ct);

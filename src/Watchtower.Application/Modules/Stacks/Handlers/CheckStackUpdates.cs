@@ -22,6 +22,7 @@ public sealed class CheckStackUpdates(WatchtowerDbContext db, StackUpdateService
             StackId = result.StackId,
             HasUpdates = result.HasUpdates,
             OutdatedImages = result.OutdatedImages,
+            NewCommitSha = result.NewCommitSha,
             CheckedAt = result.CheckedAt,
         };
         return new Response(StackMapping.ToDto(stack, check));

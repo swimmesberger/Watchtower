@@ -8,5 +8,10 @@ public sealed class StackUpdateCheck {
     public bool HasUpdates { get; set; }
     /// <summary>Image names (with tag) that have a newer version available. Persisted as newline-separated text.</summary>
     public string[] OutdatedImages { get; set; } = [];
+    /// <summary>
+    /// Remote branch head SHA when it differs from the last deployed commit (a new commit is available).
+    /// Null when the branch is up to date, was never deployed, or could not be checked.
+    /// </summary>
+    public string? NewCommitSha { get; set; }
     public DateTimeOffset CheckedAt { get; set; }
 }

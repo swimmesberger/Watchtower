@@ -302,7 +302,8 @@ function StackCard({
   deploying: boolean
 }) {
   const dotTone = describeDot(stack.lastDeployStatus)
-  const updateCount = stack.outdatedImages?.length ?? 0
+  // Outdated images plus a pending new commit on the tracked branch.
+  const updateCount = (stack.outdatedImages?.length ?? 0) + (stack.newCommitSha ? 1 : 0)
   const isDeploying = stack.lastDeployStatus === 'running'
   const repo = stack.repositoryUrl.replace(/^https?:\/\//, '')
 

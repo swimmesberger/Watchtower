@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { api } from '@/lib/api'
 import { apiBase } from '@/lib/config'
-import type { Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
+import type { AutoDeployMode, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
 import { EnvVarEditor } from '@/components/env-var-editor'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -55,6 +55,8 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     credentialId: stack.credentialId,
     webhookToken: stack.webhookToken ?? '',
     webhookEnabled: stack.webhookEnabled,
+    autoDeployMode: stack.autoDeployMode,
+    autoDeployTime: stack.autoDeployTime ?? '02:00',
   })
 
   // Draft is null until the user edits; displayed rows fall back to the loaded server vars.
@@ -99,6 +101,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
       ...form,
       composeProjectName: form.composeProjectName || null,
       webhookToken: form.webhookToken || null,
+      autoDeployTime: form.autoDeployMode === 'scheduled' ? form.autoDeployTime : null,
       // Only replace env vars when the user actually edited them — sending the fallback
       // rows while the env query is unresolved would silently wipe the stored vars.
       envVars: envDraft?.filter((v) => v.key.trim() !== ''),
@@ -258,6 +261,60 @@ export function SettingsTab({ stack }: { stack: Stack }) {
 
                 <p className="font-mono text-[12px] text-text-3">{curlHint}</p>
               </>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* Automatic deployment (pull-based) */}
+      <section>
+        <SectionHeader
+          title="Automatic deployment"
+          description="Redeploy without an inbound webhook: Watchtower polls the registry for newer images and the git branch for new commits."
+        />
+        <Card>
+          <CardContent className="space-y-4 pt-4 md:pt-5">
+            <Field label="Mode">
+              <Select
+                value={form.autoDeployMode ?? 'off'}
+                onValueChange={(v) => set('autoDeployMode', v as AutoDeployMode)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off">Disabled</SelectItem>
+                  <SelectItem value="onChange">When an update is detected</SelectItem>
+                  <SelectItem value="scheduled">Daily at a fixed time</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+
+            {form.autoDeployMode === 'onChange' && (
+              <p className="text-[13px] text-text-2">
+                Polls on the stack update-check interval (Settings → Automation) and redeploys as
+                soon as a newer image or a new commit on{' '}
+                <span className="font-mono">{form.branch || 'main'}</span> is found.
+              </p>
+            )}
+
+            {form.autoDeployMode === 'scheduled' && (
+              <Field
+                label="Deploy time"
+                hint="Server-local time. Checks once per day at this time and redeploys only if something new is available."
+              >
+                {({ id, describedBy }) => (
+                  <Input
+                    id={id}
+                    aria-describedby={describedBy}
+                    type="time"
+                    className="max-w-40"
+                    value={form.autoDeployTime ?? ''}
+                    onChange={(e) => set('autoDeployTime', e.target.value)}
+                    required
+                  />
+                )}
+              </Field>
             )}
           </CardContent>
         </Card>
