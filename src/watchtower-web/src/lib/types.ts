@@ -374,3 +374,54 @@ export interface AutomationConfig {
   stackCheckEnabled: boolean
   stackCheckIntervalMinutes: number
 }
+
+// ── Reverse proxy (routes) ──────────────────────────────────────────────────
+
+export type RouteStatus = 'pending' | 'awaitingdns' | 'active' | 'error'
+export type DomainKind = 'managed' | 'custom'
+
+export interface Route {
+  id: number
+  stackId: number
+  stackName: string | null
+  domain: string
+  serviceName: string
+  containerPort: number
+  tlsEnabled: boolean
+  isPrimary: boolean
+  kind: DomainKind
+  status: RouteStatus
+  statusDetail: string | null
+  /** ISO timestamp of the certificate expiry, when known. */
+  certNotAfter: string | null
+  createdAt: string
+}
+
+export interface CreateRouteRequest {
+  stackId: number
+  domain: string
+  serviceName: string
+  containerPort: number
+  tlsEnabled: boolean
+  isPrimary: boolean
+  kind?: DomainKind | null
+}
+
+export interface UpdateRouteRequest {
+  domain: string
+  serviceName: string
+  containerPort: number
+  tlsEnabled: boolean
+  isPrimary: boolean
+}
+
+export interface DnsCheckResult {
+  resolves: boolean
+  addresses: string[]
+}
+
+export interface ProxyStatus {
+  enabled: boolean
+  caddyRunning: boolean
+  routeCount: number
+}

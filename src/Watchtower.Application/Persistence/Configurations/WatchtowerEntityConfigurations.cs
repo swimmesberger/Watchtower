@@ -90,6 +90,25 @@ public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnv
 }
 
 [EntityConfiguration]
+public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
+    public void Configure(EntityTypeBuilder<Route> b) {
+        b.ToTable("routes");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Domain).IsRequired();
+        b.Property(x => x.ServiceName).IsRequired();
+        // Stored as the enum name (e.g. "Active"/"Managed"); the API maps Status to lowercase for the client.
+        b.Property(x => x.Status).HasConversion<string>();
+        b.Property(x => x.Kind).HasConversion<string>();
+        b.HasIndex(x => x.Domain).IsUnique();
+        b.HasIndex(x => x.StackId);
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<StackUpdateCheck> {
     public void Configure(EntityTypeBuilder<StackUpdateCheck> b) {
         b.ToTable("stack_update_checks");

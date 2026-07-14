@@ -1109,6 +1109,491 @@
         ]
       }
     },
+    "proxy.checkDns": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "resolves": {
+            "type": "boolean"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "resolves",
+          "addresses"
+        ]
+      }
+    },
+    "proxy.createRoute": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "containerPort": {
+            "type": "integer"
+          },
+          "tlsEnabled": {
+            "type": "boolean"
+          },
+          "isPrimary": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "stackId",
+          "domain",
+          "serviceName",
+          "containerPort",
+          "tlsEnabled",
+          "isPrimary",
+          "kind"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "stackId": {
+                "type": "integer"
+              },
+              "stackName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "domain": {
+                "type": "string"
+              },
+              "serviceName": {
+                "type": "string"
+              },
+              "containerPort": {
+                "type": "integer"
+              },
+              "tlsEnabled": {
+                "type": "boolean"
+              },
+              "isPrimary": {
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "statusDetail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "certNotAfter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "stackId",
+              "stackName",
+              "domain",
+              "serviceName",
+              "containerPort",
+              "tlsEnabled",
+              "isPrimary",
+              "kind",
+              "status",
+              "statusDetail",
+              "certNotAfter",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "route"
+        ]
+      }
+    },
+    "proxy.deleteRoute": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "proxy.getRoute": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "stackId": {
+                "type": "integer"
+              },
+              "stackName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "domain": {
+                "type": "string"
+              },
+              "serviceName": {
+                "type": "string"
+              },
+              "containerPort": {
+                "type": "integer"
+              },
+              "tlsEnabled": {
+                "type": "boolean"
+              },
+              "isPrimary": {
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "statusDetail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "certNotAfter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "stackId",
+              "stackName",
+              "domain",
+              "serviceName",
+              "containerPort",
+              "tlsEnabled",
+              "isPrimary",
+              "kind",
+              "status",
+              "statusDetail",
+              "certNotAfter",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "route"
+        ]
+      }
+    },
+    "proxy.getStatus": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "caddyRunning": {
+            "type": "boolean"
+          },
+          "routeCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "caddyRunning",
+          "routeCount"
+        ]
+      }
+    },
+    "proxy.listRoutes": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "stackId": {
+                  "type": "integer"
+                },
+                "stackName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "serviceName": {
+                  "type": "string"
+                },
+                "containerPort": {
+                  "type": "integer"
+                },
+                "tlsEnabled": {
+                  "type": "boolean"
+                },
+                "isPrimary": {
+                  "type": "boolean"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "statusDetail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "certNotAfter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "stackId",
+                "stackName",
+                "domain",
+                "serviceName",
+                "containerPort",
+                "tlsEnabled",
+                "isPrimary",
+                "kind",
+                "status",
+                "statusDetail",
+                "certNotAfter",
+                "createdAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "routes"
+        ]
+      }
+    },
+    "proxy.updateRoute": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "containerPort": {
+            "type": "integer"
+          },
+          "tlsEnabled": {
+            "type": "boolean"
+          },
+          "isPrimary": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "domain",
+          "serviceName",
+          "containerPort",
+          "tlsEnabled",
+          "isPrimary"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "stackId": {
+                "type": "integer"
+              },
+              "stackName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "domain": {
+                "type": "string"
+              },
+              "serviceName": {
+                "type": "string"
+              },
+              "containerPort": {
+                "type": "integer"
+              },
+              "tlsEnabled": {
+                "type": "boolean"
+              },
+              "isPrimary": {
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "statusDetail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "certNotAfter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "stackId",
+              "stackName",
+              "domain",
+              "serviceName",
+              "containerPort",
+              "tlsEnabled",
+              "isPrimary",
+              "kind",
+              "status",
+              "statusDetail",
+              "certNotAfter",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "route"
+        ]
+      }
+    },
     "registries.create": {
       "params": {
         "type": "object",
@@ -3009,6 +3494,9 @@
         ]
       },
       "Networks": {
+        "features": []
+      },
+      "Proxy": {
         "features": []
       },
       "Registries": {

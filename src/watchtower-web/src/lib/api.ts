@@ -11,17 +11,21 @@ import type {
   ContainerMetrics,
   CreateCredentialRequest,
   CreateRegistryRequest,
+  CreateRouteRequest,
   CreateStackRequest,
   Credential,
   DeployAccepted,
   DeployEvent,
+  DnsCheckResult,
   DockerConfigStatus,
   HostMetrics,
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
   PruneOrphansResult,
+  ProxyStatus,
   Registry,
+  Route,
   SelfUpdateStatus,
   Stack,
   StackEnvVar,
@@ -29,6 +33,7 @@ import type {
   StackMetricsResult,
   UpdateCredentialRequest,
   UpdateRegistryRequest,
+  UpdateRouteRequest,
   UpdateSelfConfigRequest,
   UpdateStackRequest,
   VolumeInfo,
@@ -150,6 +155,36 @@ export const api = {
       (await rpc('networks.list', { project: project ?? null })).networks as NetworkInfo[],
     ports: async (project?: string | null) =>
       (await rpc('networks.ports', { project: project ?? null })) as NetworkPortsResult,
+  },
+
+  proxy: {
+    listRoutes: async () => (await rpc('proxy.listRoutes', {})).routes as Route[],
+    getRoute: async (id: number) => (await rpc('proxy.getRoute', { id })).route as Route,
+    createRoute: async (data: CreateRouteRequest) =>
+      (await rpc('proxy.createRoute', {
+        stackId: data.stackId,
+        domain: data.domain,
+        serviceName: data.serviceName,
+        containerPort: data.containerPort,
+        tlsEnabled: data.tlsEnabled,
+        isPrimary: data.isPrimary,
+        kind: data.kind ?? null,
+      })).route as Route,
+    updateRoute: async (id: number, data: UpdateRouteRequest) =>
+      (await rpc('proxy.updateRoute', {
+        id,
+        domain: data.domain,
+        serviceName: data.serviceName,
+        containerPort: data.containerPort,
+        tlsEnabled: data.tlsEnabled,
+        isPrimary: data.isPrimary,
+      })).route as Route,
+    deleteRoute: async (id: number) => {
+      await rpc('proxy.deleteRoute', { id })
+    },
+    checkDns: async (domain: string) =>
+      (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
+    getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
   },
 
   metrics: {

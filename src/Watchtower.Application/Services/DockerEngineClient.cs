@@ -269,6 +269,80 @@ public sealed class DockerEngineClient : IDisposable {
         return slash < 0 ? address : address[..slash];
     }
 
+    /// <summary>
+    /// Creates a user-defined bridge network via <c>POST /networks/create</c> and returns its ID.
+    /// Callers should check <see cref="ListNetworksAsync"/> first for idempotency — this method does
+    /// not guard against duplicate names.
+    /// </summary>
+    public async Task<string> CreateNetworkAsync(
+        string name, IReadOnlyDictionary<string, string>? labels = null, CancellationToken ct = default) {
+        var body = new DockerCreateNetworkBody {
+            Name = name,
+            Driver = "bridge",
+            Labels = labels is null ? null : new Dictionary<string, string>(labels),
+        };
+        var json = JsonSerializer.Serialize(body, DockerJsonContext.Default.DockerCreateNetworkBody);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _client.PostAsync($"{_apiBase}/networks/create", content, ct);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var result = await JsonSerializer.DeserializeAsync(stream, DockerJsonContext.Default.DockerCreateNetworkResponse, ct)
+            ?? throw new InvalidOperationException($"Null response creating network {name}");
+        return result.Id;
+    }
+
+    /// <summary>
+    /// Connects <paramref name="containerId"/> to a network via <c>POST /networks/{id}/connect</c>,
+    /// optionally registering DNS <paramref name="aliases"/> so other containers on the network can
+    /// resolve it by a stable name. A 403 ("endpoint already exists") is treated as success.
+    /// </summary>
+    public async Task ConnectContainerAsync(
+        string networkIdOrName, string containerId, IReadOnlyList<string>? aliases = null, CancellationToken ct = default) {
+        var body = new DockerConnectNetworkBody {
+            Container = containerId,
+            EndpointConfig = aliases is { Count: > 0 }
+                ? new DockerEndpointConfig { Aliases = aliases.ToArray() }
+                : null,
+        };
+        var json = JsonSerializer.Serialize(body, DockerJsonContext.Default.DockerConnectNetworkBody);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _client.PostAsync(
+            $"{_apiBase}/networks/{Uri.EscapeDataString(networkIdOrName)}/connect", content, ct);
+        // 403 = endpoint already exists on this network; treat as already-connected.
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden) return;
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>Disconnects <paramref name="containerId"/> from a network via <c>POST /networks/{id}/disconnect</c>.</summary>
+    public async Task DisconnectContainerAsync(
+        string networkIdOrName, string containerId, bool force = false, CancellationToken ct = default) {
+        var body = new DockerDisconnectNetworkBody { Container = containerId, Force = force };
+        var json = JsonSerializer.Serialize(body, DockerJsonContext.Default.DockerDisconnectNetworkBody);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _client.PostAsync(
+            $"{_apiBase}/networks/{Uri.EscapeDataString(networkIdOrName)}/disconnect", content, ct);
+        // 404/403 = not connected / gone; treat as already-disconnected.
+        if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Forbidden) return;
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Lists containers (all states) filtered by exact label matches, via
+    /// <c>GET /containers/json?all=true&amp;filters={"label":["k=v",…]}</c>. Used to find a compose
+    /// service's container(s) by <c>com.docker.compose.project</c> + <c>com.docker.compose.service</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<DockerContainerInfo>> ListContainersByLabelsAsync(
+        IReadOnlyList<string> labelFilters, CancellationToken ct = default) {
+        var labelJson = JsonSerializer.Serialize(labelFilters.ToArray(), DockerJsonContext.Default.StringArray);
+        var filters = $"{{\"label\":{labelJson}}}";
+        var url = $"{_apiBase}/containers/json?all=true&filters={Uri.EscapeDataString(filters)}";
+        var response = await _client.GetAsync(url, ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.ListDockerContainerInfo, ct)
+            ?? [];
+    }
+
     // ── Containers (all states) + stats ──────────────────────────────────────
 
     /// <summary>
@@ -541,6 +615,15 @@ public sealed record DockerWaitContainerResponse {
 [JsonSerializable(typeof(DockerImageInfo))]
 [JsonSerializable(typeof(DockerCreateContainerBody))]
 [JsonSerializable(typeof(DockerCreateContainerResponse))]
+[JsonSerializable(typeof(DockerEmptyObject))]
+[JsonSerializable(typeof(DockerPortBinding))]
+[JsonSerializable(typeof(DockerRestartPolicy))]
+[JsonSerializable(typeof(DockerNetworkingConfig))]
+[JsonSerializable(typeof(DockerEndpointConfig))]
+[JsonSerializable(typeof(DockerCreateNetworkBody))]
+[JsonSerializable(typeof(DockerCreateNetworkResponse))]
+[JsonSerializable(typeof(DockerConnectNetworkBody))]
+[JsonSerializable(typeof(DockerDisconnectNetworkBody))]
 [JsonSerializable(typeof(DockerWaitContainerResponse))]
 [JsonSerializable(typeof(DockerVolumeListResponse))]
 [JsonSerializable(typeof(DockerVolumeInfo))]
@@ -758,12 +841,22 @@ public sealed record DockerCreateContainerBody {
     public string[]? Cmd { get; init; }
     /// <summary>Environment variables in "KEY=VALUE" format.</summary>
     public string[]? Env { get; init; }
+    /// <summary>Container labels (e.g. an ownership marker so Watchtower can find its managed containers).</summary>
+    public Dictionary<string, string>? Labels { get; init; }
+    /// <summary>Ports the container exposes, keyed "443/tcp"; each value is an empty object.</summary>
+    public Dictionary<string, DockerEmptyObject>? ExposedPorts { get; init; }
     public DockerCreateHostConfig? HostConfig { get; init; }
+    /// <summary>
+    /// Network attachment at create time. At most one network may be specified here; attach further
+    /// networks afterwards with <see cref="DockerEngineClient.ConnectContainerAsync"/>.
+    /// </summary>
+    public DockerNetworkingConfig? NetworkingConfig { get; init; }
 }
 
-/// <summary>HostConfig fields used when creating the coordinator container.</summary>
+/// <summary>HostConfig fields used when creating the coordinator and Caddy containers.</summary>
 public sealed record DockerCreateHostConfig {
-    /// <summary>Bind mounts in the form "host-path:container-path[:options]".</summary>
+    /// <summary>Bind mounts in the form "host-path:container-path[:options]". Named volumes work here too
+    /// (e.g. "caddy_data:/data") and are auto-created by the daemon if missing.</summary>
     public string[]? Binds { get; init; }
     /// <summary>When true the container is automatically removed when it exits.</summary>
     public bool AutoRemove { get; init; }
@@ -775,9 +868,65 @@ public sealed record DockerCreateHostConfig {
     /// ensuring identical Docker socket access permissions.
     /// </summary>
     public string[]? GroupAdd { get; init; }
+    /// <summary>Host port publishing, keyed "443/tcp" → list of host bindings.</summary>
+    public Dictionary<string, List<DockerPortBinding>>? PortBindings { get; init; }
+    /// <summary>Restart policy (e.g. Name = "unless-stopped") for long-lived managed containers.</summary>
+    public DockerRestartPolicy? RestartPolicy { get; init; }
 }
 
 /// <summary>Response body from POST /containers/create.</summary>
 public sealed record DockerCreateContainerResponse {
     public required string Id { get; init; }
+}
+
+/// <summary>An empty JSON object (<c>{}</c>). Used as the value type of <c>ExposedPorts</c>.</summary>
+public sealed record DockerEmptyObject;
+
+/// <summary>A single host port binding for <c>HostConfig.PortBindings</c>.</summary>
+public sealed record DockerPortBinding {
+    /// <summary>Host bind IP (e.g. "0.0.0.0"); null lets Docker pick the default.</summary>
+    public string? HostIp { get; init; }
+    /// <summary>Host port as a string, e.g. "443".</summary>
+    public required string HostPort { get; init; }
+}
+
+/// <summary>Container restart policy (e.g. Name = "unless-stopped", "always", "on-failure").</summary>
+public sealed record DockerRestartPolicy {
+    public required string Name { get; init; }
+    public int MaximumRetryCount { get; init; }
+}
+
+/// <summary>NetworkingConfig for POST /containers/create: endpoints keyed by network name.</summary>
+public sealed record DockerNetworkingConfig {
+    public Dictionary<string, DockerEndpointConfig>? EndpointsConfig { get; init; }
+}
+
+/// <summary>Per-network endpoint settings (DNS aliases) for connect / create.</summary>
+public sealed record DockerEndpointConfig {
+    public string[]? Aliases { get; init; }
+}
+
+/// <summary>Request body for POST /networks/create.</summary>
+public sealed record DockerCreateNetworkBody {
+    public required string Name { get; init; }
+    public string Driver { get; init; } = "bridge";
+    public Dictionary<string, string>? Labels { get; init; }
+}
+
+/// <summary>Response body from POST /networks/create.</summary>
+public sealed record DockerCreateNetworkResponse {
+    public required string Id { get; init; }
+    public string? Warning { get; init; }
+}
+
+/// <summary>Request body for POST /networks/{id}/connect.</summary>
+public sealed record DockerConnectNetworkBody {
+    public required string Container { get; init; }
+    public DockerEndpointConfig? EndpointConfig { get; init; }
+}
+
+/// <summary>Request body for POST /networks/{id}/disconnect.</summary>
+public sealed record DockerDisconnectNetworkBody {
+    public required string Container { get; init; }
+    public bool Force { get; init; }
 }

@@ -32,6 +32,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     private readonly ComposeCliService _compose;
     private readonly DockerEngineClient _docker;
     private readonly DeployOutputBroadcaster _broadcaster;
+    private readonly CaddyManager _caddy;
     private readonly ILogger<DeployQueueService> _logger;
 
     public DeployQueueService(
@@ -40,12 +41,14 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         ComposeCliService compose,
         DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
+        CaddyManager caddy,
         ILogger<DeployQueueService> logger) {
         _scopeFactory = scopeFactory;
         _git = git;
         _compose = compose;
         _docker = docker;
         _broadcaster = broadcaster;
+        _caddy = caddy;
         _logger = logger;
     }
 
@@ -278,9 +281,19 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             var finalStatus = upResult.ExitCode == 0 ? "success" : "failed";
             CompleteEvent(eventId, finalStatus, output.ToString());
             UpdateDeployStatus(stackId, upResult.ExitCode == 0 ? DeployStatus.Success : DeployStatus.Failed);
-            // A successful deploy may have pulled new images; clear the cached check.
-            if (upResult.ExitCode == 0)
+            if (upResult.ExitCode == 0) {
+                // A successful deploy may have pulled new images; clear the cached check.
                 DeleteUpdateCheck(stackId);
+                // (Re)wire this stack's routes into the reverse proxy: recreated service containers must
+                // rejoin the edge network and Caddy must reload. No-op when the proxy is disabled;
+                // best-effort so a proxy hiccup never fails an otherwise successful deploy.
+                try {
+                    await _caddy.ConnectStackAsync(stackId, ct);
+                    await _caddy.ApplyAsync(ct);
+                } catch (Exception ex) {
+                    _logger.LogWarning(ex, "Reverse-proxy reconcile after deploy of stack {StackId} failed", stackId);
+                }
+            }
         } catch (OperationCanceledException) {
             output.AppendLine("[Watchtower] Deploy cancelled (server shutting down).");
             CompleteEvent(eventId, "failed", output.ToString());
