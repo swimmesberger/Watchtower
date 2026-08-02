@@ -182,6 +182,28 @@ approval for outside collaborators" workflow setting on, and never enabling publ
   repos with fork PRs.
 - Runner containers get no Watchtower API access and no extra mounts beyond caches.
 
+## Secrets
+
+Secrets a workflow needs (registry logins, API tokens) often already live in Watchtower as
+`Credential`s. Three delivery mechanisms, by secret type:
+
+1. **Watchtower → GitHub Actions secrets sync (default).** Per CI repo, a mapping
+   `secret name → Credential`. Watchtower encrypts the value with the repo's public key
+   (libsodium sealed box, `GET .../actions/secrets/public-key`) and upserts it via
+   `PUT /repos/{o}/{r}/actions/secrets/{name}` — on mapping change and **automatically on
+   credential rotation**, so rotating once in Watchtower propagates to every repo that uses
+   it. Workflows keep standard `${{ secrets.X }}` syntax and GitHub's log masking. Requires
+   the fine-grained PAT to also carry the "Secrets" (write) repository permission.
+2. **Registry auth without any secret (automatic for docker-socket repos).** Runners of
+   repos with `AllowDockerSocket` get a pre-authenticated `DOCKER_CONFIG` mounted, built by
+   the existing `RegistryAuthBuilder` from the repo's mapped registries — `docker push` in a
+   job needs no login step and no secret. Also the natural push→deploy bridge: the job
+   pushes, Watchtower's stack update-check sees the new image.
+3. **Local env injection (opt-in, discouraged default).** Env vars injected into the runner
+   container never touch GitHub, but the runner cannot mask values it doesn't know are
+   secrets — an accidental `echo` lands in build logs in plaintext. Reserved for secrets
+   that must not be stored at GitHub, behind an explicit warning in the UI.
+
 ## Multi-instance behavior
 
 Watchtower stays single-host; each instance (NAS, each Hetzner box) manages runners
