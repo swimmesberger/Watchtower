@@ -263,13 +263,12 @@ containers; post commit statuses back to GitHub via the API.
   Actions tab stays empty (Watchtower must be the complete build UI); scheduled triggers
   become Watchtower's responsibility.
 
-Both architectures can coexist per repo: **attached** (official runner, 100 % compat,
-GitHub Actions UI works, secrets synced) vs **sovereign** (act, everything local,
-Watchtower-only UI). v1 ships attached mode (already spiked, battle-tested). Sovereign
-mode is the strategic direction that fully realizes "GitHub is repo hosting only" — worth
-a dedicated spike on a real repo after milestone 2 to measure whether the compatibility
-gaps matter in practice; if not, it can become the default for new repos and the
-secrets-sync machinery stays minimal.
+**Decision (2026-08-02): attached mode — the official GitHub Actions runner — is the
+architecture**, settled in favor of native PR/commit visibility (checks, branch
+protection, Actions tab, scoped `github.token`, OIDC) over full local sovereignty.
+Sovereign mode is shelved, not planned; this section stays as the record of the analysis
+should the trade-off ever be revisited (e.g. a forge migration, where act is the natural
+engine anyway).
 
 ## Multi-instance behavior
 
