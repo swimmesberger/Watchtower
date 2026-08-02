@@ -246,6 +246,31 @@ everything including reusable workflows. The context shim is a candidate experim
 milestone 3; if it proves stable across several runner releases it may become the default,
 demoting sync to the reusable-workflow edge case.
 
+### Evaluated alternative: sovereign mode (act engine, no GitHub attachment)
+
+No third-party runner can attach to GitHub's Actions service (undocumented protocol,
+enforced minimum runner version — Gitea/Forgejo runners speak their own forge's protocol).
+But **nektos/act** — the engine underneath Gitea/Forgejo Actions — executes GHA workflow
+YAML directly, which enables a different architecture: Watchtower as the CI provider.
+On push (webhook/poll), check out the commit and run `.github/workflows/*.yml` via act in
+containers; post commit statuses back to GitHub via the API.
+
+- Solves secrets/vars completely: act composes the expression contexts from local input —
+  `${{ secrets.X }}` works with values that never leave the box. No sync, no runner fork.
+- Compatibility ~90–95%: marketplace actions, containers, matrix, services, reusable
+  workflows (limits), artifact server + cache exist. Gaps: OIDC `id-token`, scoped
+  `github.token` (a PAT stands in), environments/approvals, concurrency groups; GitHub's
+  Actions tab stays empty (Watchtower must be the complete build UI); scheduled triggers
+  become Watchtower's responsibility.
+
+Both architectures can coexist per repo: **attached** (official runner, 100 % compat,
+GitHub Actions UI works, secrets synced) vs **sovereign** (act, everything local,
+Watchtower-only UI). v1 ships attached mode (already spiked, battle-tested). Sovereign
+mode is the strategic direction that fully realizes "GitHub is repo hosting only" — worth
+a dedicated spike on a real repo after milestone 2 to measure whether the compatibility
+gaps matter in practice; if not, it can become the default for new repos and the
+secrets-sync machinery stays minimal.
+
 ## Multi-instance behavior
 
 Watchtower stays single-host; each instance (NAS, each Hetzner box) manages runners
