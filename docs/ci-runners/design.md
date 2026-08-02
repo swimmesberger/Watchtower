@@ -185,24 +185,37 @@ approval for outside collaborators" workflow setting on, and never enabling publ
 ## Secrets
 
 Secrets a workflow needs (registry logins, API tokens) often already live in Watchtower as
-`Credential`s. Three delivery mechanisms, by secret type:
+`Credential`s. Principle: **GitHub is repo hosting; secrets stay on the box.** Watchtower is
+the source of truth and delivers secrets to jobs itself — nothing is synced to GitHub's
+secret store. This also keeps workflows portable: plain `$ENV_VAR` references run unchanged
+on Gitea/Forgejo Actions or `act`, unlike `${{ secrets.X }}`.
 
-1. **Watchtower → GitHub Actions secrets sync (default).** Per CI repo, a mapping
-   `secret name → Credential`. Watchtower encrypts the value with the repo's public key
-   (libsodium sealed box, `GET .../actions/secrets/public-key`) and upserts it via
-   `PUT /repos/{o}/{r}/actions/secrets/{name}` — on mapping change and **automatically on
-   credential rotation**, so rotating once in Watchtower propagates to every repo that uses
-   it. Workflows keep standard `${{ secrets.X }}` syntax and GitHub's log masking. Requires
-   the fine-grained PAT to also carry the "Secrets" (write) repository permission.
+1. **Local env injection (default).** Per CI repo, a mapping `env name → Credential`.
+   The orchestrator injects the values into the runner container at create time; job steps
+   read them as ordinary env vars. Rotation is instant — the next spawned runner carries the
+   new value, nothing to propagate. Two caveats and their fixes:
+   - *Log masking*: the runner only masks values GitHub told it are secrets. Recover this
+     locally via `ACTIONS_RUNNER_HOOK_JOB_STARTED`: Watchtower ships a hook script in the
+     runner container that emits `::add-mask::` for every injected secret before each job.
+     (Must be verified in the spike — if hook output turns out not to process workflow
+     commands, fall back to documenting a one-line masking step.)
+   - *Action `with:` inputs*: expression contexts can't read raw process env; where an
+     action only takes an input, bridge with `echo "TOKEN=$TOKEN" >> "$GITHUB_ENV"` once,
+     then `${{ env.TOKEN }}` works in later steps.
 2. **Registry auth without any secret (automatic for docker-socket repos).** Runners of
    repos with `AllowDockerSocket` get a pre-authenticated `DOCKER_CONFIG` mounted, built by
    the existing `RegistryAuthBuilder` from the repo's mapped registries — `docker push` in a
    job needs no login step and no secret. Also the natural push→deploy bridge: the job
    pushes, Watchtower's stack update-check sees the new image.
-3. **Local env injection (opt-in, discouraged default).** Env vars injected into the runner
-   container never touch GitHub, but the runner cannot mask values it doesn't know are
-   secrets — an accidental `echo` lands in build logs in plaintext. Reserved for secrets
-   that must not be stored at GitHub, behind an explicit warning in the UI.
+3. **GitHub Actions secrets sync (escape hatch, maybe-never).** Only needed for third-party
+   reusable workflows that declare `secrets:` inputs. Would use the sealed-box secrets API
+   (libsodium dependency + "Secrets" PAT permission) with auto-resync on rotation. Not part
+   of any planned milestone; build it only when a concrete workflow demands it.
+
+Scope note: with runner-injected env, every job of that repo sees the repo's mapped secrets
+(there is no per-job delivery). Runners are per-repo, so the blast radius equals the repo —
+same as GitHub repo secrets — but it reinforces the existing rule: never enable public repos
+with fork-PR workflows.
 
 ## Multi-instance behavior
 
