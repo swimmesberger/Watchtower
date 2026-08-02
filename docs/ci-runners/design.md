@@ -222,6 +222,30 @@ Mechanisms:
    `::add-mask::` — verify in spike) and unusable in `with:` inputs without a
    `$GITHUB_ENV` bridge step.
 
+### Evaluated alternative: patched runner ("context shim")
+
+It IS possible to make `${{ secrets.X }}`/`${{ vars.X }}` resolve locally without GitHub
+ever seeing the values: `actions/runner` is MIT-licensed and Watchtower ships the runner
+image anyway, so a small patch in `Runner.Worker`'s job-message processing can merge a
+Watchtower-mounted secrets file into the `secrets`/`vars` contexts and register the values
+as log masks. Step-level usage (`env:`, `with:`, `run:`, container `credentials:`) is
+evaluated in the worker and would be fully covered.
+
+Hard limits (no local mechanism can cross them): expressions GitHub evaluates at plan time
+— job-level `if:`/`environment:`, and **reusable-workflow `secrets:` wiring**
+(`secrets: inherit`), which is expanded server-side — still require real GitHub secrets.
+
+Cost: a maintained fork. The patch is small, but GitHub enforces a minimum runner version,
+so it needs an automated rebase-and-rebuild per upstream release; an upstream refactor of
+context composition breaks the patch until rebased. (A MITM variant — rewriting the
+encrypted job message, feasible since the JIT config contains the runner's RSA key — was
+considered and rejected as undocumented-protocol surgery.)
+
+Decision: **sync (mechanism 1) stays the v1 default** — zero maintenance, covers
+everything including reusable workflows. The context shim is a candidate experiment after
+milestone 3; if it proves stable across several runner releases it may become the default,
+demoting sync to the reusable-workflow edge case.
+
 ## Multi-instance behavior
 
 Watchtower stays single-host; each instance (NAS, each Hetzner box) manages runners
