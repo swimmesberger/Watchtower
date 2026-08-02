@@ -65,6 +65,34 @@ public sealed record WatchtowerOptions {
     /// (e.g. <c>WATCHTOWER__PROXY__ENABLED=true</c>, <c>WATCHTOWER__PROXY__ADMINEMAIL=…</c>).
     /// </summary>
     public ProxyOptions Proxy { get; init; } = new();
+
+    /// <summary>
+    /// Self-hosted GitHub Actions runner settings (docs/ci-runners/design.md). Bound from
+    /// <c>WATCHTOWER__CI__*</c> (e.g. <c>WATCHTOWER__CI__INSTANCENAME=nas</c>).
+    /// </summary>
+    public CiOptions Ci { get; init; } = new();
+}
+
+/// <summary>
+/// Settings for the ephemeral GitHub Actions runners this instance manages. The feature itself is
+/// per-repo (a repo enabled via <c>ci.addRepo</c> gets runners); these are the instance-wide knobs.
+/// </summary>
+public sealed record CiOptions {
+    /// <summary>
+    /// Name identifying this Watchtower instance in runner names and labels
+    /// (<c>watchtower-{instance}-…</c>). Defaults to the machine hostname.
+    /// </summary>
+    public string? InstanceName { get; init; }
+
+    /// <summary>Default runner image; per-repo override via <see cref="Entities.CiRepo.RunnerImage"/>.</summary>
+    public string RunnerImage { get; init; } = "ghcr.io/actions/actions-runner:latest";
+
+    /// <summary>Reconcile loop interval in seconds. Clamped to 5–300.</summary>
+    public int ReconcileIntervalSeconds { get; init; } = 15;
+
+    /// <summary>Resolved instance name: explicit setting or machine hostname.</summary>
+    public string ResolveInstanceName() =>
+        string.IsNullOrWhiteSpace(InstanceName) ? Environment.MachineName.ToLowerInvariant() : InstanceName.Trim();
 }
 
 /// <summary>
