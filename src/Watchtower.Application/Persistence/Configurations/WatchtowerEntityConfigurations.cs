@@ -53,6 +53,10 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
         b.HasIndex(x => x.Name).IsUnique();
+        // The App API authenticates every request by looking the presented bearer token up here, so
+        // the column must be indexed. Unique guards against two stacks ever sharing a token; SQLite
+        // treats NULLs as distinct, so any number of stacks may still have no token yet.
+        b.HasIndex(x => x.AppApiToken).IsUnique();
         b.HasOne(x => x.Credential)
             .WithMany()
             .HasForeignKey(x => x.CredentialId)

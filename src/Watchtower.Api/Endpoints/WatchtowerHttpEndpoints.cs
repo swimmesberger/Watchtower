@@ -12,11 +12,16 @@ public static class WatchtowerHttpEndpoints {
     /// <summary>Response body returned by the deploy webhook (202 Accepted).</summary>
     public sealed record WebhookDeployResult(int DeployEventId, string Status);
 
+    /// <summary>Maps the webhook, the SSE streams, the proxy gate, the App API and <c>/health</c>.</summary>
+    /// <param name="app">The web application to map onto.</param>
+    /// <returns>The same application, for chaining.</returns>
     public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app) {
         MapWebhook(app);
         MapDeployOutputStream(app);
         MapContainerLogStream(app);
         MapProxyAsk(app);
+        // Public, token-authenticated surface for deployed applications (see AppApiEndpoints).
+        app.MapAppApiEndpoints();
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
     }

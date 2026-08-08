@@ -1,9 +1,12 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 
@@ -33,8 +36,20 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     private readonly DockerEngineClient _docker;
     private readonly DeployOutputBroadcaster _broadcaster;
     private readonly CaddyManager _caddy;
+    private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<DeployQueueService> _logger;
 
+    /// <param name="scopeFactory">Creates the short-lived scopes all database access runs in.</param>
+    /// <param name="git">Repository clone helper.</param>
+    /// <param name="compose">Docker Compose CLI wrapper.</param>
+    /// <param name="docker">Docker Engine API client.</param>
+    /// <param name="broadcaster">Live deploy-output fan-out for the SSE stream.</param>
+    /// <param name="caddy">Reverse-proxy reconciler invoked after a successful deploy.</param>
+    /// <param name="options">
+    /// Live Watchtower options; <c>PublicBaseUrl</c> is read per deploy to decide whether
+    /// <c>WATCHTOWER_URL</c> is injected into the stack's environment.
+    /// </param>
+    /// <param name="logger">Logger.</param>
     public DeployQueueService(
         IServiceScopeFactory scopeFactory,
         GitCloneService git,
@@ -42,6 +57,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
         CaddyManager caddy,
+        IOptionsMonitor<WatchtowerOptions> options,
         ILogger<DeployQueueService> logger) {
         _scopeFactory = scopeFactory;
         _git = git;
@@ -49,6 +65,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         _docker = docker;
         _broadcaster = broadcaster;
         _caddy = caddy;
+        _options = options;
         _logger = logger;
     }
 
@@ -248,20 +265,29 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             // 3. Build a scoped DOCKER_CONFIG with all configured registry credentials.
             dockerConfigDir = CreateRegistryConfigDir();
 
-            // 4. Write stack-level environment variable overrides to a temp .env file.
+            // 4. Write the temp .env file consumed by `docker compose --env-file`: the operator's
+            //    stack variables first, then Watchtower's reserved App API variables. Reserved names
+            //    are written LAST and operator vars using them are skipped, so the injected values
+            //    always win. The token is generated + persisted before the file is materialized, and
+            //    is never written to the deploy output or the log.
             var envVars = GetEnvVars(stackId);
-            if (envVars.Count > 0) {
-                envFilePath = Path.Combine(Path.GetTempPath(), $"watchtower-env-{Guid.NewGuid():N}.env");
-                var envContent = new StringBuilder();
-                foreach (var v in envVars) {
-                    var safeValue = v.Value.Contains('\n') || v.Value.Contains('"')
-                        ? $"\"{v.Value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
-                        : v.Value;
-                    envContent.AppendLine($"{v.Key}={safeValue}");
-                }
-                await File.WriteAllTextAsync(envFilePath, envContent.ToString(), ct);
-                WriteHeader($"[Watchtower] Injecting {envVars.Count} environment variable(s)");
+            var appApiToken = await EnsureAppApiTokenAsync(stackId, ct);
+            var reservedVars = BuildReservedEnvVars(stackId, appApiToken);
+
+            envFilePath = Path.Combine(Path.GetTempPath(), $"watchtower-env-{Guid.NewGuid():N}.env");
+            var envContent = new StringBuilder();
+            var operatorCount = 0;
+            foreach (var v in envVars) {
+                if (AppApiTokens.Reserved.Contains(v.Key)) continue;
+                envContent.AppendLine($"{v.Key}={EscapeEnvValue(v.Value)}");
+                operatorCount++;
             }
+            foreach (var (key, value) in reservedVars)
+                envContent.AppendLine($"{key}={EscapeEnvValue(value)}");
+            await File.WriteAllTextAsync(envFilePath, envContent.ToString(), ct);
+            WriteHeader(
+                $"[Watchtower] Injecting {operatorCount} environment variable(s) "
+                + $"+ reserved: {string.Join(", ", reservedVars.Select(v => v.Key))}");
 
             // 5. Pull updated images.
             WriteHeader($"[Watchtower] Pulling images for project '{stack.ComposeProjectName}'");
@@ -385,6 +411,38 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return db.Credentials.AsNoTracking()
             .Where(c => c.Id == credentialId).Select(c => c.Token).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// The reserved variables injected into every deploy, in write order. <c>WATCHTOWER_URL</c> is
+    /// only written when a public base URL is configured; the value is read live from
+    /// <see cref="IOptionsMonitor{T}"/> so a settings change applies to the next deploy.
+    /// </summary>
+    private List<(string Key, string Value)> BuildReservedEnvVars(int stackId, string appApiToken) {
+        var vars = new List<(string Key, string Value)> {
+            (AppApiTokens.TokenVariable, appApiToken),
+            (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
+        };
+        var publicBaseUrl = _options.CurrentValue.PublicBaseUrl;
+        if (!string.IsNullOrWhiteSpace(publicBaseUrl))
+            vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
+        return vars;
+    }
+
+    /// <summary>Quotes a value for the compose <c>.env</c> file when it embeds a newline or a quote.</summary>
+    private static string EscapeEnvValue(string value) =>
+        value.Contains('\n') || value.Contains('"')
+            ? $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
+            : value;
+
+    /// <summary>
+    /// Reads (generating and persisting on first use) the stack's App API token, so the value written
+    /// into the deploy environment is the same one <c>/api/app/*</c> will authenticate against.
+    /// </summary>
+    private async Task<string> EnsureAppApiTokenAsync(int stackId, CancellationToken ct) {
+        using var scope = _scopeFactory.CreateScope();
+        var appApi = scope.ServiceProvider.GetRequiredService<AppApiService>();
+        return await appApi.EnsureTokenAsync(stackId, ct);
     }
 
     private List<(string Key, string Value)> GetEnvVars(int stackId) {

@@ -38,6 +38,10 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();
+        // Public App API (/api/app/*): token auth + the read models the host endpoints translate.
+        // Scoped because it reads through the scoped DbContext; the deploy queue resolves it from a
+        // short-lived scope when it needs to materialize a stack's token.
+        services.AddScoped<AppApiService>();
 
         // Elarion settings — typed key/value store backed by the EF Setting entity. Replaces the
         // hand-rolled SettingsStore; used for self-update config/runtime state and the runtime-editable

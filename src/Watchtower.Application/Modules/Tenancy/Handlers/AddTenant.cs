@@ -48,6 +48,10 @@ public sealed class AddTenant(WatchtowerDbContext db, DeployQueueService deployQ
             CredentialId = template.CredentialId,
             TemplateId = template.Id,
             TenantSlug = slug,
+            // Each tenant instance is its own stack and gets its own App API token — a tenant can
+            // never read another tenant's status, logs or version.
+            AppApiToken = AppApiTokens.Generate(),
+            AppApiEnabled = true,
             CreatedAt = DateTimeOffset.UtcNow,
         };
 

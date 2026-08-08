@@ -1,5 +1,6 @@
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Stacks.Handlers;
 
@@ -41,6 +42,10 @@ public sealed class CreateStack(WatchtowerDbContext db)
             CredentialId = command.CredentialId,
             WebhookToken = command.WebhookToken,
             WebhookEnabled = command.WebhookEnabled,
+            // App API token is minted up front so operators can hand it to the application before
+            // its first deploy; the deploy path only generates lazily for pre-existing stacks.
+            AppApiToken = AppApiTokens.Generate(),
+            AppApiEnabled = true,
             AutoDeployMode = autoDeployMode,
             AutoDeployTime = autoDeployTime,
             CreatedAt = DateTimeOffset.UtcNow,

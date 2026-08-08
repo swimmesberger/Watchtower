@@ -39,6 +39,19 @@ public sealed class Stack {
     public string? WebhookToken { get; set; }
     /// <summary>When true the webhook endpoint is active; when false it returns 404.</summary>
     public bool WebhookEnabled { get; set; }
+    /// <summary>
+    /// Bearer token the deployed application presents to the public App API (<c>/api/app/*</c>) to
+    /// query its own status, version and logs. Injected into every deploy as
+    /// <c>WATCHTOWER_APP_TOKEN</c>. Stored in plaintext because it must be re-injected on each
+    /// deploy — see <see cref="Services.AppApiTokens"/>. Null until first generated (lazily, at the
+    /// next deploy or when an operator opens the App API panel).
+    /// </summary>
+    public string? AppApiToken { get; set; }
+    /// <summary>
+    /// When false, every <c>/api/app/*</c> call presenting this stack's token is rejected with 403.
+    /// Defaults to true so a freshly created stack can call the API as soon as it is deployed.
+    /// </summary>
+    public bool AppApiEnabled { get; set; } = true;
     /// <summary>Pull-based deployment mode for hosts where an inbound webhook can't reach Watchtower.</summary>
     public AutoDeployMode AutoDeployMode { get; set; } = AutoDeployMode.Off;
     /// <summary>
