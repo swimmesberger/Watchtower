@@ -91,10 +91,15 @@ generates**, so a repo that ships a `.env` keeps working unchanged. Precedence, 
 A key defined at a higher level simply replaces the lower one — the lower entry is not written at
 all, so there is no reliance on last-wins duplicate-key behaviour.
 
-An entry in the repository `.env` whose opening quote is never closed is **dropped**, and the deploy
-output says so (`Warning: dropped malformed .env entry 'MOTD' (unterminated quote)`). Keeping it
-would swallow the rest of the file — including Watchtower's own reserved lines — into one quoted
-value, which would break the injected token in ways that surface only as puzzling `401`s.
+Because no key is ever written twice, the *physical* order of the generated file carries no meaning
+and is instead chosen for safety: the reserved variables are written first, then the operator's, then
+your repository's block last. Your `.env` lines are copied through verbatim, so Watchtower is not the
+authority on where one of your quoted values ends — putting them last means a value that runs away
+can only affect the rest of your own variables, never the injected `WATCHTOWER_*` lines.
+
+An entry in the repository `.env` whose opening quote is never closed is also **dropped**, and the
+deploy output says so (`Warning: dropped malformed .env entry 'MOTD' (unterminated quote)`); parsing
+continues with the next line, so only that one entry is lost.
 
 The generated file always contains `WATCHTOWER_APP_TOKEN`, so on Linux it is created `0600` and
 deleted at the end of the deploy.

@@ -438,16 +438,28 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             : value;
 
     /// <summary>
-    /// Composes the temp env-file body from three layers, lowest precedence first:
-    /// the repository's own <c>.env</c>, then the operator's <see cref="StackEnvVar"/>s, then
-    /// Watchtower's reserved variables.
+    /// Composes the temp env-file body from three layers: Watchtower's reserved variables, the
+    /// operator's <see cref="StackEnvVar"/>s, and whatever remains of the repository's own
+    /// <c>.env</c> — in that physical order.
     /// </summary>
     /// <remarks>
-    /// Precedence is applied by <em>omission</em> rather than by relying on last-wins duplicate-key
-    /// semantics inside a single file (which is not a documented Compose guarantee): a repository key
-    /// that the operator or Watchtower also defines is simply not written. Repository lines are copied
-    /// through verbatim so their original quoting and escaping survive exactly as Compose would have
-    /// read them; only Watchtower-owned values are re-encoded.
+    /// <para>
+    /// Precedence — repository lowest, then operator, then reserved — is applied by <em>omission</em>
+    /// rather than by relying on last-wins duplicate-key semantics inside a single file (which is not
+    /// a documented Compose guarantee): a repository key that the operator or Watchtower also defines
+    /// is simply not written, and an operator key using a reserved name is skipped. The three sets of
+    /// keys written are therefore pairwise disjoint, so <em>file order carries no precedence
+    /// meaning</em> and is free to be chosen for safety instead.
+    /// </para>
+    /// <para>
+    /// It is chosen so that the repository block comes <em>last</em>. Repository lines are copied
+    /// through verbatim to preserve their original quoting and escaping, which means Watchtower is not
+    /// the authority on where a repository's quoted value ends — dotenv's escaping rules have corners
+    /// (<c>KEY="C:\Users\"</c>) that a line-oriented reader can misjudge. Emitting Watchtower-owned and
+    /// operator-owned lines first makes it structurally impossible for a repository value to swallow
+    /// them, whatever the parser concludes: a mis-parsed repository block can at worst corrupt the rest
+    /// of the repository's own variables. The reserved <c>WATCHTOWER_*</c> lines are always intact.
+    /// </para>
     /// </remarks>
     /// <param name="repoEntries">Entries parsed from the repository's <c>.env</c>, in file order.</param>
     /// <param name="operatorVars">The stack's operator-defined variables.</param>
@@ -457,7 +469,8 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         IReadOnlyList<(string Key, string RawText)> repoEntries,
         IReadOnlyList<(string Key, string Value)> operatorVars,
         IReadOnlyList<(string Key, string Value)> reservedVars) {
-        // Keys a later layer defines; a repository entry for any of these is dropped, not overwritten.
+        // Keys a higher-precedence layer defines; a repository entry for any of these is dropped
+        // rather than overwritten, which is what frees the physical ordering below.
         var overridden = new HashSet<string>(StringComparer.Ordinal);
         foreach (var v in operatorVars)
             if (!AppApiTokens.Reserved.Contains(v.Key)) overridden.Add(v.Key);
@@ -465,13 +478,11 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
 
         var content = new StringBuilder();
 
-        var repoCount = 0;
-        foreach (var (key, rawText) in repoEntries) {
-            if (overridden.Contains(key)) continue;
-            content.AppendLine(rawText);
-            repoCount++;
-        }
+        // 1. Reserved, first — nothing the repository writes can reach back over these.
+        foreach (var (key, value) in reservedVars)
+            content.AppendLine($"{key}={EscapeEnvValue(value)}");
 
+        // 2. Operator variables. Values are re-encoded here, so their quoting is Watchtower's own.
         var operatorCount = 0;
         foreach (var v in operatorVars) {
             // An operator variable using a reserved name is skipped so the injected value wins.
@@ -480,8 +491,14 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             operatorCount++;
         }
 
-        foreach (var (key, value) in reservedVars)
-            content.AppendLine($"{key}={EscapeEnvValue(value)}");
+        // 3. The repository block last, verbatim and in file order (so duplicate keys inside the
+        //    repository's own file still resolve the way Compose would have resolved them).
+        var repoCount = 0;
+        foreach (var (key, rawText) in repoEntries) {
+            if (overridden.Contains(key)) continue;
+            content.AppendLine(rawText);
+            repoCount++;
+        }
 
         return (content.ToString(), operatorCount, repoCount);
     }
@@ -524,11 +541,17 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     /// </summary>
     /// <remarks>
     /// An entry whose opening quote is never closed before end-of-file is <em>discarded</em>, not
-    /// salvaged. Keeping it would swallow the rest of the file into one verbatim block written ahead
-    /// of everything else — including the reserved <c>WATCHTOWER_*</c> lines, which a repository could
-    /// then comment out or corrupt from inside its own quoted value. Repository-controlled bytes must
-    /// never be able to swallow the lines that follow them. Only the malformed entry is lost: parsing
-    /// resumes at the next line, so the assignments after it are still read.
+    /// salvaged, and only that entry is lost: parsing resumes at the next line so the assignments
+    /// after it are still read. This protects the repository's own remaining variables from one
+    /// malformed line.
+    /// <para>
+    /// It is deliberately <em>not</em> what protects Watchtower's injected variables. This reader is
+    /// line-oriented and does not model dotenv's backslash escaping, so it can misjudge where a quoted
+    /// value ends (<c>KEY="C:\Users\"</c> looks closed to it and open to Compose). That is tolerable
+    /// only because <see cref="BuildEnvFileContent"/> emits the repository block <em>last</em>: there
+    /// are no Watchtower-owned or operator-owned lines after it for a runaway value to swallow.
+    /// Ordering is the guarantee; this drop is a courtesy to the repository.
+    /// </para>
     /// </remarks>
     /// <param name="lines">The env file's lines.</param>
     /// <returns>The usable entries in file order, plus the keys discarded as malformed.</returns>
