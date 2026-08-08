@@ -70,9 +70,15 @@ public static class AppApiTokens {
     }
 
     /// <summary>
-    /// Compares a presented token against a stored one in constant time. Used as a second gate after
-    /// the indexed lookup so the match itself is never decided by an early-exit string comparison.
+    /// Compares a presented token against a stored one without an early-exit on the first differing
+    /// byte.
     /// </summary>
+    /// <remarks>
+    /// This is a defense-in-depth re-check of a row that an indexed SQL equality predicate already
+    /// selected; that predicate is the deciding comparison and is not constant-time, so this call
+    /// does not by itself make authentication timing-safe. It exists to re-assert the match in
+    /// process — catching, for example, a store collation that compares more loosely than intended.
+    /// </remarks>
     /// <param name="presented">Token supplied by the caller.</param>
     /// <param name="stored">Token persisted on the stack row; null/empty always fails.</param>
     /// <returns>True only when both are non-empty and byte-identical.</returns>

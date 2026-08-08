@@ -50,6 +50,17 @@ token that Watchtower injects into the stack's environment at every deploy.**
 - **Applications become deployment-aware without privilege.** A token grants read-only access to one
   stack's own metadata and nothing else. Tenant instances of a template each get their own token, so
   tenants are isolated from one another by construction.
+- **Isolation now depends on compose project names being unique**, because that label is how a
+  caller's containers are resolved. Two stacks sharing one would share containers, and with them App
+  API visibility. Since the default project name is the lowercased stack name, `Acme` and `acme`
+  would collide — so `stacks.create`, `stacks.update` and `tenancy.addTenant` reject a name that
+  another stack already uses, compared case-insensitively.
+  **Residual risk:** the check is enforced on write, not by a unique index. A database that already
+  contains colliding rows keeps them, and for those stacks the App API can cross the boundary. This
+  is deliberate — a `CREATE UNIQUE INDEX` migration would fail at startup on exactly those databases,
+  and bricking an upgrade is worse than a latent collision that already breaks the stacks' deploys
+  (both resolve to the same compose project) independently of this feature. Operators hitting it fix
+  it by renaming one stack, which the write-time check then keeps fixed.
 - **A deliberate list of things the API never returns:** deploy output (produced with git and
   registry credentials in scope), environment variable values, credentials, and any other stack's
   data. This list is the security contract; new endpoints must preserve it.

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Stacks.Handlers;
 
@@ -38,11 +39,17 @@ public sealed class UpdateStack(WatchtowerDbContext db)
         if (StackMapping.ValidateAutoDeploy(autoDeployMode, ref autoDeployTime) is { } autoDeployError)
             return AppError.Validation(autoDeployError);
 
+        // A rename can move this stack onto another stack's compose project name, which would make the
+        // two share containers (and App API visibility). Checked before anything is mutated.
+        var projectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
+        if (await StackProjectNames.IsTakenAsync(db, projectName, excludeStackId: stack.Id, ct))
+            return AppError.Validation(StackProjectNames.TakenMessage(projectName));
+
         stack.Name = command.Name;
         stack.RepositoryUrl = command.RepositoryUrl;
         stack.ComposeFilePath = command.ComposeFilePath;
         stack.Branch = command.Branch;
-        stack.ComposeProjectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
+        stack.ComposeProjectName = projectName;
         stack.CredentialId = command.CredentialId;
         stack.WebhookToken = command.WebhookToken;
         stack.WebhookEnabled = command.WebhookEnabled;

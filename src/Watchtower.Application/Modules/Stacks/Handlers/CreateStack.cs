@@ -33,12 +33,18 @@ public sealed class CreateStack(WatchtowerDbContext db)
         if (StackMapping.ValidateAutoDeploy(autoDeployMode, ref autoDeployTime) is { } autoDeployError)
             return AppError.Validation(autoDeployError);
 
+        // Two stacks sharing a compose project name would share containers — and with them App API
+        // visibility. Enforced here because the default name is the lowercased stack name.
+        var projectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
+        if (await StackProjectNames.IsTakenAsync(db, projectName, excludeStackId: null, ct))
+            return AppError.Validation(StackProjectNames.TakenMessage(projectName));
+
         var stack = new Stack {
             Name = command.Name,
             RepositoryUrl = command.RepositoryUrl,
             ComposeFilePath = command.ComposeFilePath,
             Branch = command.Branch,
-            ComposeProjectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName),
+            ComposeProjectName = projectName,
             CredentialId = command.CredentialId,
             WebhookToken = command.WebhookToken,
             WebhookEnabled = command.WebhookEnabled,

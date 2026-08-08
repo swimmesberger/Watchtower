@@ -35,7 +35,7 @@ client generated from the exported schema.
                                     └───────────────────────────────┘                 └────────────┘
 ```
 
-- **JSON-RPC** (`POST /rpc`) serves every CRUD/action operation — see the 29 methods in
+- **JSON-RPC** (`POST /rpc`) serves every CRUD/action operation — see the methods in
   [`rpc-schema.json`](rpc-schema.json) (`credentials.*`, `registries.*`, `stacks.*`, `containers.*`,
   `deployments.active`, `system.*`).
 - **Plain HTTP** endpoints handle what JSON-RPC can't: the deploy webhook, two Server-Sent-Event

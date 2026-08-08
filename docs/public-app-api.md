@@ -33,6 +33,23 @@ store it, it reads it from `WATCHTOWER_APP_TOKEN`.
 
 Error bodies are JSON: `{ "error": "…" }`.
 
+### Status codes
+
+Every endpoint can return these:
+
+| Code | Meaning |
+| --- | --- |
+| `200` | Success. |
+| `400` | Only on `/logs`: the stack exposes several services and no `service` was given. The body lists them. |
+| `401` | Missing, malformed, or unknown token. |
+| `403` | Valid token, but the App API is switched off for that stack. |
+| `404` | Only on `/logs`: no container matches (the stack is down, or the named service does not exist). |
+| `503` | The Docker daemon is unreachable, so live container state could not be read. Affects `/status`, `/version` and `/logs`. |
+
+`/self` and `/deployments` read only Watchtower's own database, so they keep working while Docker is
+down. If the daemon fails *after* a log stream has started, the headers are already sent and the
+failure is reported in-band as an `event: error` frame instead (see [`/logs`](#get-apiapplogsserviceservicetailtailfollowfollow)).
+
 Tokens are stored in plaintext on the stack row, like `WebhookToken` and registry credentials —
 Watchtower has to read the value back to re-inject it at every deploy. See
 [ADR-0008](decisions/0008-public-app-api.md).
@@ -60,6 +77,22 @@ an operator variable using one of these keys is skipped.
 Set the base URL with `WATCHTOWER__PUBLICBASEURL=https://watchtower.example.com` (or the
 `Watchtower:PublicBaseUrl` config key). Without it the variable is simply not injected and the
 application must know where Watchtower lives by other means.
+
+### Your repository's own `.env` still works
+
+Passing `--env-file` makes Compose stop auto-loading the project directory's `.env`. Because
+Watchtower now always passes one, it **merges your repository's committed `.env` into the file it
+generates**, so a repo that ships a `.env` keeps working unchanged. Precedence, lowest first:
+
+1. the repository's `.env` (copied through verbatim, so quoting and escaping survive as written),
+2. the stack's operator-defined variables,
+3. Watchtower's reserved `WATCHTOWER_*` variables.
+
+A key defined at a higher level simply replaces the lower one — the lower entry is not written at
+all, so there is no reliance on last-wins duplicate-key behaviour.
+
+The generated file always contains `WATCHTOWER_APP_TOKEN`, so on Linux it is created `0600` and
+deleted at the end of the deploy.
 
 ### ⚠️ Compose only *interpolates* env-file variables — reference them explicitly
 
@@ -169,18 +202,41 @@ frame.
 
 | Query | Default | Notes |
 | --- | --- | --- |
-| `service` | — | `com.docker.compose.service` name. Required when the stack runs more than one container. |
+| `service` | — | `com.docker.compose.service` name. Required when the stack exposes more than one service. |
 | `tail` | `100` | Clamped to `1…5000`. |
 | `follow` | `false` | `true` keeps the stream open and follows new output. |
 
-If the stack has several containers and no `service` was given, the request is rejected rather than
-guessed at:
+If the stack exposes several **services** and no `service` was given, the request is rejected rather
+than guessed at (`400`):
 
 ```json
 {
   "error": "This stack has multiple services; specify ?service=<name>.",
   "services": ["app", "worker"]
 }
+```
+
+If nothing matches — the stack is not running, or the named service does not exist — the response is
+`404` with `{ "error": "…" }`.
+
+**Replicas.** A service scaled to several containers is *not* ambiguous. All of its replicas are
+merged into the one stream, and every line is prefixed with the emitting container's 12-character
+short id so you can tell them apart:
+
+```
+data: 6f0b1c2d3e4f | starting worker loop
+data: 9a8b7c6d5e4f | starting worker loop
+```
+
+A single matching container streams unprefixed. Interleaving follows arrival order, not timestamps —
+lines from different replicas are not globally ordered.
+
+If the Docker daemon drops out mid-stream the response cannot change status, so the stream ends with
+an error frame instead:
+
+```
+event: error
+data: The Docker daemon became unreachable.
 ```
 
 ## Examples

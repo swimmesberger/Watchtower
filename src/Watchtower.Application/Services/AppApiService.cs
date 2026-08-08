@@ -150,9 +150,12 @@ public sealed class AppApiService(WatchtowerDbContext db, DockerEngineClient doc
     /// </summary>
     /// <remarks>
     /// A missing, non-Bearer or wrong-shaped token is rejected before any database access. Otherwise
-    /// the stack is found by an indexed exact-match lookup on the token column, and the presented
-    /// token is then re-checked against the found row with a constant-time comparison before the
-    /// match is trusted. A matched but disabled stack yields <see cref="AppApiAuthStatus.Forbidden"/>.
+    /// the row is selected by an indexed SQL equality predicate on the token column — that predicate
+    /// is what decides the match, and it is not a constant-time comparison. The subsequent
+    /// <see cref="AppApiTokens.Verify"/> call is defense in depth on the already-selected row: it
+    /// catches a mismatch the store might allow (e.g. an unexpected collation) without claiming to
+    /// close a timing channel the database lookup itself leaves open. A matched but disabled stack
+    /// yields <see cref="AppApiAuthStatus.Forbidden"/>.
     /// </remarks>
     /// <param name="authorizationHeader">Raw <c>Authorization</c> header value; may be null or empty.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -239,8 +242,8 @@ public sealed class AppApiService(WatchtowerDbContext db, DockerEngineClient doc
     /// <remarks>
     /// Docker's label filter narrows the query to compose-managed containers server-side; the project
     /// value is then matched case-insensitively in process, matching how the update checker resolves
-    /// stack membership. Results are ordered by service name then container name so "the first
-    /// container" is deterministic across calls.
+    /// stack membership. Results are ordered by service name then container id, so the order — and
+    /// with it "the first container" — is stable across calls.
     /// </remarks>
     /// <param name="caller">The authenticated stack.</param>
     /// <param name="service">Optional <c>com.docker.compose.service</c> value to filter by.</param>

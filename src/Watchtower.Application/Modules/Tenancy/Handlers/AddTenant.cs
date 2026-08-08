@@ -39,12 +39,18 @@ public sealed class AddTenant(WatchtowerDbContext db, DeployQueueService deployQ
         if (await db.Routes.AnyAsync(r => r.Domain == domain, ct))
             return AppError.Validation($"Domain '{domain}' is already routed.");
 
+        // Tenant isolation depends on each instance owning its compose project name: sharing one
+        // would let a tenant's App API token read another tenant's containers and logs.
+        var projectName = TenancyMapping.ProjectName(template.Name, slug);
+        if (await StackProjectNames.IsTakenAsync(db, projectName, excludeStackId: null, ct))
+            return AppError.Validation(StackProjectNames.TakenMessage(projectName));
+
         var stack = new Stack {
             Name = stackName,
             RepositoryUrl = template.RepositoryUrl,
             ComposeFilePath = template.ComposeFilePath,
             Branch = template.Branch,
-            ComposeProjectName = TenancyMapping.ProjectName(template.Name, slug),
+            ComposeProjectName = projectName,
             CredentialId = template.CredentialId,
             TemplateId = template.Id,
             TenantSlug = slug,
