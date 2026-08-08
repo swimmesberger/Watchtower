@@ -27,8 +27,11 @@ token that Watchtower injects into the stack's environment at every deploy.**
   base64url, uniquely indexed) and an `app_api_enabled` flag. The token is minted at stack creation,
   or lazily on the next deploy for pre-existing stacks.
 - **The token is delivered by the deploy pipeline.** Alongside `WATCHTOWER_STACK_ID` and the optional
-  `WATCHTOWER_URL`, it is written into the temp `.env` handed to `docker compose`, after the
-  operator's variables so injected values always win.
+  `WATCHTOWER_URL`, it is written first into the temp `.env` handed to `docker compose`. Precedence is
+  enforced by omission — operator or repository variables using reserved names are never written — so
+  injected values always win regardless of position, and the file's physical order is free to be
+  chosen for safety instead (the repository's own block goes last, where a mis-parsed quoted value
+  cannot reach the injected lines).
 - **Stored in plaintext**, consistent with `Stack.WebhookToken` and `Credential.Token`. This is
   forced by the mechanism rather than chosen for convenience: Watchtower must re-inject the *value*
   at every deploy, so a one-way hash would make it unrecoverable and turn every deploy into a
