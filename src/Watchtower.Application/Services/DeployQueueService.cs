@@ -274,11 +274,13 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             var envVars = GetEnvVars(stackId);
             var appApiToken = await EnsureAppApiTokenAsync(stackId, ct);
             var reservedVars = BuildReservedEnvVars(stackId, appApiToken);
-            var repoEnvEntries = await ReadRepoEnvEntriesAsync(composePath, ct);
+            var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
+            foreach (var droppedKey in repoEnv.DroppedKeys)
+                WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
 
             envFilePath = Path.Combine(Path.GetTempPath(), $"watchtower-env-{Guid.NewGuid():N}.env");
             var (envContent, operatorCount, repoCount) =
-                BuildEnvFileContent(repoEnvEntries, envVars, reservedVars);
+                BuildEnvFileContent(repoEnv.Entries, envVars, reservedVars);
             await File.WriteAllTextAsync(envFilePath, envContent, ct);
             // The file now always carries WATCHTOWER_APP_TOKEN, so keep it owner-only rather than
             // leaving it at the process umask in a world-readable temp directory.
@@ -492,18 +494,27 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     /// <param name="composeFilePath">Absolute path to the cloned compose file.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The parsed entries, in file order.</returns>
-    private async Task<IReadOnlyList<(string Key, string RawText)>> ReadRepoEnvEntriesAsync(
-        string composeFilePath, CancellationToken ct) {
+    private async Task<RepoEnv> ReadRepoEnvEntriesAsync(string composeFilePath, CancellationToken ct) {
         var projectDir = Path.GetDirectoryName(composeFilePath);
-        if (string.IsNullOrEmpty(projectDir)) return [];
+        if (string.IsNullOrEmpty(projectDir)) return RepoEnv.Empty;
         var repoEnvPath = Path.Combine(projectDir, ".env");
-        if (!File.Exists(repoEnvPath)) return [];
+        if (!File.Exists(repoEnvPath)) return RepoEnv.Empty;
         try {
             return ParseEnvEntries(await File.ReadAllLinesAsync(repoEnvPath, ct));
-        } catch (IOException ex) {
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // An unreadable .env must never fail the deploy — degrade to "no repository env".
             _logger.LogWarning(ex, "Could not read repository .env at {Path}; continuing without it", repoEnvPath);
-            return [];
+            return RepoEnv.Empty;
         }
+    }
+
+    /// <summary>Entries parsed from a repository <c>.env</c>, plus the keys that had to be discarded.</summary>
+    /// <param name="Entries">Usable entries, in file order.</param>
+    /// <param name="DroppedKeys">Keys discarded as malformed; surfaced in the deploy output.</param>
+    private sealed record RepoEnv(
+        IReadOnlyList<(string Key, string RawText)> Entries, IReadOnlyList<string> DroppedKeys) {
+        /// <summary>No repository <c>.env</c>, or one that could not be read.</summary>
+        public static readonly RepoEnv Empty = new([], []);
     }
 
     /// <summary>
@@ -511,25 +522,52 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     /// and comments are dropped; an <c>export </c> prefix is tolerated; a value opening a quote that
     /// the line never closes continues onto the following lines and is kept with the entry.
     /// </summary>
+    /// <remarks>
+    /// An entry whose opening quote is never closed before end-of-file is <em>discarded</em>, not
+    /// salvaged. Keeping it would swallow the rest of the file into one verbatim block written ahead
+    /// of everything else — including the reserved <c>WATCHTOWER_*</c> lines, which a repository could
+    /// then comment out or corrupt from inside its own quoted value. Repository-controlled bytes must
+    /// never be able to swallow the lines that follow them. Only the malformed entry is lost: parsing
+    /// resumes at the next line, so the assignments after it are still read.
+    /// </remarks>
     /// <param name="lines">The env file's lines.</param>
-    /// <returns>One entry per assignment, in file order.</returns>
-    private static List<(string Key, string RawText)> ParseEnvEntries(string[] lines) {
+    /// <returns>The usable entries in file order, plus the keys discarded as malformed.</returns>
+    private static RepoEnv ParseEnvEntries(string[] lines) {
         var entries = new List<(string, string)>();
+        var dropped = new List<string>();
         for (var i = 0; i < lines.Length; i++) {
             if (ParseEnvKey(lines[i]) is not { } key) continue;
 
-            var block = new StringBuilder(lines[i]);
-            // Multi-line quoted value: keep consuming until the opening quote is closed.
-            if (UnterminatedQuote(lines[i]) is { } quote) {
-                while (i + 1 < lines.Length) {
-                    i++;
-                    block.Append('\n').Append(lines[i]);
-                    if (lines[i].Contains(quote)) break;
-                }
+            // Single-line value: the common case.
+            if (UnterminatedQuote(lines[i]) is not { } quote) {
+                entries.Add((key, lines[i]));
+                continue;
             }
+
+            // The value opens a quote. Look ahead for the line that closes it WITHOUT consuming
+            // anything yet, so that a quote which is never closed costs only its own line.
+            var closingLine = -1;
+            for (var j = i + 1; j < lines.Length; j++) {
+                if (!lines[j].Contains(quote)) continue;
+                closingLine = j;
+                break;
+            }
+
+            if (closingLine < 0) {
+                // Malformed: drop just this entry and carry on parsing the remaining lines. Consuming
+                // to end-of-file instead would silently swallow every later assignment as part of the
+                // broken value — losing valid repository variables on top of the malformed one.
+                dropped.Add(key);
+                continue;
+            }
+
+            var block = new StringBuilder(lines[i]);
+            for (var j = i + 1; j <= closingLine; j++)
+                block.Append('\n').Append(lines[j]);
             entries.Add((key, block.ToString()));
+            i = closingLine;
         }
-        return entries;
+        return new RepoEnv(entries, dropped);
     }
 
     /// <summary>Returns the assigned key of a <c>KEY=VALUE</c> line, or null when the line is not one.</summary>

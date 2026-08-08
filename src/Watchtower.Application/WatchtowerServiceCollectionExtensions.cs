@@ -35,6 +35,9 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<ComposeCliService>();
         services.AddSingleton<GitCloneService>();
         services.AddSingleton<DeployOutputBroadcaster>();
+        // Watchtower's own compose project name — resolved once, then cached — so no stack can be
+        // created under it and read Watchtower's own containers through the App API.
+        services.AddSingleton<SelfProjectNameProvider>();
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();

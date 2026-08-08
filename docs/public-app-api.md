@@ -91,6 +91,11 @@ generates**, so a repo that ships a `.env` keeps working unchanged. Precedence, 
 A key defined at a higher level simply replaces the lower one — the lower entry is not written at
 all, so there is no reliance on last-wins duplicate-key behaviour.
 
+An entry in the repository `.env` whose opening quote is never closed is **dropped**, and the deploy
+output says so (`Warning: dropped malformed .env entry 'MOTD' (unterminated quote)`). Keeping it
+would swallow the rest of the file — including Watchtower's own reserved lines — into one quoted
+value, which would break the injected token in ways that surface only as puzzling `401`s.
+
 The generated file always contains `WATCHTOWER_APP_TOKEN`, so on Linux it is created `0600` and
 deleted at the end of the deploy.
 
@@ -203,7 +208,7 @@ frame.
 | Query | Default | Notes |
 | --- | --- | --- |
 | `service` | — | `com.docker.compose.service` name. Required when the stack exposes more than one service. |
-| `tail` | `100` | Clamped to `1…5000`. |
+| `tail` | `100` | Clamped to `1…5000`. Applies **per container** — a service with 3 replicas replays up to `3 × tail` lines. |
 | `follow` | `false` | `true` keeps the stream open and follows new output. |
 
 If the stack exposes several **services** and no `service` was given, the request is rejected rather
@@ -231,13 +236,27 @@ data: 9a8b7c6d5e4f | starting worker loop
 A single matching container streams unprefixed. Interleaving follows arrival order, not timestamps —
 lines from different replicas are not globally ordered.
 
-If the Docker daemon drops out mid-stream the response cannot change status, so the stream ends with
-an error frame instead:
+### When something fails mid-stream
+
+The response has already sent its headers by then, so it cannot change status code. Failures are
+reported in band as `error` frames, and the frame always names the container it came from:
 
 ```
 event: error
-data: The Docker daemon became unreachable.
+data: 9a8b7c6d5e4f | log stream failed (the Docker daemon is unreachable)
 ```
+
+**One replica failing does not end the stream.** That container emits its error frame and stops; the
+surviving replicas keep streaming. The response ends only when *every* container has finished — at
+which point you get the usual terminator — or when you disconnect:
+
+```
+event: done
+data:
+```
+
+So a well-behaved client treats `error` as "this log source is gone" and `done` as "the stream is
+over", and should expect zero or more `error` frames before `done`.
 
 ## Examples
 
@@ -277,7 +296,11 @@ const response = await fetch(
 const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
 for (let { value, done } = await reader.read(); !done; { value, done } = await reader.read()) {
   for (const frame of value.split("\n\n")) {
-    if (frame.startsWith("event: done")) return;
+    if (frame.startsWith("event: done")) return;          // every container finished
+    if (frame.startsWith("event: error")) {               // one log source died; others continue
+      console.warn(frame.split("\n")[1]?.slice(6));
+      continue;
+    }
     if (frame.startsWith("data: ")) console.log(frame.slice(6));
   }
 }

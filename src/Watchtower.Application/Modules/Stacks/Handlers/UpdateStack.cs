@@ -7,7 +7,7 @@ namespace Watchtower.Application.Modules.Stacks.Handlers;
 
 /// <summary>Updates a stack definition. When <c>EnvVars</c> is provided it atomically replaces all env vars.</summary>
 [Handler("stacks.update")]
-public sealed class UpdateStack(WatchtowerDbContext db)
+public sealed class UpdateStack(WatchtowerDbContext db, SelfProjectNameProvider selfProjects)
     : IHandler<UpdateStack.Command, Result<UpdateStack.Response>> {
     public sealed record Command(
         int Id,
@@ -39,11 +39,13 @@ public sealed class UpdateStack(WatchtowerDbContext db)
         if (StackMapping.ValidateAutoDeploy(autoDeployMode, ref autoDeployTime) is { } autoDeployError)
             return AppError.Validation(autoDeployError);
 
-        // A rename can move this stack onto another stack's compose project name, which would make the
-        // two share containers (and App API visibility). Checked before anything is mutated.
+        // A rename can move this stack onto another stack's compose project name — or onto Watchtower's
+        // own — which would make them share containers (and App API visibility). Checked before
+        // anything is mutated.
         var projectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
-        if (await StackProjectNames.IsTakenAsync(db, projectName, excludeStackId: stack.Id, ct))
-            return AppError.Validation(StackProjectNames.TakenMessage(projectName));
+        if (await StackProjectNames.ValidateAsync(db, selfProjects, projectName, excludeStackId: stack.Id, ct)
+            is { } projectNameError)
+            return AppError.Validation(projectNameError);
 
         stack.Name = command.Name;
         stack.RepositoryUrl = command.RepositoryUrl;

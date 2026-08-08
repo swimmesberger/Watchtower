@@ -61,6 +61,17 @@ token that Watchtower injects into the stack's environment at every deploy.**
   and bricking an upgrade is worse than a latent collision that already breaks the stacks' deploys
   (both resolve to the same compose project) independently of this feature. Operators hitting it fix
   it by renaming one stack, which the write-time check then keeps fixed.
+  Declining the index also leaves the guard a check-then-insert: two concurrent `stacks.create` calls
+  resolving to the same project name can both pass validation and both be written. Accepted — stack
+  creation is a deliberate operator action, not a request an application can drive, so the race needs
+  simultaneous manual creates of colliding names; the same rename fixes it.
+- **Watchtower's own compose project is reserved.** A stack resolving to the project Watchtower itself
+  runs under would expose Watchtower's containers — and so every stack's deploy activity — through
+  that stack's token. The name is read once from Watchtower's own container labels and rejected by the
+  same validation. When Watchtower is not running in a container, or Docker cannot be reached, nothing
+  is reserved: this is defense in depth layered on the isolation above, and failing to resolve it must
+  not block stack creation. The managed Caddy container needs no entry — it is created directly over
+  the Docker API with no compose labels, so the App API's compose-project lookup cannot see it.
 - **A deliberate list of things the API never returns:** deploy output (produced with git and
   registry credentials in scope), environment variable values, credentials, and any other stack's
   data. This list is the security contract; new endpoints must preserve it.

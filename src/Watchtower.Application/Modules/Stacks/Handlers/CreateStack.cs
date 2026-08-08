@@ -6,7 +6,7 @@ namespace Watchtower.Application.Modules.Stacks.Handlers;
 
 /// <summary>Creates a new stack. Initial environment variables (if any) are set atomically.</summary>
 [Handler("stacks.create")]
-public sealed class CreateStack(WatchtowerDbContext db)
+public sealed class CreateStack(WatchtowerDbContext db, SelfProjectNameProvider selfProjects)
     : IHandler<CreateStack.Command, Result<CreateStack.Response>> {
     public sealed record Command(
         string Name,
@@ -34,10 +34,12 @@ public sealed class CreateStack(WatchtowerDbContext db)
             return AppError.Validation(autoDeployError);
 
         // Two stacks sharing a compose project name would share containers — and with them App API
-        // visibility. Enforced here because the default name is the lowercased stack name.
+        // visibility. Enforced here because the default name is the lowercased stack name. Watchtower's
+        // own project is reserved for the same reason.
         var projectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
-        if (await StackProjectNames.IsTakenAsync(db, projectName, excludeStackId: null, ct))
-            return AppError.Validation(StackProjectNames.TakenMessage(projectName));
+        if (await StackProjectNames.ValidateAsync(db, selfProjects, projectName, excludeStackId: null, ct)
+            is { } projectNameError)
+            return AppError.Validation(projectNameError);
 
         var stack = new Stack {
             Name = command.Name,

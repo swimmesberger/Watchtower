@@ -25,6 +25,33 @@ namespace Watchtower.Application.Services;
 /// </remarks>
 public static class StackProjectNames {
     /// <summary>
+    /// Validates a resolved compose project name against every other stack and against the project
+    /// Watchtower itself runs under.
+    /// </summary>
+    /// <param name="db">Database context to query.</param>
+    /// <param name="selfProjects">Resolver for Watchtower's own (reserved) project name.</param>
+    /// <param name="projectName">Resolved compose project name to test.</param>
+    /// <param name="excludeStackId">Stack to exclude from the check (the one being updated); null when creating.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>An operator-facing error message, or null when the name is free to use.</returns>
+    public static async Task<string?> ValidateAsync(
+        WatchtowerDbContext db, SelfProjectNameProvider selfProjects,
+        string projectName, int? excludeStackId, CancellationToken ct) {
+        if (await selfProjects.IsReservedAsync(projectName, ct))
+            return $"Compose project name '{projectName}' is reserved: it is the project Watchtower "
+                   + "itself runs under. A stack sharing it would expose Watchtower's own containers "
+                   + "through the App API. Choose a different stack name, or set an explicit compose "
+                   + "project name.";
+
+        if (await IsTakenAsync(db, projectName, excludeStackId, ct))
+            return $"Compose project name '{projectName}' is already used by another stack (compared "
+                   + "case-insensitively). Two stacks sharing a project name would share containers. "
+                   + "Choose a different stack name, or set an explicit compose project name.";
+
+        return null;
+    }
+
+    /// <summary>
     /// Reports whether another stack already uses <paramref name="projectName"/>, ignoring case.
     /// </summary>
     /// <param name="db">Database context to query.</param>
@@ -42,12 +69,4 @@ public static class StackProjectNames {
                  && (excludeStackId == null || s.Id != excludeStackId),
             ct);
     }
-
-    /// <summary>The validation message shown when a compose project name collides.</summary>
-    /// <param name="projectName">The colliding name.</param>
-    /// <returns>An operator-facing explanation naming the conflict and how to resolve it.</returns>
-    public static string TakenMessage(string projectName) =>
-        $"Compose project name '{projectName}' is already used by another stack (compared "
-        + "case-insensitively). Two stacks sharing a project name would share containers. Choose a "
-        + "different stack name, or set an explicit compose project name.";
 }
