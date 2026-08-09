@@ -55,6 +55,21 @@ public sealed class PipelineGatingTests {
     }
 
     [Fact]
+    public async Task AuthDisabled_TheAdminOnlyUsersModuleIsReachableAndAdvertised() {
+        using var factory = AuthDisabled();
+        using var client = factory.CreateApiClient();
+
+        // users.* is [RequireRole("Admin")]; with authentication off the caller is
+        // ImplicitAdminCurrentUser, which holds that role — so the module must work, not 403.
+        var list = await RpcAsync(client, "users.list", cookie: null);
+        Assert.Contains("\"users\":[]", list, StringComparison.Ordinal);
+
+        // The SPA's users module is gated on `when: { module: 'Users' }`, which reads this snapshot.
+        var session = await RpcAsync(client, "elarion.session", cookie: null);
+        Assert.Contains("\"Users\":true", session, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AuthEnabled_ClosesTheStreamsAndTheRpcSurfaceToAnonymousCallers() {
         using var factory = AuthEnabled();
         using var client = factory.CreateApiClient();
