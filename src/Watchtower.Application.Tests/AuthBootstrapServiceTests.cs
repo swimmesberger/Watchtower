@@ -76,6 +76,34 @@ public sealed class AuthBootstrapServiceTests {
     }
 
     [Fact]
+    public async Task ResetPassword_RevokesTheAccountsExistingSessions() {
+        using var host = AuthTestHost.Start(Enabled, Bootstrap);
+        await host.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        string token;
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var sessions = scope.ServiceProvider.GetRequiredService<AuthSessionService>();
+            var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+            token = await sessions.CreateSsoSessionAsync(admin!, TestContext.Current.CancellationToken);
+        }
+
+        // Break-glass is reached for when control of the account is in doubt. A session minted before the
+        // reset would otherwise keep working for the whole absolute lifetime, so changing the password
+        // would not actually have taken anyone's access away.
+        using var recovered = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", "break-glass-recovery"));
+        await recovered.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        await using (var scope = recovered.Services.CreateAsyncScope()) {
+            var sessions = scope.ServiceProvider.GetRequiredService<AuthSessionService>();
+            Assert.Null(await sessions.ValidateAsync(token, TestContext.Current.CancellationToken));
+
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.AuthSessions.AnyAsync(TestContext.Current.CancellationToken));
+        }
+    }
+
+    [Fact]
     public async Task ResetPassword_ThatViolatesThePolicy_LeavesTheOldPasswordWorking() {
         using var host = AuthTestHost.Start(Enabled, Bootstrap);
         await host.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);

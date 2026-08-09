@@ -7,6 +7,7 @@ using Elarion.JsonRpc;
 using Elarion.Session;
 using Elarion.Settings.Configuration;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
 using Watchtower.Api.Authentication;
@@ -68,9 +69,12 @@ builder.Services.ConfigureHttpJsonOptions(o => {
 // cross-origin. In production the SPA is served same-origin from wwwroot, so no CORS is applied.
 // SetIsOriginAllowed rather than AllowAnyOrigin because the login cookie needs AllowCredentials, and the
 // CORS protocol forbids combining credentials with a wildcard origin (ASP.NET throws at request time).
+// The predicate is restricted to loopback: this policy approves CREDENTIALED cross-origin calls, so an
+// allow-anything predicate would let any page a developer happens to visit drive their local Watchtower
+// with their session cookie. The dev server always runs on localhost, so loopback loses nothing.
 const string DevCorsPolicy = "watchtower-dev-frontend";
 builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
-    p.SetIsOriginAllowed(_ => true).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+    p.SetIsOriginAllowed(DevCorsOrigins.IsLoopback).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 // Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
 // git service layer, the deploy engine, and the background update checkers.
@@ -107,10 +111,34 @@ if (authEnabled) {
     builder.Services.AddAuthorization();
 }
 
+// Trust X-Forwarded-Proto so HttpContext.Request.IsHttps reflects the scheme the *browser* used, not the
+// plain HTTP hop from the TLS-terminating proxy to Kestrel. Without this the session cookie never gets the
+// Secure attribute in any shipped deployment, because Kestrel only ever sees http://.
+//
+// Spoofing analysis for the cleared KnownNetworks/KnownProxies (which otherwise reject forwarded headers
+// from unknown sources): Caddy is a sibling container on a Docker network whose subnet is assigned
+// dynamically at creation time, so there is no stable address to pin — the alternative to clearing the
+// lists is the header being ignored, which is the bug. The exposure is bounded because nothing on the
+// server keys a trust decision off the scheme: a direct client that spoofs X-Forwarded-Proto=https only
+// changes the attributes of the cookie *it* receives, and a Secure cookie it cannot replay over http is a
+// self-inflicted denial of service, not an escalation. Only the proto header is processed — X-Forwarded-For
+// and -Host are deliberately left alone so nothing downstream can be fooled about the client address or
+// the host name.
+builder.Services.Configure<ForwardedHeadersOptions>(o => {
+    o.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
+    // KnownIPNetworks, not the deprecated KnownNetworks (ASPDEPR005).
+    o.KnownIPNetworks.Clear();
+    o.KnownProxies.Clear();
+});
+
 var app = builder.Build();
 
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
+
+// First in the pipeline: everything after it — including the cookie issuance in the login endpoint —
+// must see the corrected scheme.
+app.UseForwardedHeaders();
 
 // Allow the cross-origin Vite dev server to call the API (development only).
 if (app.Environment.IsDevelopment())

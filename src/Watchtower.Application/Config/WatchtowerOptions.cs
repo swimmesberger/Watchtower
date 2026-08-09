@@ -81,6 +81,33 @@ public sealed record WatchtowerOptions {
 }
 
 /// <summary>
+/// When the login cookie carries the <c>Secure</c> attribute.
+/// </summary>
+public enum AuthCookieSecurePolicy {
+    /// <summary>
+    /// Decide per request from whether it arrived over TLS — after <c>X-Forwarded-Proto</c> has been
+    /// applied, so a request that reached a TLS-terminating proxy over HTTPS counts as secure. The right
+    /// answer for both shipped topologies (published plain-HTTP port, and behind the proxy).
+    /// </summary>
+    Auto,
+
+    /// <summary>
+    /// Always set <c>Secure</c>. Use when Watchtower is only ever reached over HTTPS and the proxy does
+    /// <em>not</em> send <c>X-Forwarded-Proto</c>, which would otherwise leave <see cref="Auto"/> issuing
+    /// cookies without the flag. A cookie set this way is never sent over plain HTTP, so the published
+    /// port stops working as a recovery path.
+    /// </summary>
+    Always,
+
+    /// <summary>
+    /// Never set <c>Secure</c>. Only for a deployment with no TLS anywhere — a lab or an isolated LAN.
+    /// The session cookie then travels in the clear and is trivially interceptable; do not use it on an
+    /// instance reachable from an untrusted network.
+    /// </summary>
+    Never,
+}
+
+/// <summary>
 /// Settings for the central authorization plane: local user accounts, the login session, and the
 /// per-route access policy the reverse proxy enforces (docs/central-auth/design.md).
 /// Disabled by default so upgrading an existing deployment cannot lock its operator out.
@@ -105,6 +132,14 @@ public sealed record AuthOptions {
 
     /// <summary>Hard cap on a session's age in days, regardless of activity — after this a fresh login is required.</summary>
     public int AbsoluteSessionLifetimeDays { get; init; } = 7;
+
+    /// <summary>
+    /// Whether the login cookie is marked <c>Secure</c>. The default (<see cref="AuthCookieSecurePolicy.Auto"/>)
+    /// follows the request scheme once <c>X-Forwarded-Proto</c> has been applied, which is correct for both
+    /// shipped topologies; see <see cref="AuthCookieSecurePolicy"/> for when to override it. Set via
+    /// <c>WATCHTOWER__AUTH__COOKIESECURE=Always</c>.
+    /// </summary>
+    public AuthCookieSecurePolicy CookieSecure { get; init; } = AuthCookieSecurePolicy.Auto;
 
     /// <summary>
     /// Directory holding the identity-token signing key and the data-protection keys. Must live on a

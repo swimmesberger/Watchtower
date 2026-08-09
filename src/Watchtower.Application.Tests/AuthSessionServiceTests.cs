@@ -173,6 +173,41 @@ public sealed class AuthSessionServiceTests {
     }
 
     [Fact]
+    public async Task ShorteningTheAbsoluteCap_ExpiresSessionsIssuedUnderTheOldOne() {
+        // A 24-hour idle window under the default seven-day cap.
+        var sliding = ("Watchtower:Auth:SessionLifetimeHours", (string?)"24");
+        using var host = AuthTestHost.Start(sliding);
+        var userId = await CreateUserAsync(host, "alice");
+
+        string token;
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            token = await CreateSessionAsync(scope.ServiceProvider, userId);
+        }
+
+        // Keep the session in active use so the idle window never lapses — the absolute cap is the only
+        // thing that can end it, which is what this test is about.
+        for (var elapsed = 0; elapsed < 40; elapsed += 20) {
+            host.Time.Advance(TimeSpan.FromHours(20));
+            await using var scope = host.Services.CreateAsyncScope();
+            var sessions = scope.ServiceProvider.GetRequiredService<AuthSessionService>();
+            Assert.NotNull(await sessions.ValidateAsync(token, TestContext.Current.CancellationToken));
+        }
+
+        // Forty hours in, still comfortably inside the seven-day cap it was issued under. The operator now
+        // tightens the policy to one day. The cap is re-derived on every validation rather than frozen into
+        // the stored expiry, so the session dies at once — having to wait out the old cap would make the
+        // setting useless in exactly the situation it gets changed in.
+        using var tightened = host.Restart(sliding, ("Watchtower:Auth:AbsoluteSessionLifetimeDays", "1"));
+        await using (var scope = tightened.Services.CreateAsyncScope()) {
+            var sessions = scope.ServiceProvider.GetRequiredService<AuthSessionService>();
+            Assert.Null(await sessions.ValidateAsync(token, TestContext.Current.CancellationToken));
+
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.AuthSessions.AnyAsync(TestContext.Current.CancellationToken));
+        }
+    }
+
+    [Fact]
     public async Task DisabledAccount_StopsValidating_ButKeepsItsRows() {
         using var host = AuthTestHost.Start();
         var userId = await CreateUserAsync(host, "alice");

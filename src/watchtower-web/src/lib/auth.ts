@@ -52,13 +52,35 @@ export async function logout(): Promise<void> {
 }
 
 /**
- * Only same-origin, absolute paths are accepted as a return target — an open-redirect guard for the one
- * value on this page that comes from the URL. `//evil.example` is a protocol-relative URL, hence the
- * second check.
+ * Resolves the `?redirect=` parameter to a safe same-origin target, or `/`. This is an open-redirect
+ * guard on the one value here that an attacker controls: the login page is reached by following a link,
+ * so a hostile `redirect` would bounce the visitor to another site *after* they authenticate — the point
+ * at which they are most likely to trust the page they land on.
+ *
+ * Resolution goes through the URL parser rather than string prefix tests, because the browser's parser
+ * accepts far more than `//host` as a host-relative URL and every one of these defeats a `startsWith('/')
+ * && !startsWith('//')` check:
+ *
+ *   /\evil.example        backslash — the WHATWG parser treats \ as / in special schemes
+ *   /\/evil.example       mixed separators
+ *   /%09/evil.example     and the raw TAB, LF and CR forms: stripped before parsing, leaving //evil…
+ *
+ * Parsing against `location.origin` and then demanding the result *stay* on that origin collapses all of
+ * them: whatever the parser makes of the input is what the browser would have navigated to, so if that
+ * lands off-origin it is rejected. Do not "simplify" this back into string checks.
  */
 export function safeRedirectTarget(candidate: string | undefined): string {
-  if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) return '/'
-  return candidate
+  if (!candidate) return '/'
+  try {
+    const resolved = new URL(candidate, window.location.origin)
+    if (resolved.origin !== window.location.origin) return '/'
+    // Returning to the login page would either loop or show a signed-in visitor the form again.
+    if (resolved.pathname === LOGIN_PATH) return '/'
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`
+  } catch {
+    // An input the parser rejects outright is not a target worth guessing at.
+    return '/'
+  }
 }
 
 /**

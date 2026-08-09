@@ -43,7 +43,12 @@ public sealed class WatchtowerSessionAuthenticationHandler(
             return AuthenticateResult.NoResult();
         }
 
-        var session = await sessions.ValidateAsync(token, Context.RequestAborted);
+        // Deliberately not Context.RequestAborted: validation also writes (the sliding renewal, and the
+        // delete of an expired row), and a client that hangs up mid-request would turn those into a
+        // cancellation exception surfacing out of the authentication handler rather than a clean anonymous
+        // result. The work is a single indexed point-read plus at most one small write; it does not need
+        // to be interruptible.
+        var session = await sessions.ValidateAsync(token, CancellationToken.None);
         if (session?.User is null) return AuthenticateResult.NoResult();
 
         var principal = new ClaimsPrincipal(CreateIdentity(session.User));

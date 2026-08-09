@@ -22,7 +22,7 @@ namespace Watchtower.Application.Services;
 /// </remarks>
 public sealed class AuthSessionService(
     WatchtowerDbContext db,
-    IOptions<WatchtowerOptions> options,
+    IOptionsMonitor<WatchtowerOptions> options,
     TimeProvider time) {
 
     /// <summary>Name of the central single-sign-on cookie. Host-scoped: no <c>Domain</c> attribute is ever set.</summary>
@@ -36,7 +36,7 @@ public sealed class AuthSessionService(
     /// cannot produce a session that expires instantly (or effectively never).
     /// </summary>
     public TimeSpan SlidingLifetime =>
-        TimeSpan.FromHours(Math.Clamp(options.Value.Auth.SessionLifetimeHours, 1, 24 * 30));
+        TimeSpan.FromHours(Math.Clamp(options.CurrentValue.Auth.SessionLifetimeHours, 1, 24 * 30));
 
     /// <summary>
     /// Hard cap on a session's age measured from <see cref="AuthSession.CreatedAt"/>. Never shorter than
@@ -45,7 +45,7 @@ public sealed class AuthSessionService(
     /// </summary>
     public TimeSpan AbsoluteLifetime {
         get {
-            var absolute = TimeSpan.FromDays(Math.Clamp(options.Value.Auth.AbsoluteSessionLifetimeDays, 1, 365));
+            var absolute = TimeSpan.FromDays(Math.Clamp(options.CurrentValue.Auth.AbsoluteSessionLifetimeDays, 1, 365));
             return absolute < SlidingLifetime ? SlidingLifetime : absolute;
         }
     }
@@ -81,8 +81,13 @@ public sealed class AuthSessionService(
     /// <remarks>
     /// Renews the sliding window as a side effect, but only once less than half of it remains: a write on
     /// every request would turn each page load into a database write for no security benefit. The renewed
-    /// expiry is clamped to <see cref="AuthSession.CreatedAt"/> + <see cref="AbsoluteLifetime"/>, so
-    /// <see cref="AuthSession.ExpiresAt"/> alone is always sufficient to decide whether a session is alive.
+    /// expiry is clamped to <see cref="AuthSession.CreatedAt"/> + <see cref="AbsoluteLifetime"/>.
+    /// <para>
+    /// The absolute cap is re-derived here rather than trusted from the stored
+    /// <see cref="AuthSession.ExpiresAt"/>, so <em>shortening</em> <c>AbsoluteSessionLifetimeDays</c> takes
+    /// effect for sessions that were already issued under the longer setting — an operator tightening the
+    /// policy after an incident should not have to wait out the old cap.
+    /// </para>
     /// </remarks>
     public async Task<AuthSession?> ValidateAsync(string? rawToken, CancellationToken ct = default) {
         if (string.IsNullOrEmpty(rawToken)) return null;
@@ -94,8 +99,8 @@ public sealed class AuthSessionService(
         if (session is null) return null;
 
         var now = time.GetUtcNow();
-        if (session.ExpiresAt <= now) {
-            // Expired: drop the row on the way past so a stale cookie stops costing a lookup.
+        if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
+            // Expired by either clock: drop the row on the way past so a stale cookie stops costing a lookup.
             db.AuthSessions.Remove(session);
             await db.SaveChangesAsync(ct);
             return null;

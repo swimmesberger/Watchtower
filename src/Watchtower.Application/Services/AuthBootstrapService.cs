@@ -43,10 +43,11 @@ public sealed class AuthBootstrapService(
             using var scope = scopeFactory.CreateScope();
             var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var sessions = scope.ServiceProvider.GetRequiredService<AuthSessionService>();
 
             // Break-glass runs first: on an instance that has no administrator it creates one, which
             // then makes the ordinary first-run bootstrap a no-op instead of a competing account.
-            await ApplyBreakGlassResetAsync(users, auth, cancellationToken);
+            await ApplyBreakGlassResetAsync(users, sessions, auth, cancellationToken);
             await EnsureAdminAsync(users, db, auth, cancellationToken);
         } catch (Exception ex) {
             // Never take the host down: a transient database problem here must not turn into a boot
@@ -101,8 +102,14 @@ public sealed class AuthBootstrapService(
     /// runs the password validators <em>before</em> touching the stored hash, so a
     /// <c>ResetPassword</c> that violates the policy leaves the existing password working instead of
     /// wiping it and locking the operator out for good.
+    /// <para>
+    /// A successful reset also revokes the account's existing sessions. Break-glass is used when control of
+    /// the account is in doubt, and a session issued before the reset would otherwise keep working for up to
+    /// the absolute lifetime — changing the password would not have taken the intruder's access away.
+    /// </para>
     /// </remarks>
-    private async Task ApplyBreakGlassResetAsync(UserManager<User> users, AuthOptions auth, CancellationToken ct) {
+    private async Task ApplyBreakGlassResetAsync(
+        UserManager<User> users, AuthSessionService sessions, AuthOptions auth, CancellationToken ct) {
         if (string.IsNullOrWhiteSpace(auth.ResetPassword)) return;
         ct.ThrowIfCancellationRequested();
 
@@ -136,10 +143,14 @@ public sealed class AuthBootstrapService(
         await users.SetLockoutEndDateAsync(admin, null);
         await users.ResetAccessFailedCountAsync(admin);
 
+        // Recovery is only recovery if it also ends whatever sessions are already out there.
+        var revoked = await sessions.RevokeAllForUserAsync(admin.Id, ct);
+
         logger.LogWarning(
-            "Break-glass reset applied: the '{UserName}' password was reset from configuration and its lockout " +
-            "cleared. Remove WATCHTOWER__AUTH__RESETPASSWORD once you are signed in.",
-            AdminUserName);
+            "Break-glass reset applied: the '{UserName}' password was reset from configuration, its lockout " +
+            "cleared, and {Revoked} existing session(s) revoked. Remove WATCHTOWER__AUTH__RESETPASSWORD once " +
+            "you are signed in.",
+            AdminUserName, revoked);
     }
 
     /// <summary>A fresh administrator; <see cref="UserManager{TUser}"/> fills in the normalized name, hash and stamps.</summary>

@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -52,15 +54,24 @@ public static class WatchtowerAuthEndpoints {
     }
 
     /// <summary>
-    /// Password login. Every failure path costs one password-hash computation and returns the same body, so
-    /// neither the response nor its timing reveals whether the account exists.
+    /// Password login. Every failure path returns the same body and costs one password-hash computation, so
+    /// neither the response nor — to a first approximation — its timing reveals whether the account exists.
     /// </summary>
+    /// <remarks>
+    /// The hash parity is not perfect and is not claimed to be: a wrong password additionally writes the
+    /// lockout counter (<c>AccessFailedAsync</c>), so it costs one extra round trip that the unknown-user
+    /// path does not. That delta distinguishes "wrong password" from "no such account" to an attacker who
+    /// can measure it precisely enough. Closing it means writing on the unknown-user path too, i.e. letting
+    /// an attacker create database traffic from a made-up name — a worse trade. The hash burn removes the
+    /// order-of-magnitude difference, which is the one that is trivially observable over a network.
+    /// </remarks>
     private static void MapLogin(WebApplication app) {
         app.MapPost("/api/auth/login", async (
             HttpContext http,
             UserManager<User> users,
             IPasswordHasher<User> hasher,
             AuthSessionService sessions,
+            IOptionsMonitor<WatchtowerOptions> options,
             WatchtowerDbContext db,
             TimeProvider time,
             CancellationToken ct) => {
@@ -117,10 +128,12 @@ public static class WatchtowerAuthEndpoints {
                 await users.ResetAccessFailedCountAsync(user);
 
             var token = await sessions.CreateSsoSessionAsync(user, ct);
-            AppendSessionCookie(http, token, sessions.AbsoluteLifetime);
+            AppendSessionCookie(http, token, sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
 
             Record(db, time, LoginOk, user.Id, Describe(http, reason: null));
-            await db.SaveChangesAsync(ct);
+            // Same reasoning as the failure path: the session now exists, so the row recording that it was
+            // handed out must not depend on the client staying connected.
+            await db.SaveChangesAsync(CancellationToken.None);
 
             return Results.Ok(new LoginResponse(user.UserName, user.IsAdmin));
         });
@@ -131,23 +144,26 @@ public static class WatchtowerAuthEndpoints {
         app.MapPost("/api/auth/logout", async (
             HttpContext http,
             AuthSessionService sessions,
+            IOptionsMonitor<WatchtowerOptions> options,
             WatchtowerDbContext db,
             TimeProvider time,
             CancellationToken ct) => {
 
+            var securePolicy = options.CurrentValue.Auth.CookieSecure;
             var session = await sessions.ValidateAsync(
                 http.Request.Cookies[AuthSessionService.SsoCookieName], ct);
             if (session is null) {
                 // Nothing to revoke, but clear whatever stale value the browser is still presenting.
-                DeleteSessionCookie(http);
+                DeleteSessionCookie(http, securePolicy);
                 return Results.Unauthorized();
             }
 
-            await sessions.RevokeAllForUserAsync(session.UserId, ct);
+            await sessions.RevokeAllForUserAsync(session.UserId, CancellationToken.None);
             Record(db, time, Logout, session.UserId, Describe(http, reason: null));
-            await db.SaveChangesAsync(ct);
+            // The sessions are already gone; the row saying who ended them must not be lost to a disconnect.
+            await db.SaveChangesAsync(CancellationToken.None);
 
-            DeleteSessionCookie(http);
+            DeleteSessionCookie(http, securePolicy);
             return Results.NoContent();
         });
     }
@@ -181,14 +197,21 @@ public static class WatchtowerAuthEndpoints {
     }
 
     /// <summary>
-    /// Host-scoped (no <c>Domain</c>), <c>HttpOnly</c>, <c>SameSite=Lax</c>, and <c>Secure</c> whenever the
-    /// request arrived over TLS — never unconditionally, because the published-port deployment is plain HTTP
-    /// and a <c>Secure</c> cookie there would simply never come back (design.md §4, §9, §11).
+    /// Host-scoped (no <c>Domain</c>), <c>HttpOnly</c>, <c>SameSite=Lax</c>, and <c>Secure</c> per
+    /// <paramref name="securePolicy"/> (design.md §4, §9, §11).
     /// </summary>
-    private static void AppendSessionCookie(HttpContext http, string token, TimeSpan maxAge) =>
+    /// <remarks>
+    /// <see cref="AuthCookieSecurePolicy.Auto"/> reads <see cref="HttpRequest.IsHttps"/> <em>after</em>
+    /// <c>UseForwardedHeaders</c> has applied <c>X-Forwarded-Proto</c>, so a request that reached the proxy
+    /// over HTTPS is treated as secure even though the hop into Kestrel is plain HTTP. Setting the flag
+    /// unconditionally instead would break the published-port recovery path, where the cookie would be set
+    /// and then never sent back.
+    /// </remarks>
+    private static void AppendSessionCookie(
+        HttpContext http, string token, TimeSpan maxAge, AuthCookieSecurePolicy securePolicy) =>
         http.Response.Cookies.Append(AuthSessionService.SsoCookieName, token, new CookieOptions {
             HttpOnly = true,
-            Secure = http.Request.IsHttps,
+            Secure = IsSecure(http, securePolicy),
             SameSite = SameSiteMode.Lax,
             Path = "/",
             IsEssential = true,
@@ -198,11 +221,18 @@ public static class WatchtowerAuthEndpoints {
         });
 
     /// <summary>Expires the cookie. The attributes must match the ones it was set with or the browser keeps it.</summary>
-    private static void DeleteSessionCookie(HttpContext http) =>
+    private static void DeleteSessionCookie(HttpContext http, AuthCookieSecurePolicy securePolicy) =>
         http.Response.Cookies.Delete(AuthSessionService.SsoCookieName, new CookieOptions {
             HttpOnly = true,
-            Secure = http.Request.IsHttps,
+            Secure = IsSecure(http, securePolicy),
             SameSite = SameSiteMode.Lax,
             Path = "/",
         });
+
+    /// <summary>Resolves the configured policy against this request.</summary>
+    private static bool IsSecure(HttpContext http, AuthCookieSecurePolicy policy) => policy switch {
+        AuthCookieSecurePolicy.Always => true,
+        AuthCookieSecurePolicy.Never => false,
+        _ => http.Request.IsHttps,
+    };
 }
