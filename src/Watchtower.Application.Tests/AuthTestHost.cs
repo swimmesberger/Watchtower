@@ -38,9 +38,13 @@ public sealed class AuthTestHost : IDisposable {
         _ownsConnection = ownsConnection;
         _dataDirectory = Path.Combine(Path.GetTempPath(), "watchtower-tests", Guid.NewGuid().ToString("N"));
 
+        // DbPath and KeyPath default to /data/*, which AddWatchtowerServices creates eagerly — point
+        // both at a scratch directory so tests never try to write outside their own temp space.
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(settings.Append(
-                new KeyValuePair<string, string?>("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db"))))
+            .AddInMemoryCollection(settings.Concat([
+                new KeyValuePair<string, string?>("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db")),
+                new KeyValuePair<string, string?>("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys")),
+            ]))
             .Build();
 
         _registrations = [];

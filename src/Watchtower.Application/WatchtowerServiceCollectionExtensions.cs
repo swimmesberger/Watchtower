@@ -1,6 +1,7 @@
 using Elarion.Abstractions.Features;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -68,9 +69,16 @@ public static class WatchtowerServiceCollectionExtensions {
         // Registered unconditionally: nothing runs until something asks for a UserManager, and the
         // bootstrap below no-ops while Auth:Enabled is false.
         //
-        // Data protection backs the password-reset token provider. The web host already registers it;
-        // the call is idempotent and keeps the application layer self-contained for tests.
-        services.AddDataProtection();
+        // Data protection is REQUIRED here, not a convenience: the host builds with
+        // WebApplication.CreateSlimBuilder, which registers none of it. It encrypts the password-reset
+        // tokens today and the session cookies from the next work item on. The key ring is persisted to
+        // Auth:KeyPath — unconditionally, because the default location is per-user and the shipped
+        // container has no home directory, which would make the keys ephemeral and sign everyone out on
+        // every restart. Directory created up front, exactly as DbPath's is above.
+        var keyPath = section.GetValue<string>("Auth:KeyPath");
+        if (string.IsNullOrWhiteSpace(keyPath)) keyPath = new AuthOptions().KeyPath;
+        Directory.CreateDirectory(keyPath);
+        services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyPath));
         services.AddIdentityCore<User>(o => {
             // Brute-force protection: 5 failed logins park the account for 15 minutes.
             o.Lockout.AllowedForNewUsers = true;

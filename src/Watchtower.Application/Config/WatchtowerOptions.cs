@@ -116,12 +116,15 @@ public sealed record AuthOptions {
     /// Password for the <c>admin</c> account created on first start. A value configured here is a
     /// secret and is never written to the log. When it is left unset a random password is generated
     /// instead, and <em>that</em> one is logged once — it has no other way of reaching the operator.
+    /// Ignored when <see cref="ResetPassword"/> is also set on a fresh database: recovery runs first
+    /// and creates the account, so <see cref="ResetPassword"/> wins.
     /// </summary>
     public string? BootstrapPassword { get; init; }
 
     /// <summary>
     /// Break-glass recovery: when set, every start guarantees an <c>admin</c> account whose password is
     /// this value and which is not locked out — recreating the account if it was renamed or deleted.
+    /// Takes precedence over <see cref="BootstrapPassword"/>, including on a fresh database.
     /// Remove it again once you are back in. Treated as a secret; never logged.
     /// </summary>
     public string? ResetPassword { get; init; }

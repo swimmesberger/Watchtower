@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -23,6 +24,12 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
     IUserPasswordStore<User>,
     IUserSecurityStampStore<User>,
     IUserLockoutStore<User> {
+
+    /// <summary>SQLite extended result code <c>SQLITE_CONSTRAINT_UNIQUE</c>.</summary>
+    private const int SqliteConstraintUnique = 2067;
+
+    /// <summary>SQLite extended result code <c>SQLITE_CONSTRAINT_PRIMARYKEY</c>.</summary>
+    private const int SqliteConstraintPrimaryKey = 1555;
 
     // -- Identity --------------------------------------------------------------------------------
 
@@ -63,9 +70,11 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
         db.Users.Add(user);
         try {
             await db.SaveChangesAsync(cancellationToken);
-        } catch (DbUpdateException) {
+        } catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex)) {
             // UserManager's uniqueness check is a separate read, so two concurrent creations of the
-            // same name both pass it and the unique index is what actually decides.
+            // same name both pass it and the unique index is what actually decides. Only that specific
+            // constraint failure is a domain error — anything else is an environment or code fault and
+            // must keep propagating as an exception.
             db.Entry(user).State = EntityState.Detached;
             return IdentityResult.Failed(errors.DuplicateUserName(user.UserName));
         }
@@ -75,6 +84,7 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
     public async Task<IdentityResult> UpdateAsync(User user, CancellationToken cancellationToken) {
         ArgumentNullException.ThrowIfNull(user);
         cancellationToken.ThrowIfCancellationRequested();
+        DetachOtherInstanceOf(user);
         // Attach before rotating so the *stored* stamp is what lands in the UPDATE's WHERE clause —
         // rotating first would compare the row against the new value and never match.
         db.Users.Attach(user);
@@ -91,6 +101,7 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
     public async Task<IdentityResult> DeleteAsync(User user, CancellationToken cancellationToken) {
         ArgumentNullException.ThrowIfNull(user);
         cancellationToken.ThrowIfCancellationRequested();
+        DetachOtherInstanceOf(user);
         db.Users.Remove(user);
         try {
             await db.SaveChangesAsync(cancellationToken);
@@ -99,8 +110,6 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
         }
         return IdentityResult.Success;
     }
-
-    private static string NewStamp() => Guid.NewGuid().ToString("N");
 
     public async Task<User?> FindByIdAsync(string userId, CancellationToken cancellationToken) {
         cancellationToken.ThrowIfCancellationRequested();
@@ -193,4 +202,30 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
 
     /// <summary>No-op: the <see cref="WatchtowerDbContext"/> is owned by the DI scope, not by this store.</summary>
     public void Dispose() { }
+
+    // -- Helpers ---------------------------------------------------------------------------------
+
+    private static string NewStamp() => Guid.NewGuid().ToString("N");
+
+    /// <summary>
+    /// Lets a caller write back a user it loaded detached (e.g. via <c>AsNoTracking</c>). Identity's own
+    /// <c>UserValidator</c> calls <see cref="FindByNameAsync"/> on the way into an update, which tracks a
+    /// <em>second</em> instance of the same row; attaching the caller's copy on top of that throws.
+    /// Evicting the validator's copy makes the caller's instance — and its original concurrency stamp —
+    /// the one that wins.
+    /// </summary>
+    private void DetachOtherInstanceOf(User user) {
+        if (user.Id == 0) return;
+        var tracked = db.Users.Local.FirstOrDefault(u => u.Id == user.Id && !ReferenceEquals(u, user));
+        if (tracked is not null) db.Entry(tracked).State = EntityState.Detached;
+    }
+
+    /// <summary>
+    /// True only for a violated unique/primary-key index — the one database failure that represents a
+    /// domain outcome (a name already taken) rather than a fault worth throwing.
+    /// </summary>
+    private static bool IsUniqueConstraintViolation(DbUpdateException exception) =>
+        exception.InnerException is SqliteException {
+            SqliteExtendedErrorCode: SqliteConstraintUnique or SqliteConstraintPrimaryKey,
+        };
 }

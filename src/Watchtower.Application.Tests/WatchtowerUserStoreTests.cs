@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
 using Xunit;
 
 namespace Watchtower.Application.Tests;
@@ -108,6 +110,40 @@ public sealed class WatchtowerUserStoreTests {
         var stale = await secondManager.UpdateAsync(asSeenBySecond);
         Assert.False(stale.Succeeded);
         Assert.Contains(stale.Errors, e => e.Code == nameof(IdentityErrorDescriber.ConcurrencyFailure));
+    }
+
+    [Fact]
+    public async Task DetachedUser_CanBeWrittenBack_DespiteValidationTrackingItsOwnCopy() {
+        using var host = AuthTestHost.Start();
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            Assert.True((await users.CreateAsync(AuthTestHost.NewUser("erin"), GoodPassword)).Succeeded);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+
+            // The read-side pattern used throughout this codebase: load detached, mutate, write back.
+            // Identity's UserValidator re-reads the user during UpdateAsync and tracks a second
+            // instance of the same row, which the store has to evict for the attach to succeed.
+            var detached = await db.Users.AsNoTracking()
+                .SingleAsync(u => u.NormalizedUserName == "ERIN", TestContext.Current.CancellationToken);
+            detached.Email = "erin@example.invalid";
+
+            var result = await users.UpdateAsync(detached);
+            Assert.True(result.Succeeded, string.Join("; ", result.Errors.Select(e => e.Description)));
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var erin = await users.FindByNameAsync("erin");
+            Assert.NotNull(erin);
+            Assert.Equal("erin@example.invalid", erin.Email);
+            // The write did not disturb the credentials.
+            Assert.True(await users.CheckPasswordAsync(erin, GoodPassword));
+        }
     }
 
     [Fact]
