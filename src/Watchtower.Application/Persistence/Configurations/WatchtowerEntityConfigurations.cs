@@ -24,6 +24,22 @@ public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credentia
 }
 
 [EntityConfiguration]
+public sealed class CiRepoConfiguration : IEntityTypeConfiguration<CiRepo> {
+    public void Configure(EntityTypeBuilder<CiRepo> b) {
+        b.ToTable("ci_repos");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Owner).IsRequired();
+        b.Property(x => x.Name).IsRequired();
+        b.HasIndex(x => new { x.Owner, x.Name }).IsUnique();
+        b.HasOne(x => x.Credential)
+            .WithMany()
+            .HasForeignKey(x => x.CredentialId)
+            .OnDelete(DeleteBehavior.Restrict);
+        b.Ignore(x => x.FullName);
+    }
+}
+
+[EntityConfiguration]
 public sealed class RegistryConfiguration : IEntityTypeConfiguration<Registry> {
     public void Configure(EntityTypeBuilder<Registry> b) {
         b.ToTable("registries");

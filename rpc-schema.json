@@ -2,6 +2,581 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "JSON-RPC 2.0 Schema",
   "methods": {
+    "ci.addRepo": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "credentialId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "maxConcurrentRunners": {
+            "type": "integer",
+            "default": 1
+          },
+          "runnerImage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "extraLabels": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "allowDockerSocket": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "owner",
+          "name",
+          "credentialId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "fullName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "maxConcurrentRunners": {
+                "type": "integer"
+              },
+              "runnerImage": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "extraLabels": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "allowDockerSocket": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "runnerStatus": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "desiredRunners": {
+                    "type": "integer"
+                  },
+                  "runningRunners": {
+                    "type": "integer"
+                  },
+                  "totalSpawned": {
+                    "type": "integer"
+                  },
+                  "lastError": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastErrorAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "backoffUntil": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "desiredRunners",
+                  "runningRunners",
+                  "totalSpawned",
+                  "lastError",
+                  "lastErrorAt",
+                  "backoffUntil"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "owner",
+              "name",
+              "fullName",
+              "credentialId",
+              "enabled",
+              "maxConcurrentRunners",
+              "runnerImage",
+              "extraLabels",
+              "allowDockerSocket",
+              "createdAt",
+              "runnerStatus"
+            ]
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    },
+    "ci.getRunnerStatus": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "repoId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repoId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "desiredRunners": {
+                "type": "integer"
+              },
+              "runningRunners": {
+                "type": "integer"
+              },
+              "totalSpawned": {
+                "type": "integer"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastErrorAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "backoffUntil": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "desiredRunners",
+              "runningRunners",
+              "totalSpawned",
+              "lastError",
+              "lastErrorAt",
+              "backoffUntil"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    "ci.listAvailableRepos": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "credentialId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "credentialId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "fullName": {
+                  "type": "string"
+                },
+                "private": {
+                  "type": "boolean"
+                },
+                "defaultBranch": {
+                  "type": "string"
+                },
+                "pushedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "fullName",
+                "private",
+                "defaultBranch",
+                "pushedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "repos"
+        ]
+      }
+    },
+    "ci.listRepos": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "owner": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "fullName": {
+                  "type": "string"
+                },
+                "credentialId": {
+                  "type": "integer"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "maxConcurrentRunners": {
+                  "type": "integer"
+                },
+                "runnerImage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "extraLabels": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "allowDockerSocket": {
+                  "type": "boolean"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "runnerStatus": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "desiredRunners": {
+                      "type": "integer"
+                    },
+                    "runningRunners": {
+                      "type": "integer"
+                    },
+                    "totalSpawned": {
+                      "type": "integer"
+                    },
+                    "lastError": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "lastErrorAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "backoffUntil": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "desiredRunners",
+                    "runningRunners",
+                    "totalSpawned",
+                    "lastError",
+                    "lastErrorAt",
+                    "backoffUntil"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "owner",
+                "name",
+                "fullName",
+                "credentialId",
+                "enabled",
+                "maxConcurrentRunners",
+                "runnerImage",
+                "extraLabels",
+                "allowDockerSocket",
+                "createdAt",
+                "runnerStatus"
+              ]
+            }
+          }
+        },
+        "required": [
+          "repos"
+        ]
+      }
+    },
+    "ci.removeRepo": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ]
+      }
+    },
+    "ci.updateRepo": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "maxConcurrentRunners": {
+            "type": "integer"
+          },
+          "credentialId": {
+            "type": "integer"
+          },
+          "runnerImage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extraLabels": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "allowDockerSocket": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "enabled",
+          "maxConcurrentRunners",
+          "credentialId",
+          "runnerImage",
+          "extraLabels",
+          "allowDockerSocket"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "fullName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "maxConcurrentRunners": {
+                "type": "integer"
+              },
+              "runnerImage": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "extraLabels": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "allowDockerSocket": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "runnerStatus": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "desiredRunners": {
+                    "type": "integer"
+                  },
+                  "runningRunners": {
+                    "type": "integer"
+                  },
+                  "totalSpawned": {
+                    "type": "integer"
+                  },
+                  "lastError": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastErrorAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "backoffUntil": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "desiredRunners",
+                  "runningRunners",
+                  "totalSpawned",
+                  "lastError",
+                  "lastErrorAt",
+                  "backoffUntil"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "owner",
+              "name",
+              "fullName",
+              "credentialId",
+              "enabled",
+              "maxConcurrentRunners",
+              "runnerImage",
+              "extraLabels",
+              "allowDockerSocket",
+              "createdAt",
+              "runnerStatus"
+            ]
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    },
     "containers.env": {
       "params": {
         "type": "object",
@@ -4272,6 +4847,9 @@
   },
   "capabilities": {
     "modules": {
+      "Ci": {
+        "features": []
+      },
       "Containers": {
         "features": []
       },

@@ -61,6 +61,14 @@ public static class WatchtowerServiceCollectionExtensions {
 
         services.AddSingleton<StackUpdateService>();
 
+        // CI runners (docs/ci-runners/design.md) — the orchestrator reconciles ephemeral GitHub
+        // Actions runner containers for enabled repos; singleton so ci.* handlers can read live
+        // status and wake it after config changes. Idle cost with no repos configured: one SQLite
+        // query + one Docker label query per pass.
+        services.AddSingleton<GitHubApiClient>();
+        services.AddSingleton<CiRunnerOrchestrator>();
+        services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
+
         // Metrics backend (ADR-0007) — pluggable and mutually exclusive, so exactly one collector runs.
         // Default ("memory"): the in-memory ring buffer fed by the background sampler (amendment F5),
         // zero external dependency; the RPC handlers read only the store, no Docker fan-out on the path.
