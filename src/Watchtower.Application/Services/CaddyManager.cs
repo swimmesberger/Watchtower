@@ -34,6 +34,8 @@ public sealed class CaddyManager : IHostedService, IDisposable {
     private const string CaddyContainerName = "watchtower-caddy";
     private const string CaddyAlias = "watchtower-caddy";
     private const string SelfAlias = "watchtower";
+    /// <summary>Port Watchtower listens on inside its container; where Caddy reaches it on the control network.</summary>
+    private const int SelfPort = 8080;
     private const int AdminPort = 2019;
     private const string ManagedLabelKey = "com.watchtower.managed";
     private const string ComposeProjectLabel = "com.docker.compose.project";
@@ -42,6 +44,7 @@ public sealed class CaddyManager : IHostedService, IDisposable {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
     private readonly ProxyOptions _proxy;
+    private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<CaddyManager> _logger;
     private readonly HttpClient _admin;
     private readonly CancellationTokenSource _cts = new();
@@ -50,11 +53,15 @@ public sealed class CaddyManager : IHostedService, IDisposable {
     public CaddyManager(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
-        IOptions<WatchtowerOptions> options,
+        IOptionsMonitor<WatchtowerOptions> options,
         ILogger<CaddyManager> logger) {
         _scopeFactory = scopeFactory;
         _docker = docker;
-        _proxy = options.Value.Proxy;
+        // Proxy settings are snapshotted: they decide the container's ports and volumes, so changing one
+        // needs a restart anyway. Auth settings are read live (see LoadSitesAsync) because turning access
+        // control on for a route must take effect on the next reconcile, not the next restart.
+        _proxy = options.CurrentValue.Proxy;
+        _options = options;
         _logger = logger;
         // Reached over the control network by the caddy container's DNS alias.
         _admin = new HttpClient { BaseAddress = new Uri($"http://{CaddyAlias}:{AdminPort}") };
@@ -114,9 +121,11 @@ public sealed class CaddyManager : IHostedService, IDisposable {
         try {
             var sites = await LoadSitesAsync(ct);
             // Caddy reaches Watchtower over the control network by the "watchtower" alias; the app listens
-            // on :8080 inside the container. The ask endpoint gates on-demand certs to known domains.
-            var askUrl = $"http://{SelfAlias}:8080/api/proxy/ask";
-            var caddyfile = CaddyConfigBuilder.Build(sites, new CaddyGlobals(_proxy.AdminEmail, AdminPort, askUrl));
+            // on :8080 inside the container. The ask endpoint gates on-demand certs to known domains, and
+            // the same address carries the forward-auth and callback traffic for protected sites.
+            var askUrl = $"http://{SelfAlias}:{SelfPort}/api/proxy/ask";
+            var caddyfile = CaddyConfigBuilder.Build(
+                sites, new CaddyGlobals(_proxy.AdminEmail, AdminPort, askUrl, $"{SelfAlias}:{SelfPort}"));
             await PushConfigAsync(caddyfile, ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to apply Caddy config; will be retried on the next change.");
@@ -287,7 +296,29 @@ public sealed class CaddyManager : IHostedService, IDisposable {
         var routes = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
             .ToListAsync(ct);
-        return routes
+        return ProjectSites(routes, _options.CurrentValue.Auth);
+    }
+
+    /// <summary>
+    /// Projects the route table onto the site list, adding the Watchtower self-route when one is needed.
+    /// Split out from <see cref="LoadSitesAsync"/> as a pure function so the access-control decisions can
+    /// be tested without a database or a Docker daemon.
+    /// </summary>
+    /// <remarks>
+    /// A route is protected only when access control is switched on <em>and</em> the route asks for it, so
+    /// turning <c>Auth:Enabled</c> off is a complete escape hatch: the next reconcile emits exactly the
+    /// configuration this file produced before access control existed, whatever the route rows say.
+    /// <para>
+    /// The self-route is the answer to the bootstrap problem in design.md §11 — a protected app redirects
+    /// to <c>Auth:Host</c>, so that host has to be served before forward-auth is useful for anything. It is
+    /// never <c>Protected</c>: Watchtower authenticates its own UI natively (§2.5), and putting the login
+    /// page behind the gate that redirects to the login page would lock the operator out. An explicit
+    /// <see cref="Route"/> row for the same domain wins — the operator has then said what they want that
+    /// host to do, and silently shadowing it would be worse than honouring it.
+    /// </para>
+    /// </remarks>
+    internal static List<CaddySite> ProjectSites(IReadOnlyList<Route> routes, AuthOptions auth) {
+        var sites = routes
             .Where(r => r.Stack is not null)
             .Select(r => new CaddySite(
                 r.Domain,
@@ -295,8 +326,17 @@ public sealed class CaddyManager : IHostedService, IDisposable {
                 r.ContainerPort,
                 r.TlsEnabled,
                 // Customer-owned domains use on-demand TLS; managed subdomains are issued proactively.
-                OnDemand: r.Kind == DomainKind.Custom))
+                OnDemand: r.Kind == DomainKind.Custom,
+                Protected: auth.Enabled && r.AccessMode != AccessMode.Public))
             .ToList();
+
+        if (!auth.Enabled || string.IsNullOrWhiteSpace(auth.Host)) return sites;
+
+        var host = auth.Host.Trim().ToLowerInvariant();
+        if (sites.All(s => !string.Equals(s.Domain, host, StringComparison.OrdinalIgnoreCase)))
+            sites.Add(new CaddySite(host, SelfAlias, SelfPort, Tls: true));
+
+        return sites;
     }
 
     /// <summary>POSTs the Caddyfile to the admin <c>/load</c> endpoint, retrying while Caddy boots.</summary>

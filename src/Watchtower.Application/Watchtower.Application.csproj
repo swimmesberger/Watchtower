@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Watchtower.Api" />
+    <!-- CaddyManager.ProjectSites: the route-table-to-site-list projection, testable without Docker. -->
+    <InternalsVisibleTo Include="Watchtower.Application.Tests" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +22,11 @@
     <PackageReference Include="EFCore.NamingConventions" />
     <!-- Referenced directly so the pinned e_sqlite3 native version (GHSA-2m69-gcr7-jv3q) actually applies. -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- JWT minting + JWKS for the identity assertion forwarded to protected apps (AuthTokenSigner). -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
   </ItemGroup>
 
   <ItemGroup>

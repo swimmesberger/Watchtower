@@ -158,8 +158,11 @@ if (authEnabled) {
     app.UseAuthorization();
 }
 
-// Login/logout (only mapped when Auth:Enabled).
+// Login/logout/continue (only mapped when Auth:Enabled).
 app.MapWatchtowerAuthEndpoints(authEnabled);
+// Forward-auth: the verify endpoint Caddy consults for protected apps, the callback and per-app logout
+// served on each app's own domain, and the public JWKS. All anonymous — verify *is* the auth check.
+app.MapWatchtowerAccessEndpoints(authEnabled);
 // JSON-RPC endpoint (POST /rpc).
 app.MapElarionJsonRpc();
 // Auto-discovered [HttpEndpoint] handlers (feature-flag gated; none today).

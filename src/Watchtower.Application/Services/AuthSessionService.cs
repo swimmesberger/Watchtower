@@ -28,8 +28,20 @@ public sealed class AuthSessionService(
     /// <summary>Name of the central single-sign-on cookie. Host-scoped: no <c>Domain</c> attribute is ever set.</summary>
     public const string SsoCookieName = "__wt_sso";
 
+    /// <summary>
+    /// Name of the per-app session cookie, set by the callback on the app's own domain. Host-scoped, so
+    /// each protected app gets its own — which is the whole reason the redirect dance exists (design.md §2.2).
+    /// </summary>
+    public const string AccessCookieName = "__wt_access";
+
     /// <summary>Entropy of a session token, in bytes (256 bits).</summary>
     private const int TokenByteLength = 32;
+
+    /// <summary>
+    /// How long a login code stays redeemable. It exists only to survive one redirect hop, so the window
+    /// is the round trip and nothing more.
+    /// </summary>
+    public static readonly TimeSpan LoginCodeLifetime = TimeSpan.FromSeconds(60);
 
     /// <summary>
     /// Idle lifetime a session is extended to. Clamped to a sane range so a mistyped configuration value
@@ -54,7 +66,22 @@ public sealed class AuthSessionService(
     /// Creates a central SSO session for <paramref name="user"/> and returns the raw cookie token — the only
     /// time it exists outside the caller's browser, since only its hash is stored.
     /// </summary>
-    public async Task<string> CreateSsoSessionAsync(User user, CancellationToken ct = default) {
+    public Task<string> CreateSsoSessionAsync(User user, CancellationToken ct = default) =>
+        CreateSessionAsync(user, SessionKind.Sso, routeId: null, ct);
+
+    /// <summary>
+    /// Creates a session for one protected app — the row behind its <c>__wt_access</c> cookie — and returns
+    /// the raw cookie token. Minted only by the callback endpoint, from a redeemed login code.
+    /// </summary>
+    /// <remarks>
+    /// The session is bound to <paramref name="routeId"/>: <see cref="ValidateAppSessionAsync"/> refuses it
+    /// for any other route, so a cookie captured from one app cannot be replayed against another (they are
+    /// different hosts, but the binding does not rely on the browser getting the scoping right).
+    /// </remarks>
+    public Task<string> CreateAppSessionAsync(User user, int routeId, CancellationToken ct = default) =>
+        CreateSessionAsync(user, SessionKind.App, routeId, ct);
+
+    private async Task<string> CreateSessionAsync(User user, SessionKind kind, int? routeId, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(user);
 
         var now = time.GetUtcNow();
@@ -64,8 +91,8 @@ public sealed class AuthSessionService(
         db.AuthSessions.Add(new AuthSession {
             TokenHash = HashToken(token),
             UserId = user.Id,
-            Kind = SessionKind.Sso,
-            RouteId = null,
+            Kind = kind,
+            RouteId = routeId,
             CreatedAt = now,
             // SlidingLifetime <= AbsoluteLifetime by construction, so the initial expiry is already within the cap.
             ExpiresAt = now + SlidingLifetime,
@@ -89,14 +116,30 @@ public sealed class AuthSessionService(
     /// policy after an incident should not have to wait out the old cap.
     /// </para>
     /// </remarks>
-    public async Task<AuthSession?> ValidateAsync(string? rawToken, CancellationToken ct = default) {
+    public Task<AuthSession?> ValidateAsync(string? rawToken, CancellationToken ct = default) =>
+        ValidateCoreAsync(rawToken, SessionKind.Sso, routeId: null, ct);
+
+    /// <summary>
+    /// Resolves an <c>__wt_access</c> cookie token to its live session, requiring that the session was
+    /// minted for <paramref name="routeId"/>. Returns <see langword="null"/> for an unknown, expired,
+    /// wrong-route or disabled-account token — the verify endpoint treats all of those identically.
+    /// </summary>
+    public Task<AuthSession?> ValidateAppSessionAsync(string? rawToken, int routeId, CancellationToken ct = default) =>
+        ValidateCoreAsync(rawToken, SessionKind.App, routeId, ct);
+
+    private async Task<AuthSession?> ValidateCoreAsync(
+        string? rawToken, SessionKind kind, int? routeId, CancellationToken ct) {
         if (string.IsNullOrEmpty(rawToken)) return null;
 
         var hash = HashToken(rawToken);
         var session = await db.AuthSessions
             .Include(s => s.User)
-            .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == SessionKind.Sso, ct);
+            .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == kind, ct);
         if (session is null) return null;
+
+        // Wrong app: refuse, but leave the row alone — it is a perfectly good session for its own route,
+        // and deleting it here would let a request to app B sign the visitor out of app A.
+        if (routeId is not null && session.RouteId != routeId) return null;
 
         var now = time.GetUtcNow();
         if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
@@ -130,6 +173,85 @@ public sealed class AuthSessionService(
     /// <returns>How many sessions were revoked.</returns>
     public Task<int> RevokeAllForUserAsync(int userId, CancellationToken ct = default) =>
         db.AuthSessions.Where(s => s.UserId == userId).ExecuteDeleteAsync(ct);
+
+    /// <summary>
+    /// Deletes just the app session behind <paramref name="rawToken"/> — the per-app sign-out
+    /// (<c>/.watchtower/logout</c>), which must not touch the visitor's other apps or their central session.
+    /// </summary>
+    /// <returns><see langword="true"/> when a row was actually removed.</returns>
+    public async Task<bool> RevokeAppSessionAsync(string? rawToken, CancellationToken ct = default) {
+        if (string.IsNullOrEmpty(rawToken)) return false;
+        var hash = HashToken(rawToken);
+        var removed = await db.AuthSessions
+            .Where(s => s.TokenHash == hash && s.Kind == SessionKind.App)
+            .ExecuteDeleteAsync(ct);
+        return removed > 0;
+    }
+
+    // ── Login codes: the one-time cross-domain handoff (design.md §5) ──────────
+
+    /// <summary>What a redeemed login code authorises. The row itself is gone by the time this is returned.</summary>
+    public sealed record LoginCodeGrant(int UserId, int RouteId, string RedirectUri);
+
+    /// <summary>
+    /// Mints a single-use code binding <paramref name="userId"/> to <paramref name="routeId"/> and the
+    /// already-validated <paramref name="redirectUri"/>, and returns the raw value for the callback URL.
+    /// Only its hash is stored, so the redirect URL in a proxy log is not a redeemable credential once
+    /// the row is gone.
+    /// </summary>
+    public async Task<string> MintLoginCodeAsync(
+        int userId, int routeId, string redirectUri, CancellationToken ct = default) {
+        ArgumentException.ThrowIfNullOrWhiteSpace(redirectUri);
+
+        var now = time.GetUtcNow();
+        await SweepExpiredCodesAsync(now, ct);
+
+        var code = NewToken();
+        db.LoginCodes.Add(new LoginCode {
+            CodeHash = HashToken(code),
+            UserId = userId,
+            RouteId = routeId,
+            RedirectUri = redirectUri,
+            CreatedAt = now,
+            ExpiresAt = now + LoginCodeLifetime,
+        });
+        await db.SaveChangesAsync(ct);
+        return code;
+    }
+
+    /// <summary>
+    /// Consumes <paramref name="rawCode"/> and returns what it authorises, or <see langword="null"/> when
+    /// it is unknown, already redeemed, or expired.
+    /// </summary>
+    /// <remarks>
+    /// The delete is the claim, not a follow-up to it: the row is removed by a single statement whose
+    /// affected-row count decides the outcome, so two concurrent redemptions of the same code produce one
+    /// winner and one <see langword="null"/> rather than two app sessions. Expiry is checked after that —
+    /// an expired code is consumed as well, since nothing is gained by leaving it redeemable-but-refused.
+    /// </remarks>
+    public async Task<LoginCodeGrant?> RedeemLoginCodeAsync(string? rawCode, CancellationToken ct = default) {
+        if (string.IsNullOrEmpty(rawCode)) return null;
+
+        var hash = HashToken(rawCode);
+        var code = await db.LoginCodes.AsNoTracking().FirstOrDefaultAsync(c => c.CodeHash == hash, ct);
+        if (code is null) return null;
+
+        var claimed = await db.LoginCodes.Where(c => c.Id == code.Id).ExecuteDeleteAsync(ct);
+        if (claimed != 1) return null;
+
+        return code.ExpiresAt <= time.GetUtcNow()
+            ? null
+            : new LoginCodeGrant(code.UserId, code.RouteId, code.RedirectUri);
+    }
+
+    /// <summary>
+    /// Opportunistic sweep of expired codes, riding along with the mint that is already writing. Same
+    /// hand-written-SQL reason as <see cref="SweepExpiredAsync"/>.
+    /// </summary>
+    private async Task SweepExpiredCodesAsync(DateTimeOffset now, CancellationToken ct) {
+        var cutoff = now.ToUniversalTime();
+        await db.Database.ExecuteSqlAsync($"DELETE FROM login_codes WHERE expires_at <= {cutoff}", ct);
+    }
 
     /// <summary>
     /// Opportunistic lazy sweep of expired sessions of every kind. Logins are rare and already write, so this

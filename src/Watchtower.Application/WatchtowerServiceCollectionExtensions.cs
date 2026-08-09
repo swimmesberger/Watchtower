@@ -112,6 +112,13 @@ public static class WatchtowerServiceCollectionExtensions {
         // the context it writes through. Registered unconditionally — it is inert until something logs in.
         services.AddScoped<AuthSessionService>();
 
+        // The ES256 signer behind X-Watchtower-Jwt and the JWKS endpoint (design.md §2.3). Singleton
+        // because the key pair is process-wide state: loading it per request would re-read the PEM on
+        // every proxied request, and generating it per request would produce a different `kid` each time.
+        // Registered unconditionally and lazily — the key file is not touched until the first assertion
+        // is minted or the JWKS is fetched, so a deployment with Auth:Enabled off never creates one.
+        services.AddSingleton<AuthTokenSigner>();
+
         // Who the caller is, and therefore what [assembly: ElarionAuthorizationDefaults] lets through.
         // Registered BEFORE AddElarionClaimsCurrentUser on purpose: that helper uses TryAdd for
         // ICurrentUser, so registering first is how a host substitutes its own snapshot.

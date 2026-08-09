@@ -17,33 +17,91 @@ export const LOCAL_USER_ID = 'local'
 export interface LoginResult {
   userName: string
   isAdmin: boolean
+  /**
+   * Set only when the sign-in was continuing into a protected app: the URL to hand the session over on
+   * that app's own domain. Treat it as opaque — navigate to it, never render or parse it (see
+   * {@link continueSession}).
+   */
+  continueUrl?: string
 }
 
 /** Thrown when the credentials were rejected; the message is the backend's deliberately generic one. */
 export class LoginError extends Error {}
 
 /**
+ * Thrown when the account is real but may not enter the app it was trying to reach. Distinct from
+ * {@link LoginError} because the answer is different: no password will help, so the form is the wrong
+ * thing to show.
+ */
+export class AccessDeniedError extends Error {}
+
+/**
  * Signs in and, on success, leaves the `__wt_sso` cookie in place. The cookie is `HttpOnly`, so nothing
  * here ever sees it — `credentials: 'include'` is what makes the browser keep and resend it, and it is
  * required for the Aspire/Vite dev setup where the SPA and the API are different origins.
+ *
+ * `redirectUri` is the protected app the visitor was originally going to, passed straight through; the
+ * backend validates it against the route table and answers with a `continueUrl` or a 403.
  */
-export async function login(userName: string, password: string): Promise<LoginResult> {
+export async function login(
+  userName: string,
+  password: string,
+  redirectUri?: string,
+): Promise<LoginResult> {
   const response = await fetch(`${apiBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ userName, password }),
+    body: JSON.stringify({ userName, password, redirectUri }),
   })
 
   if (response.status === 401) {
     const body = (await response.json().catch(() => null)) as { message?: string } | null
     throw new LoginError(body?.message ?? 'Invalid user name or password.')
   }
+  if (response.status === 403) {
+    throw new AccessDeniedError(await deniedMessage(response))
+  }
   if (!response.ok) {
     throw new Error(`Sign-in failed: ${response.status} ${response.statusText}`)
   }
 
   return (await response.json()) as LoginResult
+}
+
+/**
+ * The silent-SSO path: exchanges an existing central session for a hand-over URL into `redirectUri`'s
+ * app, so a visitor already signed in to Watchtower never sees a second password prompt.
+ *
+ * The returned URL is built by the backend from the *route table* — a domain Watchtower actually proxies
+ * — not from the string passed in here. That is what makes navigating to it safe, and it is also why
+ * `redirectUri` itself must never be rendered or navigated to directly: unlike the `?redirect=` parameter
+ * (which {@link safeRedirectTarget} pins to this origin), it is by design cross-origin, so the only
+ * defensible handling is to let the backend decide whether it names a real app and echo nothing back.
+ */
+export async function continueSession(redirectUri: string): Promise<string> {
+  const response = await fetch(`${apiBase}/api/auth/continue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ redirectUri }),
+  })
+
+  if (response.status === 403) {
+    throw new AccessDeniedError(await deniedMessage(response))
+  }
+  if (!response.ok) {
+    throw new Error(`Could not continue to the application: ${response.status} ${response.statusText}`)
+  }
+
+  const body = (await response.json()) as { continueUrl: string }
+  return body.continueUrl
+}
+
+/** The backend's generic denial message, which deliberately does not say *why*. */
+async function deniedMessage(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => null)) as { message?: string } | null
+  return body?.message ?? 'You are not permitted to access that application.'
 }
 
 /** Signs the account out everywhere (the backend revokes every session it holds, not just this browser's). */

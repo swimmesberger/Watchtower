@@ -37,6 +37,13 @@
        Microsoft.Extensions.* — see docs/central-auth/design.md §2.4. -->
 
   <ItemGroup>
+    <!-- ES256 identity assertions forwarded to protected apps (docs/central-auth/design.md §2.3): token
+         minting, the JWKS document, and the validation the tests do against it. Not part of the ASP.NET
+         shared framework (only the JwtBearer *handler* would be, and we are the issuer, not a consumer). -->
+    <PackageVersion Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.22.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Test stack (xunit v3). -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />

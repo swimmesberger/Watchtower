@@ -21,11 +21,13 @@ namespace Watchtower.Application.Tests;
 /// <remarks>
 /// The SQLite connection is held open for the lifetime of the host because closing the last
 /// connection to <c>DataSource=:memory:</c> discards the database. <see cref="Restart"/> hands the
-/// same connection to a second provider, which is how "what happens on the next start" is tested.
+/// same connection <em>and the same data directory</em> to a second provider, which is how "what happens
+/// on the next start" is tested — in a deployment both live on the same persistent volume, so a restart
+/// that saw a fresh key directory would be modelling a disaster rather than a restart.
 /// </remarks>
 public sealed class AuthTestHost : IDisposable {
     private readonly SqliteConnection _connection;
-    private readonly bool _ownsConnection;
+    private readonly bool _ownsResources;
     private readonly ServiceProvider _provider;
     private readonly ServiceCollection _registrations;
     private readonly string _dataDirectory;
@@ -34,15 +36,16 @@ public sealed class AuthTestHost : IDisposable {
 
     private AuthTestHost(
         SqliteConnection connection,
-        bool ownsConnection,
+        bool ownsResources,
+        string dataDirectory,
         TestTimeProvider time,
         Action<IServiceCollection>? configure,
         IEnumerable<KeyValuePair<string, string?>> settings) {
         _connection = connection;
-        _ownsConnection = ownsConnection;
+        _ownsResources = ownsResources;
         _time = time;
         _configure = configure;
-        _dataDirectory = Path.Combine(Path.GetTempPath(), "watchtower-tests", Guid.NewGuid().ToString("N"));
+        _dataDirectory = dataDirectory;
 
         // DbPath and KeyPath default to /data/*, which AddWatchtowerServices creates eagerly — point
         // both at a scratch directory so tests never try to write outside their own temp space.
@@ -94,15 +97,19 @@ public sealed class AuthTestHost : IDisposable {
         connection.Open();
         return new AuthTestHost(
             connection,
-            ownsConnection: true,
+            ownsResources: true,
+            Path.Combine(Path.GetTempPath(), "watchtower-tests", Guid.NewGuid().ToString("N")),
             new TestTimeProvider(DateTimeOffset.UtcNow),
             configure,
             ToConfiguration(settings));
     }
 
-    /// <summary>Simulates the next process start against the same database, optionally with different configuration.</summary>
+    /// <summary>
+    /// Simulates the next process start against the same database and the same <c>/data</c> volume,
+    /// optionally with different configuration.
+    /// </summary>
     public AuthTestHost Restart(params (string Key, string? Value)[] settings) =>
-        new(_connection, ownsConnection: false, _time, _configure, ToConfiguration(settings));
+        new(_connection, ownsResources: false, _dataDirectory, _time, _configure, ToConfiguration(settings));
 
     /// <summary>
     /// Builds the bootstrap hosted service the way the host would, first asserting that
@@ -126,7 +133,9 @@ public sealed class AuthTestHost : IDisposable {
 
     public void Dispose() {
         _provider.Dispose();
-        if (_ownsConnection) _connection.Dispose();
+        // A restarted host borrows both; only the host that created them cleans up, and it is disposed last.
+        if (!_ownsResources) return;
+        _connection.Dispose();
         if (Directory.Exists(_dataDirectory)) Directory.Delete(_dataDirectory, recursive: true);
     }
 

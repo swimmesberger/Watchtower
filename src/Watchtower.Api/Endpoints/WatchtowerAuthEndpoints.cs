@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
+using Watchtower.Api.Authentication;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -14,12 +15,30 @@ namespace Watchtower.Api.Endpoints;
 /// externally-shaped surfaces (webhook, SSE) — and because the login page must work before any handler would
 /// let the caller in.
 /// </summary>
+/// <remarks>
+/// The same two endpoints also drive the cross-domain dance (design.md §5). A login page reached from a
+/// protected app carries that app's URL, and the response then contains a <c>continueUrl</c> the browser
+/// follows to the app's own callback; <c>/api/auth/continue</c> is the same step for a visitor who is
+/// already signed in centrally, which is what makes the second and third app silent.
+/// </remarks>
 public static class WatchtowerAuthEndpoints {
-    /// <summary>Credentials posted by the login form.</summary>
-    public sealed record LoginRequest(string? UserName, string? Password);
+    /// <summary>
+    /// Credentials posted by the login form. <paramref name="RedirectUri"/> is present only when the login
+    /// page was reached from a protected app, and is the URL the visitor was originally going to.
+    /// </summary>
+    public sealed record LoginRequest(string? UserName, string? Password, string? RedirectUri);
 
-    /// <summary>What the SPA learns about the account it just signed in as.</summary>
-    public sealed record LoginResponse(string UserName, bool IsAdmin);
+    /// <summary>
+    /// What the SPA learns about the account it just signed in as. <paramref name="ContinueUrl"/> is set
+    /// only for the cross-domain dance and is an opaque target to navigate to — the SPA never renders it.
+    /// </summary>
+    public sealed record LoginResponse(string UserName, bool IsAdmin, string? ContinueUrl = null);
+
+    /// <summary>The app the caller wants to be handed over to.</summary>
+    public sealed record ContinueRequest(string? RedirectUri);
+
+    /// <summary>Where to navigate to hand the central session over to that app.</summary>
+    public sealed record ContinueResponse(string ContinueUrl);
 
     /// <summary>The single failure body every rejected login gets, whatever the actual reason was.</summary>
     public sealed record AuthErrorResponse(string Message);
@@ -28,6 +47,7 @@ public static class WatchtowerAuthEndpoints {
     private const string LoginOk = "login.ok";
     private const string LoginFailed = "login.failed";
     private const string Logout = "logout";
+    private const string AccessDenied = "access.denied";
 
     /// <summary>
     /// One message for a bad password, an unknown name, a disabled account and a locked-out one alike:
@@ -35,6 +55,15 @@ public static class WatchtowerAuthEndpoints {
     /// </summary>
     private static readonly AuthErrorResponse InvalidCredentials =
         new("Invalid user name or password.");
+
+    /// <summary>
+    /// One message for "no such app", "that app is public" and "you hold no grant for it" alike. The
+    /// caller has authenticated by this point, so the message may be specific about the outcome — but not
+    /// about the reason, which would otherwise enumerate which domains Watchtower proxies and who may
+    /// enter them.
+    /// </summary>
+    private static readonly AuthErrorResponse AccessNotPermitted =
+        new("You are not permitted to access that application.");
 
     /// <summary>
     /// Maps the login endpoints. When <paramref name="authEnabled"/> is false the routes still exist but
@@ -45,11 +74,13 @@ public static class WatchtowerAuthEndpoints {
         if (!authEnabled) {
             app.MapPost("/api/auth/login", () => Results.NotFound());
             app.MapPost("/api/auth/logout", () => Results.NotFound());
+            app.MapPost("/api/auth/continue", () => Results.NotFound());
             return app;
         }
 
         MapLogin(app);
         MapLogout(app);
+        MapContinue(app);
         return app;
     }
 
@@ -128,15 +159,97 @@ public static class WatchtowerAuthEndpoints {
                 await users.ResetAccessFailedCountAsync(user);
 
             var token = await sessions.CreateSsoSessionAsync(user, ct);
-            AppendSessionCookie(http, token, sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
+            AuthCookies.Append(
+                http, AuthSessionService.SsoCookieName, token,
+                sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
 
             Record(db, time, LoginOk, user.Id, Describe(http, reason: null));
             // Same reasoning as the failure path: the session now exists, so the row recording that it was
             // handed out must not depend on the client staying connected.
             await db.SaveChangesAsync(CancellationToken.None);
 
-            return Results.Ok(new LoginResponse(user.UserName, user.IsAdmin));
+            // The credentials were good and the central session exists either way; what is still open is
+            // whether this account may enter the app the visitor came from.
+            if (string.IsNullOrWhiteSpace(body?.RedirectUri))
+                return Results.Ok(new LoginResponse(user.UserName, user.IsAdmin));
+
+            var continueUrl = await IssueContinueUrlAsync(db, sessions, time, http, user.Id, body.RedirectUri, ct);
+            return continueUrl is null
+                ? Results.Json(AccessNotPermitted, statusCode: StatusCodes.Status403Forbidden)
+                : Results.Ok(new LoginResponse(user.UserName, user.IsAdmin, continueUrl));
         });
+    }
+
+    /// <summary>
+    /// The silent-SSO step: a visitor who already holds a central session asks to be handed over to an app,
+    /// without a password prompt. Same validation and the same generic refusal as the login path.
+    /// </summary>
+    /// <remarks>
+    /// JSON content type required for the same reason login requires it: a cross-site HTML form cannot
+    /// produce one, so a forged POST cannot mint a code with somebody else's session (design.md §9, CSRF).
+    /// </remarks>
+    private static void MapContinue(WebApplication app) {
+        app.MapPost("/api/auth/continue", async (
+            HttpContext http,
+            AuthSessionService sessions,
+            WatchtowerDbContext db,
+            TimeProvider time,
+            CancellationToken ct) => {
+
+            if (!http.Request.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+
+            ContinueRequest? body;
+            try {
+                body = await http.Request.ReadFromJsonAsync<ContinueRequest>(ct);
+            } catch (System.Text.Json.JsonException) {
+                return Results.BadRequest();
+            }
+
+            var session = await sessions.ValidateAsync(
+                http.Request.Cookies[AuthSessionService.SsoCookieName], ct);
+            if (session is null) return Results.Unauthorized();
+
+            var continueUrl = await IssueContinueUrlAsync(
+                db, sessions, time, http, session.UserId, body?.RedirectUri, ct);
+            return continueUrl is null
+                ? Results.Json(AccessNotPermitted, statusCode: StatusCodes.Status403Forbidden)
+                : Results.Ok(new ContinueResponse(continueUrl));
+        });
+    }
+
+    /// <summary>
+    /// Validates the requested app URL, checks the account may enter it, and mints the one-time code —
+    /// returning the URL to navigate to, or <see langword="null"/> when any of that fails.
+    /// </summary>
+    /// <remarks>
+    /// Failing as one value rather than distinguishing the causes is deliberate: an unknown domain, a
+    /// public route and a missing grant must be indistinguishable to the caller, or the endpoint becomes a
+    /// way to enumerate the route table and its policy from an ordinary account.
+    /// <para>
+    /// The returned URL is built from <see cref="Route.Domain"/> — a row Watchtower wrote — not from the
+    /// caller's string, so the browser is only ever sent to a domain this instance actually proxies.
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> IssueContinueUrlAsync(
+        WatchtowerDbContext db,
+        AuthSessionService sessions,
+        TimeProvider time,
+        HttpContext http,
+        int userId,
+        string? redirectUri,
+        CancellationToken ct) {
+
+        var target = await RouteAccessPolicy.ResolveRedirectTargetAsync(db, redirectUri, ct);
+        if (target is null || !await RouteAccessPolicy.IsAuthorizedAsync(db, target.Value.Route, userId, ct)) {
+            Record(db, time, AccessDenied, userId, Describe(http, "redirect_uri refused"), target?.Route.Id);
+            await db.SaveChangesAsync(CancellationToken.None);
+            return null;
+        }
+
+        var (route, url) = target.Value;
+        var code = await sessions.MintLoginCodeAsync(userId, route.Id, url, ct);
+        return $"https://{route.Domain}{RouteAccessPolicy.CallbackPath}?code={Uri.EscapeDataString(code)}";
     }
 
     /// <summary>Global sign-out: every session of the account is deleted, not just this browser's.</summary>
@@ -154,7 +267,7 @@ public static class WatchtowerAuthEndpoints {
                 http.Request.Cookies[AuthSessionService.SsoCookieName], ct);
             if (session is null) {
                 // Nothing to revoke, but clear whatever stale value the browser is still presenting.
-                DeleteSessionCookie(http, securePolicy);
+                AuthCookies.Delete(http, AuthSessionService.SsoCookieName, securePolicy);
                 return Results.Unauthorized();
             }
 
@@ -163,7 +276,7 @@ public static class WatchtowerAuthEndpoints {
             // The sessions are already gone; the row saying who ended them must not be lost to a disconnect.
             await db.SaveChangesAsync(CancellationToken.None);
 
-            DeleteSessionCookie(http, securePolicy);
+            AuthCookies.Delete(http, AuthSessionService.SsoCookieName, securePolicy);
             return Results.NoContent();
         });
     }
@@ -181,11 +294,12 @@ public static class WatchtowerAuthEndpoints {
     }
 
     /// <summary>Queues an audit row; the caller decides when to commit it alongside its other writes.</summary>
-    private static void Record(WatchtowerDbContext db, TimeProvider time, string kind, int? userId, string? detail) =>
+    private static void Record(
+        WatchtowerDbContext db, TimeProvider time, string kind, int? userId, string? detail, int? routeId = null) =>
         db.AuthEvents.Add(new AuthEvent {
             Kind = kind,
             UserId = userId,
-            RouteId = null,
+            RouteId = routeId,
             Detail = detail,
             CreatedAt = time.GetUtcNow(),
         });
@@ -196,43 +310,4 @@ public static class WatchtowerAuthEndpoints {
         return reason is null ? $"from {address}" : $"{reason}; from {address}";
     }
 
-    /// <summary>
-    /// Host-scoped (no <c>Domain</c>), <c>HttpOnly</c>, <c>SameSite=Lax</c>, and <c>Secure</c> per
-    /// <paramref name="securePolicy"/> (design.md §4, §9, §11).
-    /// </summary>
-    /// <remarks>
-    /// <see cref="AuthCookieSecurePolicy.Auto"/> reads <see cref="HttpRequest.IsHttps"/> <em>after</em>
-    /// <c>UseForwardedHeaders</c> has applied <c>X-Forwarded-Proto</c>, so a request that reached the proxy
-    /// over HTTPS is treated as secure even though the hop into Kestrel is plain HTTP. Setting the flag
-    /// unconditionally instead would break the published-port recovery path, where the cookie would be set
-    /// and then never sent back.
-    /// </remarks>
-    private static void AppendSessionCookie(
-        HttpContext http, string token, TimeSpan maxAge, AuthCookieSecurePolicy securePolicy) =>
-        http.Response.Cookies.Append(AuthSessionService.SsoCookieName, token, new CookieOptions {
-            HttpOnly = true,
-            Secure = IsSecure(http, securePolicy),
-            SameSite = SameSiteMode.Lax,
-            Path = "/",
-            IsEssential = true,
-            // The database row is the authority on expiry; MaxAge only stops the browser from keeping a
-            // value that can no longer be valid, so it tracks the absolute cap rather than the idle window.
-            MaxAge = maxAge,
-        });
-
-    /// <summary>Expires the cookie. The attributes must match the ones it was set with or the browser keeps it.</summary>
-    private static void DeleteSessionCookie(HttpContext http, AuthCookieSecurePolicy securePolicy) =>
-        http.Response.Cookies.Delete(AuthSessionService.SsoCookieName, new CookieOptions {
-            HttpOnly = true,
-            Secure = IsSecure(http, securePolicy),
-            SameSite = SameSiteMode.Lax,
-            Path = "/",
-        });
-
-    /// <summary>Resolves the configured policy against this request.</summary>
-    private static bool IsSecure(HttpContext http, AuthCookieSecurePolicy policy) => policy switch {
-        AuthCookieSecurePolicy.Always => true,
-        AuthCookieSecurePolicy.Never => false,
-        _ => http.Request.IsHttps,
-    };
 }
