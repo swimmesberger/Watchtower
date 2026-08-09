@@ -159,12 +159,108 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
         // Stored as the enum name (e.g. "Active"/"Managed"); the API maps Status to lowercase for the client.
         b.Property(x => x.Status).HasConversion<string>();
         b.Property(x => x.Kind).HasConversion<string>();
+        // Stored as the enum name (e.g. "Public"); "Public" is the default so existing routes keep today's behaviour.
+        b.Property(x => x.AccessMode).HasConversion<string>();
         b.HasIndex(x => x.Domain).IsUnique();
         b.HasIndex(x => x.StackId);
         b.HasOne(x => x.Stack)
             .WithMany()
             .HasForeignKey(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
+    public void Configure(EntityTypeBuilder<User> b) {
+        b.ToTable("users");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.UserName).IsRequired();
+        b.Property(x => x.NormalizedUserName).IsRequired();
+        b.Property(x => x.PasswordHash).IsRequired();
+        b.Property(x => x.SecurityStamp).IsRequired();
+        // Every login looks the user up by the normalized name, which is also where uniqueness is enforced.
+        b.HasIndex(x => x.NormalizedUserName).IsUnique();
+    }
+}
+
+[EntityConfiguration]
+public sealed class AuthSessionConfiguration : IEntityTypeConfiguration<AuthSession> {
+    public void Configure(EntityTypeBuilder<AuthSession> b) {
+        b.ToTable("auth_sessions");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.TokenHash).IsRequired();
+        // Stored as the enum name (e.g. "Sso").
+        b.Property(x => x.Kind).HasConversion<string>();
+        b.HasIndex(x => x.TokenHash).IsUnique();
+        // Deleting a user or a route revokes the sessions that depend on it.
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(x => x.Route)
+            .WithMany()
+            .HasForeignKey(x => x.RouteId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class LoginCodeConfiguration : IEntityTypeConfiguration<LoginCode> {
+    public void Configure(EntityTypeBuilder<LoginCode> b) {
+        b.ToTable("login_codes");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.CodeHash).IsRequired();
+        b.Property(x => x.RedirectUri).IsRequired();
+        b.HasIndex(x => x.CodeHash).IsUnique();
+        // Codes are short-lived; the sweep of expired rows scans this index.
+        b.HasIndex(x => x.ExpiresAt);
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(x => x.Route)
+            .WithMany()
+            .HasForeignKey(x => x.RouteId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class RouteAccessGrantConfiguration : IEntityTypeConfiguration<RouteAccessGrant> {
+    public void Configure(EntityTypeBuilder<RouteAccessGrant> b) {
+        b.ToTable("route_access_grants");
+        b.HasKey(x => x.Id);
+        // One grant per (route, user) — re-granting is idempotent rather than duplicated.
+        b.HasIndex(x => new { x.RouteId, x.UserId }).IsUnique();
+        b.HasOne(x => x.Route)
+            .WithMany()
+            .HasForeignKey(x => x.RouteId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class AuthEventConfiguration : IEntityTypeConfiguration<AuthEvent> {
+    public void Configure(EntityTypeBuilder<AuthEvent> b) {
+        b.ToTable("auth_events");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Kind).IsRequired();
+        // The audit view reads newest-first.
+        b.HasIndex(x => x.CreatedAt);
+        // The trail survives the subjects it mentions: detach instead of cascading.
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.SetNull);
+        b.HasOne(x => x.Route)
+            .WithMany()
+            .HasForeignKey(x => x.RouteId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

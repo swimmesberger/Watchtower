@@ -1,0 +1,105 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
+using Xunit;
+
+namespace Watchtower.Application.Tests;
+
+/// <summary>
+/// A Watchtower service provider wired the way the real host wires it
+/// (<see cref="WatchtowerServiceCollectionExtensions.AddWatchtowerServices"/>), but persisting to a
+/// private in-memory SQLite database instead of <c>/data</c>. Exercising the production registration
+/// is the point: a test that hand-registered Identity would not notice the host drifting away from it.
+/// </summary>
+/// <remarks>
+/// The SQLite connection is held open for the lifetime of the host because closing the last
+/// connection to <c>DataSource=:memory:</c> discards the database. <see cref="Restart"/> hands the
+/// same connection to a second provider, which is how "what happens on the next start" is tested.
+/// </remarks>
+public sealed class AuthTestHost : IDisposable {
+    private readonly SqliteConnection _connection;
+    private readonly bool _ownsConnection;
+    private readonly ServiceProvider _provider;
+    private readonly ServiceCollection _registrations;
+    private readonly string _dataDirectory;
+
+    private AuthTestHost(
+        SqliteConnection connection,
+        bool ownsConnection,
+        IEnumerable<KeyValuePair<string, string?>> settings) {
+        _connection = connection;
+        _ownsConnection = ownsConnection;
+        _dataDirectory = Path.Combine(Path.GetTempPath(), "watchtower-tests", Guid.NewGuid().ToString("N"));
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(settings.Append(
+                new KeyValuePair<string, string?>("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db"))))
+            .Build();
+
+        _registrations = [];
+        _registrations.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
+        _registrations.AddWatchtowerServices(configuration);
+
+        // Swap the file-backed context for the shared in-memory connection. AddDbContext registers its
+        // options with TryAdd, so the original descriptor has to go first.
+        _registrations.RemoveAll<DbContextOptions<WatchtowerDbContext>>();
+        _registrations.RemoveAll<DbContextOptions>();
+        _registrations.AddDbContext<WatchtowerDbContext>(o =>
+            o.UseSqlite(_connection).UseSnakeCaseNamingConvention());
+
+        _provider = _registrations.BuildServiceProvider();
+
+        using var scope = _provider.CreateScope();
+        // Applying the real migrations (rather than EnsureCreated) keeps the tests honest about the
+        // schema the deployed database will actually have.
+        scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>().Database.Migrate();
+    }
+
+    public IServiceProvider Services => _provider;
+
+    /// <summary>Starts a host over a brand-new database. <paramref name="settings"/> are <c>Watchtower:*</c> configuration keys.</summary>
+    public static AuthTestHost Start(params (string Key, string? Value)[] settings) {
+        var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        return new AuthTestHost(connection, ownsConnection: true, ToConfiguration(settings));
+    }
+
+    /// <summary>Simulates the next process start against the same database, optionally with different configuration.</summary>
+    public AuthTestHost Restart(params (string Key, string? Value)[] settings) =>
+        new(_connection, ownsConnection: false, ToConfiguration(settings));
+
+    /// <summary>
+    /// Builds the bootstrap hosted service the way the host would, first asserting that
+    /// <c>AddWatchtowerServices</c> really registers it — <c>IHostedService</c> is not resolved
+    /// directly because that would also construct the Docker- and proxy-facing background services.
+    /// </summary>
+    public AuthBootstrapService CreateBootstrapService() {
+        Assert.Contains(_registrations, d =>
+            d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(AuthBootstrapService));
+        return ActivatorUtilities.CreateInstance<AuthBootstrapService>(_provider);
+    }
+
+    /// <summary>A user shaped for <c>UserManager.CreateAsync</c>, which overwrites the normalized name and stamp itself.</summary>
+    public static User NewUser(string userName) => new() {
+        UserName = userName,
+        NormalizedUserName = userName.ToUpperInvariant(),
+        PasswordHash = string.Empty,
+        SecurityStamp = Guid.NewGuid().ToString("N"),
+    };
+
+    public void Dispose() {
+        _provider.Dispose();
+        if (_ownsConnection) _connection.Dispose();
+        if (Directory.Exists(_dataDirectory)) Directory.Delete(_dataDirectory, recursive: true);
+    }
+
+    private static IEnumerable<KeyValuePair<string, string?>> ToConfiguration((string Key, string? Value)[] settings) =>
+        settings.Select(s => new KeyValuePair<string, string?>(s.Key, s.Value));
+}

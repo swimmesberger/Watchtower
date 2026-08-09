@@ -61,6 +61,29 @@ public static class WatchtowerServiceCollectionExtensions {
 
         services.AddSingleton<StackUpdateService>();
 
+        // Central authorization (docs/central-auth/design.md) — ASP.NET Identity *core* only
+        // (UserManager + password hasher + lockout/security-stamp), stored through WatchtowerDbContext.
+        // Registered unconditionally: nothing runs until something asks for a UserManager, and the
+        // bootstrap below no-ops while Auth:Enabled is false.
+        services.AddIdentityCore<Entities.User>(o => {
+            // Brute-force protection: 5 failed logins park the account for 15 minutes.
+            o.Lockout.AllowedForNewUsers = true;
+            o.Lockout.MaxFailedAccessAttempts = 5;
+            o.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+            // Length over composition rules — forced symbol classes push operators towards
+            // predictable substitutions without adding real entropy.
+            o.Password.RequiredLength = 10;
+            o.Password.RequiredUniqueChars = 1;
+            o.Password.RequireDigit = false;
+            o.Password.RequireLowercase = false;
+            o.Password.RequireUppercase = false;
+            o.Password.RequireNonAlphanumeric = false;
+            o.User.RequireUniqueEmail = false;
+        }).AddUserStore<WatchtowerUserStore>();
+
+        // First-run admin + break-glass password reset. No-op unless Auth:Enabled.
+        services.AddHostedService<AuthBootstrapService>();
+
         // CI runners (docs/ci-runners/design.md) — the orchestrator reconciles ephemeral GitHub
         // Actions runner containers for enabled repos; singleton so ci.* handlers can read live
         // status and wake it after config changes. Idle cost with no repos configured: one SQLite

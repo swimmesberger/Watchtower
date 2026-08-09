@@ -24,7 +24,9 @@
 
   <ItemGroup>
     <!-- Brings the shared framework (Microsoft.Extensions.* hosting/logging/options/DI) used by the
-         background services and the ASP.NET-hosted handler pipeline. -->
+         background services and the ASP.NET-hosted handler pipeline. It also supplies ASP.NET
+         Identity *core* (Microsoft.Extensions.Identity.Core) behind WatchtowerUserStore — that
+         assembly is part of the shared framework, so it needs no PackageReference (NU1510). -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 

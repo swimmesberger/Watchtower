@@ -1,0 +1,173 @@
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
+
+namespace Watchtower.Application.Services;
+
+/// <summary>
+/// Backs ASP.NET Identity <em>core</em> (<see cref="UserManager{TUser}"/>, the password hasher, the
+/// lockout and security-stamp machinery) with Watchtower's own <see cref="User"/> entity and
+/// <see cref="WatchtowerDbContext"/> — deliberately instead of <c>IdentityDbContext</c>, whose DbSets
+/// would collide with the source-generated ones (docs/central-auth/design.md §2.4).
+/// </summary>
+/// <remarks>
+/// Scoped, like the context it writes through. Names arriving at
+/// <see cref="FindByNameAsync"/> and <see cref="SetNormalizedUserNameAsync"/> have already been put
+/// through Identity's <c>ILookupNormalizer</c> by <see cref="UserManager{TUser}"/>, which is what
+/// makes login case-insensitive on SQLite.
+/// </remarks>
+public sealed class WatchtowerUserStore(WatchtowerDbContext db) :
+    IUserStore<User>,
+    IUserPasswordStore<User>,
+    IUserSecurityStampStore<User>,
+    IUserLockoutStore<User> {
+
+    // -- Identity --------------------------------------------------------------------------------
+
+    public Task<string> GetUserIdAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(user.Id.ToString());
+    }
+
+    public Task<string?> GetUserNameAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult<string?>(user.UserName);
+    }
+
+    public Task SetUserNameAsync(User user, string? userName, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.UserName = userName ?? string.Empty;
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> GetNormalizedUserNameAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult<string?>(user.NormalizedUserName);
+    }
+
+    public Task SetNormalizedUserNameAsync(User user, string? normalizedName, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.NormalizedUserName = normalizedName ?? string.Empty;
+        return Task.CompletedTask;
+    }
+
+    // -- Persistence -----------------------------------------------------------------------------
+
+    public async Task<IdentityResult> CreateAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (user.CreatedAt == default) user.CreatedAt = DateTimeOffset.UtcNow;
+        db.Users.Add(user);
+        await db.SaveChangesAsync(cancellationToken);
+        return IdentityResult.Success;
+    }
+
+    public async Task<IdentityResult> UpdateAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        cancellationToken.ThrowIfCancellationRequested();
+        db.Users.Update(user);
+        await db.SaveChangesAsync(cancellationToken);
+        return IdentityResult.Success;
+    }
+
+    public async Task<IdentityResult> DeleteAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        cancellationToken.ThrowIfCancellationRequested();
+        db.Users.Remove(user);
+        await db.SaveChangesAsync(cancellationToken);
+        return IdentityResult.Success;
+    }
+
+    public async Task<User?> FindByIdAsync(string userId, CancellationToken cancellationToken) {
+        cancellationToken.ThrowIfCancellationRequested();
+        return int.TryParse(userId, out var id)
+            ? await db.Users.FirstOrDefaultAsync(u => u.Id == id, cancellationToken)
+            : null;
+    }
+
+    public async Task<User?> FindByNameAsync(string normalizedUserName, CancellationToken cancellationToken) {
+        cancellationToken.ThrowIfCancellationRequested();
+        return await db.Users.FirstOrDefaultAsync(u => u.NormalizedUserName == normalizedUserName, cancellationToken);
+    }
+
+    // -- Password --------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Identity models "no password" as null; the column is non-nullable, so it is stored as the empty
+    /// string and reported back as null by <see cref="GetPasswordHashAsync"/>. Anything else makes
+    /// <c>UserManager.AddPasswordAsync</c> believe a cleared account still has a password.
+    /// </summary>
+    public Task SetPasswordHashAsync(User user, string? passwordHash, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.PasswordHash = passwordHash ?? string.Empty;
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc cref="SetPasswordHashAsync"/>
+    public Task<string?> GetPasswordHashAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(string.IsNullOrEmpty(user.PasswordHash) ? null : user.PasswordHash);
+    }
+
+    public Task<bool> HasPasswordAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(!string.IsNullOrEmpty(user.PasswordHash));
+    }
+
+    // -- Security stamp --------------------------------------------------------------------------
+
+    public Task SetSecurityStampAsync(User user, string stamp, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.SecurityStamp = stamp;
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> GetSecurityStampAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult<string?>(user.SecurityStamp);
+    }
+
+    // -- Lockout ---------------------------------------------------------------------------------
+
+    public Task<DateTimeOffset?> GetLockoutEndDateAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(user.LockoutEnd);
+    }
+
+    public Task SetLockoutEndDateAsync(User user, DateTimeOffset? lockoutEnd, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.LockoutEnd = lockoutEnd;
+        return Task.CompletedTask;
+    }
+
+    public Task<int> IncrementAccessFailedCountAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(++user.AccessFailedCount);
+    }
+
+    public Task ResetAccessFailedCountAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.AccessFailedCount = 0;
+        return Task.CompletedTask;
+    }
+
+    public Task<int> GetAccessFailedCountAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(user.AccessFailedCount);
+    }
+
+    /// <summary>
+    /// Always true: brute-force protection is a Watchtower-wide policy, not a per-account opt-out, so
+    /// there is no column behind it (and <see cref="SetLockoutEnabledAsync"/> is therefore a no-op).
+    /// </summary>
+    public Task<bool> GetLockoutEnabledAsync(User user, CancellationToken cancellationToken) =>
+        Task.FromResult(true);
+
+    /// <inheritdoc cref="GetLockoutEnabledAsync"/>
+    public Task SetLockoutEnabledAsync(User user, bool enabled, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    /// <summary>No-op: the <see cref="WatchtowerDbContext"/> is owned by the DI scope, not by this store.</summary>
+    public void Dispose() { }
+}

@@ -71,6 +71,59 @@ public sealed record WatchtowerOptions {
     /// <c>WATCHTOWER__CI__*</c> (e.g. <c>WATCHTOWER__CI__INSTANCENAME=nas</c>).
     /// </summary>
     public CiOptions Ci { get; init; } = new();
+
+    /// <summary>
+    /// Central authorization settings (docs/central-auth/design.md). Bound from
+    /// <c>WATCHTOWER__AUTH__*</c> (e.g. <c>WATCHTOWER__AUTH__ENABLED=true</c>,
+    /// <c>WATCHTOWER__AUTH__BOOTSTRAPPASSWORD=…</c>).
+    /// </summary>
+    public AuthOptions Auth { get; init; } = new();
+}
+
+/// <summary>
+/// Settings for the central authorization plane: local user accounts, the login session, and the
+/// per-route access policy the reverse proxy enforces (docs/central-auth/design.md).
+/// Disabled by default so upgrading an existing deployment cannot lock its operator out.
+/// </summary>
+public sealed record AuthOptions {
+    /// <summary>
+    /// When true, Watchtower manages users and enforces access policy. Turning it on bootstraps an
+    /// <c>admin</c> account (see <see cref="BootstrapPassword"/>). Set via
+    /// <c>WATCHTOWER__AUTH__ENABLED=true</c>.
+    /// </summary>
+    public bool Enabled { get; init; } = false;
+
+    /// <summary>
+    /// Public hostname of the central login page, e.g. <c>watchtower.example.com</c>. Protected apps
+    /// redirect unauthenticated visitors here, so it must be reachable through the proxy. Optional
+    /// while only Watchtower's own UI is protected.
+    /// </summary>
+    public string? Host { get; init; }
+
+    /// <summary>Idle lifetime of a login session in hours; each request slides it forward.</summary>
+    public int SessionLifetimeHours { get; init; } = 12;
+
+    /// <summary>Hard cap on a session's age in days, regardless of activity — after this a fresh login is required.</summary>
+    public int AbsoluteSessionLifetimeDays { get; init; } = 7;
+
+    /// <summary>
+    /// Directory holding the identity-token signing key and the data-protection keys. Must live on a
+    /// persistent volume: losing it signs everyone out on restart.
+    /// </summary>
+    public string KeyPath { get; init; } = "/data/auth-keys";
+
+    /// <summary>
+    /// Password for the <c>admin</c> account created on first start. When unset a random one is
+    /// generated and written to the log once — the only time it is shown. Treated as a secret; never logged.
+    /// </summary>
+    public string? BootstrapPassword { get; init; }
+
+    /// <summary>
+    /// Break-glass recovery: when set, the <c>admin</c> account's password is reset to this value and
+    /// its lockout cleared on every start. Remove it again once you are back in. Treated as a secret;
+    /// never logged.
+    /// </summary>
+    public string? ResetPassword { get; init; }
 }
 
 /// <summary>

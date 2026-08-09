@@ -20,6 +20,16 @@ public enum DomainKind {
     Custom,
 }
 
+/// <summary>Who may reach the app behind a route (docs/central-auth/design.md §3).</summary>
+public enum AccessMode {
+    /// <summary>No access control — the proxy forwards every request, as it always has.</summary>
+    Public,
+    /// <summary>Any signed-in Watchtower user may enter; anonymous requests are sent to the central login.</summary>
+    Authenticated,
+    /// <summary>Only users holding a <see cref="RouteAccessGrant"/> for this route may enter.</summary>
+    Restricted,
+}
+
 /// <summary>
 /// A public domain that the built-in reverse proxy (Caddy) terminates TLS for and forwards to a
 /// service inside a <see cref="Stack"/>. The set of routes is the authoritative source for the
@@ -42,6 +52,19 @@ public sealed class Route {
     /// <summary>Marks the canonical domain for the stack (others may redirect to it).</summary>
     public bool IsPrimary { get; set; }
     public DomainKind Kind { get; set; } = DomainKind.Managed;
+
+    /// <summary>
+    /// Access policy for this app. <see cref="AccessMode.Public"/> (the default) keeps the proxy
+    /// behaviour unchanged; the other modes make the proxy verify each request with Watchtower first.
+    /// </summary>
+    public AccessMode AccessMode { get; set; } = AccessMode.Public;
+
+    /// <summary>
+    /// Request-path prefixes exempt from access control even when the route is protected, one per
+    /// line (e.g. webhook receivers and health endpoints that non-browser clients call). Null or
+    /// empty means every path is checked.
+    /// </summary>
+    public string? BypassPaths { get; set; }
 
     public RouteStatus Status { get; set; } = RouteStatus.Pending;
     /// <summary>Human-readable detail for the current status (e.g. an error reason).</summary>
