@@ -3,9 +3,10 @@
 // the backend resolves from its own [AppModule]/[ClientFeatures] declarations — so a typo'd module or flag
 // in a `when` clause is a compile error checked against the same catalog the backend enforces.
 //
-// Watchtower has no authentication (it runs behind an authenticating reverse proxy — see README), so the
-// permission/role axes are omitted entirely: the kit reduces an omitted axis to `never`, making any stray
-// `permission`/`role` clause a compile error instead of a silently accepted string (Elarion #71).
+// The permission/role axes stay omitted: the kit reduces an omitted axis to `never`, making a stray
+// `permission`/`role` clause a compile error instead of a silently accepted string (Elarion #71). No
+// handler declares [RequireRole]/[RequirePermission] yet, so the exported schema carries no such
+// vocabulary — role-gated contributions arrive with the role gating itself.
 import type { ModuleName, FlagName } from '@/generated/session-client'
 
 export type { ModuleName, FlagName }

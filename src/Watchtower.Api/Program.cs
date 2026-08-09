@@ -2,11 +2,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Elarion.Abstractions.Modules;
 using Elarion.AspNetCore;
+using Elarion.AspNetCore.Identity;
 using Elarion.JsonRpc;
 using Elarion.Session;
 using Elarion.Settings.Configuration;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
+using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
@@ -63,9 +66,11 @@ builder.Services.ConfigureHttpJsonOptions(o => {
 // CORS for development: when the SPA runs on the Vite dev server (a different origin — e.g. under the
 // Aspire AppHost, which injects the API URL as VITE_API_URL) it calls /rpc, /api/* and the SSE streams
 // cross-origin. In production the SPA is served same-origin from wwwroot, so no CORS is applied.
+// SetIsOriginAllowed rather than AllowAnyOrigin because the login cookie needs AllowCredentials, and the
+// CORS protocol forbids combining credentials with a wildcard origin (ASP.NET throws at request time).
 const string DevCorsPolicy = "watchtower-dev-frontend";
 builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
-    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+    p.SetIsOriginAllowed(_ => true).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 // Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
 // git service layer, the deploy engine, and the background update checkers.
@@ -82,12 +87,25 @@ builder.AddElarionSettingsConfiguration();
 //                        (e.g. Metrics' "metrics-history") for the frontend's contribution gating.
 //   AddElarionJsonRpc  — the JSON-RPC transport + shared handler dispatcher.
 builder.Services.AddElarion(builder.Configuration);
-// The session bootstrap composes ICurrentUser; Watchtower is unauthenticated (reverse-proxy auth — see
-// README), so a fixed anonymous user stands in: isAuthenticated=false, no roles/grants.
-builder.Services.AddSingleton<Elarion.Abstractions.Identity.ICurrentUser, AnonymousCurrentUser>();
+// ICurrentUser (claims-backed when Auth:Enabled, an implicit local administrator otherwise) and the
+// IAuthorizer behind [assembly: ElarionAuthorizationDefaults] are registered by AddWatchtowerServices
+// above — both are mode decisions driven by Watchtower:Auth:Enabled, so they live next to the rest of the
+// auth wiring instead of being split across the host.
 builder.Services.AddElarionSession(builder.Configuration.GetClientCapabilityManifest());
 builder.Services.AddElarionJsonRpc((dispatcher, configuration) =>
     ElarionBootstrapper.RegisterHandlers(dispatcher, configuration).MapElarionSession());
+
+// Native login (docs/central-auth/design.md §2.5). The scheme reads the __wt_sso cookie and resolves it
+// against the auth_sessions table on every request, so revocation is immediate; ASP.NET's cookie handler
+// is deliberately unused because its self-contained tickets could not be revoked at all.
+var authEnabled = builder.Configuration.GetValue<bool>("Watchtower:Auth:Enabled");
+if (authEnabled) {
+    builder.Services
+        .AddAuthentication(WatchtowerSessionDefaults.AuthenticationScheme)
+        .AddScheme<AuthenticationSchemeOptions, WatchtowerSessionAuthenticationHandler>(
+            WatchtowerSessionDefaults.AuthenticationScheme, configureOptions: null);
+    builder.Services.AddAuthorization();
+}
 
 var app = builder.Build();
 
@@ -98,16 +116,28 @@ await InitializeDatabaseAsync(app);
 if (app.Environment.IsDevelopment())
     app.UseCors(DevCorsPolicy);
 
-// Serve the built React SPA from wwwroot/ (index.html is the SPA entry point).
+// Serve the built React SPA from wwwroot/ (index.html is the SPA entry point). Before authentication:
+// the login page is part of that bundle, so it has to be reachable without a session.
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+// Identity, then the ICurrentUser snapshot, then endpoint authorization — all before anything is mapped,
+// so every transport sees the same principal. UseElarionCurrentUser seeds the request scope for
+// [HttpEndpoint] handlers; JSON-RPC captures HttpContext.User into its own per-call scope itself.
+if (authEnabled) {
+    app.UseAuthentication();
+    app.UseElarionCurrentUser();
+    app.UseAuthorization();
+}
+
+// Login/logout (only mapped when Auth:Enabled).
+app.MapWatchtowerAuthEndpoints(authEnabled);
 // JSON-RPC endpoint (POST /rpc).
 app.MapElarionJsonRpc();
 // Auto-discovered [HttpEndpoint] handlers (feature-flag gated; none today).
 app.MapElarionEndpoints(app.Configuration);
 // Webhook, SSE streams, and health.
-app.MapWatchtowerHttpEndpoints();
+app.MapWatchtowerHttpEndpoints(authEnabled);
 
 // SPA fallback: any unmatched route returns index.html so the client router handles it.
 app.MapFallbackToFile("index.html");

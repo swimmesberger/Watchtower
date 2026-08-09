@@ -1,12 +1,13 @@
 // The app shell renders the navigation from `sidebarItems` contributions — it never imports a feature
 // module. Adding a destination is a contribution in the owning module; the shell doesn't change.
-import { Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Eye, Moon, Sun } from 'lucide-react'
+import { Link, Outlet, useRouteContext, useRouterState } from '@tanstack/react-router'
+import { Eye, LogOut, Moon, Sun } from 'lucide-react'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/theme'
+import { goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } from '@/lib/auth'
 import { Toaster } from '@/components/ui/toast'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
 import { sidebarItems, type SidebarItem } from './points'
 
 function isActive(currentPath: string, item: SidebarItem): boolean {
@@ -33,6 +34,44 @@ function ThemeToggle({ className }: { className?: string }) {
   )
 }
 
+/**
+ * Ends the session — globally, since the backend revokes every session the account holds. Rendered only
+ * for a real account: with `Auth:Enabled` off the backend reports an implicit local administrator
+ * (`LOCAL_USER_ID`) that has nothing to sign out of.
+ */
+function SignOutButton({ className }: { className?: string }) {
+  const { caps } = useRouteContext({ from: '__root__' })
+  const user = caps.user
+  if (!user.isAuthenticated || user.id === LOCAL_USER_ID) return null
+
+  async function onSignOut() {
+    try {
+      await logout()
+    } finally {
+      // Leave regardless: if the call failed the cookie may still be good, and the login page is where
+      // the visitor finds that out — staying put with a half-signed-out shell is the worse outcome.
+      goToLogin('/')
+    }
+  }
+
+  return (
+    <Tooltip label={`Sign out (${user.id})`}>
+      <button
+        type="button"
+        onClick={() => void onSignOut()}
+        aria-label="Sign out"
+        className={cn(
+          'touch-target inline-flex size-9 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text',
+          'focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+          className,
+        )}
+      >
+        <LogOut className="size-[18px]" />
+      </button>
+    </Tooltip>
+  )
+}
+
 function Wordmark() {
   return (
     <Link to="/" className="flex items-center gap-2.5">
@@ -48,6 +87,17 @@ export function AppShell() {
   const currentPath = useRouterState({ select: (s) => s.location.pathname })
   const items = useContributions(sidebarItems)
   const mobileItems = items.filter((i) => i.mobile !== false)
+
+  // The login page is pre-auth: navigation to places the visitor cannot reach yet would be noise, so the
+  // shell steps aside and renders the page on its own. (Toasts and tooltips stay — the form uses both.)
+  if (currentPath === LOGIN_PATH) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Outlet />
+        <Toaster />
+      </TooltipProvider>
+    )
+  }
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -81,15 +131,19 @@ export function AppShell() {
               )
             })}
           </nav>
-          <div className="border-t border-border px-3 py-3">
+          <div className="flex items-center gap-1 border-t border-border px-3 py-3">
             <ThemeToggle />
+            <SignOutButton />
           </div>
         </aside>
 
         {/* ── Mobile top bar ── */}
         <header className="sticky top-0 z-30 flex h-[var(--header-h)] items-center justify-between border-b border-border bg-surface px-4 md:hidden">
           <Wordmark />
-          <ThemeToggle />
+          <div className="flex items-center gap-1">
+            <ThemeToggle />
+            <SignOutButton />
+          </div>
         </header>
 
         {/* ── Content column ── */}

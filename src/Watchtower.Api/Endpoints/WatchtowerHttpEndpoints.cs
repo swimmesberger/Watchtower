@@ -12,13 +12,29 @@ public static class WatchtowerHttpEndpoints {
     /// <summary>Response body returned by the deploy webhook (202 Accepted).</summary>
     public sealed record WebhookDeployResult(int DeployEventId, string Status);
 
-    public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app) {
+    /// <summary>
+    /// Maps the non-RPC surfaces. With <paramref name="authEnabled"/> the two SSE streams — which carry
+    /// deploy output and container logs, i.e. exactly the data the JSON-RPC handlers now protect — require a
+    /// login session too; <c>EventSource</c> sends cookies on same-origin requests, so the UI is unaffected.
+    /// </summary>
+    /// <remarks>
+    /// Three endpoints stay open by design (design.md §11): <c>/health</c> is a liveness probe with no data,
+    /// the deploy webhook authenticates callers with its own per-stack bearer token (a CI runner has no
+    /// browser session), and <c>/api/proxy/ask</c> is Caddy's on-demand-TLS gate, reachable only from the
+    /// internal control network and consulted before any user is involved.
+    /// </remarks>
+    public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app, bool authEnabled) {
         MapWebhook(app);
-        MapDeployOutputStream(app);
-        MapContainerLogStream(app);
+        Protect(MapDeployOutputStream(app), authEnabled);
+        Protect(MapContainerLogStream(app), authEnabled);
         MapProxyAsk(app);
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
+    }
+
+    /// <summary>Requires a valid login session on an endpoint, but only when authentication is configured.</summary>
+    private static void Protect(RouteHandlerBuilder route, bool authEnabled) {
+        if (authEnabled) route.RequireAuthorization();
     }
 
     /// <summary>
@@ -68,7 +84,7 @@ public static class WatchtowerHttpEndpoints {
     /// Streams deploy output lines for an event as Server-Sent Events. While running: replays buffered
     /// lines then streams live ones. After completion: replays the stored output from the database.
     /// </summary>
-    private static void MapDeployOutputStream(WebApplication app) {
+    private static RouteHandlerBuilder MapDeployOutputStream(WebApplication app) =>
         app.MapGet("/api/stacks/events/{eventId:int}/stream", async (
             int eventId, HttpResponse response, DeployOutputBroadcaster broadcaster,
             WatchtowerDbContext db, CancellationToken ct) => {
@@ -102,10 +118,9 @@ public static class WatchtowerHttpEndpoints {
             await response.WriteAsync("event: done\ndata: \n\n", ct);
             await response.Body.FlushAsync(ct);
         });
-    }
 
     /// <summary>Streams container logs as Server-Sent Events. Query: tail (default 100), follow (default true).</summary>
-    private static void MapContainerLogStream(WebApplication app) {
+    private static RouteHandlerBuilder MapContainerLogStream(WebApplication app) =>
         app.MapGet("/api/containers/{id}/logs", async (
             string id, int? tail, bool? follow, HttpResponse response, DockerEngineClient docker, CancellationToken ct) => {
             response.ContentType = "text/event-stream";
@@ -118,7 +133,6 @@ public static class WatchtowerHttpEndpoints {
                 await response.Body.FlushAsync(ct);
             }
         });
-    }
 
     /// <summary>Writes one SSE data line; embedded newlines are escaped to preserve the frame boundary.</summary>
     private static async Task WriteSseLine(HttpResponse response, string line, CancellationToken ct) {

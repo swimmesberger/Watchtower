@@ -6,6 +6,7 @@
 // #71). UI-only modules (networks, volumes) own no routes and are discovered by glob only.
 import { createRouter } from '@tanstack/react-router'
 import { rootRoute } from './root-route'
+import { loginRoute } from './login-route'
 import type { AppModule } from './app-module'
 import credentials from '@/modules/credentials'
 import dashboard from '@/modules/dashboard'
@@ -36,6 +37,8 @@ export const appManifests = appModules.map((m) => m.manifest)
 // Each `satisfies AppModule` module keeps its concrete route tuple, so the tree is statically typed and
 // TanStack infers `Link`/`params`/`search` across the app.
 const routeTree = rootRoute.addChildren([
+  // Platform-owned and deliberately ungated: it is the page an unauthenticated visitor is sent to.
+  loginRoute,
   ...credentials.routes,
   ...dashboard.routes,
   ...infrastructure.routes,

@@ -1,6 +1,7 @@
 import { rpcResultSchemas } from '@/generated/rpc-schemas'
 import type { RpcMethods } from '@/generated/rpc-types'
 import { apiBase } from './config'
+import { goToLogin, LOGIN_PATH } from './auth'
 import { randomUuid } from './utils'
 
 /**
@@ -26,6 +27,9 @@ export class RpcError extends Error {
   get isForbidden() {
     return this.code === -32003
   }
+  get isUnauthorized() {
+    return this.code === -32005
+  }
   get isValidation() {
     return this.code === -32602
   }
@@ -42,6 +46,8 @@ export async function rpc<M extends keyof RpcMethods>(
   const response = await fetch(`${apiBase}/rpc`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    // Carries the __wt_sso cookie; required cross-origin (Vite dev server / Aspire) and harmless same-origin.
+    credentials: 'include',
     body: JSON.stringify({ jsonrpc: '2.0', method, params, id: randomUuid() }),
   })
 
@@ -51,7 +57,12 @@ export async function rpc<M extends keyof RpcMethods>(
 
   const json = await response.json()
   if (json.error) {
-    throw new RpcError(json.error.code, json.error.message, json.error.data)
+    const error = new RpcError(json.error.code, json.error.message, json.error.data)
+    // A session that expired mid-visit surfaces as -32005 on whatever call happened to run next. Bounce
+    // once, from here, so every caller gets the behaviour without each query wiring up its own handler —
+    // the guard on the login page itself is what stops this from looping.
+    if (error.isUnauthorized && window.location.pathname !== LOGIN_PATH) goToLogin()
+    throw error
   }
 
   const schema = rpcResultSchemas[method]

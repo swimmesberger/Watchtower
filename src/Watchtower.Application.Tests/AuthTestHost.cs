@@ -29,13 +29,19 @@ public sealed class AuthTestHost : IDisposable {
     private readonly ServiceProvider _provider;
     private readonly ServiceCollection _registrations;
     private readonly string _dataDirectory;
+    private readonly TestTimeProvider _time;
+    private readonly Action<IServiceCollection>? _configure;
 
     private AuthTestHost(
         SqliteConnection connection,
         bool ownsConnection,
+        TestTimeProvider time,
+        Action<IServiceCollection>? configure,
         IEnumerable<KeyValuePair<string, string?>> settings) {
         _connection = connection;
         _ownsConnection = ownsConnection;
+        _time = time;
+        _configure = configure;
         _dataDirectory = Path.Combine(Path.GetTempPath(), "watchtower-tests", Guid.NewGuid().ToString("N"));
 
         // DbPath and KeyPath default to /data/*, which AddWatchtowerServices creates eagerly — point
@@ -49,7 +55,11 @@ public sealed class AuthTestHost : IDisposable {
 
         _registrations = [];
         _registrations.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
+        // Registered first so AddWatchtowerServices' TryAddSingleton(TimeProvider.System) stands down:
+        // session expiry is a clock decision, and the tests have to be able to move the clock.
+        _registrations.AddSingleton<TimeProvider>(_time);
         _registrations.AddWatchtowerServices(configuration);
+        _configure?.Invoke(_registrations);
 
         // Swap the file-backed context for the shared in-memory connection. AddDbContext registers its
         // options with TryAdd, so the original descriptor has to go first.
@@ -68,16 +78,31 @@ public sealed class AuthTestHost : IDisposable {
 
     public IServiceProvider Services => _provider;
 
+    /// <summary>The host's clock. Moving it is how session expiry, sliding renewal and the absolute cap are exercised.</summary>
+    public TestTimeProvider Time => _time;
+
     /// <summary>Starts a host over a brand-new database. <paramref name="settings"/> are <c>Watchtower:*</c> configuration keys.</summary>
-    public static AuthTestHost Start(params (string Key, string? Value)[] settings) {
+    public static AuthTestHost Start(params (string Key, string? Value)[] settings) =>
+        Start(configure: null, settings);
+
+    /// <summary>
+    /// Starts a host with extra registrations layered on top of the production ones — used to add a single
+    /// generated handler pipeline so a test can dispatch through it without booting the whole Elarion host.
+    /// </summary>
+    public static AuthTestHost Start(Action<IServiceCollection>? configure, params (string Key, string? Value)[] settings) {
         var connection = new SqliteConnection("DataSource=:memory:");
         connection.Open();
-        return new AuthTestHost(connection, ownsConnection: true, ToConfiguration(settings));
+        return new AuthTestHost(
+            connection,
+            ownsConnection: true,
+            new TestTimeProvider(DateTimeOffset.UtcNow),
+            configure,
+            ToConfiguration(settings));
     }
 
     /// <summary>Simulates the next process start against the same database, optionally with different configuration.</summary>
     public AuthTestHost Restart(params (string Key, string? Value)[] settings) =>
-        new(_connection, ownsConnection: false, ToConfiguration(settings));
+        new(_connection, ownsConnection: false, _time, _configure, ToConfiguration(settings));
 
     /// <summary>
     /// Builds the bootstrap hosted service the way the host would, first asserting that

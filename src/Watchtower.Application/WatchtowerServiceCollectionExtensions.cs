@@ -1,4 +1,7 @@
 using Elarion.Abstractions.Features;
+using Elarion.Abstractions.Identity;
+using Elarion.Authorization;
+using Elarion.Identity;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection;
@@ -6,6 +9,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -23,6 +27,10 @@ public static class WatchtowerServiceCollectionExtensions {
     public static IServiceCollection AddWatchtowerServices(this IServiceCollection services, IConfiguration config) {
         var section = config.GetSection("Watchtower");
         services.Configure<WatchtowerOptions>(section);
+
+        // Wall-clock seam. Session expiry is the one place where "now" is a correctness decision rather
+        // than a log line, so it is injected and the tests can move it.
+        services.TryAddSingleton(TimeProvider.System);
 
         var dbPath = section.GetValue<string>("DbPath") ?? "/data/watchtower.db";
         var dir = Path.GetDirectoryName(dbPath);
@@ -99,6 +107,34 @@ public static class WatchtowerServiceCollectionExtensions {
         // through a token so the validators run before the stored hash is touched. The phone/email/
         // authenticator providers AddDefaultTokenProviders would bring have nothing to drive them.
         .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider);
+
+        // Login sessions (design.md §4): revocable database rows behind the __wt_sso cookie. Scoped, like
+        // the context it writes through. Registered unconditionally — it is inert until something logs in.
+        services.AddScoped<AuthSessionService>();
+
+        // Who the caller is, and therefore what [assembly: ElarionAuthorizationDefaults] lets through.
+        // Registered BEFORE AddElarionClaimsCurrentUser on purpose: that helper uses TryAdd for
+        // ICurrentUser, so registering first is how a host substitutes its own snapshot.
+        var authEnabled = section.GetValue<bool>("Auth:Enabled");
+        if (authEnabled) {
+            services.AddScoped<WatchtowerClaimsCurrentUser>();
+            services.AddScoped<ICurrentUser>(sp => sp.GetRequiredService<WatchtowerClaimsCurrentUser>());
+            // Claim types must match what WatchtowerSessionAuthenticationHandler mints; both sides read
+            // the WatchtowerClaims constants rather than repeating the strings.
+            services.AddElarionClaimsCurrentUser(o => {
+                o.UserIdClaimType = WatchtowerClaims.UserId;
+                o.EmailClaimType = WatchtowerClaims.Email;
+                o.RoleClaimType = WatchtowerClaims.Role;
+            });
+        } else {
+            // No authentication configured ⇒ the local operator is the administrator, exactly as before.
+            services.AddSingleton<ICurrentUser, ImplicitAdminCurrentUser>();
+        }
+
+        // The IAuthorizer the generated authorization decorator resolves. Required in BOTH modes: the
+        // decorator is attached at compile time by [assembly: ElarionAuthorizationDefaults], so a missing
+        // registration would fail every handler at resolution time rather than fail open.
+        services.AddElarionAuthorization();
 
         // First-run admin + break-glass password reset. No-op unless Auth:Enabled.
         services.AddHostedService<AuthBootstrapService>();

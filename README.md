@@ -12,9 +12,14 @@ application framework for module-based handler pipelines with compile-time regis
 hosting. Every operation is a `[Handler]` exposed over JSON-RPC; the React frontend calls a typed
 client generated from the exported schema.
 
-> Watchtower has **no built-in authentication**. Put it behind an authenticating reverse proxy
-> (Cloudflare Access, Authelia, oauth2-proxy, …). Only the `/api/webhooks/*` routes are designed to
-> be reachable by unauthenticated external callers, and each is protected by a per-stack bearer token.
+> Authentication is **opt-in and off by default**, so an upgrade cannot lock you out. Left off,
+> Watchtower is unauthenticated and belongs behind an authenticating reverse proxy (Cloudflare Access,
+> Authelia, oauth2-proxy, …). Set `WATCHTOWER__AUTH__ENABLED=true` to use built-in local accounts
+> instead: the first start creates an `admin` user from `WATCHTOWER__AUTH__BOOTSTRAPPASSWORD` (or logs a
+> generated one), the UI gains a login page, and every handler and log stream requires a session.
+> `WATCHTOWER__AUTH__RESETPASSWORD` is the break-glass hook if you lock yourself out.
+> Either way, only the `/api/webhooks/*` routes are designed to be reachable by unauthenticated
+> external callers, and each is protected by a per-stack bearer token.
 
 ## Tech stack
 
