@@ -250,8 +250,11 @@ public static class WatchtowerAccessEndpoints {
             var route = await db.Routes.AsNoTracking().FirstOrDefaultAsync(r => r.Id == grant.RouteId, ct);
             if (route is null) return ExpiredCodePage();
 
+            // Caddy always sets X-Forwarded-Host for a request that reached the app's own site block, so
+            // its absence means this did not arrive through one — refuse rather than mint a cookie scoped
+            // to a host the code was not bound to. A present header must match the code's route domain.
             var host = RouteAccessPolicy.NormalizeForwardedHost(http.Request.Headers["X-Forwarded-Host"]);
-            if (host is not null && !string.Equals(host, route.Domain, StringComparison.OrdinalIgnoreCase))
+            if (host is null || !string.Equals(host, route.Domain, StringComparison.OrdinalIgnoreCase))
                 return ExpiredCodePage();
 
             var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == grant.UserId, ct);

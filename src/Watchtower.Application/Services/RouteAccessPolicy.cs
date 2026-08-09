@@ -105,14 +105,30 @@ public static class RouteAccessPolicy {
     /// <paramref name="bypassPaths"/> — either a reserved Watchtower path or a configured bypass prefix.
     /// </summary>
     /// <remarks>
-    /// A path containing a dot segment is never exempt, in any form. Prefix matching happens on the raw
-    /// path, while the upstream sees whatever it makes of that path after normalisation; without this
-    /// guard <c>/public/../admin</c> would match a <c>/public/</c> bypass and then reach <c>/admin</c>.
-    /// Percent-encoded dots are rejected on sight for the same reason — Watchtower does not decode the
-    /// path, so it cannot know what the upstream will make of <c>%2e%2e</c>, and guessing wrong here fails
-    /// open.
+    /// Two guards, both fail-closed, because the exemption is decided on the <em>raw</em> forwarded path
+    /// while the upstream acts on whatever it makes of that path after decoding and normalising — and
+    /// Watchtower does neither, so it cannot predict the result:
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     <b>Any percent-encoding disqualifies the exemption.</b> A literal ASCII bypass prefix like
+    ///     <c>/webhooks/</c> needs no encoding to be matched by a legitimate request, so an encoded byte in
+    ///     the matched path is only ever an attempt to smuggle something past the prefix check: with a
+    ///     <c>/webhooks/</c> bypass, <c>/webhooks/..%2fadmin</c> keeps the dots literal <em>and</em> hides
+    ///     the separator, so no segment equals <c>..</c> yet an upstream that decodes <c>%2f</c>→<c>/</c>
+    ///     and normalises reaches <c>/admin</c> unauthenticated. We cannot know which upstreams decode, so
+    ///     the presence of a single <c>%</c> is enough to fall through to the full check.
+    ///   </description></item>
+    ///   <item><description>
+    ///     <b>A literal dot segment disqualifies it too</b> — <c>/public/../admin</c> would otherwise match
+    ///     a <c>/public/</c> bypass and then reach <c>/admin</c>. (The <c>%</c> rule already covers the
+    ///     encoded forms; this stays for the un-encoded ones.)
+    ///   </description></item>
+    /// </list>
     /// </remarks>
     public static bool IsExemptPath(string? bypassPaths, string path) {
+        // The encoded-byte guard runs first and covers %2e/%2f/%5c and every other encoded form in one
+        // rule; HasDotSegment then handles the un-encoded `..`/`.` segments.
+        if (path.Contains('%', StringComparison.Ordinal)) return false;
         if (HasDotSegment(path)) return false;
         if (path.StartsWith(ReservedPathPrefix, StringComparison.Ordinal)) return true;
 

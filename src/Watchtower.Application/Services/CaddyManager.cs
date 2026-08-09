@@ -333,9 +333,17 @@ public sealed class CaddyManager : IHostedService, IDisposable {
         if (!auth.Enabled || string.IsNullOrWhiteSpace(auth.Host)) return sites;
 
         var host = auth.Host.Trim().ToLowerInvariant();
-        if (sites.All(s => !string.Equals(s.Domain, host, StringComparison.OrdinalIgnoreCase)))
+        var existing = sites.FindIndex(s => string.Equals(s.Domain, host, StringComparison.OrdinalIgnoreCase));
+        if (existing < 0) {
             sites.Add(new CaddySite(host, SelfAlias, SelfPort, Tls: true));
+            return sites;
+        }
 
+        // An explicit row for the auth host still renders — the operator has said what that host should
+        // serve — but it is force-unprotected regardless of its AccessMode: gating the login page behind
+        // the gate that redirects to the login page is a lockout loop, leaving the UI reachable only via
+        // the published port. Watchtower authenticates its own UI natively (§2.5), so nothing is lost.
+        sites[existing] = sites[existing] with { Protected = false };
         return sites;
     }
 

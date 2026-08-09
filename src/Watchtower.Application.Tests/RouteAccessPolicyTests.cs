@@ -72,11 +72,35 @@ public sealed class RouteAccessPolicyTests {
     // exemption decided on the raw string would be handing out access to wherever it normalises to.
     [InlineData("/webhooks/../admin")]
     [InlineData("/.watchtower/../admin")]
+    [InlineData("/webhooks/./sneaky")]
+    public void PathsWithLiteralDotSegments_AreNeverExempt(string path) =>
+        Assert.False(RouteAccessPolicy.IsExemptPath("/webhooks/", path));
+
+    [Theory]
+    // The nastier variant: the dots stay literal `..` while the SEPARATOR is encoded, so no segment
+    // equals ".." — yet an upstream that decodes %2f→/ (or %5c→\) and normalises reaches /admin. Any
+    // percent-encoding at all in the matched path disqualifies the fast-path exemption, because Watchtower
+    // does not decode and cannot predict what the upstream will.
+    [InlineData("/webhooks/..%2fadmin")]
+    [InlineData("/webhooks/..%2Fadmin")]
+    [InlineData("/webhooks/..%5cadmin")]
+    [InlineData("/webhooks/..%5Cadmin")]
     [InlineData("/webhooks/%2e%2e/admin")]
     [InlineData("/webhooks/%2E%2E/admin")]
-    [InlineData("/webhooks/./sneaky")]
-    public void PathsWithDotSegments_AreNeverExempt(string path) =>
+    // Even a single encoded byte anywhere in the path — there is no benign reason to encode part of a
+    // literal ASCII prefix, so its presence is enough to fall through to the full check.
+    [InlineData("/webhooks%2f../admin")]
+    [InlineData("/webhooks/legit%20name")]
+    public void PathsWithAnyPercentEncoding_AreNeverExempt(string path) =>
         Assert.False(RouteAccessPolicy.IsExemptPath("/webhooks/", path));
+
+    [Theory]
+    // The other half of the rule: a plain, un-encoded request to the prefix still matches. A legitimate
+    // caller of a bypass path has no need to encode anything, so nothing is lost by disqualifying encoding.
+    [InlineData("/webhooks/github")]
+    [InlineData("/webhooks/")]
+    public void PlainPaths_StillMatchTheBypassPrefix(string path) =>
+        Assert.True(RouteAccessPolicy.IsExemptPath("/webhooks/", path));
 
     [Theory]
     [InlineData("https://app.example.com/reports?range=30d")]

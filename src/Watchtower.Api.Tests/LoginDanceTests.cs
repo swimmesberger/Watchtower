@@ -123,6 +123,27 @@ public sealed class LoginDanceTests {
     }
 
     [Fact]
+    public async Task CallbackWithoutAForwardedHost_IsRefused() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+        await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated);
+
+        var login = await client.SendAsync(Login("admin", WatchtowerApiFactory.AdminPassword, AppUrl), ct);
+        var continueUrl = await ContinueUrlOf(login);
+
+        // Caddy always sets X-Forwarded-Host for a request that reached the app's own site block, so its
+        // absence means the request did not come through one — minting a cookie for a host the code was not
+        // bound to (self-harm, but still wrong) is refused rather than performed.
+        var uri = new Uri(continueUrl);
+        var request = new HttpRequestMessage(HttpMethod.Get, uri.PathAndQuery);
+        var response = await client.SendAsync(request, ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.False(response.Headers.Contains("Set-Cookie"));
+    }
+
+    [Fact]
     public async Task GrantRevokedBetweenMintAndRedeem_StopsTheHandover() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();

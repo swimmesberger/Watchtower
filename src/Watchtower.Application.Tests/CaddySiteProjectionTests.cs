@@ -71,6 +71,25 @@ public sealed class CaddySiteProjectionTests {
     }
 
     [Fact]
+    public void ExplicitAuthHostRoute_RendersButIsNeverProtected_EvenWhenSetNonPublic() {
+        // The lockout trap: an operator creates a real Route for the auth host and, meaning well, sets it
+        // Authenticated or Restricted. Gating it would put the login page behind forward_auth, which
+        // redirects to the login page — the UI would then be reachable only via the published port.
+        var authHostRoute = Route(AuthHost, AccessMode.Restricted);
+
+        var sites = CaddyManager.ProjectSites(
+            [authHostRoute, Route("members.example.invalid", AccessMode.Authenticated)],
+            new AuthOptions { Enabled = true, Host = AuthHost });
+
+        var self = Site(sites, AuthHost);
+        Assert.False(self.Protected);
+        // The explicit row still renders (its upstream, not the synthesised self-route's).
+        Assert.Equal("watchtower-web", self.UpstreamHost);
+        // The other protected route is unaffected.
+        Assert.True(Site(sites, "members.example.invalid").Protected);
+    }
+
+    [Fact]
     public void WithoutAnAuthHost_NoSelfRouteIsEmitted() {
         var sites = CaddyManager.ProjectSites(
             [Route("members.example.invalid", AccessMode.Authenticated)],
