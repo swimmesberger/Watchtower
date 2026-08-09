@@ -11,7 +11,7 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    [Migration("20260809211258_AddCentralAuth")]
+    [Migration("20260809213642_AddCentralAuth")]
     partial class AddCentralAuth
     {
         /// <inheritdoc />
@@ -134,6 +134,9 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_auth_sessions");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_auth_sessions_expires_at");
 
                     b.HasIndex("RouteId")
                         .HasDatabaseName("ix_auth_sessions_route_id");
@@ -737,6 +740,12 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Property<int>("AccessFailedCount")
                         .HasColumnType("INTEGER")
                         .HasColumnName("access_failed_count");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("concurrency_stamp");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("TEXT")

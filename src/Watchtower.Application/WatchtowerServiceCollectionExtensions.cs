@@ -1,10 +1,12 @@
 using Elarion.Abstractions.Features;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
@@ -65,7 +67,11 @@ public static class WatchtowerServiceCollectionExtensions {
         // (UserManager + password hasher + lockout/security-stamp), stored through WatchtowerDbContext.
         // Registered unconditionally: nothing runs until something asks for a UserManager, and the
         // bootstrap below no-ops while Auth:Enabled is false.
-        services.AddIdentityCore<Entities.User>(o => {
+        //
+        // Data protection backs the password-reset token provider. The web host already registers it;
+        // the call is idempotent and keeps the application layer self-contained for tests.
+        services.AddDataProtection();
+        services.AddIdentityCore<User>(o => {
             // Brute-force protection: 5 failed logins park the account for 15 minutes.
             o.Lockout.AllowedForNewUsers = true;
             o.Lockout.MaxFailedAccessAttempts = 5;
@@ -79,7 +85,12 @@ public static class WatchtowerServiceCollectionExtensions {
             o.Password.RequireUppercase = false;
             o.Password.RequireNonAlphanumeric = false;
             o.User.RequireUniqueEmail = false;
-        }).AddUserStore<WatchtowerUserStore>();
+        })
+        .AddUserStore<WatchtowerUserStore>()
+        // Only the data-protector provider: password resets (including the break-glass hook) go
+        // through a token so the validators run before the stored hash is touched. The phone/email/
+        // authenticator providers AddDefaultTokenProviders would bring have nothing to drive them.
+        .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider);
 
         // First-run admin + break-glass password reset. No-op unless Auth:Enabled.
         services.AddHostedService<AuthBootstrapService>();

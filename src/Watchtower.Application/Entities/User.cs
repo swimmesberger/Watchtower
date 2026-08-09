@@ -46,5 +46,12 @@ public sealed class User {
     /// </summary>
     public required string SecurityStamp { get; set; }
 
+    /// <summary>
+    /// EF Core optimistic-concurrency token, rotated on every write by
+    /// <see cref="Services.WatchtowerUserStore"/>. Two administrators editing the same account
+    /// concurrently make the second write fail loudly instead of silently discarding the first.
+    /// </summary>
+    public required string ConcurrencyStamp { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 }

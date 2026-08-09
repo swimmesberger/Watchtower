@@ -75,13 +75,73 @@ public sealed class AuthBootstrapServiceTests {
         Assert.Equal(1, await CountUsersAsync(recovered));
     }
 
+    [Fact]
+    public async Task ResetPassword_ThatViolatesThePolicy_LeavesTheOldPasswordWorking() {
+        using var host = AuthTestHost.Start(Enabled, Bootstrap);
+        await host.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        // "short" is below the 10-character minimum: the reset must be refused *before* anything is
+        // written, or the operator is left with an account that has no usable password at all.
+        using var attempted = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", "short"));
+        await attempted.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        await using var scope = attempted.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+        var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+        Assert.NotNull(admin);
+        Assert.NotEqual(string.Empty, admin.PasswordHash);
+        Assert.True(await users.CheckPasswordAsync(admin, BootstrapPassword));
+        Assert.False(await users.CheckPasswordAsync(admin, "short"));
+    }
+
+    [Fact]
+    public async Task ResetPassword_RecreatesTheAdminAccount_WhenItWasDeleted() {
+        const string recoveryPassword = "break-glass-recovery";
+
+        using var host = AuthTestHost.Start(Enabled, Bootstrap);
+        await host.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        // The operator renamed the seeded account away — but other users still exist, so the ordinary
+        // first-run bootstrap will not step in.
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+            Assert.NotNull(admin);
+            Assert.True((await users.SetUserNameAsync(admin, "operator")).Succeeded);
+        }
+
+        using var recovered = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", recoveryPassword));
+        await recovered.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        await using (var scope = recovered.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+            Assert.NotNull(admin);
+            Assert.True(admin.IsAdmin);
+            Assert.True(await users.CheckPasswordAsync(admin, recoveryPassword));
+        }
+
+        // The renamed account is untouched; recovery added one, it did not replace anything.
+        Assert.Equal(2, await CountUsersAsync(recovered));
+    }
+
+    /// <summary>
+    /// Leaves the admin account both locked out <em>and</em> carrying a non-zero failure count.
+    /// Stopping one attempt short of the threshold matters: Identity zeroes
+    /// <c>AccessFailedCount</c> on the attempt that trips the lockout, so a 5-failure setup would make
+    /// the post-reset "count is zero" assertion pass no matter what the reset did.
+    /// </summary>
     private static async Task LockOutAdminAsync(AuthTestHost host) {
         await using var scope = host.Services.CreateAsyncScope();
         var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
         var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
         Assert.NotNull(admin);
-        for (var attempt = 1; attempt <= 5; attempt++)
+
+        for (var attempt = 1; attempt <= 4; attempt++)
             await users.AccessFailedAsync(admin);
+        Assert.Equal(4, await users.GetAccessFailedCountAsync(admin));
+
+        await users.SetLockoutEndDateAsync(admin, DateTimeOffset.UtcNow.AddMinutes(15));
         Assert.True(await users.IsLockedOutAsync(admin));
     }
 

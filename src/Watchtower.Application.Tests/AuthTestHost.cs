@@ -92,6 +92,7 @@ public sealed class AuthTestHost : IDisposable {
         NormalizedUserName = userName.ToUpperInvariant(),
         PasswordHash = string.Empty,
         SecurityStamp = Guid.NewGuid().ToString("N"),
+        ConcurrencyStamp = Guid.NewGuid().ToString("N"),
     };
 
     public void Dispose() {

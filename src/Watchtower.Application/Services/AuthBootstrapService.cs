@@ -39,12 +39,23 @@ public sealed class AuthBootstrapService(
         var auth = options.Value.Auth;
         if (!auth.Enabled) return;
 
-        using var scope = scopeFactory.CreateScope();
-        var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        try {
+            using var scope = scopeFactory.CreateScope();
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
 
-        await EnsureAdminAsync(users, db, auth, cancellationToken);
-        await ApplyBreakGlassResetAsync(users, auth, cancellationToken);
+            // Break-glass runs first: on an instance that has no administrator it creates one, which
+            // then makes the ordinary first-run bootstrap a no-op instead of a competing account.
+            await ApplyBreakGlassResetAsync(users, auth, cancellationToken);
+            await EnsureAdminAsync(users, db, auth, cancellationToken);
+        } catch (Exception ex) {
+            // Never take the host down: a transient database problem here must not turn into a boot
+            // loop that also removes the operator's ability to look at the UI and fix it.
+            logger.LogError(
+                ex, "Auth bootstrap failed; Watchtower is starting without verifying the '{UserName}' account. " +
+                    "Restart once the database is reachable, or set WATCHTOWER__AUTH__RESETPASSWORD to recover.",
+                AdminUserName);
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -57,16 +68,7 @@ public sealed class AuthBootstrapService(
         var generated = string.IsNullOrWhiteSpace(auth.BootstrapPassword);
         var password = generated ? GeneratePassword() : auth.BootstrapPassword!;
 
-        var admin = new User {
-            UserName = AdminUserName,
-            NormalizedUserName = AdminUserName.ToUpperInvariant(),
-            PasswordHash = string.Empty,
-            SecurityStamp = Guid.NewGuid().ToString("N"),
-            IsAdmin = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-
-        var result = await users.CreateAsync(admin, password);
+        var result = await users.CreateAsync(NewAdmin(), password);
         if (!result.Succeeded) {
             logger.LogError(
                 "Could not create the initial '{UserName}' account: {Errors}. " +
@@ -77,8 +79,8 @@ public sealed class AuthBootstrapService(
 
         if (generated) {
             logger.LogWarning(
-                "Created the initial Watchtower administrator '{UserName}' with the generated password: {Password}\n" +
-                "This is the only time it is shown — save it now, then change it or set " +
+                "Created the initial Watchtower administrator '{UserName}' with the generated password: {Password} " +
+                "— this is the only time it is shown, so save it now, then change it or set " +
                 "WATCHTOWER__AUTH__BOOTSTRAPPASSWORD.",
                 AdminUserName, password);
         } else {
@@ -89,34 +91,45 @@ public sealed class AuthBootstrapService(
     }
 
     /// <summary>
-    /// Recovery hook for a locked-out operator: resets the <c>admin</c> password to
-    /// <see cref="AuthOptions.ResetPassword"/> and clears any lockout. Applied on every start, so the
-    /// setting is meant to be removed again once access is restored.
+    /// Recovery hook for a locked-out operator: guarantees that after this start there is an <c>admin</c>
+    /// account whose password is <see cref="AuthOptions.ResetPassword"/> and which is not locked out —
+    /// recreating the account if it was renamed or deleted. Applied on every start, so the setting is
+    /// meant to be removed again once access is restored.
     /// </summary>
+    /// <remarks>
+    /// The reset goes through a password-reset token rather than remove-then-add: <c>ResetPasswordAsync</c>
+    /// runs the password validators <em>before</em> touching the stored hash, so a
+    /// <c>ResetPassword</c> that violates the policy leaves the existing password working instead of
+    /// wiping it and locking the operator out for good.
+    /// </remarks>
     private async Task ApplyBreakGlassResetAsync(UserManager<User> users, AuthOptions auth, CancellationToken ct) {
         if (string.IsNullOrWhiteSpace(auth.ResetPassword)) return;
         ct.ThrowIfCancellationRequested();
 
         var admin = await users.FindByNameAsync(AdminUserName);
         if (admin is null) {
-            logger.LogWarning(
-                "WATCHTOWER__AUTH__RESETPASSWORD is set but there is no '{UserName}' account to reset.",
-                AdminUserName);
+            var created = await users.CreateAsync(NewAdmin(), auth.ResetPassword!);
+            if (created.Succeeded) {
+                logger.LogWarning(
+                    "Break-glass recovery: there was no '{UserName}' account, so one was created from " +
+                    "WATCHTOWER__AUTH__RESETPASSWORD. Remove that setting once you are signed in.",
+                    AdminUserName);
+            } else {
+                logger.LogError(
+                    "Break-glass recovery could not create the '{UserName}' account: {Errors}. " +
+                    "Correct WATCHTOWER__AUTH__RESETPASSWORD and restart.",
+                    AdminUserName, Describe(created));
+            }
             return;
         }
 
-        var removed = await users.RemovePasswordAsync(admin);
-        if (!removed.Succeeded) {
-            logger.LogError("Break-glass reset failed while clearing the old password: {Errors}", Describe(removed));
-            return;
-        }
-
-        var added = await users.AddPasswordAsync(admin, auth.ResetPassword!);
-        if (!added.Succeeded) {
+        var token = await users.GeneratePasswordResetTokenAsync(admin);
+        var reset = await users.ResetPasswordAsync(admin, token, auth.ResetPassword!);
+        if (!reset.Succeeded) {
             logger.LogError(
-                "Break-glass reset failed: {Errors}. The '{UserName}' account now has no password — " +
-                "correct WATCHTOWER__AUTH__RESETPASSWORD and restart.",
-                Describe(added), AdminUserName);
+                "Break-glass reset rejected for '{UserName}': {Errors}. The previous password is unchanged and " +
+                "still valid — correct WATCHTOWER__AUTH__RESETPASSWORD and restart.",
+                AdminUserName, Describe(reset));
             return;
         }
 
@@ -128,6 +141,17 @@ public sealed class AuthBootstrapService(
             "cleared. Remove WATCHTOWER__AUTH__RESETPASSWORD once you are signed in.",
             AdminUserName);
     }
+
+    /// <summary>A fresh administrator; <see cref="UserManager{TUser}"/> fills in the normalized name, hash and stamps.</summary>
+    private static User NewAdmin() => new() {
+        UserName = AdminUserName,
+        NormalizedUserName = AdminUserName.ToUpperInvariant(),
+        PasswordHash = string.Empty,
+        SecurityStamp = Guid.NewGuid().ToString("N"),
+        ConcurrencyStamp = Guid.NewGuid().ToString("N"),
+        IsAdmin = true,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
 
     private static string GeneratePassword() =>
         RandomNumberGenerator.GetString(PasswordAlphabet, GeneratedPasswordLength);

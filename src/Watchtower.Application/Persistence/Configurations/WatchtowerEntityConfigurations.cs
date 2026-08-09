@@ -179,6 +179,8 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
         b.Property(x => x.NormalizedUserName).IsRequired();
         b.Property(x => x.PasswordHash).IsRequired();
         b.Property(x => x.SecurityStamp).IsRequired();
+        // Optimistic concurrency: the stamp read into memory must still be the stored one at write time.
+        b.Property(x => x.ConcurrencyStamp).IsRequired().IsConcurrencyToken();
         // Every login looks the user up by the normalized name, which is also where uniqueness is enforced.
         b.HasIndex(x => x.NormalizedUserName).IsUnique();
     }
@@ -193,6 +195,8 @@ public sealed class AuthSessionConfiguration : IEntityTypeConfiguration<AuthSess
         // Stored as the enum name (e.g. "Sso").
         b.Property(x => x.Kind).HasConversion<string>();
         b.HasIndex(x => x.TokenHash).IsUnique();
+        // Expired sessions are swept in bulk, same as login codes (design.md §4).
+        b.HasIndex(x => x.ExpiresAt);
         // Deleting a user or a route revokes the sessions that depend on it.
         b.HasOne(x => x.User)
             .WithMany()

@@ -31,6 +31,9 @@ jobs:
       - name: Build backend
         run: dotnet build Watchtower.slnx --configuration Release
 
+      - name: Test backend
+        run: dotnet test Watchtower.slnx --configuration Release --no-build
+
       - name: Verify RPC schema is up to date
         run: |
           dotnet run --project src/Watchtower.Api --configuration Release --no-build -- --export-schema rpc-schema.json

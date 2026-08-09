@@ -81,6 +81,37 @@ public sealed class RouteAccessModeTests {
         }
     }
 
+    /// <summary>
+    /// The reason the scaffolded <c>defaultValue: ""</c> in the AddCentralAuth migration was replaced by
+    /// <c>"Public"</c>: rows that predate the column are back-filled by SQLite's column default, and an
+    /// empty string is not a value the enum converter can read. This inserts such a row the way the
+    /// migration leaves one behind — without mentioning <c>access_mode</c> at all — and then loads it
+    /// through EF, which is exactly what an upgraded deployment does on its first request.
+    /// </summary>
+    [Fact]
+    public async Task RowInsertedWithoutAccessMode_IsBackFilledAsPublic() {
+        using var host = AuthTestHost.Start();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            db.Stacks.Add(NewStack("legacy"));
+            await db.SaveChangesAsync(ct);
+
+            var stackId = await db.Stacks.Where(s => s.Name == "legacy").Select(s => s.Id).SingleAsync(ct);
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO routes (stack_id, domain, service_name, container_port, tls_enabled, is_primary, kind, status, created_at)
+                VALUES ({stackId}, 'legacy.example.invalid', 'web', 8080, 1, 0, 'Managed', 'Pending', '2026-01-01 00:00:00.0000000+00:00')
+                """, ct);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Domain == "legacy.example.invalid", ct);
+            Assert.Equal(AccessMode.Public, route.AccessMode);
+        }
+    }
+
     /// <summary>A stack that satisfies the entity's required members; a route needs one to hang off.</summary>
     private static Stack NewStack(string name) => new() {
         Name = name,

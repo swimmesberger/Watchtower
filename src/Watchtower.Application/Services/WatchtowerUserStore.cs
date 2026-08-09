@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
@@ -17,7 +18,7 @@ namespace Watchtower.Application.Services;
 /// through Identity's <c>ILookupNormalizer</c> by <see cref="UserManager{TUser}"/>, which is what
 /// makes login case-insensitive on SQLite.
 /// </remarks>
-public sealed class WatchtowerUserStore(WatchtowerDbContext db) :
+public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDescriber errors) :
     IUserStore<User>,
     IUserPasswordStore<User>,
     IUserSecurityStampStore<User>,
@@ -27,7 +28,7 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db) :
 
     public Task<string> GetUserIdAsync(User user, CancellationToken cancellationToken) {
         ArgumentNullException.ThrowIfNull(user);
-        return Task.FromResult(user.Id.ToString());
+        return Task.FromResult(user.Id.ToString(CultureInfo.InvariantCulture));
     }
 
     public Task<string?> GetUserNameAsync(User user, CancellationToken cancellationToken) {
@@ -58,16 +59,32 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db) :
         ArgumentNullException.ThrowIfNull(user);
         cancellationToken.ThrowIfCancellationRequested();
         if (user.CreatedAt == default) user.CreatedAt = DateTimeOffset.UtcNow;
+        if (string.IsNullOrEmpty(user.ConcurrencyStamp)) user.ConcurrencyStamp = NewStamp();
         db.Users.Add(user);
-        await db.SaveChangesAsync(cancellationToken);
+        try {
+            await db.SaveChangesAsync(cancellationToken);
+        } catch (DbUpdateException) {
+            // UserManager's uniqueness check is a separate read, so two concurrent creations of the
+            // same name both pass it and the unique index is what actually decides.
+            db.Entry(user).State = EntityState.Detached;
+            return IdentityResult.Failed(errors.DuplicateUserName(user.UserName));
+        }
         return IdentityResult.Success;
     }
 
     public async Task<IdentityResult> UpdateAsync(User user, CancellationToken cancellationToken) {
         ArgumentNullException.ThrowIfNull(user);
         cancellationToken.ThrowIfCancellationRequested();
+        // Attach before rotating so the *stored* stamp is what lands in the UPDATE's WHERE clause —
+        // rotating first would compare the row against the new value and never match.
+        db.Users.Attach(user);
+        user.ConcurrencyStamp = NewStamp();
         db.Users.Update(user);
-        await db.SaveChangesAsync(cancellationToken);
+        try {
+            await db.SaveChangesAsync(cancellationToken);
+        } catch (DbUpdateConcurrencyException) {
+            return IdentityResult.Failed(errors.ConcurrencyFailure());
+        }
         return IdentityResult.Success;
     }
 
@@ -75,9 +92,15 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db) :
         ArgumentNullException.ThrowIfNull(user);
         cancellationToken.ThrowIfCancellationRequested();
         db.Users.Remove(user);
-        await db.SaveChangesAsync(cancellationToken);
+        try {
+            await db.SaveChangesAsync(cancellationToken);
+        } catch (DbUpdateConcurrencyException) {
+            return IdentityResult.Failed(errors.ConcurrencyFailure());
+        }
         return IdentityResult.Success;
     }
+
+    private static string NewStamp() => Guid.NewGuid().ToString("N");
 
     public async Task<User?> FindByIdAsync(string userId, CancellationToken cancellationToken) {
         cancellationToken.ThrowIfCancellationRequested();

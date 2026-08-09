@@ -113,15 +113,16 @@ public sealed record AuthOptions {
     public string KeyPath { get; init; } = "/data/auth-keys";
 
     /// <summary>
-    /// Password for the <c>admin</c> account created on first start. When unset a random one is
-    /// generated and written to the log once — the only time it is shown. Treated as a secret; never logged.
+    /// Password for the <c>admin</c> account created on first start. A value configured here is a
+    /// secret and is never written to the log. When it is left unset a random password is generated
+    /// instead, and <em>that</em> one is logged once — it has no other way of reaching the operator.
     /// </summary>
     public string? BootstrapPassword { get; init; }
 
     /// <summary>
-    /// Break-glass recovery: when set, the <c>admin</c> account's password is reset to this value and
-    /// its lockout cleared on every start. Remove it again once you are back in. Treated as a secret;
-    /// never logged.
+    /// Break-glass recovery: when set, every start guarantees an <c>admin</c> account whose password is
+    /// this value and which is not locked out — recreating the account if it was renamed or deleted.
+    /// Remove it again once you are back in. Treated as a secret; never logged.
     /// </summary>
     public string? ResetPassword { get; init; }
 }

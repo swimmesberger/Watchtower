@@ -84,6 +84,33 @@ public sealed class WatchtowerUserStoreTests {
     }
 
     [Fact]
+    public async Task ConcurrentUpdates_RejectTheSecondWriterInsteadOfLosingTheFirst() {
+        using var host = AuthTestHost.Start();
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            Assert.True((await users.CreateAsync(AuthTestHost.NewUser("dave"), GoodPassword)).Succeeded);
+        }
+
+        // Two administrators with the account open at the same time.
+        await using var first = host.Services.CreateAsyncScope();
+        await using var second = host.Services.CreateAsyncScope();
+        var firstManager = first.ServiceProvider.GetRequiredService<UserManager<User>>();
+        var secondManager = second.ServiceProvider.GetRequiredService<UserManager<User>>();
+
+        var asSeenByFirst = await firstManager.FindByNameAsync("dave");
+        var asSeenBySecond = await secondManager.FindByNameAsync("dave");
+        Assert.NotNull(asSeenByFirst);
+        Assert.NotNull(asSeenBySecond);
+
+        Assert.True((await firstManager.UpdateAsync(asSeenByFirst)).Succeeded);
+
+        var stale = await secondManager.UpdateAsync(asSeenBySecond);
+        Assert.False(stale.Succeeded);
+        Assert.Contains(stale.Errors, e => e.Code == nameof(IdentityErrorDescriber.ConcurrencyFailure));
+    }
+
+    [Fact]
     public async Task PasswordPolicy_RequiresLengthButNotSymbolClasses() {
         using var host = AuthTestHost.Start();
         await using var scope = host.Services.CreateAsyncScope();

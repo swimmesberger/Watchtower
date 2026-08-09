@@ -41,6 +41,7 @@ namespace Watchtower.Application.Persistence.Migrations
                     access_failed_count = table.Column<int>(type: "INTEGER", nullable: false),
                     lockout_end = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
                     security_stamp = table.Column<string>(type: "TEXT", nullable: false),
+                    concurrency_stamp = table.Column<string>(type: "TEXT", nullable: false),
                     created_at = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
                 },
                 constraints: table =>
@@ -177,6 +178,11 @@ namespace Watchtower.Application.Persistence.Migrations
                 name: "ix_auth_events_user_id",
                 table: "auth_events",
                 column: "user_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_auth_sessions_expires_at",
+                table: "auth_sessions",
+                column: "expires_at");
 
             migrationBuilder.CreateIndex(
                 name: "ix_auth_sessions_route_id",
