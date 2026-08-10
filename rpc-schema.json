@@ -4558,6 +4558,59 @@
         ]
       }
     },
+    "templates.grantManagement": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "stackId": {
+            "type": "integer"
+          },
+          "allowDelete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "templateId",
+          "stackId",
+          "allowDelete"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "grant": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "stackName": {
+                "type": "string"
+              },
+              "allowDelete": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "stackId",
+              "stackName",
+              "allowDelete",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "grant"
+        ]
+      }
+    },
     "templates.list": {
       "params": {
         "type": "object"
@@ -4629,6 +4682,54 @@
         ]
       }
     },
+    "templates.listGrants": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stackId": {
+                  "type": "integer"
+                },
+                "stackName": {
+                  "type": "string"
+                },
+                "allowDelete": {
+                  "type": "boolean"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "stackId",
+                "stackName",
+                "allowDelete",
+                "createdAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "grants"
+        ]
+      }
+    },
     "templates.listTenants": {
       "params": {
         "type": "object",
@@ -4691,6 +4792,66 @@
         },
         "required": [
           "tenants"
+        ]
+      }
+    },
+    "templates.removeTenant": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "removeVolumes": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "templateId",
+          "slug",
+          "removeVolumes"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    },
+    "templates.revokeManagement": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "templateId",
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
         ]
       }
     },

@@ -26,7 +26,7 @@ namespace Watchtower.Application.Services;
 /// so the whole topology is reconciled on startup. All DB access opens short-lived scopes since this is
 /// a singleton. No-op unless <c>Proxy:Enabled</c> is set.
 /// </summary>
-public sealed class CaddyManager : IHostedService, IDisposable {
+public class CaddyManager : IHostedService, IDisposable {
     public const string ControlNetwork = "watchtower-control";
     // Each stack gets its own ingress network shared only with Caddy, so tenants are isolated at L2
     // (a compromised tenant cannot reach another tenant's containers).
@@ -116,7 +116,13 @@ public sealed class CaddyManager : IHostedService, IDisposable {
     /// Renders the Caddyfile from the current route table and pushes it to Caddy for a reload.
     /// Best-effort: never throws, so a proxy hiccup can't fail the route CRUD or deploy that triggered it.
     /// </summary>
-    public async Task ApplyAsync(CancellationToken ct = default) {
+    /// <remarks>
+    /// Virtual so tests can observe that a reload was requested. There is no other way to see it: the
+    /// method returns nothing and no-ops entirely while the proxy is disabled, which is how it runs in
+    /// every test host — yet "the proxy stopped serving the deleted tenant's domain" is precisely the
+    /// part of teardown worth pinning.
+    /// </remarks>
+    public virtual async Task ApplyAsync(CancellationToken ct = default) {
         if (!_proxy.Enabled) return;
         try {
             var sites = await LoadSitesAsync(ct);

@@ -34,6 +34,7 @@ import type {
   StackTemplate,
   Tenant,
   TemplateEnvVar,
+  TemplateGrant,
   UpdateTemplateRequest,
   StackEnvVar,
   StackEnvVarInput,
@@ -253,6 +254,15 @@ export const api = {
       (await rpc('templates.listTenants', { templateId })).tenants as Tenant[],
     deployAll: async (templateId: number) =>
       (await rpc('templates.deployAll', { templateId })).count as number,
+    removeTenant: async (templateId: number, slug: string, removeVolumes: boolean) =>
+      (await rpc('templates.removeTenant', { templateId, slug, removeVolumes })).slug as string,
+    listGrants: async (templateId: number) =>
+      (await rpc('templates.listGrants', { templateId })).grants as TemplateGrant[],
+    grantManagement: async (templateId: number, stackId: number, allowDelete: boolean) =>
+      (await rpc('templates.grantManagement', { templateId, stackId, allowDelete }))
+        .grant as TemplateGrant,
+    revokeManagement: async (templateId: number, stackId: number) =>
+      (await rpc('templates.revokeManagement', { templateId, stackId })).removed as boolean,
   },
 
   metrics: {

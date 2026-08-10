@@ -255,6 +255,27 @@ public sealed class RouteAccessGrantConfiguration : IEntityTypeConfiguration<Rou
 }
 
 [EntityConfiguration]
+public sealed class TemplateManagementGrantConfiguration : IEntityTypeConfiguration<TemplateManagementGrant> {
+    public void Configure(EntityTypeBuilder<TemplateManagementGrant> b) {
+        b.ToTable("template_management_grants");
+        b.HasKey(x => x.Id);
+        // One grant per (stack, template) — re-granting updates the existing row rather than adding a
+        // second one, so a revoke can never leave a forgotten duplicate behind still granting access.
+        b.HasIndex(x => new { x.StackId, x.TemplateId }).IsUnique();
+        // Both ends cascade: a grant is meaningless once either the grantee stack or the managed
+        // template is gone, and leaving the row behind would re-grant a recycled id.
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(x => x.Template)
+            .WithMany()
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class AuthEventConfiguration : IEntityTypeConfiguration<AuthEvent> {
     public void Configure(EntityTypeBuilder<AuthEvent> b) {
         b.ToTable("auth_events");

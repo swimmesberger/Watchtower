@@ -21,8 +21,9 @@ client generated from the exported schema.
 > Restricted access, with signed identity forwarded upstream) — see the operator guide,
 > [docs/central-auth/README.md](docs/central-auth/README.md).
 > `WATCHTOWER__AUTH__RESETPASSWORD` is the break-glass hook if you lock yourself out.
-> Either way, only the `/api/webhooks/*` and `/api/app/*` routes are designed to be reachable by
-> unauthenticated external callers, and each is protected by a per-stack (or per-application) bearer token.
+> Either way, only the `/api/webhooks/*`, `/api/app/*` and `/api/mgmt/*` routes are designed to be
+> reachable by unauthenticated external callers, and each is protected by a per-stack (or
+> per-application) bearer token.
 
 ## Tech stack
 
@@ -53,6 +54,9 @@ client generated from the exported schema.
   and each endpoint resolves the caller's containers server-side from its compose project — so a
   stack can only ever see itself, never another stack, deploy output, or credentials. See
   [docs/public-app-api.md](docs/public-app-api.md) and [ADR-0008](docs/decisions/0008-public-app-api.md).
+  Its multi-tenant sibling, the **Management API** (`/api/mgmt/*`), lets a stack manage the tenants
+  of one template it was explicitly granted — see [docs/public-mgmt-api.md](docs/public-mgmt-api.md) and
+  [ADR-0009](docs/decisions/0009-public-management-api.md).
 - **Deploy engine:** an in-process per-stack queue with coalescing — at most one deploy runs per stack,
   with one pending slot. A deploy clones the repo, builds a scoped `DOCKER_CONFIG`, writes a temp
   `.env` from the stack's variables, then `docker compose pull` + `up -d --remove-orphans`.

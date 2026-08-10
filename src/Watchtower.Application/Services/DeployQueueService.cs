@@ -26,7 +26,7 @@ public sealed record DeployEnqueueResult(int DeployEventId, string Status);
 /// through short-lived scopes resolved from <see cref="IServiceScopeFactory"/> because the
 /// singleton must not capture a scoped <see cref="WatchtowerDbContext"/>.
 /// </summary>
-public sealed class DeployQueueService : IHostedService, IDisposable {
+public class DeployQueueService : IHostedService, IDisposable {
     private readonly ConcurrentDictionary<int, StackSlot> _slots = new();
     private readonly CancellationTokenSource _cts = new();
 
@@ -103,7 +103,13 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     /// coalesced onto a pending plain deploy (or vice-versa), the pending slot keeps the UNION of the
     /// volume lists so a recreate is never silently downgraded to a plain deploy.
     /// </param>
-    public DeployEnqueueResult Enqueue(int stackId, string triggeredBy, IReadOnlyList<string>? removeVolumes = null) {
+    /// <remarks>
+    /// Virtual, and the class is not sealed, so a test host can accept work without spawning a worker:
+    /// the worker clones a repository and shells out to compose, neither of which exists in a test, and
+    /// it would do so on a background thread racing the test's own database connection.
+    /// </remarks>
+    public virtual DeployEnqueueResult Enqueue(
+        int stackId, string triggeredBy, IReadOnlyList<string>? removeVolumes = null) {
         var slot = _slots.GetOrAdd(stackId, _ => new StackSlot());
 
         lock (slot.Lock) {

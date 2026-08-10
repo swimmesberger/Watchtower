@@ -13,6 +13,7 @@ namespace Watchtower.Api.Tests;
 public sealed class PipelineGatingTests {
     private const string DeployStream = "/api/stacks/events/1/stream";
     private const string ContainerLogStream = "/api/containers/abc/logs";
+    private const string MgmtTemplates = "/api/mgmt/templates";
 
     // Reads from the database and the in-process broadcaster only — no Docker, so it is the stream that
     // can be driven to completion in a test. The container-log stream is only asserted on its 401 path,
@@ -98,6 +99,46 @@ public sealed class PipelineGatingTests {
         // 404 because no such stack exists — the point is that it is not a 401 from the session gate.
         var webhook = await client.PostAsync("/api/webhooks/stacks/1/deploy", content: null, ct);
         Assert.Equal(HttpStatusCode.NotFound, webhook.StatusCode);
+    }
+
+    /// <summary>
+    /// The two public token-authenticated surfaces stay out of the session gate: their callers are
+    /// deployed applications and a vendor's management UI, neither of which has a browser session. They
+    /// must answer with <em>their own</em> 401 — the one that says the bearer token was missing or
+    /// unknown — rather than the session middleware's, or the token would never get a chance to be the
+    /// gate it is supposed to be.
+    /// </summary>
+    [Fact]
+    public async Task AuthEnabled_LeavesTheTokenAuthenticatedPublicSurfacesToTheirOwnGate() {
+        using var factory = AuthEnabled();
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        foreach (var url in new[] { "/api/app/self", MgmtTemplates, $"{MgmtTemplates}/1/tenants" }) {
+            var anonymous = await client.GetAsync(url, ct);
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+            // The body is the surface's own, which is what distinguishes it from the session gate's
+            // empty 401 (the session challenge also sets WWW-Authenticate; this never does).
+            Assert.Contains("Missing or invalid App API token.",
+                await anonymous.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+            Assert.Empty(anonymous.Headers.WwwAuthenticate);
+        }
+    }
+
+    /// <summary>
+    /// The grant handlers behind that surface are the opposite case: they are operator-only privilege
+    /// management, so with authentication on they are closed to an anonymous JSON-RPC caller like every
+    /// other handler.
+    /// </summary>
+    [Fact]
+    public async Task AuthEnabled_ClosesTheGrantManagementRpcMethods() {
+        using var factory = AuthEnabled();
+        using var client = factory.CreateApiClient();
+
+        foreach (var method in new[] {
+                     "templates.listGrants", "templates.grantManagement", "templates.revokeManagement",
+                 })
+            Assert.Contains("-32005", await RpcAsync(client, method, cookie: null), StringComparison.Ordinal);
     }
 
     [Fact]

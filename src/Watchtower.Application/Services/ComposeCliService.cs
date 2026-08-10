@@ -9,7 +9,12 @@ namespace Watchtower.Application.Services;
 /// Runs Docker Compose CLI commands in a subprocess, capturing combined stdout/stderr output.
 /// Requires docker and the compose plugin to be present in PATH inside the container.
 /// </summary>
-public sealed class ComposeCliService {
+/// <remarks>
+/// Not sealed, and <see cref="DownProjectAsync"/> is virtual, so tenant teardown can be exercised
+/// without a Docker daemon: that one call is the only step of the teardown that leaves the process,
+/// and both its success and its failure change what the rest of the teardown is allowed to do.
+/// </remarks>
+public class ComposeCliService {
     private readonly string? _dockerApiVersion;
 
     /// <param name="options">Watchtower options — reads <c>DockerApiVersion</c>
@@ -61,6 +66,28 @@ public sealed class ComposeCliService {
         string composeFilePath, string projectName, string? dockerConfigDir, CancellationToken ct) {
         var args = BuildArgs(composeFilePath, projectName, envFilePath: null, "down");
         return RunComposeAsync(args, dockerConfigDir, _dockerApiVersion, onLine: null, ct);
+    }
+
+    /// <summary>
+    /// Runs <c>docker compose down --remove-orphans</c> for a project identified by name alone,
+    /// optionally deleting its named volumes.
+    /// </summary>
+    /// <remarks>
+    /// Tenant teardown has no repository checkout to point <c>--file</c> at — clones only exist for the
+    /// duration of a deploy — so the project is resolved the way Compose resolves it without a file: from
+    /// the <c>com.docker.compose.project</c> labels on the running containers. That also means a project
+    /// with nothing running is a no-op success, which is the desired behaviour when a tenant's containers
+    /// are already gone.
+    /// </remarks>
+    /// <param name="projectName">Value passed to --project-name; the compose project to tear down.</param>
+    /// <param name="removeVolumes">When true, adds <c>--volumes</c> so the project's named volumes are deleted too.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Exit code and captured output.</returns>
+    public virtual Task<(int ExitCode, string Output)> DownProjectAsync(
+        string projectName, bool removeVolumes, CancellationToken ct) {
+        var args = new List<string> { "compose", "--project-name", projectName, "down", "--remove-orphans" };
+        if (removeVolumes) args.Add("--volumes");
+        return RunComposeAsync([.. args], dockerConfigDir: null, _dockerApiVersion, onLine: null, ct);
     }
 
     /// <summary>Builds the docker compose argument list, optionally including --env-file.</summary>

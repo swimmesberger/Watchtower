@@ -41,6 +41,20 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// <summary>The bootstrap password the <c>admin</c> account is created with.</summary>
     public const string AdminPassword = "correct-horse-battery";
 
+    /// <summary>
+    /// The compose CLI the host runs with: a stub that records <c>down</c> requests and answers with
+    /// <see cref="StubComposeCliService.DownExitCode"/> rather than starting a subprocess.
+    /// </summary>
+    /// <remarks>Held here rather than resolved from the container so a test can arm it before the first request.</remarks>
+    public StubComposeCliService Compose { get; } = new();
+
+    /// <summary>The Caddy manager the host runs with: a double that counts config reloads.</summary>
+    public RecordingCaddyManager Caddy => (RecordingCaddyManager)Services.GetRequiredService<CaddyManager>();
+
+    /// <summary>The deploy queue the host runs with: accepts and records work without running it.</summary>
+    public QueuedOnlyDeployQueueService DeployQueue =>
+        (QueuedOnlyDeployQueueService)Services.GetRequiredService<DeployQueueService>();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder) {
         // Production, not Development: the development-only CORS policy would otherwise join the pipeline
         // and the tests would stop describing what ships.
@@ -71,6 +85,26 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
                             d.ImplementationType != typeof(AuthBootstrapService))
                 .ToList();
             foreach (var descriptor in hosted) services.Remove(descriptor);
+
+            // The three services that reach outside the process on a request path, replaced by doubles
+            // that record instead. Dropping the hosted registrations above is not enough: a request can
+            // still call any of them directly — enqueuing a deploy really does start a worker that
+            // clones a repository and shells out to compose, on a thread that would then race this
+            // host's single shared SQLite connection. Substituting them is also what makes their effects
+            // (a compose down, a proxy reload) observable at all, since both no-op without a daemon.
+            //
+            // This is unconditional, so it applies to every test in this assembly, not only the ones
+            // that assert on the doubles. That is safe today because no other test drives a code path
+            // that reaches any of the three, and it is the safer default regardless: the alternative is
+            // a test suite that can shell out to the developer's real Docker daemon by accident. A test
+            // that genuinely needs the real implementations has to opt out here first.
+            services.RemoveAll<ComposeCliService>();
+            services.AddSingleton<ComposeCliService>(Compose);
+            services.RemoveAll<CaddyManager>();
+            services.AddSingleton<CaddyManager>(sp => ActivatorUtilities.CreateInstance<RecordingCaddyManager>(sp));
+            services.RemoveAll<DeployQueueService>();
+            services.AddSingleton<DeployQueueService>(
+                sp => ActivatorUtilities.CreateInstance<QueuedOnlyDeployQueueService>(sp));
         });
     }
 

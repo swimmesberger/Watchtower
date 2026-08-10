@@ -56,6 +56,13 @@ public static class WatchtowerServiceCollectionExtensions {
         // Scoped because it reads through the scoped DbContext; the deploy queue resolves it from a
         // short-lived scope when it needs to materialize a stack's token.
         services.AddScoped<AppApiService>();
+        // Tenant lifecycle, shared by the operator-facing templates.* handlers and the public
+        // management API so both provision and tear down through one code path.
+        services.AddScoped<TenantProvisioningService>();
+        services.AddScoped<TenantTeardownService>();
+        // Public management API (/api/mgmt/*): App API token auth + grant resolution + the tenant
+        // read models the host endpoints translate.
+        services.AddScoped<MgmtApiService>();
 
         // Elarion settings — typed key/value store backed by the EF Setting entity. Replaces the
         // hand-rolled SettingsStore; used for self-update config/runtime state and the runtime-editable
