@@ -94,11 +94,15 @@ public sealed class UpdateRealm(
         // would mean the realm's visitors are redirected to a host nothing is answering on.
         await caddy.ApplyAsync(ct);
 
-        // Past the commit point. The previous host is in the detail because it is where the sessions that
-        // just stopped working were living — a row naming only the new one would not explain the change.
-        var changes = string.Equals(previousHost, authHost, StringComparison.Ordinal)
-            ? $"renamedFrom={previousName}"
-            : $"renamedFrom={previousName}; authHost={previousHost ?? "(none)"}->{authHost ?? "(none)"}";
+        // Past the commit point. The detail names only what actually changed — a host-only save must not
+        // claim a rename — and the previous host is included because it is where the sessions that just
+        // stopped working were living; a row naming only the new one would not explain the change.
+        var parts = new List<string>(2);
+        if (!string.Equals(previousName, name, StringComparison.Ordinal))
+            parts.Add($"renamedFrom={previousName}");
+        if (!string.Equals(previousHost, authHost, StringComparison.Ordinal))
+            parts.Add($"authHost={previousHost ?? "(none)"}->{authHost ?? "(none)"}");
+        var changes = parts.Count > 0 ? string.Join("; ", parts) : "no changes";
         await RealmMapping.RecordAsync(
             db, currentUser, time, AuthEventKinds.RealmUpdated, realm.Id, realm.Slug, changes);
 
