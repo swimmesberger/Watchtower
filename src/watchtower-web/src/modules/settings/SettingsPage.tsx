@@ -3,14 +3,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   RefreshCw,
   RotateCcw,
   Timer,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { AutomationConfig, SelfUpdateStatus, UpdateSelfConfigRequest } from '@/lib/types'
+import type {
+  AutomationConfig,
+  MetricsBackend,
+  MetricsConfig,
+  SelfUpdateStatus,
+  UpdateSelfConfigRequest,
+} from '@/lib/types'
 import { absoluteTitle, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -18,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { SecretField } from '@/components/ui/secret-field'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
@@ -113,6 +118,8 @@ export function SettingsPage() {
       )}
 
       <AutomationCard />
+
+      <MetricsCard />
     </div>
   )
 }
@@ -257,6 +264,264 @@ function ToggleRow({
   )
 }
 
+// ── Metrics backend card (ADR-0013, runtime-switchable) ───────────────────────
+
+const BACKEND_LABELS: Record<MetricsBackend, string> = {
+  sqlite: 'Persisted (SQLite, default)',
+  memory: 'Live only (in-memory)',
+  influxdb: 'External InfluxDB (bring your own)',
+}
+
+interface MetricsDraft {
+  backend: MetricsBackend
+  retentionDays: number
+  influxUrl: string
+  influxOrg: string
+  influxBucket: string
+  /** Only sent when non-empty — an empty field keeps the stored token. */
+  influxToken: string
+  influxComposeProjectTag: string
+  influxDiskMountpoint: string
+}
+
+function toDraft(config: MetricsConfig): MetricsDraft {
+  return {
+    backend: config.backend,
+    retentionDays: config.retentionDays,
+    influxUrl: config.influx.url ?? '',
+    influxOrg: config.influx.org ?? '',
+    influxBucket: config.influx.bucket ?? '',
+    influxToken: '',
+    influxComposeProjectTag: config.influx.composeProjectTag,
+    influxDiskMountpoint: config.influx.diskMountpoint,
+  }
+}
+
+function MetricsCard() {
+  const qc = useQueryClient()
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['metrics', 'config'],
+    queryFn: api.metrics.getConfig,
+    staleTime: 60_000,
+  })
+
+  const [draft, setDraft] = useState<MetricsDraft | null>(null)
+  const form = draft ?? (data ? toDraft(data) : null)
+  const dirty = draft != null && data != null && JSON.stringify(draft) !== JSON.stringify(toDraft(data))
+
+  const save = useMutation({
+    mutationFn: (next: MetricsDraft) =>
+      api.metrics.updateConfig({
+        backend: next.backend,
+        retentionDays: next.retentionDays,
+        influxUrl: next.influxUrl.trim() || null,
+        influxOrg: next.influxOrg.trim() || null,
+        influxBucket: next.influxBucket.trim() || null,
+        influxToken: next.influxToken.trim() || null,
+        influxComposeProjectTag: next.influxComposeProjectTag.trim(),
+        influxDiskMountpoint: next.influxDiskMountpoint.trim() || '/',
+      }),
+    onSuccess: next => {
+      const availabilityChanged = data != null && data.historyAvailable !== next.historyAvailable
+      qc.setQueryData(['metrics', 'config'], next)
+      qc.invalidateQueries({ queryKey: ['metrics'] })
+      setDraft(null)
+      if (availabilityChanged) {
+        // The History nav item is gated on the boot capability snapshot — rebuild it.
+        toast.success('Metrics backend switched — reloading…')
+        setTimeout(() => window.location.reload(), 800)
+      } else {
+        toast.success('Metrics settings saved.')
+      }
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Failed to save.'),
+  })
+
+  function set<K extends keyof MetricsDraft>(key: K, value: MetricsDraft[K]) {
+    if (!form) return
+    setDraft({ ...form, [key]: value })
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-text">Metrics</h2>
+        <p className="mt-0.5 text-[13px] text-text-2">
+          Where resource metrics come from and how long history is kept. Switching applies immediately —
+          no restart needed.
+        </p>
+      </div>
+
+      {isLoading || !form ? (
+        <Card>
+          <CardContent className="flex flex-col gap-4 p-5">
+            <Skeleton variant="line" className="w-2/3" />
+            <Skeleton variant="line" className="w-1/2" />
+          </CardContent>
+        </Card>
+      ) : isError ? (
+        <Banner
+          tone="danger"
+          title="Couldn't load metrics settings"
+          action={
+            <Button size="sm" variant="secondary" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          The metrics-backend configuration is unavailable.
+        </Banner>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col gap-5 p-5">
+            <Field label="Backend" hint="Persisted keeps history in Watchtower's own database with zero dependencies.">
+              {({ id }) => (
+                <Select value={form.backend} onValueChange={v => set('backend', v as MetricsBackend)}>
+                  <SelectTrigger id={id}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(BACKEND_LABELS) as MetricsBackend[]).map(b => (
+                      <SelectItem key={b} value={b}>
+                        {BACKEND_LABELS[b]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </Field>
+
+            {form.backend === 'sqlite' && (
+              <div className="flex items-center gap-2 pl-0.5">
+                <span className="text-[13px] text-text-2">Keep history for</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={form.retentionDays}
+                  onChange={e =>
+                    set('retentionDays', Math.max(1, Math.min(365, Number(e.target.value) || 1)))
+                  }
+                  className="w-20 tnum"
+                  aria-label="History retention in days"
+                />
+                <span className="text-[13px] text-text-2">days</span>
+              </div>
+            )}
+
+            {form.backend === 'memory' && (
+              <p className="text-[13px] text-text-2">
+                Only the ~15-minute live window is kept, nothing is written to disk. The History view is
+                hidden on this backend.
+              </p>
+            )}
+
+            {form.backend === 'influxdb' && (
+              <div className="flex flex-col gap-4">
+                <p className="text-[13px] text-text-2">
+                  Watchtower reads from an InfluxDB v2 an external collector fills (it never writes).
+                  See the metrics-history doc for the expected collector schema.
+                </p>
+                <Field label="URL" hint="InfluxDB v2 base URL, e.g. http://influxdb:8086.">
+                  {({ id }) => (
+                    <Input
+                      id={id}
+                      mono
+                      placeholder="http://influxdb:8086"
+                      value={form.influxUrl}
+                      onChange={e => set('influxUrl', e.target.value)}
+                    />
+                  )}
+                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Organization">
+                    {({ id }) => (
+                      <Input
+                        id={id}
+                        mono
+                        value={form.influxOrg}
+                        onChange={e => set('influxOrg', e.target.value)}
+                      />
+                    )}
+                  </Field>
+                  <Field label="Bucket">
+                    {({ id }) => (
+                      <Input
+                        id={id}
+                        mono
+                        value={form.influxBucket}
+                        onChange={e => set('influxBucket', e.target.value)}
+                      />
+                    )}
+                  </Field>
+                </div>
+                <Field
+                  label="API token"
+                  hint={
+                    data?.influx.hasToken
+                      ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
+                      : 'Token with read access to the bucket.'
+                  }
+                >
+                  {() => (
+                    <SecretField
+                      value={form.influxToken}
+                      copyable={false}
+                      placeholder={data?.influx.hasToken ? '••••••••  (unchanged)' : 'Paste a read token'}
+                      onChange={v => set('influxToken', v)}
+                      aria-label="InfluxDB API token"
+                    />
+                  )}
+                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Compose-project tag"
+                    hint="Tag carrying the compose project (per-stack rollup). Leave empty unless the collector emits it."
+                  >
+                    {({ id }) => (
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="compose_project"
+                        value={form.influxComposeProjectTag}
+                        onChange={e => set('influxComposeProjectTag', e.target.value)}
+                      />
+                    )}
+                  </Field>
+                  <Field label="Disk mount point" hint="Mount point reported for the host-disk cell.">
+                    {({ id }) => (
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="/"
+                        value={form.influxDiskMountpoint}
+                        onChange={e => set('influxDiskMountpoint', e.target.value)}
+                      />
+                    )}
+                  </Field>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!dirty || save.isPending}
+                loading={save.isPending}
+                onClick={() => draft && save.mutate(draft)}
+              >
+                Save metrics
+              </Button>
+              {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  )
+}
+
 // ── Self-update card ──────────────────────────────────────────────────────────
 
 function SelfUpdateCard({
@@ -278,11 +543,7 @@ function SelfUpdateCard({
 }) {
   const [confirmApply, setConfirmApply] = useState(false)
 
-  const effectiveImage = status.imageName ?? status.detectedImageName
-  const effectiveComposePath = status.composeFilePath ?? status.detectedComposeFilePath
-  const effectiveProjectName = status.composeProjectName ?? status.detectedComposeProjectName
-
-  const canCheck = !!effectiveImage
+  const canCheck = !!status.detectedImageName
   const canApply = !!status.canApplyUpdate
   const applyStage = status.applyStage
   const isApplying = applyStage === 'pulling' || applyStage === 'restarting'
@@ -421,25 +682,10 @@ function SelfUpdateCard({
             <div className="overflow-x-auto">
               <dl className="grid min-w-[18rem] grid-cols-[5rem_1fr] gap-x-3 gap-y-1.5 text-xs">
                 <dt className="self-center text-text-3">Image</dt>
-                <dd className="truncate font-mono text-text-2" title={effectiveImage ?? ''}>
-                  {effectiveImage ?? <span className="font-sans italic text-text-3">unknown</span>}
-                  {status.imageName && <OverrideTag />}
-                </dd>
-
-                <dt className="self-center text-text-3">Compose</dt>
-                <dd className="truncate font-mono text-text-2" title={effectiveComposePath ?? ''}>
-                  {effectiveComposePath ?? (
-                    <span className="font-sans italic text-text-3">not started via Compose</span>
+                <dd className="truncate font-mono text-text-2" title={status.detectedImageName ?? ''}>
+                  {status.detectedImageName ?? (
+                    <span className="font-sans italic text-text-3">unknown</span>
                   )}
-                  {status.composeFilePath && <OverrideTag />}
-                </dd>
-
-                <dt className="self-center text-text-3">Project</dt>
-                <dd className="truncate font-mono text-text-2" title={effectiveProjectName ?? ''}>
-                  {effectiveProjectName ?? (
-                    <span className="font-sans italic text-text-3">—</span>
-                  )}
-                  {status.composeProjectName && <OverrideTag />}
                 </dd>
               </dl>
             </div>
@@ -449,27 +695,11 @@ function SelfUpdateCard({
         {/* ── Credential ── */}
         <CredentialRow status={status} onSave={onSave} saving={saving} />
 
-        {/* ── Overrides (collapsible) ── */}
-        <OverridesSection status={status} onSave={onSave} saving={saving} />
-
         {/* ── Check error ── */}
         {checkError && (
           <div className="border-t border-border px-4 py-4 md:px-5">
             <Banner tone="danger" title="Update check failed">
               {checkError}
-            </Banner>
-          </div>
-        )}
-
-        {/* ── Outdated but no compose info ── */}
-        {status.isOutdated && !canApply && (
-          <div className="border-t border-border px-4 py-4 md:px-5">
-            <Banner tone="warn" title="Update available, but automatic apply isn't possible">
-              Compose info is missing. Restart Watchtower manually with{' '}
-              <code className="rounded bg-warn-bg px-1.5 py-0.5 font-mono text-[12px] text-warn">
-                docker compose up -d
-              </code>
-              .
             </Banner>
           </div>
         )}
@@ -529,10 +759,6 @@ function LiveBanner({ tone, children }: { tone: 'run' | 'warn'; children: React.
   )
 }
 
-function OverrideTag() {
-  return <span className="ml-1.5 font-sans not-italic text-text-3">(override)</span>
-}
-
 // ── Credential row ────────────────────────────────────────────────────────────
 
 function CredentialRow({
@@ -554,12 +780,7 @@ function CredentialRow({
   const dirty = value !== initial
 
   function handleSave() {
-    onSave({
-      imageName: status.imageName ?? null,
-      credentialId: value === NO_CREDENTIAL ? null : Number(value),
-      composeFilePath: status.composeFilePath ?? null,
-      composeProjectName: status.composeProjectName ?? null,
-    })
+    onSave({ credentialId: value === NO_CREDENTIAL ? null : Number(value) })
   }
 
   return (
@@ -595,109 +816,6 @@ function CredentialRow({
         >
           Save
         </Button>
-      )}
-    </div>
-  )
-}
-
-// ── Overrides (collapsible) ───────────────────────────────────────────────────
-
-function OverridesSection({
-  status,
-  onSave,
-  saving,
-}: {
-  status: SelfUpdateStatus
-  onSave: (data: UpdateSelfConfigRequest) => void
-  saving: boolean
-}) {
-  const hasOverrides = !!(status.imageName || status.composeFilePath || status.composeProjectName)
-  const [open, setOpen] = useState(hasOverrides)
-
-  const [imageName, setImageName] = useState(status.imageName ?? '')
-  const [composeFilePath, setComposeFilePath] = useState(status.composeFilePath ?? '')
-  const [composeProjectName, setComposeProjectName] = useState(status.composeProjectName ?? '')
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    onSave({
-      imageName: imageName.trim() || null,
-      credentialId: status.credentialId ?? null,
-      composeFilePath: composeFilePath.trim() || null,
-      composeProjectName: composeProjectName.trim() || null,
-    })
-  }
-
-  return (
-    <div className="border-t border-border">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-4 py-3 text-[13px] text-text-2 transition-colors hover:bg-surface-2 hover:text-text md:px-5"
-      >
-        {open ? (
-          <ChevronDown className="size-4 shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight className="size-4 shrink-0" aria-hidden />
-        )}
-        {hasOverrides ? 'Overrides active' : 'Override auto-detected settings'}
-      </button>
-
-      {open && (
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col gap-4 border-t border-border bg-surface-2/40 px-4 py-4 md:px-5"
-        >
-          <p className="text-[13px] text-text-2">
-            Leave a field blank to use the auto-detected value. Set an override to force a specific
-            value.
-          </p>
-          <Field
-            label="Image name"
-            hint="e.g. ghcr.io/owner/watchtower:latest. Defaults to the detected image."
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                mono
-                placeholder={status.detectedImageName ?? 'ghcr.io/owner/watchtower:latest'}
-                value={imageName}
-                onChange={e => setImageName(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Compose file path" hint="Absolute path on the host, e.g. /opt/watchtower/docker-compose.yml.">
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                mono
-                placeholder={status.detectedComposeFilePath ?? '/opt/watchtower/docker-compose.yml'}
-                value={composeFilePath}
-                onChange={e => setComposeFilePath(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Project name" hint="Compose project name. Defaults to the detected project.">
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                mono
-                placeholder={status.detectedComposeProjectName ?? 'watchtower'}
-                value={composeProjectName}
-                onChange={e => setComposeProjectName(e.target.value)}
-              />
-            )}
-          </Field>
-          <div className="flex justify-end">
-            <Button type="submit" variant="primary" loading={saving} className="w-full md:w-auto">
-              Save overrides
-            </Button>
-          </div>
-        </form>
       )}
     </div>
   )

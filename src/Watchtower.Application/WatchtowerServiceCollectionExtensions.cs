@@ -189,25 +189,24 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CiRunnerOrchestrator>();
         services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
 
-        // Metrics backend (ADR-0007) — pluggable and mutually exclusive, so exactly one collector runs.
-        // Default ("memory"): the in-memory ring buffer fed by the background sampler (amendment F5),
-        // zero external dependency; the RPC handlers read only the store, no Docker fan-out on the path.
-        // Opt-in ("influxdb"): read host + container series (incl. history) from an InfluxDB an external
-        // collector populates — the sampler/store are NOT registered, so Watchtower runs no collector of
-        // its own and InfluxDB is the single source of truth. Switching backends requires a restart.
-        var metricsBackend = section.GetValue<string>("Metrics:Backend");
-        if (string.Equals(metricsBackend, "influxdb", StringComparison.OrdinalIgnoreCase)) {
-            services.AddSingleton<IMetricsSource, InfluxMetricsSource>();
-        } else {
-            services.AddSingleton<MetricsStore>();
-            services.AddHostedService<MetricsSampler>();
-            services.AddSingleton<IMetricsSource, InMemoryMetricsSource>();
-        }
+        // Metrics backend (ADR-0007, amended by ADR-0013) — three backends behind one runtime router:
+        // "sqlite" (default) persists windowed history next to the live ring, "memory" keeps the ring
+        // only, "influxdb" reads an externally-collected InfluxDB. Everything is registered
+        // unconditionally; the router resolves the backend from IOptionsMonitor per call and the sampler
+        // re-checks it per tick (idling under influxdb so exactly one collector runs). That is what
+        // makes the backend switchable from the Settings page without a restart.
+        services.AddSingleton<MetricsStore>();
+        services.AddSingleton<MetricsPersistenceService>();
+        services.AddHostedService<MetricsSampler>();
+        services.AddSingleton<InMemoryMetricsSource>();
+        services.AddSingleton<SqliteMetricsSource>();
+        services.AddSingleton<IMetricsSource, MetricsSourceRouter>();
 
         // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates every module's
-        // [ClientFeatures] names through this one service — "metrics-history" reflects the backend chosen
-        // above, "apps-portal" reflects the caller's realm. Scoped because the second of those reads
-        // ICurrentUser; a singleton could only answer the deployment-scoped half.
+        // [ClientFeatures] names through this one service, per call — "metrics-history" follows the
+        // routed metrics backend above (including across a runtime switch), "apps-portal" reflects the
+        // caller's realm. Scoped because the second of those reads ICurrentUser; a singleton could only
+        // answer the deployment-scoped half.
         services.AddScoped<IFeatureFlagService, WatchtowerFeatureFlagService>();
 
         // Background checkers — always registered. Each loops on a short poll and reads its

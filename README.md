@@ -61,14 +61,16 @@ client generated from the exported schema.
   with one pending slot. A deploy clones the repo, builds a scoped `DOCKER_CONFIG`, writes a temp
   `.env` from the stack's variables, then `docker compose pull` + `up -d --remove-orphans`.
 - **Self-update:** Watchtower can pull its own newer image and spawn a short-lived *coordinator*
-  sibling container that runs `docker compose up -d` to recreate it (a container can't restart itself).
+  sibling container that recreates it via the Docker API — cloning the running container's
+  configuration onto the new image, with automatic rollback if the replacement fails to start
+  (a container can't restart itself). Needs no configuration beyond the Docker socket.
 
 See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/elarion.md](docs/elarion.md) for how the project consumes the framework,
 [docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
 is no longer enough (Docker Swarm vs k3s),
 [docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip,
-[docs/metrics-history.md](docs/metrics-history.md) for switching metrics to a durable InfluxDB backend, and
+[docs/metrics-history.md](docs/metrics-history.md) for the metrics backends (persisted SQLite history by default, BYO InfluxDB opt-in), and
 [docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure
@@ -139,7 +141,8 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` — straight into the containers, no compose changes needed — for the [App API](docs/public-app-api.md). |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
-| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `memory` | Metrics source: `memory` (in-process sampler) or `influxdb` (read a durable store) — see [docs/metrics-history.md](docs/metrics-history.md). |
+| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `sqlite` | Metrics source: `sqlite` (persisted history), `memory` (live only), or `influxdb` (read an external store). Runtime-switchable under Settings → Metrics — see [docs/metrics-history.md](docs/metrics-history.md). |
+| `Metrics:RetentionDays` | `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `sqlite` backend (1–365 days). |
 
 `WATCHTOWER_DOCKER_CONFIG` / `DOCKER_CONFIG` point at a mounted host `config.json` for private pulls.
 

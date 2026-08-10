@@ -63,11 +63,19 @@ Settings (`app_settings`) are accessed through the scoped `SettingsStore`.
 
 ## Self-update
 
-A running container cannot `docker compose up -d` itself — Docker would kill the process mid-run. So
-Watchtower pulls the new image, then spawns a **coordinator** sibling container (same image, same socket)
-launched with `--self-update`; it waits ~3 s for the original request to return, runs `compose up -d` to
-recreate Watchtower, and exits. On the next startup Watchtower reconciles the coordinator's exit code to
-report success/failure. See `Services/SelfUpdateService.cs` and `Watchtower.Api/CoordinatorMode.cs`.
+A running container cannot recreate itself — the process dies the moment its container stops. So
+Watchtower pulls the new image, then spawns a **coordinator** sibling container (the just-pulled image,
+same socket) launched with `--self-update`. The coordinator recreates Watchtower purely via the Docker
+API: it clones the running container's configuration onto the new image (`ContainerCloneSpec` — carries
+Config/HostConfig/networks, drops the id-derived default hostname and stale runtime fields), waits ~3 s
+for the original request to return, stops and renames the old container aside, creates and starts the
+replacement under the original name, and rolls back to the old container if that fails. No compose file
+is read or required, so self-update needs zero configuration and works for any deployment shape; the
+flip side is that a compose file edited since the last `docker compose up -d` is not re-asserted by a
+self-update — run compose on the host to apply compose-file changes. The main process watches the
+coordinator, so a failed (rolled-back) run surfaces immediately; when the update succeeds, the next
+startup reconciles the coordinator's exit code instead. See `Services/SelfUpdateService.cs`,
+`Services/ContainerCloneSpec.cs` and `Watchtower.Api/CoordinatorMode.cs`.
 
 ## Persistence
 

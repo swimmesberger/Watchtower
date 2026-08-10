@@ -392,6 +392,76 @@ public sealed class DockerEngineClient : IDisposable {
     }
 
     /// <summary>
+    /// Returns the raw, untyped container inspection JSON. Used by the self-update coordinator to
+    /// clone a container with full fidelity — the typed <see cref="DockerContainerDetails"/> model
+    /// deliberately covers only the fields Watchtower reads, which would silently drop the rest of
+    /// the configuration on a recreate.
+    /// </summary>
+    public async Task<System.Text.Json.Nodes.JsonObject> InspectContainerRawAsync(
+        string containerId, CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/containers/{containerId}/json", ct);
+        response.EnsureSuccessStatusCode();
+        await using var json = await response.Content.ReadAsStreamAsync(ct);
+        var node = await System.Text.Json.Nodes.JsonNode.ParseAsync(json, cancellationToken: ct);
+        return node?.AsObject()
+            ?? throw new InvalidOperationException($"Null response inspecting container {containerId}");
+    }
+
+    /// <summary>
+    /// Creates a container from a raw JSON body (Docker's create schema: Config fields at the top
+    /// level plus <c>HostConfig</c>/<c>NetworkingConfig</c>) and returns its ID. Counterpart of
+    /// <see cref="InspectContainerRawAsync"/> for full-fidelity recreates.
+    /// </summary>
+    public async Task<string> CreateContainerRawAsync(
+        System.Text.Json.Nodes.JsonObject body, string name, CancellationToken ct = default) {
+        var url = $"{_apiBase}/containers/create?name={Uri.EscapeDataString(name)}";
+        using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+        var response = await _client.PostAsync(url, content, ct);
+        await EnsureSuccessWithBodyAsync(response, ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var result = await JsonSerializer.DeserializeAsync(stream, DockerJsonContext.Default.DockerCreateContainerResponse, ct)
+            ?? throw new InvalidOperationException("Null response creating container");
+        return result.Id;
+    }
+
+    /// <summary>Renames a container. Works on running and stopped containers alike.</summary>
+    public async Task RenameContainerAsync(string containerId, string newName, CancellationToken ct = default) {
+        var response = await _client.PostAsync(
+            $"{_apiBase}/containers/{containerId}/rename?name={Uri.EscapeDataString(newName)}", content: null, ct);
+        await EnsureSuccessWithBodyAsync(response, ct);
+    }
+
+    /// <summary>
+    /// Connects a container to a network with the given endpoint settings. Needed because the
+    /// create endpoint accepts only a single network; additional ones are attached afterwards.
+    /// </summary>
+    public async Task ConnectNetworkAsync(
+        string networkName, string containerId, System.Text.Json.Nodes.JsonObject endpointConfig,
+        CancellationToken ct = default) {
+        var body = new System.Text.Json.Nodes.JsonObject {
+            ["Container"] = containerId,
+            ["EndpointConfig"] = endpointConfig,
+        };
+        using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+        var response = await _client.PostAsync(
+            $"{_apiBase}/networks/{Uri.EscapeDataString(networkName)}/connect", content, ct);
+        await EnsureSuccessWithBodyAsync(response, ct);
+    }
+
+    /// <summary>
+    /// Like <see cref="HttpResponseMessage.EnsureSuccessStatusCode"/>, but includes the daemon's
+    /// error message in the exception — the recreate path surfaces these to the user, and "409
+    /// Conflict" alone is useless next to "name already in use by container …".
+    /// </summary>
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, CancellationToken ct) {
+        if (response.IsSuccessStatusCode) return;
+        var body = await response.Content.ReadAsStringAsync(ct);
+        throw new HttpRequestException(
+            $"Docker API returned {(int)response.StatusCode} {response.StatusCode}: {body.Trim()}",
+            inner: null, response.StatusCode);
+    }
+
+    /// <summary>
     /// Pulls <paramref name="imageName"/> from the registry, optionally authenticating
     /// with <paramref name="username"/> and <paramref name="token"/>.
     /// Blocks until the pull stream is fully drained (i.e., the pull is complete).

@@ -60,17 +60,6 @@ public class ComposeCliService {
     }
 
     /// <summary>
-    /// Runs <c>docker compose config --quiet</c> to validate the compose file without modifying
-    /// any containers. Returns a non-zero exit code and error output if the file is invalid.
-    /// </summary>
-    public Task<(int ExitCode, string Output)> ConfigAsync(
-        string composeFilePath, string projectName, CancellationToken ct) {
-        var args = BuildComposeArgs(
-            composeFilePath, projectName, envFilePath: null, overrideFilePath: null, "config", "--quiet");
-        return RunAsync(args, dockerConfigDir: null, onLine: null, ct);
-    }
-
-    /// <summary>
     /// Runs <c>docker compose config --format json</c> to read back the fully resolved project — the
     /// services the deploy is about to start, and the labels declared on them.
     /// </summary>

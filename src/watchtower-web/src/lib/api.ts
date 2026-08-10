@@ -23,6 +23,7 @@ import type {
   DockerConfigStatus,
   Group,
   HostMetrics,
+  MetricsConfig,
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
@@ -44,6 +45,7 @@ import type {
   StackEnvVarInput,
   StackMetricsResult,
   UpdateCredentialRequest,
+  UpdateMetricsConfigRequest,
   UpdateRealmRequest,
   UpdateRegistryRequest,
   UpdateRouteRequest,
@@ -281,6 +283,18 @@ export const api = {
         .containers as ContainerMetrics[],
     stacks: async (range?: MetricsRange | null) =>
       (await rpc('metrics.stacks', { range: range ?? null })) as StackMetricsResult,
+    getConfig: async () => (await rpc('metrics.getConfig', {})).config as MetricsConfig,
+    updateConfig: async (data: UpdateMetricsConfigRequest) =>
+      (await rpc('metrics.updateConfig', {
+        backend: data.backend,
+        retentionDays: data.retentionDays,
+        influxUrl: data.influxUrl ?? null,
+        influxOrg: data.influxOrg ?? null,
+        influxBucket: data.influxBucket ?? null,
+        influxToken: data.influxToken ?? null,
+        influxComposeProjectTag: data.influxComposeProjectTag ?? null,
+        influxDiskMountpoint: data.influxDiskMountpoint ?? null,
+      })).config as MetricsConfig,
   },
 
   users: {
@@ -359,10 +373,7 @@ export const api = {
     getSelf: async () => (await rpc('system.getSelf', {})).status as SelfUpdateStatus,
     updateConfig: async (data: UpdateSelfConfigRequest) =>
       (await rpc('system.updateConfig', {
-        imageName: data.imageName ?? null,
         credentialId: data.credentialId ?? null,
-        composeFilePath: data.composeFilePath ?? null,
-        composeProjectName: data.composeProjectName ?? null,
       })).status as SelfUpdateStatus,
     check: async () => (await rpc('system.check', {})).status as SelfUpdateStatus,
     update: async () => {

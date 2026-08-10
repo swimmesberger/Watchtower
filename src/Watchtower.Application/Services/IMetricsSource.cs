@@ -1,10 +1,12 @@
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// The read abstraction every <c>metrics.*</c> handler depends on (ADR-0007). A backend either serves
-/// the live in-memory window (the default <see cref="InMemoryMetricsSource"/>) or reads from InfluxDB
-/// (<see cref="InfluxMetricsSource"/>). Exactly one implementation is registered per deployment, so
-/// there is a single active collector — the RPC path never fans out to Docker.
+/// The read abstraction every <c>metrics.*</c> handler depends on (ADR-0007, amended by ADR-0013).
+/// Backends: the SQLite-persisted default (<see cref="SqliteMetricsSource"/>), the live-only ring
+/// (<see cref="InMemoryMetricsSource"/>), and the BYO InfluxDB reader (<see cref="InfluxMetricsSource"/>).
+/// The registered implementation is <see cref="MetricsSourceRouter"/>, which delegates to whichever
+/// backend the current options select — runtime-switchable, while the sampler's per-tick backend check
+/// keeps a single active collector. The RPC path never fans out to Docker.
 /// </summary>
 public interface IMetricsSource {
     /// <summary>Static description of what this backend can do — source name and history availability.</summary>
@@ -53,6 +55,6 @@ public readonly record struct MetricsWindow {
 /// Static capabilities of the active metrics backend, surfaced to the UI so it can gate the time-range
 /// view and label the data source (ADR-0007).
 /// </summary>
-/// <param name="Source">Backend id: <c>memory</c> or <c>influxdb</c>.</param>
+/// <param name="Source">Backend id: <c>memory</c>, <c>sqlite</c>, or <c>influxdb</c>.</param>
 /// <param name="HistoryAvailable">True when the backend can answer explicit historical ranges.</param>
 public sealed record MetricsCapabilities(string Source, bool HistoryAvailable);

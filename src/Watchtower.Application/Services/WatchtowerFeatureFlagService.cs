@@ -14,9 +14,11 @@ namespace Watchtower.Application.Services;
 /// <list type="bullet">
 ///   <item><description>
 ///     <c>metrics-history</c> is <b>deployment-scoped</b> — true exactly when the active
-///     <see cref="IMetricsSource"/> backend can answer historical time ranges (the InfluxDB backend,
-///     ADR-0007). Boot-fixed by DI; runtime-variable availability (e.g. Docker unreachable) stays on the
-///     data as <c>available</c>/<c>reason</c>.
+///     <see cref="IMetricsSource"/> backend can answer historical time ranges (the sqlite and influxdb
+///     backends, ADR-0007 as amended by ADR-0013). Evaluated per call against the routed source
+///     (<see cref="MetricsSourceRouter"/>), so it follows a runtime backend switch
+///     (<c>metrics.updateConfig</c>) on the next session fetch; runtime-variable availability (e.g.
+///     Docker unreachable) stays on the data as <c>available</c>/<c>reason</c>.
 ///   </description></item>
 ///   <item><description>
 ///     <c>apps-portal</c> is <b>per-caller</b> — see <see cref="AppsPortalFlag"/>. ADR-0030's flags are
