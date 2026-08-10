@@ -1048,6 +1048,13 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -1066,6 +1073,9 @@
               "name": {
                 "type": "string"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "memberCount": {
                 "type": "integer"
               }
@@ -1073,6 +1083,7 @@
             "required": [
               "id",
               "name",
+              "realmId",
               "memberCount"
             ]
           }
@@ -1135,7 +1146,16 @@
     },
     "groups.list": {
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
       },
       "result": {
         "type": "object",
@@ -1151,6 +1171,9 @@
                 "name": {
                   "type": "string"
                 },
+                "realmId": {
+                  "type": "integer"
+                },
                 "memberCount": {
                   "type": "integer"
                 }
@@ -1158,6 +1181,7 @@
               "required": [
                 "id",
                 "name",
+                "realmId",
                 "memberCount"
               ]
             }
@@ -1196,6 +1220,9 @@
               "name": {
                 "type": "string"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "memberCount": {
                 "type": "integer"
               }
@@ -1203,6 +1230,7 @@
             "required": [
               "id",
               "name",
+              "realmId",
               "memberCount"
             ]
           }
@@ -2536,6 +2564,254 @@
         },
         "required": [
           "route"
+        ]
+      }
+    },
+    "realms.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "authHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "realm": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "authHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isSystem": {
+                "type": "boolean"
+              },
+              "userCount": {
+                "type": "integer"
+              },
+              "groupCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "slug",
+              "authHost",
+              "isSystem",
+              "userCount",
+              "groupCount",
+              "templateCount",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "realm"
+        ]
+      }
+    },
+    "realms.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "realms.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "realms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "slug": {
+                  "type": "string"
+                },
+                "authHost": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "isSystem": {
+                  "type": "boolean"
+                },
+                "userCount": {
+                  "type": "integer"
+                },
+                "groupCount": {
+                  "type": "integer"
+                },
+                "templateCount": {
+                  "type": "integer"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "slug",
+                "authHost",
+                "isSystem",
+                "userCount",
+                "groupCount",
+                "templateCount",
+                "createdAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "realms"
+        ]
+      }
+    },
+    "realms.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "authHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "realm": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "authHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isSystem": {
+                "type": "boolean"
+              },
+              "userCount": {
+                "type": "integer"
+              },
+              "groupCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "slug",
+              "authHost",
+              "isSystem",
+              "userCount",
+              "groupCount",
+              "templateCount",
+              "createdAt"
+            ]
+          }
+        },
+        "required": [
+          "realm"
         ]
       }
     },
@@ -4565,6 +4841,13 @@
                 "value"
               ]
             }
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -4615,6 +4898,9 @@
               "targetPort": {
                 "type": "integer"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -4633,6 +4919,7 @@
               "domainPattern",
               "targetServiceName",
               "targetPort",
+              "realmId",
               "createdAt",
               "instanceCount"
             ]
@@ -4739,6 +5026,9 @@
               "targetPort": {
                 "type": "integer"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -4757,6 +5047,7 @@
               "domainPattern",
               "targetServiceName",
               "targetPort",
+              "realmId",
               "createdAt",
               "instanceCount"
             ]
@@ -4885,6 +5176,9 @@
                 "targetPort": {
                   "type": "integer"
                 },
+                "realmId": {
+                  "type": "integer"
+                },
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
@@ -4903,6 +5197,7 @@
                 "domainPattern",
                 "targetServiceName",
                 "targetPort",
+                "realmId",
                 "createdAt",
                 "instanceCount"
               ]
@@ -5141,6 +5436,13 @@
                 "value"
               ]
             }
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -5192,6 +5494,9 @@
               "targetPort": {
                 "type": "integer"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -5210,6 +5515,7 @@
               "domainPattern",
               "targetServiceName",
               "targetPort",
+              "realmId",
               "createdAt",
               "instanceCount"
             ]
@@ -5238,6 +5544,13 @@
           },
           "isAdmin": {
             "type": "boolean"
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -5274,6 +5587,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -5286,6 +5602,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "realmId",
               "createdAt"
             ]
           }
@@ -5321,7 +5638,16 @@
     },
     "users.list": {
       "params": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
       },
       "result": {
         "type": "object",
@@ -5352,6 +5678,9 @@
                 "lockedOut": {
                   "type": "boolean"
                 },
+                "realmId": {
+                  "type": "integer"
+                },
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
@@ -5364,6 +5693,7 @@
                 "isAdmin",
                 "disabled",
                 "lockedOut",
+                "realmId",
                 "createdAt"
               ]
             }
@@ -5445,6 +5775,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -5457,6 +5790,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "realmId",
               "createdAt"
             ]
           }
@@ -5520,6 +5854,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "realmId": {
+                "type": "integer"
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -5532,6 +5869,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "realmId",
               "createdAt"
             ]
           }
@@ -5800,6 +6138,9 @@
         "features": []
       },
       "Proxy": {
+        "features": []
+      },
+      "Realms": {
         "features": []
       },
       "Registries": {

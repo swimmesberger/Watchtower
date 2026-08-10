@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Features;
 using Elarion.Abstractions.Identity;
 using Elarion.Authorization;
@@ -166,6 +167,16 @@ public static class WatchtowerServiceCollectionExtensions {
         // decorator is attached at compile time by [assembly: ElarionAuthorizationDefaults], so a missing
         // registration would fail every handler at resolution time rather than fail open.
         services.AddElarionAuthorization();
+
+        // …and then decorated, so the management surface is the operator population's (design.md §13).
+        // The framework's own ClaimsAuthorizer keeps evaluating each handler's declared requirements; the
+        // realm rule is layered on top of it centrally rather than repeated as an attribute per handler,
+        // because a rule that has to be repeated is one a new handler can be written without. Registered by
+        // replacement rather than in front of AddElarionAuthorization: this must win regardless of whether
+        // the framework registers its authorizer with Add or TryAdd.
+        services.RemoveAll<IAuthorizer>();
+        services.AddScoped<ClaimsAuthorizer>();
+        services.AddScoped<IAuthorizer, SystemRealmAuthorizer>();
 
         // First-run admin + break-glass password reset. No-op unless Auth:Enabled.
         services.AddHostedService<AuthBootstrapService>();

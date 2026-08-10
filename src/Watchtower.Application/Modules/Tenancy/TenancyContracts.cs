@@ -4,6 +4,10 @@ using Watchtower.Application.Entities;
 namespace Watchtower.Application.Modules.Tenancy;
 
 /// <summary>A stack template projection including how many tenants use it.</summary>
+/// <param name="RealmId">
+/// The population this category's tenants serve (docs/central-auth/design.md §13). Every route created
+/// from the template inherits it, which is what decides who may enter a tenant.
+/// </param>
 public sealed record StackTemplateDto(
     int Id,
     string Name,
@@ -14,6 +18,7 @@ public sealed record StackTemplateDto(
     string DomainPattern,
     string TargetServiceName,
     int TargetPort,
+    int RealmId,
     DateTimeOffset CreatedAt,
     int InstanceCount);
 
@@ -46,7 +51,7 @@ public sealed record TemplateGrantDto(int StackId, string StackName, bool AllowD
 public static partial class TenancyMapping {
     public static StackTemplateDto ToDto(StackTemplate t, int instanceCount) => new(
         t.Id, t.Name, t.RepositoryUrl, t.ComposeFilePath, t.Branch, t.CredentialId,
-        t.DomainPattern, t.TargetServiceName, t.TargetPort, t.CreatedAt, instanceCount);
+        t.DomainPattern, t.TargetServiceName, t.TargetPort, t.RealmId, t.CreatedAt, instanceCount);
 
     [GeneratedRegex("^[a-z0-9][a-z0-9-]*$")]
     private static partial Regex SlugPattern();

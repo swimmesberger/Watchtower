@@ -34,9 +34,12 @@ public sealed class RenameGroup(WatchtowerDbContext db, ICurrentUser currentUser
 
         var normalized = GroupMapping.Normalize(name);
         // Excluding this group's own row: re-saving a group under a differently-cased spelling of its
-        // current name is a rename, not a collision with itself.
-        if (await db.Groups.AsNoTracking().AnyAsync(g => g.Id != group.Id && g.NormalizedName == normalized, ct))
-            return AppError.Conflict($"A group named '{name}' already exists.");
+        // current name is a rename, not a collision with itself. Scoped to the group's realm, like the
+        // unique index behind it — another population's group of the same name is not a collision either.
+        if (await db.Groups.AsNoTracking().AnyAsync(
+                g => g.Id != group.Id && g.RealmId == group.RealmId && g.NormalizedName == normalized, ct)) {
+            return AppError.Conflict($"A group named '{name}' already exists in that realm.");
+        }
 
         // Read before the commit, not after: a rename cannot change the membership, and every await that
         // honours the request token has to happen while there is still something to abandon. Past the

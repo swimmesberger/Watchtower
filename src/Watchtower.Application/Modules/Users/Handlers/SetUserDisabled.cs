@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Identity;
 using Microsoft.AspNetCore.Identity;
@@ -28,6 +28,7 @@ public sealed class SetUserDisabled(
     WatchtowerDbContext db,
     UserManager<User> users,
     AuthSessionService sessions,
+    IRealmContext realmContext,
     ICurrentUser currentUser,
     TimeProvider time)
     : IHandler<SetUserDisabled.Command, Result<SetUserDisabled.Response>> {
@@ -39,6 +40,10 @@ public sealed class SetUserDisabled(
         var user = await users.FindByIdAsync(command.Id.ToString(CultureInfo.InvariantCulture));
         if (user is null)
             return AppError.NotFound($"User {command.Id} not found.");
+
+        // The write below goes through UserManager, which re-runs the duplicate-name check against
+        // whichever realm this scope is pointed at.
+        UserMapping.PinRealm(realmContext, user);
 
         if (command.Disabled && await UserMapping.IsLastUsableAdminAsync(db, user, ct))
             return UserMapping.LastAdminError("disable", user);

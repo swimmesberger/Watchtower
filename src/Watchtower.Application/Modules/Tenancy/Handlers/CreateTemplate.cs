@@ -8,6 +8,11 @@ namespace Watchtower.Application.Modules.Tenancy.Handlers;
 [Handler("templates.create")]
 public sealed class CreateTemplate(WatchtowerDbContext db)
     : IHandler<CreateTemplate.Command, Result<CreateTemplate.Response>> {
+    /// <summary>
+    /// <paramref name="RealmId"/> is optional and last (a default value is what marks a parameter
+    /// non-required in the generated schema): a client that predates realms omits it and creates an
+    /// operator-realm category, exactly as it always did.
+    /// </summary>
     public sealed record Command(
         string Name,
         string RepositoryUrl,
@@ -17,7 +22,8 @@ public sealed class CreateTemplate(WatchtowerDbContext db)
         string DomainPattern,
         string TargetServiceName,
         int TargetPort,
-        IReadOnlyList<TemplateEnvVarInput>? BaseEnvVars);
+        IReadOnlyList<TemplateEnvVarInput>? BaseEnvVars,
+        int? RealmId = null);
 
     public sealed record Response(StackTemplateDto Template);
 
@@ -33,7 +39,14 @@ public sealed class CreateTemplate(WatchtowerDbContext db)
         if (await db.StackTemplates.AnyAsync(t => t.Name == command.Name, ct))
             return AppError.Validation($"A template named '{command.Name}' already exists.");
 
+        // The realm every tenant route created from this template will inherit (design.md §13), and
+        // therefore which population may enter them.
+        var realmId = command.RealmId ?? Realm.SystemRealmId;
+        if (!await db.Realms.AnyAsync(r => r.Id == realmId, ct))
+            return AppError.Validation($"No realm exists with id {realmId}.");
+
         var template = new StackTemplate {
+            RealmId = realmId,
             Name = command.Name,
             RepositoryUrl = command.RepositoryUrl,
             ComposeFilePath = command.ComposeFilePath,

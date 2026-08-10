@@ -21,18 +21,32 @@ namespace Watchtower.Application.Modules.Groups.Handlers;
 public sealed class CreateGroup(WatchtowerDbContext db, ICurrentUser currentUser, TimeProvider time)
     : IHandler<CreateGroup.Command, Result<CreateGroup.Response>> {
 
-    public sealed record Command(string Name);
+    /// <summary>
+    /// <paramref name="RealmId"/> is optional and last (a default value is what marks a parameter
+    /// non-required in the generated schema): a client that predates realms omits it and creates an
+    /// operator group, exactly as it always did.
+    /// </summary>
+    public sealed record Command(string Name, int? RealmId = null);
+
     public sealed record Response(GroupDto Group);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         if (GroupMapping.ValidateName(command.Name, out var name) is { } invalid)
             return invalid;
 
+        var realmId = command.RealmId ?? Realm.SystemRealmId;
+        if (await GroupMapping.FindRealmAsync(db, realmId, ct) is null)
+            return AppError.Validation($"No realm exists with id {realmId}.");
+
         var normalized = GroupMapping.Normalize(name);
-        if (await db.Groups.AsNoTracking().AnyAsync(g => g.NormalizedName == normalized, ct))
-            return AppError.Conflict($"A group named '{name}' already exists.");
+        // Scoped to the realm, like the unique index behind it: two populations may each have a "staff".
+        if (await db.Groups.AsNoTracking()
+                .AnyAsync(g => g.RealmId == realmId && g.NormalizedName == normalized, ct)) {
+            return AppError.Conflict($"A group named '{name}' already exists in that realm.");
+        }
 
         var group = new Group {
+            RealmId = realmId,
             Name = name,
             NormalizedName = normalized,
             CreatedAt = time.GetUtcNow(),
@@ -42,7 +56,7 @@ public sealed class CreateGroup(WatchtowerDbContext db, ICurrentUser currentUser
 
         // Past the commit point: the group exists, so the trail is written uncancellably.
         await GroupMapping.RecordAsync(
-            db, currentUser, time, AuthEventKinds.GroupCreated, group.Id, group.Name);
+            db, currentUser, time, AuthEventKinds.GroupCreated, group.Id, group.Name, $"realmId={realmId}");
 
         return new Response(GroupMapping.ToDto(group, memberCount: 0));
     }

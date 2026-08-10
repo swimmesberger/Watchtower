@@ -205,7 +205,59 @@ public sealed class RealmAuthFlowTests {
         Assert.Equal(HttpStatusCode.Unauthorized, (await UserInfoAsync(client, mismatched)).StatusCode);
     }
 
+    // ── The management surface is the operator population's ───────────────────
+
+    /// <summary>
+    /// End to end over the transport that matters: a realm account holds a valid central session — the
+    /// same one that lets it into its own applications — and every JSON-RPC call it makes is refused.
+    /// </summary>
+    [Fact]
+    public async Task ARealmAccount_HoldsAValidSession_AndIsStillForbiddenOnRpc() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+        var carolCookie = SsoCookie(await factory.SsoSessionAsync(carol));
+
+        var operatorAdmin = await AdminIdAsync(factory);
+        var adminCookie = SsoCookie(await factory.SsoSessionAsync(operatorAdmin));
+
+        var asRealm = await RpcAsync(client, "credentials.list", carolCookie);
+        var asOperator = await RpcAsync(client, "credentials.list", adminCookie);
+
+        // -32003 is the JSON-RPC code the transport maps Forbidden to. The session itself is fine — the
+        // bootstrap below reports it as authenticated — so what refuses the call is the realm and nothing
+        // else.
+        Assert.Contains("-32003", asRealm, StringComparison.Ordinal);
+        Assert.Contains("\"result\"", asOperator, StringComparison.Ordinal);
+
+        var bootstrap = await RpcAsync(client, "elarion.session", carolCookie);
+        Assert.Contains("\"isAuthenticated\":true", bootstrap, StringComparison.Ordinal);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>The id of the bootstrapped operator administrator.</summary>
+    private static async Task<int> AdminIdAsync(WatchtowerApiFactory factory) {
+        var id = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            id = (await db.Users.SingleAsync(u => u.NormalizedUserName == "ADMIN", Ct)).Id;
+        });
+        return id;
+    }
+
+    private static async Task<string> RpcAsync(HttpClient client, string method, string cookie) {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/rpc") {
+            Content = JsonContent.Create(new { jsonrpc = "2.0", method, @params = new { }, id = "1" }),
+        };
+        request.Headers.Add("Cookie", cookie);
+        var response = await client.SendAsync(request, Ct);
+        return await response.Content.ReadAsStringAsync(Ct);
+    }
+
+    private static string SsoCookie(string token) => $"{AuthSessionService.SsoCookieName}={token}";
+
 
     /// <summary>Mints the assertion verify would have written, for <paramref name="realmId"/>.</summary>
     private static async Task<string> MintAsync(WatchtowerApiFactory factory, int userId, int realmId) {

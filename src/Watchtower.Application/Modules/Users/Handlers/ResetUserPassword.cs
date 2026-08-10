@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Identity;
 using Microsoft.AspNetCore.Identity;
@@ -33,6 +33,7 @@ public sealed class ResetUserPassword(
     WatchtowerDbContext db,
     UserManager<User> users,
     AuthSessionService sessions,
+    IRealmContext realmContext,
     ICurrentUser currentUser,
     TimeProvider time)
     : IHandler<ResetUserPassword.Command, Result<ResetUserPassword.Response>> {
@@ -47,6 +48,10 @@ public sealed class ResetUserPassword(
         var user = await users.FindByIdAsync(command.Id.ToString(CultureInfo.InvariantCulture));
         if (user is null)
             return AppError.NotFound($"User {command.Id} not found.");
+
+        // The lockout clear below writes the account back through UserManager, which re-runs the
+        // duplicate-name check against whichever realm this scope is pointed at.
+        UserMapping.PinRealm(realmContext, user);
 
         var token = await users.GeneratePasswordResetTokenAsync(user);
         var result = await users.ResetPasswordAsync(user, token, command.NewPassword);

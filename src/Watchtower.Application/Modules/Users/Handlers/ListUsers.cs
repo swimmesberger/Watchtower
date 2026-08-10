@@ -6,21 +6,32 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.Users.Handlers;
 
 /// <summary>
-/// Lists every account, ordered by login name. Password hashes and stamps are never projected —
-/// see <see cref="UserDto"/>.
+/// Lists accounts, ordered by login name, optionally narrowed to one realm. Password hashes and stamps
+/// are never projected — see <see cref="UserDto"/>.
 /// </summary>
+/// <remarks>
+/// The default is every realm, not the operator one: this surface is system-realm-only to begin with
+/// (<see cref="SystemRealmAuthorizer"/>), so its caller is an instance administrator who is entitled to
+/// see the whole estate — and defaulting to a filtered view would hide accounts from the person
+/// responsible for them.
+/// </remarks>
 [Handler("users.list")]
 [RequireRole(WatchtowerClaims.AdminRole)]
 public sealed class ListUsers(WatchtowerDbContext db, TimeProvider time)
     : IHandler<ListUsers.Query, Result<ListUsers.Response>> {
-    public sealed record Query;
+    /// <summary>Optional realm filter; omitted means every realm.</summary>
+    public sealed record Query(int? RealmId = null);
+
     public sealed record Response(IReadOnlyList<UserDto> Users);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         // Materialize first: the lockout flag is a DateTimeOffset comparison, which EF Core's SQLite
         // provider cannot translate (see UserMapping.ToDto). The table is an operator roster — tens of
         // rows, not a page-worthy dataset.
-        var users = await db.Users.AsNoTracking()
+        var accounts = db.Users.AsNoTracking().AsQueryable();
+        if (query.RealmId is { } realmId) accounts = accounts.Where(u => u.RealmId == realmId);
+
+        var users = await accounts
             .OrderBy(u => u.UserName)
             .ToListAsync(ct);
 

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Elarion.Abstractions.Identity;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Users;
 
@@ -16,6 +17,11 @@ namespace Watchtower.Application.Modules.Users;
 /// Derived from <see cref="User.LockoutEnd"/> against the current time rather than stored — a lockout
 /// simply lapses, so a persisted flag would be stale the moment it expired.
 /// </param>
+/// <param name="RealmId">
+/// The population the account belongs to (docs/central-auth/design.md §13). Login names are unique within
+/// it, not across the instance, so an administration screen listing two accounts called <c>admin</c> needs
+/// this to tell them apart.
+/// </param>
 public sealed record UserDto(
     int Id,
     string UserName,
@@ -23,6 +29,7 @@ public sealed record UserDto(
     bool IsAdmin,
     bool Disabled,
     bool LockedOut,
+    int RealmId,
     DateTimeOffset CreatedAt);
 
 /// <summary>
@@ -45,7 +52,49 @@ public static class UserMapping {
             user.IsAdmin,
             user.Disabled,
             user.LockoutEnd is { } end && end > now,
+            user.RealmId,
             user.CreatedAt);
+    }
+
+    /// <summary>
+    /// Points the scope's credential space at <paramref name="user"/>'s realm before the account is written
+    /// back (docs/central-auth/design.md §13).
+    /// </summary>
+    /// <remarks>
+    /// Not a nicety: <see cref="UserManager{TUser}.UpdateAsync"/> runs Identity's <c>UserValidator</c>,
+    /// which checks for a duplicate login name by calling the store's <c>FindByNameAsync</c> — and that
+    /// lookup is realm-scoped. Leaving the default (the operator realm) in place while saving a customer
+    /// realm's account would ask "is this name taken?" of the wrong population, and an unrelated operator
+    /// account with the same name would be reported as a duplicate of it.
+    /// </remarks>
+    public static void PinRealm(IRealmContext realm, User user) {
+        ArgumentNullException.ThrowIfNull(realm);
+        ArgumentNullException.ThrowIfNull(user);
+        realm.SetRealm(user.RealmId);
+    }
+
+    /// <summary>
+    /// Refuses the Admin role outside the operator realm, or <see langword="null"/> when the combination is
+    /// allowed.
+    /// </summary>
+    /// <remarks>
+    /// The role means administration of <em>the instance</em> — users, routes, stacks, realms — and a realm
+    /// exists precisely so a customer population cannot reach any of that. Refused here so an operator gets
+    /// a clear answer rather than a silently inert flag; <see cref="WatchtowerClaims.ForUser"/> then
+    /// declines to emit the claim regardless, which is what makes the rule hold even for a row that
+    /// acquired the flag some other way.
+    /// </remarks>
+    public static AppError? ValidateAdminRealm(bool isAdmin, int realmId) =>
+        isAdmin && realmId != Realm.SystemRealmId
+            ? AppError.Validation(
+                "The Admin role administers the whole instance and can only be granted to an account in " +
+                "the operator realm.")
+            : null;
+
+    /// <summary>The realm an account is being placed in, or <see langword="null"/> when there is no such realm.</summary>
+    public static Task<Realm?> FindRealmAsync(WatchtowerDbContext db, int realmId, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
+        return db.Realms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == realmId, ct);
     }
 
     /// <summary>Normalizes an optional email: trimmed, or null when blank.</summary>
@@ -120,7 +169,11 @@ public static class UserMapping {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(target);
         if (!target.IsAdmin || target.Disabled) return false;
-        return !await db.Users.AnyAsync(u => u.Id != target.Id && u.IsAdmin && !u.Disabled, ct);
+        // Scoped to the operator realm, which is the only realm the role can be held in
+        // (<see cref="ValidateAdminRealm"/>) — stated rather than relied on, so a stray flag in another
+        // realm cannot be counted as the administrator that keeps this instance reachable.
+        return !await db.Users.AnyAsync(
+            u => u.Id != target.Id && u.IsAdmin && !u.Disabled && u.RealmId == Realm.SystemRealmId, ct);
     }
 
     /// <summary>The refusal returned when <see cref="IsLastUsableAdminAsync"/> holds.</summary>

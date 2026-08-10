@@ -24,11 +24,19 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 public sealed class CreateUser(
     WatchtowerDbContext db,
     UserManager<User> users,
+    IRealmContext realmContext,
     ICurrentUser currentUser,
     TimeProvider time)
     : IHandler<CreateUser.Command, Result<CreateUser.Response>> {
 
-    public sealed record Command(string UserName, string Password, string? Email, bool IsAdmin);
+    /// <summary>
+    /// <paramref name="RealmId"/> is optional and last (a default value is what marks a parameter
+    /// non-required in the generated schema): a client that predates realms omits it and creates an
+    /// operator account, exactly as it always did.
+    /// </summary>
+    public sealed record Command(
+        string UserName, string Password, string? Email, bool IsAdmin, int? RealmId = null);
+
     public sealed record Response(UserDto User);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
@@ -38,10 +46,21 @@ public sealed class CreateUser(
         if (string.IsNullOrEmpty(command.Password))
             return AppError.Validation("Password is required.");
 
+        var realmId = command.RealmId ?? Realm.SystemRealmId;
+        if (await UserMapping.FindRealmAsync(db, realmId, ct) is null)
+            return AppError.Validation($"No realm exists with id {realmId}.");
+        if (UserMapping.ValidateAdminRealm(command.IsAdmin, realmId) is { } badRole)
+            return badRole;
+
+        // Before UserManager touches anything: the duplicate-name check it runs has to be answered about
+        // the realm this account is going into, not about the scope's default (design.md §13).
+        realmContext.SetRealm(realmId);
+
         var now = time.GetUtcNow();
         // NormalizedUserName, PasswordHash and SecurityStamp are placeholders: UserManager and the
         // store overwrite all three on the way in. They are `required` on the entity, not optional.
         var user = new User {
+            RealmId = realmId,
             UserName = userName,
             NormalizedUserName = userName.ToUpperInvariant(),
             Email = UserMapping.NormalizeEmail(command.Email),
@@ -58,7 +77,8 @@ public sealed class CreateUser(
 
         // Past the commit point: the account exists, so the trail is written uncancellably.
         await UserMapping.RecordAsync(
-            db, currentUser, time, AuthEventKinds.UserCreated, user, $"isAdmin={command.IsAdmin}");
+            db, currentUser, time, AuthEventKinds.UserCreated, user,
+            $"isAdmin={command.IsAdmin}; realmId={realmId}");
 
         return new Response(UserMapping.ToDto(user, now));
     }

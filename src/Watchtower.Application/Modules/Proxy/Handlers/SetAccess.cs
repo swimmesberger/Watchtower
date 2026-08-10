@@ -89,26 +89,46 @@ public sealed class SetAccess(
             ? (command.GrantedGroupIds ?? []).Distinct().ToList()
             : [];
 
+        // The realm the route belongs to — its stack's category, or the operator realm for a standalone
+        // stack. A grant naming a subject from any other population would never admit anyone
+        // (RouteAccessPolicy applies the same invariant at access time), so it is refused here rather than
+        // stored as a row that reads like access somebody has (docs/central-auth/design.md §13).
+        var routeRealmId = await RouteAccessPolicy.RouteRealmIdAsync(db, route.Id, ct);
+        if (routeRealmId is null)
+            return AppError.NotFound($"Route {command.RouteId} not found");
+
         // Both existence checks run before any write, so a command naming one good and one unknown subject
         // is refused whole rather than half-applied.
         if (targetUserGrants.Count > 0) {
             var known = await db.Users.AsNoTracking()
                 .Where(u => targetUserGrants.Contains(u.Id))
-                .Select(u => u.Id)
+                .Select(u => new { u.Id, u.RealmId })
                 .ToListAsync(ct);
-            var missing = targetUserGrants.Except(known).OrderBy(id => id).ToList();
+            var missing = targetUserGrants.Except(known.Select(u => u.Id)).OrderBy(id => id).ToList();
             if (missing.Count > 0)
                 return AppError.Validation($"No user exists with id {Describe(missing)}.");
+
+            var foreign = known.Where(u => u.RealmId != routeRealmId).Select(u => u.Id).OrderBy(id => id).ToList();
+            if (foreign.Count > 0) {
+                return AppError.Validation(
+                    $"User {Describe(foreign)} belongs to a different realm than {route.Domain}.");
+            }
         }
 
         if (targetGroupGrants.Count > 0) {
             var known = await db.Groups.AsNoTracking()
                 .Where(g => targetGroupGrants.Contains(g.Id))
-                .Select(g => g.Id)
+                .Select(g => new { g.Id, g.RealmId })
                 .ToListAsync(ct);
-            var missing = targetGroupGrants.Except(known).OrderBy(id => id).ToList();
+            var missing = targetGroupGrants.Except(known.Select(g => g.Id)).OrderBy(id => id).ToList();
             if (missing.Count > 0)
                 return AppError.Validation($"No group exists with id {Describe(missing)}.");
+
+            var foreign = known.Where(g => g.RealmId != routeRealmId).Select(g => g.Id).OrderBy(id => id).ToList();
+            if (foreign.Count > 0) {
+                return AppError.Validation(
+                    $"Group {Describe(foreign)} belongs to a different realm than {route.Domain}.");
+            }
         }
 
         route.AccessMode = command.Mode;

@@ -149,6 +149,15 @@ public sealed record MgmtCreateResult(
 /// The tenant's own <c>AppApiEnabled</c> flag is deliberately not consulted — it governs whether that
 /// stack may call the App API about itself, not whether its operator-granted manager may observe it.
 /// </para>
+/// <para>
+/// <b>Realms (docs/central-auth/design.md §13) do not reach this surface in v1.</b> Its principal is a
+/// <em>stack</em> proven by an App API token, not an account, so the system-realm gate on the JSON-RPC
+/// surface (<see cref="SystemRealmAuthorizer"/>) has nothing to evaluate here, and the grant row remains
+/// the whole of the authorization. Scoping a management principal to its own realm — so a product's
+/// management stack cannot provision into another population even if a grant said it could — is the §13
+/// follow-up; the seam is the grant, which would gain the realm consistency check that
+/// <c>proxy.setAccess</c> already applies to route grants.
+/// </para>
 /// </remarks>
 /// <param name="db">Scoped Watchtower database context.</param>
 /// <param name="appApi">The App API service: token authentication and the shared read models.</param>

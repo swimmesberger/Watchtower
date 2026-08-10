@@ -5,9 +5,17 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Modules.Tenancy.Handlers;
 
 /// <summary>Updates a template. When BaseEnvVars is provided the base env set is replaced atomically.</summary>
+/// <remarks>
+/// The realm may only be changed while the template has <em>no</em> tenants (docs/central-auth/design.md
+/// §13). Moving a populated category would silently re-point every tenant route at another population: the
+/// accounts currently using them would stop being admitted on their next request, and the accounts of the
+/// new realm would be let in without anybody having granted them anything. Emptying the category first
+/// makes that an explicit act rather than a side effect of a form save.
+/// </remarks>
 [Handler("templates.update")]
 public sealed class UpdateTemplate(WatchtowerDbContext db)
     : IHandler<UpdateTemplate.Command, Result<UpdateTemplate.Response>> {
+    /// <summary><paramref name="RealmId"/> omitted leaves the category where it is.</summary>
     public sealed record Command(
         int Id,
         string Name,
@@ -18,7 +26,8 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
         string DomainPattern,
         string TargetServiceName,
         int TargetPort,
-        IReadOnlyList<TemplateEnvVarInput>? BaseEnvVars);
+        IReadOnlyList<TemplateEnvVarInput>? BaseEnvVars,
+        int? RealmId = null);
 
     public sealed record Response(StackTemplateDto Template);
 
@@ -35,6 +44,18 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
             return AppError.NotFound($"Template {command.Id} not found");
         if (await db.StackTemplates.AnyAsync(t => t.Name == command.Name && t.Id != command.Id, ct))
             return AppError.Validation($"A template named '{command.Name}' already exists.");
+
+        var tenantCount = await db.Stacks.CountAsync(s => s.TemplateId == template.Id, ct);
+        if (command.RealmId is { } realmId && realmId != template.RealmId) {
+            if (!await db.Realms.AnyAsync(r => r.Id == realmId, ct))
+                return AppError.Validation($"No realm exists with id {realmId}.");
+            if (tenantCount > 0) {
+                return AppError.Conflict(
+                    $"Template '{template.Name}' has {tenantCount} tenant(s), so its realm cannot be " +
+                    "changed. Remove them first.");
+            }
+            template.RealmId = realmId;
+        }
 
         template.Name = command.Name;
         template.RepositoryUrl = command.RepositoryUrl;
@@ -54,7 +75,8 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
 
-        var count = await db.Stacks.CountAsync(s => s.TemplateId == template.Id, ct);
-        return new Response(TenancyMapping.ToDto(template, count));
+        // Read before the write above, not after: nothing here changes the tenant count, and the value was
+        // already needed to decide whether the realm may move.
+        return new Response(TenancyMapping.ToDto(template, tenantCount));
     }
 }
