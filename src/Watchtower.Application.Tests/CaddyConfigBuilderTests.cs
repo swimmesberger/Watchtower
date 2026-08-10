@@ -1,3 +1,4 @@
+using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
 using Xunit;
 
@@ -53,12 +54,15 @@ public sealed class CaddyConfigBuilderTests {
 
     [Fact]
     public void MixedEstate_RendersTheProtectedShapeFromTheDesign() {
-        // One of each: an app that does its own auth, one behind "any signed-in user", one behind an
-        // explicit grant list, and Watchtower's own self-route (never protected — see CaddyManager).
+        // One of each: an app that does its own auth, one behind "any signed-in user" that forwards JWT only
+        // (the default), one behind an explicit grant list that opted into the Authelia/Traefik Remote-*
+        // headers, and Watchtower's own self-route (never protected — see CaddyManager). Every protected
+        // block strips the *whole* forwardable union regardless of its mode; only copy_headers differs.
         var sites = new[] {
             new CaddySite("public.example.invalid", "demo-web", 8080, Tls: true),
             new CaddySite("members.example.invalid", "demo-web", 3000, Tls: true, Protected: true),
-            new CaddySite("secret.example.invalid", "other-api", 9000, Tls: true, OnDemand: true, Protected: true),
+            new CaddySite("secret.example.invalid", "other-api", 9000, Tls: true, OnDemand: true,
+                Protected: true, Mode: IdentityHeaderMode.Remote),
             new CaddySite("watchtower.example.invalid", "watchtower", 8080, Tls: true),
         };
 
@@ -76,12 +80,16 @@ public sealed class CaddyConfigBuilderTests {
             		reverse_proxy watchtower:8080
             	}
             	handle {
-            		request_header -X-Watchtower-User
-            		request_header -X-Watchtower-Email
             		request_header -X-Watchtower-Jwt
+            		request_header -Remote-User
+            		request_header -Remote-Name
+            		request_header -Remote-Email
+            		request_header -X-Auth-Request-User
+            		request_header -X-Auth-Request-Preferred-Username
+            		request_header -X-Auth-Request-Email
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
-            			copy_headers X-Watchtower-User X-Watchtower-Email X-Watchtower-Jwt
+            			copy_headers X-Watchtower-Jwt
             		}
             		reverse_proxy demo-web:3000
             	}
@@ -99,12 +107,16 @@ public sealed class CaddyConfigBuilderTests {
             		reverse_proxy watchtower:8080
             	}
             	handle {
-            		request_header -X-Watchtower-User
-            		request_header -X-Watchtower-Email
             		request_header -X-Watchtower-Jwt
+            		request_header -Remote-User
+            		request_header -Remote-Name
+            		request_header -Remote-Email
+            		request_header -X-Auth-Request-User
+            		request_header -X-Auth-Request-Preferred-Username
+            		request_header -X-Auth-Request-Email
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
-            			copy_headers X-Watchtower-User X-Watchtower-Email X-Watchtower-Jwt
+            			copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email
             		}
             		reverse_proxy other-api:9000
             	}
@@ -118,21 +130,40 @@ public sealed class CaddyConfigBuilderTests {
             CaddyConfigBuilder.Build(sites, Globals));
     }
 
-    [Fact]
-    public void HeaderStripping_PrecedesForwardAuth_ForEveryIdentityHeader() {
+    [Theory]
+    [InlineData(IdentityHeaderMode.None, "copy_headers X-Watchtower-Jwt")]
+    [InlineData(IdentityHeaderMode.Remote, "copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email")]
+    [InlineData(IdentityHeaderMode.AuthRequest,
+        "copy_headers X-Watchtower-Jwt X-Auth-Request-User X-Auth-Request-Preferred-Username X-Auth-Request-Email")]
+    public void EveryMode_StripsTheFullUnion_AndCopiesOnlyItsOwnSet(IdentityHeaderMode mode, string expectedCopy) {
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true)], Globals);
+            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
+            Globals);
+
+        // The strip set is the full union in all three modes — nothing a client sends can survive.
+        foreach (var header in IdentityForwarding.AllForwardableHeaderNames)
+            Assert.Contains($"request_header -{header}\n", caddyfile, StringComparison.Ordinal);
+
+        // copy_headers carries exactly this mode's set (JWT always + the mode's plaintext names).
+        Assert.Contains($"\t\t\t{expectedCopy}\n", caddyfile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HeaderStripping_PrecedesForwardAuth_ForEveryForwardableHeader() {
+        var caddyfile = CaddyConfigBuilder.Build(
+            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
+                Mode: IdentityHeaderMode.AuthRequest)],
+            Globals);
 
         var forwardAuthAt = caddyfile.IndexOf("forward_auth", StringComparison.Ordinal);
         Assert.True(forwardAuthAt > 0);
 
-        foreach (var header in RouteAccessPolicy.IdentityHeaderNames) {
+        foreach (var header in IdentityForwarding.AllForwardableHeaderNames) {
             var stripAt = caddyfile.IndexOf($"request_header -{header}\n", StringComparison.Ordinal);
             // Order is the whole control: a header stripped *after* forward_auth ran would erase the
             // verified value, and one never stripped would let the client assert it (design.md §2.3).
             Assert.True(stripAt > 0, $"{header} is never stripped from the inbound request.");
             Assert.True(stripAt < forwardAuthAt, $"{header} is stripped after forward_auth, not before.");
-            Assert.Contains($" {header}", caddyfile.AsSpan()[forwardAuthAt..].ToString(), StringComparison.Ordinal);
         }
     }
 

@@ -31,6 +31,12 @@ public static class WatchtowerAccessEndpoints {
     /// <summary>Audit kind written when a login code is exchanged for an app session.</summary>
     private const string CodeRedeemed = "code.redeemed";
 
+    /// <summary>OIDC UserInfo (OpenID Connect Core 1.0 §5.3), served on the auth host for bearer callers.</summary>
+    private const string UserInfoApiPath = "/api/access/userinfo";
+
+    /// <summary>The same UserInfo handler on every protected app's own domain, for same-origin cookie callers.</summary>
+    private const string UserInfoAppPath = "/.watchtower/userinfo";
+
     /// <summary>
     /// Caps the length of the <c>redirect_uri</c> echoed into the login redirect. A caller controls
     /// <c>X-Forwarded-Uri</c>, and an unbounded value would become an unbounded <c>Location</c> header.
@@ -54,6 +60,8 @@ public static class WatchtowerAccessEndpoints {
             app.MapGet("/api/auth/jwks", () => Results.NotFound());
             app.MapGet(RouteAccessPolicy.CallbackPath, () => Results.NotFound());
             app.MapGet(RouteAccessPolicy.AppLogoutPath, () => Results.NotFound());
+            app.MapGet(UserInfoApiPath, () => Results.NotFound());
+            app.MapGet(UserInfoAppPath, () => Results.NotFound());
             return app;
         }
 
@@ -61,6 +69,7 @@ public static class WatchtowerAccessEndpoints {
         MapJwks(app);
         MapCallback(app);
         MapAppLogout(app);
+        MapUserInfo(app);
         return app;
     }
 
@@ -183,17 +192,24 @@ public static class WatchtowerAccessEndpoints {
     }
 
     /// <summary>
-    /// Sets the convenience headers and the assertion. Caddy strips these names from the inbound request
-    /// before calling us, so what the upstream receives is only ever what is written here.
+    /// Sets the identity headers on a verified request. The signed assertion is <em>always</em> written — it
+    /// is the source of truth (design.md §2.3). Plaintext convenience headers are written only when the route
+    /// opted into a mode, under that mode's ecosystem-standard names, read from the single-source
+    /// <see cref="IdentityForwarding"/> helper so the set can never drift from what Caddy strips and copies.
+    /// Caddy strips every forwardable name from the inbound request before calling us, so what the upstream
+    /// receives is only ever what is written here.
     /// </summary>
     private static void WriteIdentityHeaders(HttpContext http, User user, Route route, AuthTokenSigner signer) {
-        var name = HeaderSafe(user.UserName);
-        if (name is not null) http.Response.Headers[RouteAccessPolicy.UserHeaderName] = name;
-
-        var email = HeaderSafe(user.Email);
-        if (email is not null) http.Response.Headers[RouteAccessPolicy.EmailHeaderName] = email;
-
+        // Source of truth, forwarded for every protected route regardless of mode.
         http.Response.Headers[RouteAccessPolicy.JwtHeaderName] = signer.Mint(user, route.Domain);
+
+        // Plaintext convenience headers: only for a route that asked for them, and only values safe to put
+        // in a header (the email entry is already omitted by the helper when the account has none).
+        foreach (var (headerName, value) in
+                 IdentityForwarding.PlaintextHeaders(route.IdentityHeaderMode, user.UserName, user.Email)) {
+            var safe = HeaderSafe(value);
+            if (safe is not null) http.Response.Headers[headerName] = safe;
+        }
     }
 
     /// <summary>
@@ -307,6 +323,87 @@ public static class WatchtowerAccessEndpoints {
             AuthCookies.Delete(http, AuthSessionService.AccessCookieName, options.CurrentValue.Auth.CookieSecure);
             return Results.Redirect("/");
         });
+    }
+
+    // ── UserInfo (OpenID Connect Core 1.0 §5.3) ────────────────────────────────
+
+    /// <summary>
+    /// The standards-based identity endpoint for rich or on-demand identity (design.md §5.3): the same
+    /// pattern as Cloudflare Access's <c>get-identity</c>, but OIDC-shaped. One handler, two mount points —
+    /// <c>/api/access/userinfo</c> on the auth host (bearer callers) and <c>/.watchtower/userinfo</c> on
+    /// every protected app's own domain (same-origin cookie callers, since Caddy routes <c>/.watchtower/*</c>
+    /// to Watchtower). Anonymous like the rest of this surface: it authenticates the caller itself.
+    /// </summary>
+    private static void MapUserInfo(WebApplication app) {
+        app.MapGet(UserInfoApiPath, UserInfoAsync);
+        app.MapGet(UserInfoAppPath, UserInfoAsync);
+    }
+
+    /// <summary>
+    /// Answers with the caller's identity as OIDC-standard claims, or a 401 when no acceptable credential is
+    /// presented. Two are accepted, tried in this order:
+    /// <list type="number">
+    ///   <item><description>
+    ///     <c>Authorization: Bearer &lt;Watchtower JWT&gt;</c> — the standard UserInfo path, where an app
+    ///     presents the assertion it received. The signature, algorithm, expiry and issuer are all checked
+    ///     (<see cref="AuthTokenSigner.TryValidate"/>).
+    ///   </description></item>
+    ///   <item><description>
+    ///     the <c>__wt_access</c> cookie — the browser same-origin path, resolved to its session by hash.
+    ///   </description></item>
+    /// </list>
+    /// Either way the account is reloaded fresh and refused if it is gone or disabled, so an assertion minted
+    /// minutes before the account was disabled returns no identity now.
+    /// </summary>
+    private static async Task<IResult> UserInfoAsync(
+        HttpContext http, WatchtowerDbContext db, AuthSessionService sessions, AuthTokenSigner signer) {
+        var user = await ResolveUserInfoSubjectAsync(http, db, sessions, signer);
+        if (user is null) {
+            // RFC 6750 / OIDC shape: a bare invalid-token challenge, no detail that could aid enumeration.
+            http.Response.Headers.WWWAuthenticate = "Bearer error=\"invalid_token\"";
+            return Results.Unauthorized();
+        }
+
+        var claims = new System.Text.Json.Nodes.JsonObject {
+            ["sub"] = user.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["preferred_username"] = user.UserName,
+        };
+        if (!string.IsNullOrWhiteSpace(user.Email)) claims["email"] = user.Email;
+        // Real and useful; groups and email_verified are deliberately absent (Phase 2 / not verified).
+        if (user.IsAdmin) claims["roles"] = new System.Text.Json.Nodes.JsonArray(WatchtowerClaims.AdminRole);
+
+        return Results.Content(claims.ToJsonString(), "application/json", Encoding.UTF8);
+    }
+
+    /// <summary>
+    /// Resolves the account behind a UserInfo request from a bearer assertion or the <c>__wt_access</c>
+    /// cookie, or <see langword="null"/> when neither yields a live, enabled account. A bearer header short-
+    /// circuits the cookie: a caller that presented a token but a bad one is refused, not silently fallen
+    /// back on.
+    /// </summary>
+    private static async Task<User?> ResolveUserInfoSubjectAsync(
+        HttpContext http, WatchtowerDbContext db, AuthSessionService sessions, AuthTokenSigner signer) {
+        var bearer = ExtractBearerToken(http.Request.Headers.Authorization.ToString());
+        if (bearer is not null) {
+            if (!signer.TryValidate(bearer, out var userId)) return null;
+            // Reload fresh: the assertion is a five-minute-old statement, but identity is answered as of now.
+            var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, CancellationToken.None);
+            return user is null || user.Disabled ? null : user;
+        }
+
+        // ValidateAnyAsync loads the user and refuses a disabled one, so its result is already fresh.
+        var session = await sessions.ValidateAnyAsync(
+            http.Request.Cookies[AuthSessionService.AccessCookieName], CancellationToken.None);
+        return session?.User;
+    }
+
+    /// <summary>The token from an <c>Authorization: Bearer …</c> header, or <see langword="null"/> when absent.</summary>
+    private static string? ExtractBearerToken(string? authorization) {
+        if (string.IsNullOrEmpty(authorization)) return null;
+        const string prefix = "Bearer ";
+        if (!authorization.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        var token = authorization[prefix.Length..].Trim();
+        return token.Length == 0 ? null : token;
     }
 
     // ── Shared bits ───────────────────────────────────────────────────────────

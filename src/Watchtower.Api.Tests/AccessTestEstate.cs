@@ -22,7 +22,8 @@ internal static class AccessTestEstate {
 
     /// <summary>Adds a stack and a route for <paramref name="domain"/> and returns the route id.</summary>
     public static async Task<int> AddRouteAsync(
-        this WatchtowerApiFactory factory, string domain, AccessMode mode, string? bypassPaths = null) {
+        this WatchtowerApiFactory factory, string domain, AccessMode mode, string? bypassPaths = null,
+        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None) {
         var routeId = 0;
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
@@ -45,6 +46,7 @@ internal static class AccessTestEstate {
                 ServiceName = "web",
                 ContainerPort = 8080,
                 AccessMode = mode,
+                IdentityHeaderMode = identityHeaderMode,
                 BypassPaths = bypassPaths,
             };
             db.Routes.Add(route);

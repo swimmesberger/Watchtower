@@ -127,6 +127,34 @@ public sealed class AuthSessionService(
     public Task<AuthSession?> ValidateAppSessionAsync(string? rawToken, int routeId, CancellationToken ct = default) =>
         ValidateCoreAsync(rawToken, SessionKind.App, routeId, ct);
 
+    /// <summary>
+    /// Resolves a raw cookie token to its live session (with <see cref="AuthSession.User"/> loaded) by hash
+    /// alone — any kind, no route binding — or <see langword="null"/> when the token is unknown, expired, or
+    /// belongs to a disabled account. The same-origin path the UserInfo endpoint uses for the
+    /// <c>__wt_access</c> cookie, where identifying the account is the whole job and there is no route to
+    /// bind against. Deliberately does <em>not</em> renew the sliding window: UserInfo is a read, not a page
+    /// visit, and must not silently extend a session's life.
+    /// </summary>
+    public async Task<AuthSession?> ValidateAnyAsync(string? rawToken, CancellationToken ct = default) {
+        if (string.IsNullOrEmpty(rawToken)) return null;
+
+        var hash = HashToken(rawToken);
+        var session = await db.AuthSessions
+            .Include(s => s.User)
+            .FirstOrDefaultAsync(s => s.TokenHash == hash, ct);
+        if (session is null) return null;
+
+        var now = time.GetUtcNow();
+        if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
+            db.AuthSessions.Remove(session);
+            await db.SaveChangesAsync(ct);
+            return null;
+        }
+
+        // A disabled account keeps its rows but must not authenticate — freshness matters for UserInfo.
+        return session.User is null || session.User.Disabled ? null : session;
+    }
+
     private async Task<AuthSession?> ValidateCoreAsync(
         string? rawToken, SessionKind kind, int? routeId, CancellationToken ct) {
         if (string.IsNullOrEmpty(rawToken)) return null;

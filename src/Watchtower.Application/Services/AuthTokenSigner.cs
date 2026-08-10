@@ -112,6 +112,57 @@ public sealed class AuthTokenSigner : IDisposable {
         }
     }
 
+    /// <summary>Clock skew allowed when enforcing <c>exp</c>/<c>nbf</c> — enough to cover minor drift, no more.</summary>
+    private static readonly TimeSpan ClockSkew = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Verifies an assertion this signer minted and, on success, yields its <c>sub</c> (the
+    /// <see cref="User.Id"/>). The verification is deliberately strict — it is the gate on the UserInfo
+    /// endpoint (docs/central-auth/design.md §5.3): the signature must check out against our public key with
+    /// the algorithm pinned to ES256 (so <c>alg: none</c> and RSA/HMAC-confusion tokens are rejected outright),
+    /// <c>exp</c> is enforced against the host clock, and <c>iss</c> must be ours. The audience is <em>not</em>
+    /// constrained: a token's <c>aud</c> is whichever app it was minted for, and any of ours is acceptable at
+    /// UserInfo, where an app presents an assertion it itself received.
+    /// </summary>
+    /// <returns><see langword="true"/> and the subject id when valid; otherwise <see langword="false"/>.</returns>
+    public bool TryValidate(string? token, out int userId) {
+        userId = 0;
+        if (string.IsNullOrWhiteSpace(token)) return false;
+
+        var material = Material;
+        var parameters = new TokenValidationParameters {
+            ValidIssuer = Issuer,
+            ValidateIssuer = true,
+            // The aud binds a token to one app; at UserInfo any of ours is fine, so we do not constrain it.
+            ValidateAudience = false,
+            IssuerSigningKey = material.ValidationKey,
+            ValidateIssuerSigningKey = true,
+            // Pin the algorithm: the single line that closes off `alg: none` and key-confusion attacks.
+            ValidAlgorithms = [SecurityAlgorithms.EcdsaSha256],
+            RequireSignedTokens = true,
+            RequireExpirationTime = true,
+            // Enforce exp/nbf against the host clock (movable in tests) rather than the library's DateTime.UtcNow.
+            LifetimeValidator = (notBefore, expires, _, _) => {
+                if (expires is null) return false;
+                var now = _time.GetUtcNow().UtcDateTime;
+                if (expires.Value <= now - ClockSkew) return false;
+                return notBefore is not { } nbf || nbf <= now + ClockSkew;
+            },
+        };
+
+        TokenValidationResult result;
+        // ECDsa instance members are not thread-safe; serialise verification the same way signing is.
+        lock (_gate) {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            result = material.Handler.ValidateTokenAsync(token, parameters).GetAwaiter().GetResult();
+        }
+
+        if (!result.IsValid) return false;
+
+        var jwt = (JsonWebToken)result.SecurityToken;
+        return int.TryParse(jwt.Subject, NumberStyles.Integer, CultureInfo.InvariantCulture, out userId);
+    }
+
     /// <summary>Loads (or generates and persists) the key pair on first use.</summary>
     private SigningMaterial Material {
         get {
@@ -145,12 +196,23 @@ public sealed class AuthTokenSigner : IDisposable {
     }
 
     /// <summary>The loaded key pair and everything derived from it.</summary>
-    private sealed class SigningMaterial(ECDsa key, string keyId, string jwks) : IDisposable {
+    private sealed class SigningMaterial(ECDsa key, ECDsa publicKey, string keyId, string jwks) : IDisposable {
         public JsonWebTokenHandler Handler { get; } = new();
         public SigningCredentials Credentials { get; } =
             new(new ECDsaSecurityKey(key) { KeyId = keyId }, SecurityAlgorithms.EcdsaSha256);
+
+        /// <summary>
+        /// The public half as its own key, used to verify assertions at the UserInfo endpoint. A separate
+        /// instance from the private signing key so validation never hands a verifier the private scalar.
+        /// </summary>
+        public SecurityKey ValidationKey { get; } = new ECDsaSecurityKey(publicKey) { KeyId = keyId };
         public string KeyId { get; } = keyId;
         public string Jwks { get; } = jwks;
+
+        public void Dispose() {
+            key.Dispose();
+            publicKey.Dispose();
+        }
 
         /// <summary>
         /// Reads the PEM at <paramref name="path"/>, generating and persisting one if it is absent.
@@ -159,6 +221,7 @@ public sealed class AuthTokenSigner : IDisposable {
         /// </summary>
         public static SigningMaterial Load(string path, ILogger logger) {
             var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            ECDsa? publicOnly = null;
             try {
                 if (!TryPersistNew(path, key, logger)) {
                     key.Dispose();
@@ -169,14 +232,16 @@ public sealed class AuthTokenSigner : IDisposable {
 
                 // The JWKS must never carry `d`: JsonWebKeyConverter emits the private parameters when the
                 // key it is handed has them, so the public half is re-exported into its own instance first.
-                using var publicOnly = ECDsa.Create();
+                // That same public-only key is kept for signature verification (see ValidationKey).
+                publicOnly = ECDsa.Create();
                 publicOnly.ImportParameters(key.ExportParameters(includePrivateParameters: false));
                 var jwk = JsonWebKeyConverter.ConvertFromECDsaSecurityKey(new ECDsaSecurityKey(publicOnly));
                 var keyId = Base64UrlEncoder.Encode(jwk.ComputeJwkThumbprint());
 
-                return new SigningMaterial(key, keyId, RenderJwks(jwk, keyId));
+                return new SigningMaterial(key, publicOnly, keyId, RenderJwks(jwk, keyId));
             } catch {
                 key.Dispose();
+                publicOnly?.Dispose();
                 throw;
             }
         }
@@ -229,7 +294,5 @@ public sealed class AuthTokenSigner : IDisposable {
                     ["alg"] = SecurityAlgorithms.EcdsaSha256,
                 }),
             }.ToJsonString();
-
-        public void Dispose() => key.Dispose();
     }
 }

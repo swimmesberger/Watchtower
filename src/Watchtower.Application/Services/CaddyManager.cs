@@ -327,7 +327,9 @@ public sealed class CaddyManager : IHostedService, IDisposable {
                 r.TlsEnabled,
                 // Customer-owned domains use on-demand TLS; managed subdomains are issued proactively.
                 OnDemand: r.Kind == DomainKind.Custom,
-                Protected: auth.Enabled && r.AccessMode != AccessMode.Public))
+                Protected: auth.Enabled && r.AccessMode != AccessMode.Public,
+                // Only read for a protected site; the route's mode decides which plaintext headers it forwards.
+                Mode: r.IdentityHeaderMode))
             .ToList();
 
         if (!auth.Enabled || string.IsNullOrWhiteSpace(auth.Host)) return sites;

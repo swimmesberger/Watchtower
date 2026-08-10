@@ -33,9 +33,11 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Restricted, "/webhooks/\n/healthz", [alice, bob]));
+                new SetAccess.Command(
+                    routeId, AccessMode.Restricted, IdentityHeaderMode.Remote, "/webhooks/\n/healthz", [alice, bob]));
             Assert.True(result.IsSuccess, Describe(result));
             Assert.Equal(AccessMode.Restricted, result.Value.Mode);
+            Assert.Equal(IdentityHeaderMode.Remote, result.Value.IdentityHeaderMode);
             Assert.Equal([alice, bob], result.Value.GrantedUserIds);
         }
 
@@ -44,6 +46,8 @@ public sealed class ProxyAccessModuleTests {
                 scope.ServiceProvider, new GetAccess.Query(routeId));
             Assert.True(result.IsSuccess, Describe(result));
             Assert.Equal(AccessMode.Restricted, result.Value.Mode);
+            // The identity-header mode round-trips through the store the same way the access mode does.
+            Assert.Equal(IdentityHeaderMode.Remote, result.Value.IdentityHeaderMode);
             Assert.Equal("/webhooks/\n/healthz", result.Value.BypassPaths);
             Assert.Equal([alice, bob], result.Value.GrantedUserIds);
         }
@@ -59,7 +63,7 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice]));
+                new SetAccess.Command(routeId, AccessMode.Restricted, IdentityHeaderMode.None, null, [alice]));
             Assert.True(result.IsSuccess, Describe(result));
         }
 
@@ -85,14 +89,14 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice]));
+                new SetAccess.Command(routeId, AccessMode.Restricted, IdentityHeaderMode.None, null, [alice]));
             Assert.True(result.IsSuccess, Describe(result));
         }
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Authenticated, null, [alice]));
+                new SetAccess.Command(routeId, AccessMode.Authenticated, IdentityHeaderMode.None, null, [alice]));
             Assert.True(result.IsSuccess, Describe(result));
             // Grants are meaningless outside Restricted, so the response reports none...
             Assert.Empty(result.Value.GrantedUserIds);
@@ -114,7 +118,7 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Authenticated, "/webhooks/", []));
+                new SetAccess.Command(routeId, AccessMode.Authenticated, IdentityHeaderMode.None, "/webhooks/", []));
             Assert.True(result.IsSuccess, Describe(result));
         }
 
@@ -122,7 +126,7 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Public, "/webhooks/", []));
+                new SetAccess.Command(routeId, AccessMode.Public, IdentityHeaderMode.None, "/webhooks/", []));
             Assert.True(result.IsSuccess, Describe(result));
             Assert.Equal(AccessMode.Public, result.Value.Mode);
             Assert.Null(result.Value.BypassPaths);
@@ -144,7 +148,7 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Authenticated, "/ok\nnot-a-path", []));
+                new SetAccess.Command(routeId, AccessMode.Authenticated, IdentityHeaderMode.None, "/ok\nnot-a-path", []));
 
             Assert.False(result.IsSuccess);
             Assert.Equal(ErrorKind.Validation, result.Error.Kind);
@@ -165,7 +169,7 @@ public sealed class ProxyAccessModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
                 scope.ServiceProvider,
-                new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice, 4040]));
+                new SetAccess.Command(routeId, AccessMode.Restricted, IdentityHeaderMode.None, null, [alice, 4040]));
 
             Assert.False(result.IsSuccess);
             Assert.Equal(ErrorKind.Validation, result.Error.Kind);
@@ -178,6 +182,26 @@ public sealed class ProxyAccessModuleTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.RouteAccessGrants.AnyAsync(g => g.RouteId == routeId, Ct));
         }
+        Assert.Empty(await AuditKindsAsync(host));
+    }
+
+    [Fact]
+    public async Task SetAccess_RejectsAnUndefinedIdentityHeaderMode() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                // A value outside the enum must not be persisted and later read back as something the
+                // forwarding helper cannot map.
+                new SetAccess.Command(routeId, AccessMode.Authenticated, (IdentityHeaderMode)99, null, []));
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+        }
+
+        await AssertUnchangedSeededPolicyAsync(host, routeId);
         Assert.Empty(await AuditKindsAsync(host));
     }
 
@@ -213,7 +237,7 @@ public sealed class ProxyAccessModuleTests {
         await using var scope = host.Services.CreateAsyncScope();
         var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
             scope.ServiceProvider,
-            new SetAccess.Command(404, AccessMode.Authenticated, null, []));
+            new SetAccess.Command(404, AccessMode.Authenticated, IdentityHeaderMode.None, null, []));
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorKind.NotFound, result.Error.Kind);
@@ -234,7 +258,7 @@ public sealed class ProxyAccessModuleTests {
             "get" => await DeniedKindAsync<GetAccess.Query, GetAccess.Response>(
                 sp, new GetAccess.Query(routeId)),
             "set" => await DeniedKindAsync<SetAccess.Command, SetAccess.Response>(
-                sp, new SetAccess.Command(routeId, AccessMode.Restricted, null, [])),
+                sp, new SetAccess.Command(routeId, AccessMode.Restricted, IdentityHeaderMode.None, null, [])),
             _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null),
         };
 
@@ -262,7 +286,8 @@ public sealed class ProxyAccessModuleTests {
     private static async Task SetGrantsAsync(AuthTestHost host, int routeId, IReadOnlyList<int> userIds) {
         await using var scope = host.Services.CreateAsyncScope();
         var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
-            scope.ServiceProvider, new SetAccess.Command(routeId, AccessMode.Restricted, null, userIds));
+            scope.ServiceProvider,
+            new SetAccess.Command(routeId, AccessMode.Restricted, IdentityHeaderMode.None, null, userIds));
         Assert.True(result.IsSuccess, Describe(result));
     }
 

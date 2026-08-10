@@ -440,9 +440,20 @@ export interface UpdateRouteRequest {
  */
 export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
 
+/**
+ * Which plaintext identity headers reach a protected upstream (docs/central-auth/design.md §2.3). The
+ * signed `X-Watchtower-Jwt` assertion is always forwarded and is the source of truth; these opt a route
+ * into ecosystem-standard plaintext headers for apps that read a username header instead. `None` (the
+ * default) forwards the JWT only; `Remote` uses Authelia/Traefik `Remote-*`; `AuthRequest` uses
+ * oauth2-proxy `X-Auth-Request-*`. Mirrors the backend `IdentityHeaderMode` enum, serialized by name.
+ */
+export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest'
+
 /** The shape `proxy.getAccess` returns and `proxy.setAccess` both accepts and returns. */
 export interface RouteAccess {
   mode: AccessMode
+  /** Which plaintext identity headers reach the upstream; `None` forwards the signed JWT only. */
+  identityHeaderMode: IdentityHeaderMode
   /** Newline-separated request-path prefixes exempt from access control; null when none. */
   bypassPaths: string | null
   /** Ids of the users granted through the route; only meaningful for `Restricted`. */

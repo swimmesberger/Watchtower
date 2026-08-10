@@ -39,12 +39,56 @@ public sealed class RouteAccessModeTests {
             var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, ct);
             Assert.Equal(AccessMode.Public, route.AccessMode);
             Assert.Null(route.BypassPaths);
+            // Identity forwarding defaults to JWT-only: no plaintext identity header unless opted in.
+            Assert.Equal(IdentityHeaderMode.None, route.IdentityHeaderMode);
 
             // Enums are persisted by name, so the column stays readable in the SQLite file.
             var stored = await db.Database
                 .SqlQuery<string>($"SELECT access_mode AS Value FROM routes WHERE id = {routeId}")
                 .SingleAsync(ct);
             Assert.Equal(nameof(AccessMode.Public), stored);
+
+            var storedMode = await db.Database
+                .SqlQuery<string>($"SELECT identity_header_mode AS Value FROM routes WHERE id = {routeId}")
+                .SingleAsync(ct);
+            Assert.Equal(nameof(IdentityHeaderMode.None), storedMode);
+        }
+    }
+
+    [Fact]
+    public async Task RouteWithAnIdentityHeaderMode_RoundTripsItByName() {
+        using var host = AuthTestHost.Start();
+        var ct = TestContext.Current.CancellationToken;
+
+        int routeId;
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var stack = NewStack("authelia");
+            db.Stacks.Add(stack);
+            await db.SaveChangesAsync(ct);
+
+            var route = new Route {
+                StackId = stack.Id,
+                Domain = "authelia.example.invalid",
+                ServiceName = "web",
+                ContainerPort = 3000,
+                AccessMode = AccessMode.Authenticated,
+                IdentityHeaderMode = IdentityHeaderMode.Remote,
+            };
+            db.Routes.Add(route);
+            await db.SaveChangesAsync(ct);
+            routeId = route.Id;
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, ct);
+            Assert.Equal(IdentityHeaderMode.Remote, route.IdentityHeaderMode);
+
+            var stored = await db.Database
+                .SqlQuery<string>($"SELECT identity_header_mode AS Value FROM routes WHERE id = {routeId}")
+                .SingleAsync(ct);
+            Assert.Equal(nameof(IdentityHeaderMode.Remote), stored);
         }
     }
 
@@ -109,6 +153,9 @@ public sealed class RouteAccessModeTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Domain == "legacy.example.invalid", ct);
             Assert.Equal(AccessMode.Public, route.AccessMode);
+            // The identity_header_mode column the AddRouteIdentityHeaderMode migration adds is likewise
+            // back-filled by SQLite's "None" default — an empty string would not read back as the enum.
+            Assert.Equal(IdentityHeaderMode.None, route.IdentityHeaderMode);
         }
     }
 

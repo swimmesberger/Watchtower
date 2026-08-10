@@ -1886,6 +1886,13 @@
               "Restricted"
             ]
           },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest"
+            ]
+          },
           "bypassPaths": {
             "type": [
               "string",
@@ -1901,6 +1908,7 @@
         },
         "required": [
           "mode",
+          "identityHeaderMode",
           "bypassPaths",
           "grantedUserIds"
         ]
@@ -2121,6 +2129,13 @@
               "Restricted"
             ]
           },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest"
+            ]
+          },
           "bypassPaths": {
             "type": [
               "string",
@@ -2137,6 +2152,7 @@
         "required": [
           "routeId",
           "mode",
+          "identityHeaderMode",
           "bypassPaths",
           "grantedUserIds"
         ]
@@ -2149,6 +2165,13 @@
               "Public",
               "Authenticated",
               "Restricted"
+            ]
+          },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest"
             ]
           },
           "bypassPaths": {
@@ -2166,6 +2189,7 @@
         },
         "required": [
           "mode",
+          "identityHeaderMode",
           "bypassPaths",
           "grantedUserIds"
         ]

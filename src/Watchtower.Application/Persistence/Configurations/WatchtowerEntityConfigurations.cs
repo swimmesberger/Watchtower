@@ -161,6 +161,8 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
         b.Property(x => x.Kind).HasConversion<string>();
         // Stored as the enum name (e.g. "Public"); "Public" is the default so existing routes keep today's behaviour.
         b.Property(x => x.AccessMode).HasConversion<string>();
+        // Stored as the enum name (e.g. "None"); "None" is the default so existing routes forward JWT only.
+        b.Property(x => x.IdentityHeaderMode).HasConversion<string>();
         b.HasIndex(x => x.Domain).IsUnique();
         b.HasIndex(x => x.StackId);
         b.HasOne(x => x.Stack)

@@ -31,6 +31,21 @@ public enum AccessMode {
 }
 
 /// <summary>
+/// Which plaintext identity headers the proxy forwards to a protected upstream (docs/central-auth/design.md
+/// §2.3). The signed <c>X-Watchtower-Jwt</c> assertion is <em>always</em> forwarded and is the source of
+/// truth; plaintext headers are a convenience for off-the-shelf apps that cannot validate a JWT, so they are
+/// opt-in per route and use ecosystem-standard names rather than a bespoke one no app recognises.
+/// </summary>
+public enum IdentityHeaderMode {
+    /// <summary>JWT only (the default): no plaintext identity header is forwarded. The safest choice.</summary>
+    None,
+    /// <summary>Authelia/Traefik <c>Remote-User</c>/<c>Remote-Name</c>/<c>Remote-Email</c> names.</summary>
+    Remote,
+    /// <summary>oauth2-proxy <c>X-Auth-Request-User</c>/<c>-Preferred-Username</c>/<c>-Email</c> names.</summary>
+    AuthRequest,
+}
+
+/// <summary>
 /// A public domain that the built-in reverse proxy (Caddy) terminates TLS for and forwards to a
 /// service inside a <see cref="Stack"/>. The set of routes is the authoritative source for the
 /// generated proxy configuration.
@@ -58,6 +73,14 @@ public sealed class Route {
     /// behaviour unchanged; the other modes make the proxy verify each request with Watchtower first.
     /// </summary>
     public AccessMode AccessMode { get; set; } = AccessMode.Public;
+
+    /// <summary>
+    /// Which plaintext identity headers reach the upstream on a verified request.
+    /// <see cref="IdentityHeaderMode.None"/> (the default) forwards only the signed <c>X-Watchtower-Jwt</c>
+    /// assertion; the other modes additionally forward ecosystem-standard plaintext headers for apps that
+    /// read a username header instead of validating the JWT.
+    /// </summary>
+    public IdentityHeaderMode IdentityHeaderMode { get; set; } = IdentityHeaderMode.None;
 
     /// <summary>
     /// Request-path prefixes exempt from access control even when the route is protected, one per

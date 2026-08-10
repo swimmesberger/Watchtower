@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -137,6 +138,106 @@ public sealed class AuthTokenSignerTests {
         // key by thumbprint derives it exactly this way, and a mismatch would break that pin silently.
         var published = JsonWebKeySet.Create(signer.JwksDocument).Keys.Single();
         Assert.Equal(signer.KeyId, Base64UrlEncoder.Encode(published.ComputeJwkThumbprint()));
+    }
+
+    // ── TryValidate: the gate on the UserInfo endpoint (design.md §5.3) ─────────
+
+    [Fact]
+    public void TryValidate_AcceptsAFreshTokenAndYieldsTheSubject() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), AppDomain);
+
+        Assert.True(signer.TryValidate(token, out var userId));
+        Assert.Equal(7, userId);
+    }
+
+    [Fact]
+    public void TryValidate_RejectsAnExpiredToken() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), AppDomain);
+        Assert.True(signer.TryValidate(token, out _));
+
+        // Past the five-minute window (and past the 30 s skew): an assertion about one request is not a
+        // credential the caller can hold on to and present later.
+        host.Time.Advance(TimeSpan.FromMinutes(30));
+        Assert.False(signer.TryValidate(token, out _));
+    }
+
+    [Fact]
+    public void TryValidate_RejectsAWrongIssuer() {
+        using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "issuer-a.example.invalid"));
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+        var token = signer.Mint(User("alice"), AppDomain);
+
+        // Same signing key (the restart shares the data directory), but the issuer we now vouch for has
+        // changed — a token stamped by the old issuer must not validate.
+        using var restarted = host.Restart(("Watchtower:Auth:Host", "issuer-b.example.invalid"));
+        var reissued = restarted.Services.GetRequiredService<AuthTokenSigner>();
+
+        Assert.False(reissued.TryValidate(token, out _));
+    }
+
+    [Fact]
+    public void TryValidate_RejectsAnUnsignedNoneToken() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var exp = host.Time.Now.AddMinutes(5).ToUnixTimeSeconds();
+        var header = Base64UrlEncoder.Encode("""{"alg":"none","typ":"JWT"}""");
+        var payload = Base64UrlEncoder.Encode(
+            $$"""{"iss":"{{AuthTokenSigner.DefaultIssuer}}","sub":"7","exp":{{exp}}}""");
+
+        // The classic downgrade: an attacker strips the signature and sets alg to none. Pinning ES256 (and
+        // requiring a signature) rejects it outright.
+        Assert.False(signer.TryValidate($"{header}.{payload}.", out _));
+    }
+
+    [Fact]
+    public void TryValidate_RejectsAnAlgorithmConfusionToken() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        // A well-formed HS256 token: the algorithm pin means a symmetric-signed token is never even a
+        // candidate, whatever key it claims.
+        using var secret = new HMACSHA256(RandomNumberGenerator.GetBytes(32));
+        var hs256 = new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor {
+            Issuer = AuthTokenSigner.DefaultIssuer,
+            Claims = new Dictionary<string, object> { ["sub"] = "7" },
+            Expires = host.Time.Now.AddMinutes(5).UtcDateTime,
+            SigningCredentials = new SigningCredentials(
+                new SymmetricSecurityKey(secret.Key), SecurityAlgorithms.HmacSha256),
+        });
+
+        Assert.False(signer.TryValidate(hs256, out _));
+    }
+
+    [Fact]
+    public void TryValidate_RejectsATamperedSignature() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), AppDomain);
+        // Flip the last character of the signature segment; the ES256 verification then fails.
+        var tampered = token[..^1] + (token[^1] == 'A' ? 'B' : 'A');
+
+        Assert.False(signer.TryValidate(tampered, out _));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not-a-jwt")]
+    [InlineData("a.b.c")]
+    public void TryValidate_RejectsMalformedInput(string token) {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        Assert.False(signer.TryValidate(token, out var userId));
+        Assert.Equal(0, userId);
     }
 
     /// <summary>

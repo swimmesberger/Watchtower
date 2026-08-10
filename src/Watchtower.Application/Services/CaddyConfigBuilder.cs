@@ -1,4 +1,5 @@
 using System.Text;
+using Watchtower.Application.Entities;
 
 namespace Watchtower.Application.Services;
 
@@ -8,7 +9,8 @@ namespace Watchtower.Application.Services;
 /// <paramref name="OnDemand"/> requests a certificate lazily on first request (for customer-owned
 /// custom domains), gated by the ask endpoint in <see cref="CaddyGlobals"/>.
 /// <paramref name="Protected"/> puts the site behind Watchtower's access control
-/// (docs/central-auth/design.md §6).
+/// (docs/central-auth/design.md §6). <paramref name="Mode"/> selects which plaintext identity headers the
+/// upstream receives on a verified request; it is only consulted for a protected site.
 /// </summary>
 public sealed record CaddySite(
     string Domain,
@@ -16,7 +18,8 @@ public sealed record CaddySite(
     int UpstreamPort,
     bool Tls,
     bool OnDemand = false,
-    bool Protected = false);
+    bool Protected = false,
+    IdentityHeaderMode Mode = IdentityHeaderMode.None);
 
 /// <summary>
 /// Global Caddy options that apply to every site. When <paramref name="AskUrl"/> is set, on-demand TLS
@@ -81,10 +84,14 @@ public static class CaddyConfigBuilder {
     ///     matched first because those paths must work while the visitor is still anonymous.
     ///   </description></item>
     ///   <item><description>
-    ///     The identity headers are stripped from the inbound request <em>before</em> <c>forward_auth</c>
-    ///     adds the verified ones. Emitting <c>copy_headers</c> without the matching
-    ///     <c>request_header -…</c> lines would let any client assert whatever identity it liked, which is
-    ///     the whole reason §2.3 treats these headers as a trust boundary.
+    ///     Every forwardable identity name is stripped from the inbound request <em>before</em>
+    ///     <c>forward_auth</c> adds the verified ones — the full <see cref="IdentityForwarding.AllForwardableHeaderNames"/>
+    ///     union, regardless of this route's mode, so a JWT-only route still strips <c>Remote-User</c> and
+    ///     the rest and nothing a client sends under any of those names survives. <c>copy_headers</c> then
+    ///     copies back only what this route's mode forwards (the JWT always, plus that mode's plaintext
+    ///     names), which is by construction a subset of what was stripped. Emitting a <c>copy_headers</c>
+    ///     name without the matching <c>request_header -…</c> line would let any client assert that identity,
+    ///     which is the whole reason §2.3 treats these headers as a trust boundary.
     ///   </description></item>
     /// </list>
     /// </summary>
@@ -93,11 +100,13 @@ public static class CaddyConfigBuilder {
         sb.Append($"\t\treverse_proxy {globals.SelfUpstream}\n");
         sb.Append("\t}\n");
         sb.Append("\thandle {\n");
-        foreach (var header in RouteAccessPolicy.IdentityHeaderNames)
+        // Strip the whole union, not just this mode's copy set: defense in depth means a client cannot
+        // smuggle in a header that some *other* mode would have honoured.
+        foreach (var header in IdentityForwarding.AllForwardableHeaderNames)
             sb.Append($"\t\trequest_header -{header}\n");
         sb.Append($"\t\tforward_auth {globals.SelfUpstream} {{\n");
         sb.Append($"\t\t\turi {RouteAccessPolicy.VerifyPath}\n");
-        sb.Append($"\t\t\tcopy_headers {string.Join(' ', RouteAccessPolicy.IdentityHeaderNames)}\n");
+        sb.Append($"\t\t\tcopy_headers {string.Join(' ', IdentityForwarding.CopyHeaderNames(site.Mode))}\n");
         sb.Append("\t\t}\n");
         sb.Append($"\t\treverse_proxy {site.UpstreamHost}:{site.UpstreamPort}\n");
         sb.Append("\t}\n");

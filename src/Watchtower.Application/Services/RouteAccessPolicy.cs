@@ -30,21 +30,12 @@ public static class RouteAccessPolicy {
     /// <summary>The <c>forward_auth</c> target Caddy consults for every request to a protected app.</summary>
     public const string VerifyPath = "/api/access/verify";
 
-    /// <summary>Verified user name forwarded to the upstream.</summary>
-    public const string UserHeaderName = "X-Watchtower-User";
-
-    /// <summary>Verified email forwarded to the upstream, when the account has one.</summary>
-    public const string EmailHeaderName = "X-Watchtower-Email";
-
-    /// <summary>The ES256 assertion forwarded to the upstream (<see cref="AuthTokenSigner"/>).</summary>
-    public const string JwtHeaderName = "X-Watchtower-Jwt";
-
     /// <summary>
-    /// Every header the verify endpoint may set. The generated Caddy config strips exactly this list from
-    /// the inbound request and copies exactly this list back out, so both sides read it from here — a name
-    /// that were copied but not stripped would be client-spoofable (design.md §2.3).
+    /// The ES256 assertion forwarded to the upstream (<see cref="AuthTokenSigner"/>). Always emitted for a
+    /// protected route — it is the source of truth for identity forwarding, not a mode-gated convenience.
+    /// The plaintext-header vocabulary and the defense-in-depth strip set live in <see cref="IdentityForwarding"/>.
     /// </summary>
-    public static readonly string[] IdentityHeaderNames = [UserHeaderName, EmailHeaderName, JwtHeaderName];
+    public const string JwtHeaderName = "X-Watchtower-Jwt";
 
     /// <summary>
     /// Characters that must never appear in a forwarded host. A value carrying any of them is something

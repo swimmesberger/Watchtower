@@ -24,7 +24,11 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 public sealed class GetAccess(WatchtowerDbContext db)
     : IHandler<GetAccess.Query, Result<GetAccess.Response>> {
     public sealed record Query(int RouteId);
-    public sealed record Response(AccessMode Mode, string? BypassPaths, IReadOnlyList<int> GrantedUserIds);
+    public sealed record Response(
+        AccessMode Mode,
+        IdentityHeaderMode IdentityHeaderMode,
+        string? BypassPaths,
+        IReadOnlyList<int> GrantedUserIds);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var route = await db.Routes.AsNoTracking()
@@ -38,6 +42,6 @@ public sealed class GetAccess(WatchtowerDbContext db)
             .OrderBy(id => id)
             .ToListAsync(ct);
 
-        return new Response(route.AccessMode, route.BypassPaths, grantedUserIds);
+        return new Response(route.AccessMode, route.IdentityHeaderMode, route.BypassPaths, grantedUserIds);
     }
 }

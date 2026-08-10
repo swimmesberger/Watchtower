@@ -222,10 +222,34 @@ public sealed class AccessVerifyTests {
     }
 
     [Fact]
-    public async Task RestrictedWithAGrant_PassesWithIdentity() {
+    public async Task JwtOnlyMode_ForwardsTheAssertion_ButNoPlaintextHeader() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
-        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Restricted);
+        // The default: identity forwarding is JWT-only unless the route opts a plaintext mode in.
+        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated);
+        var userId = await factory.AddUserAsync("alice", "alice@example.invalid");
+        var token = await factory.AppSessionAsync(userId, routeId);
+
+        var response = await Send(client, Verify(AppDomain, "/", cookie: AccessCookie(token)));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // The signed assertion is always present — it is the source of truth.
+        Assert.True(response.Headers.Contains(RouteAccessPolicy.JwtHeaderName));
+        // ...but not a single plaintext identity header, under any ecosystem's names.
+        foreach (var header in new[] {
+            IdentityForwarding.RemoteUser, IdentityForwarding.RemoteName, IdentityForwarding.RemoteEmail,
+            IdentityForwarding.AuthRequestUser, IdentityForwarding.AuthRequestPreferredUsername,
+            IdentityForwarding.AuthRequestEmail,
+        })
+            Assert.False(response.Headers.Contains(header), $"{header} must not be set in JWT-only mode.");
+    }
+
+    [Fact]
+    public async Task RemoteMode_ForwardsTheAutheliaTraefikHeaders() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Restricted, identityHeaderMode: IdentityHeaderMode.Remote);
         var userId = await factory.AddUserAsync("alice", "alice@example.invalid");
         await factory.GrantAsync(routeId, userId);
         var token = await factory.AppSessionAsync(userId, routeId);
@@ -233,43 +257,63 @@ public sealed class AccessVerifyTests {
         var response = await Send(client, Verify(AppDomain, "/", cookie: AccessCookie(token)));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("alice", Header(response, RouteAccessPolicy.UserHeaderName));
-        Assert.Equal("alice@example.invalid", Header(response, RouteAccessPolicy.EmailHeaderName));
+        Assert.True(response.Headers.Contains(RouteAccessPolicy.JwtHeaderName));
+        Assert.Equal("alice", Header(response, IdentityForwarding.RemoteUser));
+        Assert.Equal("alice", Header(response, IdentityForwarding.RemoteName));
+        Assert.Equal("alice@example.invalid", Header(response, IdentityForwarding.RemoteEmail));
+    }
+
+    [Fact]
+    public async Task AuthRequestMode_ForwardsTheOauth2ProxyHeaders() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Authenticated, identityHeaderMode: IdentityHeaderMode.AuthRequest);
+        var userId = await factory.AddUserAsync("alice", "alice@example.invalid");
+        var token = await factory.AppSessionAsync(userId, routeId);
+
+        var response = await Send(client, Verify(AppDomain, "/", cookie: AccessCookie(token)));
+
+        Assert.Equal("alice", Header(response, IdentityForwarding.AuthRequestUser));
+        Assert.Equal("alice", Header(response, IdentityForwarding.AuthRequestPreferredUsername));
+        Assert.Equal("alice@example.invalid", Header(response, IdentityForwarding.AuthRequestEmail));
     }
 
     [Fact]
     public async Task AccountWithoutAnEmail_OmitsTheHeaderRatherThanSendingItEmpty() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
-        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated);
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Authenticated, identityHeaderMode: IdentityHeaderMode.Remote);
         var userId = await factory.AddUserAsync("alice");
         var token = await factory.AppSessionAsync(userId, routeId);
 
         var response = await Send(client, Verify(AppDomain, "/", cookie: AccessCookie(token)));
 
-        Assert.Equal("alice", Header(response, RouteAccessPolicy.UserHeaderName));
-        Assert.False(response.Headers.Contains(RouteAccessPolicy.EmailHeaderName));
+        Assert.Equal("alice", Header(response, IdentityForwarding.RemoteUser));
+        Assert.False(response.Headers.Contains(IdentityForwarding.RemoteEmail));
     }
 
     [Fact]
     public async Task SmuggledIdentityHeaders_AreReplacedByTheVerifiedOnes() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
-        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated);
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Authenticated, identityHeaderMode: IdentityHeaderMode.Remote);
         var userId = await factory.AddUserAsync("alice", "alice@example.invalid");
         var token = await factory.AppSessionAsync(userId, routeId);
 
         var request = Verify(AppDomain, "/", cookie: AccessCookie(token));
-        request.Headers.Add(RouteAccessPolicy.UserHeaderName, "root");
-        request.Headers.Add(RouteAccessPolicy.EmailHeaderName, "root@example.invalid");
+        request.Headers.Add(IdentityForwarding.RemoteUser, "root");
+        request.Headers.Add(IdentityForwarding.RemoteEmail, "root@example.invalid");
         request.Headers.Add(RouteAccessPolicy.JwtHeaderName, "forged");
 
         var response = await Send(client, request);
 
         // The generated Caddy config strips these before we ever see them; this asserts the second half of
         // the same property — what we answer with is derived from the session, never echoed from the request.
-        Assert.Equal("alice", Header(response, RouteAccessPolicy.UserHeaderName));
-        Assert.Equal("alice@example.invalid", Header(response, RouteAccessPolicy.EmailHeaderName));
+        Assert.Equal("alice", Header(response, IdentityForwarding.RemoteUser));
+        Assert.Equal("alice@example.invalid", Header(response, IdentityForwarding.RemoteEmail));
         Assert.NotEqual("forged", Header(response, RouteAccessPolicy.JwtHeaderName));
     }
 
@@ -342,7 +386,9 @@ public sealed class AccessVerifyTests {
         Assert.Single(response.Headers.GetValues(name));
 
     private static void AssertNoIdentityHeaders(HttpResponseMessage response) {
-        foreach (var header in RouteAccessPolicy.IdentityHeaderNames)
+        Assert.False(response.Headers.Contains(RouteAccessPolicy.JwtHeaderName),
+            $"{RouteAccessPolicy.JwtHeaderName} must not be set here.");
+        foreach (var header in IdentityForwarding.AllForwardableHeaderNames)
             Assert.False(response.Headers.Contains(header), $"{header} must not be set here.");
     }
 }

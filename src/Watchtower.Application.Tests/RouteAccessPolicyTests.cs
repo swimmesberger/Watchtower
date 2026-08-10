@@ -1,3 +1,4 @@
+using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
 using Xunit;
 
@@ -122,12 +123,35 @@ public sealed class RouteAccessPolicyTests {
     public void RedirectUri_RejectsAnythingElse(string? candidate) =>
         Assert.Null(RouteAccessPolicy.ParseAppRedirectUri(candidate));
 
+    [Theory]
+    [InlineData(IdentityHeaderMode.None)]
+    [InlineData(IdentityHeaderMode.Remote)]
+    [InlineData(IdentityHeaderMode.AuthRequest)]
+    public void EveryCopiedHeader_IsAlsoStripped(IdentityHeaderMode mode) {
+        // The generated Caddy config strips the full union and copies a per-mode subset. A name copied but
+        // not stripped would be client-spoofable, which is the failure mode §2.3 exists to prevent — so the
+        // copy set for every mode must be contained in the strip set.
+        var strip = IdentityForwarding.AllForwardableHeaderNames;
+        foreach (var copied in IdentityForwarding.CopyHeaderNames(mode))
+            Assert.Contains(copied, strip);
+    }
+
     [Fact]
-    public void StrippedAndCopiedHeaders_AreTheSameList() {
-        // The generated Caddy config strips this list and copies this list. A name copied but not stripped
-        // would be client-spoofable, which is the failure mode §2.3 exists to prevent.
-        Assert.Equal(
-            [RouteAccessPolicy.UserHeaderName, RouteAccessPolicy.EmailHeaderName, RouteAccessPolicy.JwtHeaderName],
-            RouteAccessPolicy.IdentityHeaderNames);
+    public void TheJwtAssertion_IsCopiedInEveryMode() {
+        // The signed assertion is the source of truth, not a mode-gated convenience: it is forwarded even
+        // when no plaintext header is (mode None).
+        foreach (var mode in Enum.GetValues<IdentityHeaderMode>())
+            Assert.Contains(RouteAccessPolicy.JwtHeaderName, IdentityForwarding.CopyHeaderNames(mode));
+    }
+
+    [Fact]
+    public void StripSet_IsTheUnionOfEveryModesCopySet() {
+        // Defense in depth: a JWT-only route still strips the names some other mode would honour, so nothing
+        // a client sends under any forwardable name can survive to the upstream.
+        var union = Enum.GetValues<IdentityHeaderMode>()
+            .SelectMany(IdentityForwarding.CopyHeaderNames)
+            .Distinct();
+        foreach (var name in union)
+            Assert.Contains(name, IdentityForwarding.AllForwardableHeaderNames);
     }
 }

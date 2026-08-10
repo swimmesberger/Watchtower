@@ -2,7 +2,14 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { AccessMode, CreateRouteRequest, Route, RouteAccess, RouteStatus } from '@/lib/types'
+import type {
+  AccessMode,
+  CreateRouteRequest,
+  IdentityHeaderMode,
+  Route,
+  RouteAccess,
+  RouteStatus,
+} from '@/lib/types'
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { timeAgo } from '@/lib/format'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
@@ -63,6 +70,13 @@ const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] 
     label: 'Selected users',
     description: 'Only the users you pick below may enter.',
   },
+]
+
+/** The identity-forwarding modes in menu order, with the label the Access dialog shows for each. */
+const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
+  { value: 'None', label: 'JWT only (default)' },
+  { value: 'Remote', label: 'Remote-* headers (Authelia/Traefik)' },
+  { value: 'AuthRequest', label: 'X-Auth-Request-* headers (oauth2-proxy)' },
 ]
 
 const emptyForm = {
@@ -715,6 +729,9 @@ function AccessForm({
   onSubmit: (data: RouteAccess) => void
 }) {
   const [mode, setMode] = useState<AccessMode>(initial.mode)
+  const [identityHeaderMode, setIdentityHeaderMode] = useState<IdentityHeaderMode>(
+    initial.identityHeaderMode,
+  )
   const [bypassPaths, setBypassPaths] = useState(initial.bypassPaths ?? '')
   const [grantedUserIds, setGrantedUserIds] = useState<number[]>(initial.grantedUserIds)
 
@@ -730,6 +747,7 @@ function AccessForm({
         if (saving) return
         onSubmit({
           mode,
+          identityHeaderMode,
           // Bypass paths only apply to a protected route, and grants only to Restricted; the backend clears
           // each for the modes they don't belong to, but don't submit retained text/selection either.
           bypassPaths: mode === 'Public' || bypassPaths.trim() === '' ? null : bypassPaths,
@@ -786,6 +804,34 @@ function AccessForm({
               </div>
             )
           }
+        </Field>
+      )}
+
+      {mode !== 'Public' && (
+        <Field label="Identity forwarding">
+          {({ id }) => (
+            <>
+              <Select
+                value={identityHeaderMode}
+                onValueChange={(v) => setIdentityHeaderMode(v as IdentityHeaderMode)}
+              >
+                <SelectTrigger id={id}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {IDENTITY_HEADER_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1.5 text-xs text-text-3">
+                Most apps validate the signed JWT (X-Watchtower-Jwt). Choose a header mode only for apps
+                that read a plaintext username header.
+              </p>
+            </>
+          )}
         </Field>
       )}
 

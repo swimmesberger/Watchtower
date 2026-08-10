@@ -111,6 +111,18 @@ public sealed class CaddySiteProjectionTests {
         Assert.True(site.Protected);
     }
 
+    [Fact]
+    public void IdentityHeaderMode_FlowsFromTheRouteToTheSite() {
+        var route = Route("members.example.invalid", AccessMode.Authenticated);
+        route.IdentityHeaderMode = IdentityHeaderMode.AuthRequest;
+
+        var site = Assert.Single(CaddyManager.ProjectSites([route], new AuthOptions { Enabled = true }));
+
+        // The proxy config builder reads the mode off the site to decide copy_headers; it originates here.
+        Assert.True(site.Protected);
+        Assert.Equal(IdentityHeaderMode.AuthRequest, site.Mode);
+    }
+
     private static CaddySite Site(IEnumerable<CaddySite> sites, string domain) =>
         Assert.Single(sites, s => s.Domain == domain);
 

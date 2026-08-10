@@ -34,15 +34,25 @@ public sealed class SetAccess(
     public sealed record Command(
         int RouteId,
         AccessMode Mode,
+        IdentityHeaderMode IdentityHeaderMode,
         string? BypassPaths,
         IReadOnlyList<int> GrantedUserIds);
 
-    public sealed record Response(AccessMode Mode, string? BypassPaths, IReadOnlyList<int> GrantedUserIds);
+    public sealed record Response(
+        AccessMode Mode,
+        IdentityHeaderMode IdentityHeaderMode,
+        string? BypassPaths,
+        IReadOnlyList<int> GrantedUserIds);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var route = await db.Routes.FirstOrDefaultAsync(r => r.Id == command.RouteId, ct);
         if (route is null)
             return AppError.NotFound($"Route {command.RouteId} not found");
+
+        // Reject an undefined enum value before touching anything — an unknown mode must not be persisted
+        // and read back later as a value the forwarding helper cannot map.
+        if (!Enum.IsDefined(command.IdentityHeaderMode))
+            return AppError.Validation($"Unknown identity header mode '{command.IdentityHeaderMode}'.");
 
         // Bypass paths only mean something for a protected route; a Public route stores none, the same way
         // grants are cleared below for any non-Restricted mode — its access controls are off, so a stale
@@ -72,6 +82,7 @@ public sealed class SetAccess(
         }
 
         route.AccessMode = command.Mode;
+        route.IdentityHeaderMode = command.IdentityHeaderMode;
         route.BypassPaths = bypassPaths;
 
         // Reconcile rather than replace: delete only the rows that fell out of the set, add only the ones
@@ -96,7 +107,8 @@ public sealed class SetAccess(
         // Past the commit point: record the change uncancellably (CancellationToken.None inside).
         await RecordAsync(route, command.Mode);
 
-        return new Response(route.AccessMode, route.BypassPaths, [.. targetGrants.OrderBy(id => id)]);
+        return new Response(
+            route.AccessMode, route.IdentityHeaderMode, route.BypassPaths, [.. targetGrants.OrderBy(id => id)]);
     }
 
     /// <summary>

@@ -205,6 +205,7 @@ export const api = {
       (await rpc('proxy.setAccess', {
         routeId,
         mode: data.mode,
+        identityHeaderMode: data.identityHeaderMode,
         bypassPaths: data.bypassPaths ?? null,
         grantedUserIds: data.grantedUserIds,
       })) as RouteAccess,
