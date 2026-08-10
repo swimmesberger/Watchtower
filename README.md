@@ -61,7 +61,9 @@ client generated from the exported schema.
   with one pending slot. A deploy clones the repo, builds a scoped `DOCKER_CONFIG`, writes a temp
   `.env` from the stack's variables, then `docker compose pull` + `up -d --remove-orphans`.
 - **Self-update:** Watchtower can pull its own newer image and spawn a short-lived *coordinator*
-  sibling container that runs `docker compose up -d` to recreate it (a container can't restart itself).
+  sibling container that recreates it via the Docker API — cloning the running container's
+  configuration onto the new image, with automatic rollback if the replacement fails to start
+  (a container can't restart itself). Needs no configuration beyond the Docker socket.
 
 See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/elarion.md](docs/elarion.md) for how the project consumes the framework,

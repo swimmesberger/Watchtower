@@ -3972,43 +3972,13 @@
           "status": {
             "type": "object",
             "properties": {
-              "imageName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "credentialId": {
                 "type": [
                   "integer",
                   "null"
                 ]
               },
-              "composeFilePath": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "composeProjectName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "detectedImageName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detectedComposeFilePath": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detectedComposeProjectName": {
                 "type": [
                   "string",
                   "null"
@@ -4140,43 +4110,13 @@
           "status": {
             "type": "object",
             "properties": {
-              "imageName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "credentialId": {
                 "type": [
                   "integer",
                   "null"
                 ]
               },
-              "composeFilePath": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "composeProjectName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "detectedImageName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detectedComposeFilePath": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detectedComposeProjectName": {
                 "type": [
                   "string",
                   "null"
@@ -4290,36 +4230,15 @@
       "params": {
         "type": "object",
         "properties": {
-          "imageName": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "credentialId": {
             "type": [
               "integer",
               "null"
             ]
-          },
-          "composeFilePath": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "composeProjectName": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
-          "imageName",
-          "credentialId",
-          "composeFilePath",
-          "composeProjectName"
+          "credentialId"
         ]
       },
       "result": {
@@ -4328,43 +4247,13 @@
           "status": {
             "type": "object",
             "properties": {
-              "imageName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "credentialId": {
                 "type": [
                   "integer",
                   "null"
                 ]
               },
-              "composeFilePath": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "composeProjectName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "detectedImageName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detectedComposeFilePath": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "detectedComposeProjectName": {
                 "type": [
                   "string",
                   "null"

@@ -86,13 +86,8 @@ export interface ActiveDeployment {
 export type SelfUpdateApplyStage = 'idle' | 'pulling' | 'restarting' | 'error'
 
 export interface SelfUpdateStatus {
-  imageName: string | null
   credentialId: number | null
-  composeFilePath: string | null
-  composeProjectName: string | null
   detectedImageName: string | null
-  detectedComposeFilePath: string | null
-  detectedComposeProjectName: string | null
   isRunningInContainer: boolean
   currentImageId: string | null
   latestImageId: string | null
@@ -163,10 +158,7 @@ export interface UpdateStackRequest {
 }
 
 export interface UpdateSelfConfigRequest {
-  imageName?: string | null
   credentialId?: number | null
-  composeFilePath?: string | null
-  composeProjectName?: string | null
 }
 
 export interface StackEnvVar {

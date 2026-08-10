@@ -323,10 +323,7 @@ export const api = {
     getSelf: async () => (await rpc('system.getSelf', {})).status as SelfUpdateStatus,
     updateConfig: async (data: UpdateSelfConfigRequest) =>
       (await rpc('system.updateConfig', {
-        imageName: data.imageName ?? null,
         credentialId: data.credentialId ?? null,
-        composeFilePath: data.composeFilePath ?? null,
-        composeProjectName: data.composeProjectName ?? null,
       })).status as SelfUpdateStatus,
     check: async () => (await rpc('system.check', {})).status as SelfUpdateStatus,
     update: async () => {

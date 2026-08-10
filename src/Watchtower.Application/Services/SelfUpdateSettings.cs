@@ -1,14 +1,12 @@
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// User-supplied self-update overrides, persisted as typed JSON under the Global-scope
-/// settings key <c>self.config</c>. Any null field means "fall back to auto-detection".
+/// User-supplied self-update configuration, persisted as typed JSON under the Global-scope
+/// settings key <c>self.config</c>.
 /// </summary>
 public sealed record SelfUpdateConfig {
-    public string? ImageName { get; init; }
+    /// <summary>Registry credential for pulling the Watchtower image; null for public images.</summary>
     public int? CredentialId { get; init; }
-    public string? ComposeFilePath { get; init; }
-    public string? ComposeProjectName { get; init; }
 }
 
 /// <summary>
