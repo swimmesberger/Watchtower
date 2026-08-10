@@ -170,6 +170,15 @@ UserInfo; it can do nothing to this Watchtower. Relatedly, the **Admin** flag ca
 operator-realm accounts: the role administers the whole instance, so the UI hides the toggle elsewhere
 and the server refuses the pair.
 
+### What a realm user sees
+
+Signing in on a realm's login host lands the visitor on **Your applications** — a plain list of the apps
+their account may open, each a link to that app's own domain, where the usual redirect dance signs them
+in without a second prompt. There is no sidebar and no management screen, because there is nothing there
+they could use. The list is exactly what the access policy already admits them to, so it discloses
+nothing they could not have reached by typing the address; an account that has been granted nothing yet
+sees a page saying so. Operator-realm accounts land on the management UI as before.
+
 ### Deleting a realm
 
 A realm is deletable only while it holds **nothing** — no accounts, no groups, no templates. There are

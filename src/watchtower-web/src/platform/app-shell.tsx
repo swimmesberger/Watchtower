@@ -9,6 +9,7 @@ import { goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } from '@/lib/auth'
 import { Toaster } from '@/components/ui/toast'
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
 import { sidebarItems, type SidebarItem } from './points'
+import { AppsPage } from './AppsPage'
 
 function isActive(currentPath: string, item: SidebarItem): boolean {
   if (item.exact) return currentPath === item.to
@@ -85,6 +86,7 @@ function Wordmark() {
 
 export function AppShell() {
   const currentPath = useRouterState({ select: (s) => s.location.pathname })
+  const { caps } = useRouteContext({ from: '__root__' })
   const items = useContributions(sidebarItems)
   const mobileItems = items.filter((i) => i.mobile !== false)
 
@@ -94,6 +96,23 @@ export function AppShell() {
     return (
       <TooltipProvider delayDuration={200}>
         <Outlet />
+        <Toaster />
+      </TooltipProvider>
+    )
+  }
+
+  // A signed-in account outside the operator realm gets the applications portal instead — the whole shell,
+  // not just the content column, because every destination in the sidebar is a management screen whose
+  // handlers would answer Forbidden (`SystemRealmAuthorizer`). Rendered in place of the route rather than
+  // as a redirect, so it is also what they see if they type an admin path in by hand.
+  //
+  // The `apps-portal` flag is the backend's answer (ADR-0030, resolved from the realm claim), so this
+  // never has to derive the realm client-side. It is false for the operator realm, for an unauthenticated
+  // boot, and when authentication is switched off — every one of which keeps today's UI exactly.
+  if (caps.isFlagEnabled('apps-portal')) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        <AppsPage caps={caps} />
         <Toaster />
       </TooltipProvider>
     )
