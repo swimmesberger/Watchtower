@@ -21,7 +21,10 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 /// Revoking the account's sessions is part of the operation, not a follow-up: an administrator
 /// resetting someone's password is acting because control of the account is in doubt, and a session
 /// minted before the reset would otherwise keep working for up to the absolute session lifetime.
-/// Resetting your own password therefore signs you out too — which is the honest behaviour.
+/// Resetting your own password therefore signs you out too — which is the honest behaviour. Because it
+/// is part of the operation, everything after the password commits runs on
+/// <see cref="CancellationToken.None"/>: a caller that hangs up mid-request must not be able to leave
+/// the account with a new password and its old sessions still live.
 /// </para>
 /// </remarks>
 [Handler("users.resetPassword")]
@@ -48,17 +51,26 @@ public sealed class ResetUserPassword(
         var token = await users.GeneratePasswordResetTokenAsync(user);
         var result = await users.ResetPasswordAsync(user, token, command.NewPassword);
         if (!result.Succeeded)
-            return AppError.Validation(UserMapping.Describe(result));
+            return UserMapping.ToError(result);
 
-        // A password reset also clears whatever brute-force lockout the old password accumulated —
-        // otherwise the account the administrator just fixed stays unusable until the timer lapses.
-        await users.SetLockoutEndDateAsync(user, null);
-        await users.ResetAccessFailedCountAsync(user);
+        // --- Past the commit point. The new password is live from here on, so the rest must not be
+        // --- abandoned because the caller's HTTP connection went away.
 
-        var revoked = await sessions.RevokeAllForUserAsync(user.Id, ct);
+        // The reset also clears whatever brute-force lockout the old password accumulated — otherwise the
+        // account the administrator just fixed stays unusable until the timer lapses. One write, and its
+        // result is checked: a concurrency failure here means someone else edited the account between the
+        // read and now, and the caller needs to know the lockout was NOT cleared (the password was).
+        user.LockoutEnd = null;
+        user.AccessFailedCount = 0;
+        var cleared = await users.UpdateAsync(user);
+        if (!cleared.Succeeded)
+            return UserMapping.ToError(cleared);
+
+        var revoked = await sessions.RevokeAllForUserAsync(user.Id, CancellationToken.None);
 
         await UserMapping.RecordAsync(
-            db, currentUser, time, "user.password.reset", user, $"sessionsRevoked={revoked}", ct);
+            db, currentUser, time, AuthEventKinds.UserPasswordReset, user,
+            $"sessionsRevoked={revoked}; lockoutCleared=true");
 
         return new Response(user.Id);
     }

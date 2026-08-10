@@ -65,6 +65,49 @@ public sealed class UsersModuleTests {
         Assert.Equal(ErrorKind.Forbidden, result.Error.Kind);
     }
 
+    /// <summary>
+    /// Every mutation is <c>[RequireRole("Admin")]</c>, so a signed-in non-administrator is refused by the
+    /// generated authorization decorator — before the handler runs at all, which is why targeting an id
+    /// that does not exist still yields <c>Forbidden</c> rather than <c>NotFound</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("create")]
+    [InlineData("update")]
+    [InlineData("resetPassword")]
+    [InlineData("setDisabled")]
+    [InlineData("delete")]
+    public async Task Mutations_WithAuthEnabled_AreDeniedToANonAdministrator(string operation) {
+        using var host = AuthTestHost.Start(WithUsersModule, ("Watchtower:Auth:Enabled", "true"));
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var sp = scope.ServiceProvider;
+            SeedPrincipal(sp, isAdmin: false);
+
+            var kind = operation switch {
+                "create" => await DeniedKindAsync<CreateUser.Command, CreateUser.Response>(
+                    sp, new CreateUser.Command("intruder", GoodPassword, null, IsAdmin: true)),
+                "update" => await DeniedKindAsync<UpdateUser.Command, UpdateUser.Response>(
+                    sp, new UpdateUser.Command(1, "renamed", null, IsAdmin: true)),
+                "resetPassword" => await DeniedKindAsync<ResetUserPassword.Command, ResetUserPassword.Response>(
+                    sp, new ResetUserPassword.Command(1, OtherPassword)),
+                "setDisabled" => await DeniedKindAsync<SetUserDisabled.Command, SetUserDisabled.Response>(
+                    sp, new SetUserDisabled.Command(1, Disabled: true)),
+                "delete" => await DeniedKindAsync<DeleteUser.Command, DeleteUser.Response>(
+                    sp, new DeleteUser.Command(1)),
+                _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null),
+            };
+
+            Assert.Equal(ErrorKind.Forbidden, kind);
+        }
+
+        // Nothing ran: no account was created and the trail records no administrative action.
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.Users.AnyAsync(TestContext.Current.CancellationToken));
+        }
+        Assert.Empty(await AuditKindsAsync(host));
+    }
+
     [Fact]
     public async Task List_ReportsALockedOutAccountUntilTheLockoutLapses() {
         using var host = AuthTestHost.Start(WithUsersModule);
@@ -351,18 +394,59 @@ public sealed class UsersModuleTests {
             Assert.Equal(id, result.Value.Id);
         }
 
+        // Nothing revoked these by hand — the FK cascade did, which is what the handler relies on.
         Assert.Equal(0, await SessionCountAsync(host, id));
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.Users.AnyAsync(u => u.Id == id, TestContext.Current.CancellationToken));
 
-            // The trail outlives its subject: the FK detaches (SET NULL), so the name lives in Detail.
+            // The trail outlives its subject, so the name lives in Detail rather than in the FK.
             var deleted = await db.AuthEvents
                 .SingleAsync(e => e.Kind == "user.deleted", TestContext.Current.CancellationToken);
             Assert.Null(deleted.UserId);
             Assert.Contains($"target=bob#{id}", deleted.Detail);
         }
+    }
+
+    /// <summary>
+    /// The audit row is written only once the delete has committed: a delete that fails must not leave a
+    /// trail claiming it happened. Driven by a stale concurrency stamp, which is the realistic cause.
+    /// </summary>
+    /// <remarks>
+    /// The interleaving is what makes this real, so it is built deliberately: the handler's scope is made
+    /// to track the account <em>first</em> (EF identity resolution then hands the handler's own
+    /// <c>FindByIdAsync</c> that same instance, stale stamp and all), and only then does a second scope
+    /// rewrite the stored stamp. That is exactly "read, someone else writes, we write".
+    /// </remarks>
+    [Fact]
+    public async Task Delete_WritesNoAuditRowWhenTheDeleteItselfFails() {
+        using var host = AuthTestHost.Start(WithUsersModule);
+        await SeedUserAsync(host, "admin", isAdmin: true);
+        var id = await SeedUserAsync(host, "bob", isAdmin: false);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.NotNull(await db.Users.FirstOrDefaultAsync(
+                u => u.Id == id, TestContext.Current.CancellationToken));
+
+            await using (var other = host.Services.CreateAsyncScope()) {
+                var otherDb = other.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+                await otherDb.Users.Where(u => u.Id == id).ExecuteUpdateAsync(
+                    s => s.SetProperty(u => u.ConcurrencyStamp, Guid.NewGuid().ToString("N")),
+                    TestContext.Current.CancellationToken);
+            }
+
+            var result = await SendAsync<DeleteUser.Command, DeleteUser.Response>(
+                scope.ServiceProvider, new DeleteUser.Command(id));
+
+            Assert.False(result.IsSuccess);
+            // A lost race is "re-read and retry", not "your request was malformed".
+            Assert.Equal(ErrorKind.Conflict, result.Error.Kind);
+        }
+
+        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Contains(await ListAsync(host), u => u.Id == id);
     }
 
     [Fact]
@@ -383,6 +467,14 @@ public sealed class UsersModuleTests {
         IServiceProvider scope, TRequest request) =>
         scope.GetRequiredService<IHandler<TRequest, Result<TResponse>>>()
             .HandleAsync(request, TestContext.Current.CancellationToken);
+
+    /// <summary>Dispatches a request that must fail, and reports which error kind came back.</summary>
+    private static async ValueTask<ErrorKind> DeniedKindAsync<TRequest, TResponse>(
+        IServiceProvider scope, TRequest request) {
+        var result = await SendAsync<TRequest, TResponse>(scope, request);
+        Assert.False(result.IsSuccess);
+        return result.Error.Kind;
+    }
 
     private static async Task<int> SeedUserAsync(AuthTestHost host, string userName, bool isAdmin) {
         await using var scope = host.Services.CreateAsyncScope();

@@ -13,11 +13,11 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 /// <remarks>
 /// The password goes through <see cref="UserManager{TUser}.CreateAsync(TUser, string)"/> so the
 /// configured policy and the PBKDF2 hasher apply — the handler never touches
-/// <see cref="User.PasswordHash"/>. Every <see cref="IdentityResult"/> failure (policy violation,
-/// disallowed characters, a name already taken) becomes a single <c>Validation</c> error, because
-/// from the caller's side they are all "the form is wrong"; a duplicate name in particular is
-/// reported by <see cref="WatchtowerUserStore"/> as <c>DuplicateUserName</c> whether it lost the
-/// race or simply came second.
+/// <see cref="User.PasswordHash"/>. Failures are mapped by <see cref="UserMapping.ToError"/>: a policy
+/// violation, a disallowed character or a name already taken are all "the form is wrong" and become one
+/// <c>Validation</c> error. A duplicate name in particular is reported by
+/// <see cref="WatchtowerUserStore"/> as <c>DuplicateUserName</c> whether it lost the race to the unique
+/// index or simply came second.
 /// </remarks>
 [Handler("users.create")]
 [RequireRole(WatchtowerClaims.AdminRole)]
@@ -54,10 +54,11 @@ public sealed class CreateUser(
 
         var result = await users.CreateAsync(user, command.Password);
         if (!result.Succeeded)
-            return AppError.Validation(UserMapping.Describe(result));
+            return UserMapping.ToError(result);
 
+        // Past the commit point: the account exists, so the trail is written uncancellably.
         await UserMapping.RecordAsync(
-            db, currentUser, time, "user.created", user, $"isAdmin={command.IsAdmin}", ct);
+            db, currentUser, time, AuthEventKinds.UserCreated, user, $"isAdmin={command.IsAdmin}");
 
         return new Response(UserMapping.ToDto(user, now));
     }

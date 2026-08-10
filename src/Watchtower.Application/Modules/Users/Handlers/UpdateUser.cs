@@ -54,12 +54,13 @@ public sealed class UpdateUser(
         // normalized name, and rotates the concurrency stamp inside the store.
         var result = await users.UpdateAsync(user);
         if (!result.Succeeded)
-            return AppError.Validation(UserMapping.Describe(result));
+            return UserMapping.ToError(result);
 
+        // Past the commit point: the account is saved, so the trail is written uncancellably.
         var changes = wasAdmin == command.IsAdmin
             ? $"renamedFrom={previousName}"
             : $"renamedFrom={previousName}; isAdmin={wasAdmin}->{command.IsAdmin}";
-        await UserMapping.RecordAsync(db, currentUser, time, "user.updated", user, changes, ct);
+        await UserMapping.RecordAsync(db, currentUser, time, AuthEventKinds.UserUpdated, user, changes);
 
         return new Response(UserMapping.ToDto(user, time.GetUtcNow()));
     }

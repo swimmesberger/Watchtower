@@ -13,14 +13,23 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 /// otherwise allowed.
 /// </summary>
 /// <remarks>
-/// The audit row is written <em>before</em> the delete and names the account in
-/// <see cref="Entities.AuthEvent.Detail"/>, because <c>AuthEvent.UserId</c> is <c>SET NULL</c> when
-/// the user goes: the trail outlives its subjects (design.md §3), so the identity has to be in the text.
+/// The order is delete-then-audit, and it matters: Watchtower has no ambient transaction across the two
+/// writes (see <see cref="UserMapping.IsLastUsableAdminAsync"/>), so auditing first would mean a delete
+/// that then failed on the concurrency stamp left behind a trail claiming an account was removed while
+/// it is still there. Writing the row only once the delete has committed can at worst lose an audit row;
+/// the other order fabricates one.
 /// <para>
-/// Sessions and route grants would go with the row anyway — both foreign keys cascade — but the
-/// sessions are revoked explicitly first so that signing the account out is an operation this handler
-/// performs and can report, rather than a database side effect that a future change to a delete
-/// behaviour could silently remove.
+/// The audit row therefore carries <c>UserId = null</c> — <c>AuthEvent.UserId</c> is <c>SET NULL</c> on
+/// delete, so a new row pointing at a gone account would simply fail the foreign key on insert. The
+/// trail outlives its subjects (design.md §3), which is why the name and id live in
+/// <see cref="Entities.AuthEvent.Detail"/>.
+/// </para>
+/// <para>
+/// Sessions and route grants go with the row through their cascading foreign keys (verified in
+/// <c>AuthSessionConfiguration</c> and <c>RouteAccessGrantConfiguration</c>) rather than being revoked
+/// by hand first: an explicit pre-revoke would be a second uncoordinated write that a failed delete
+/// would leave applied, signing an account out that still exists. The audit row is this operation's
+/// record; the cascade is its mechanism.
 /// </para>
 /// </remarks>
 [Handler("users.delete")]
@@ -28,7 +37,6 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 public sealed class DeleteUser(
     WatchtowerDbContext db,
     UserManager<User> users,
-    AuthSessionService sessions,
     ICurrentUser currentUser,
     TimeProvider time)
     : IHandler<DeleteUser.Command, Result<DeleteUser.Response>> {
@@ -44,13 +52,15 @@ public sealed class DeleteUser(
         if (await UserMapping.IsLastUsableAdminAsync(db, user, ct))
             return UserMapping.LastAdminError("delete", user);
 
-        var revoked = await sessions.RevokeAllForUserAsync(user.Id, ct);
-        await UserMapping.RecordAsync(
-            db, currentUser, time, "user.deleted", user, $"sessionsRevoked={revoked}", ct);
-
+        var wasAdmin = user.IsAdmin;
         var result = await users.DeleteAsync(user);
         if (!result.Succeeded)
-            return AppError.Conflict(UserMapping.Describe(result));
+            return UserMapping.ToError(result);
+
+        // Past the commit point: the account (and, by cascade, its sessions and grants) is gone.
+        await UserMapping.RecordAsync(
+            db, currentUser, time, AuthEventKinds.UserDeleted, user,
+            $"isAdmin={wasAdmin}; sessionsCascaded=true", targetRemoved: true);
 
         return new Response(command.Id);
     }

@@ -54,7 +54,7 @@ public static class UserMapping {
         return string.IsNullOrEmpty(value) ? null : value;
     }
 
-    /// <summary>Joins an <see cref="IdentityResult"/>'s failures into one message for <c>AppError.Validation</c>.</summary>
+    /// <summary>Joins an <see cref="IdentityResult"/>'s failures into one message.</summary>
     public static string Describe(IdentityResult result) {
         ArgumentNullException.ThrowIfNull(result);
         return result.Errors.Any()
@@ -63,18 +63,56 @@ public static class UserMapping {
     }
 
     /// <summary>
+    /// The code Identity stamps on an optimistic-concurrency failure. Read off
+    /// <see cref="IdentityErrorDescriber"/> rather than written out, so it cannot drift from what
+    /// <see cref="Services.WatchtowerUserStore"/> actually returns, and so the match never depends on a
+    /// localizable description string.
+    /// </summary>
+    private static readonly string ConcurrencyFailureCode =
+        new IdentityErrorDescriber().ConcurrencyFailure().Code;
+
+    /// <summary>
+    /// Translates a failed <see cref="IdentityResult"/> into the error the caller sees.
+    /// </summary>
+    /// <remarks>
+    /// A concurrency failure is the one outcome that is not the caller's input being wrong: another
+    /// administrator wrote the same account first, and the answer is "re-read it and try again" —
+    /// <c>Conflict</c>, not <c>Validation</c>. Everything else (policy violations, disallowed characters,
+    /// a name already taken) is a bad request body.
+    /// </remarks>
+    public static AppError ToError(IdentityResult result) {
+        ArgumentNullException.ThrowIfNull(result);
+        return result.Errors.Any(e => string.Equals(e.Code, ConcurrencyFailureCode, StringComparison.Ordinal))
+            ? AppError.Conflict(Describe(result))
+            : AppError.Validation(Describe(result));
+    }
+
+    /// <summary>
     /// True when <paramref name="target"/> is the only administrator that can still sign in, so the
     /// caller's change (demotion, disable, delete) would leave the instance with none.
     /// </summary>
     /// <remarks>
-    /// This is the <em>only</em> protection the module applies. Demoting, disabling or deleting your
-    /// own account is deliberately allowed: an operator with a second administrator account has every
-    /// right to retire the first, and a self-targeting ban would just be an extra rule to work around.
-    /// A disabled administrator is already unable to sign in, so it is not counted — and changing one
-    /// is therefore never blocked.
+    /// Demoting, disabling or deleting your <em>own</em> account is deliberately allowed: an operator with
+    /// a second administrator account has every right to retire the first, and a self-targeting ban would
+    /// just be an extra rule to work around. A disabled administrator cannot sign in, so it is not counted
+    /// — and changing one is therefore never blocked.
     /// <para>
-    /// The break-glass <c>WATCHTOWER__AUTH__RESETPASSWORD</c> hook (design.md §11) remains the recovery
-    /// path if an instance ends up with no usable administrator anyway.
+    /// <strong>This is a check-then-act guard, not a constraint.</strong> Two administrators demoting each
+    /// other at the same moment can both read the other as still active and both succeed, and Watchtower
+    /// has no ambient transaction that would make the pair atomic: the framework's
+    /// <c>TransactionDecorator</c> is opt-in (it needs a <c>[DecoratorList]</c>, an <c>ICommand</c>-marked
+    /// request and <c>AddElarionUnitOfWork</c>, none of which this application uses), so each
+    /// <c>SaveChangesAsync</c> commits on its own. Closing the race properly would take a database-level
+    /// constraint — "at least one row with <c>is_admin AND NOT disabled</c>" is not expressible as one, so
+    /// it would mean a lock table or a serialized write path, which is a large amount of machinery for a
+    /// millisecond-wide window between two trusted operators.
+    /// </para>
+    /// <para>
+    /// The guard therefore stops the realistic mistake (one administrator retiring the last account) and
+    /// not the concurrent one. The recovery path for an instance that ends up with no usable administrator
+    /// is unchanged and always available: set <c>WATCHTOWER__AUTH__RESETPASSWORD</c> and restart
+    /// (design.md §11) — <see cref="Services.AuthBootstrapService"/> recreates or unlocks the <c>admin</c>
+    /// account on the next boot.
     /// </para>
     /// </remarks>
     public static async Task<bool> IsLastUsableAdminAsync(
@@ -94,13 +132,23 @@ public static class UserMapping {
     }
 
     /// <summary>
-    /// Appends an <see cref="AuthEvent"/> and saves it. Kinds are the dotted identifiers of
-    /// design.md §9 (<c>user.created</c>, <c>user.deleted</c>, …).
+    /// Appends an <see cref="AuthEvent"/> and commits it. Kinds come from <see cref="AuthEventKinds"/>.
     /// </summary>
+    /// <param name="targetRemoved">
+    /// True when the account row has already been deleted. The event's <see cref="AuthEvent.UserId"/> is
+    /// then left null — the column is <c>SET NULL</c> on delete, so pointing a <em>new</em> row at a gone
+    /// user would simply violate the foreign key on insert.
+    /// </param>
     /// <remarks>
-    /// <paramref name="details"/> always names the target by id and login name because
-    /// <see cref="AuthEvent.UserId"/> is <c>SET NULL</c> on delete — the row that records an account
-    /// being removed would otherwise be the one row that no longer says whose account it was.
+    /// Takes no <see cref="CancellationToken"/> on purpose, and saves with
+    /// <see cref="CancellationToken.None"/>. Every call site runs after the account change has already
+    /// committed, so honouring the request token here would mean a caller that hangs up mid-request keeps
+    /// its own administrative action out of the trail — the same reasoning (and the same mechanism) as the
+    /// login endpoints' <c>RejectAsync</c>.
+    /// <para>
+    /// The detail always names the target by login name and id, so the one row that records an account
+    /// being deleted is not also the one row that can no longer say whose account it was.
+    /// </para>
     /// </remarks>
     public static async Task RecordAsync(
         WatchtowerDbContext db,
@@ -109,7 +157,7 @@ public static class UserMapping {
         string kind,
         User target,
         string? details,
-        CancellationToken ct) {
+        bool targetRemoved = false) {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(actor);
         ArgumentNullException.ThrowIfNull(time);
@@ -121,10 +169,13 @@ public static class UserMapping {
 
         db.AuthEvents.Add(new AuthEvent {
             Kind = kind,
-            UserId = target.Id,
+            UserId = targetRemoved ? null : target.Id,
+            // User administration is not route-scoped; stated rather than defaulted, as the login
+            // endpoints' Record does.
+            RouteId = null,
             Detail = detail,
             CreatedAt = time.GetUtcNow(),
         });
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(CancellationToken.None);
     }
 }

@@ -17,9 +17,9 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 /// would not be a suspension — and is subject to the last-admin guard. Disabling <em>yourself</em> is
 /// allowed as long as another administrator can still sign in.
 /// <para>
-/// Re-enabling also clears the brute-force lockout: an administrator switching an account back on
-/// expects a usable account, not one that is still parked behind a lockout window that was running
-/// when it was suspended.
+/// Re-enabling also clears the brute-force lockout — in the same write as the flag, so an administrator
+/// switching an account back on gets a usable account rather than one still parked behind a lockout
+/// window that was running when it was suspended.
 /// </para>
 /// </remarks>
 [Handler("users.setDisabled")]
@@ -44,24 +44,28 @@ public sealed class SetUserDisabled(
             return UserMapping.LastAdminError("disable", user);
 
         user.Disabled = command.Disabled;
-        var result = await users.UpdateAsync(user);
-        if (!result.Succeeded)
-            return AppError.Validation(UserMapping.Describe(result));
-
-        var detail = string.Empty;
-        if (command.Disabled) {
-            var revoked = await sessions.RevokeAllForUserAsync(user.Id, ct);
-            detail = $"sessionsRevoked={revoked}";
-        } else {
-            // Both are no-ops when the account was never locked out; calling them unconditionally keeps
-            // "enabled" a single, predictable state rather than one that depends on how it was suspended.
-            await users.SetLockoutEndDateAsync(user, null);
-            await users.ResetAccessFailedCountAsync(user);
-            detail = "lockoutCleared=true";
+        if (!command.Disabled) {
+            // Cleared in the same write as the flag, so "enabled" is one atomic state change rather than
+            // three that a failure could leave half-applied. Both are no-ops when the account was never
+            // locked out, which keeps "enabled" independent of how it came to be suspended.
+            user.LockoutEnd = null;
+            user.AccessFailedCount = 0;
         }
 
-        var kind = command.Disabled ? "user.disabled" : "user.enabled";
-        await UserMapping.RecordAsync(db, currentUser, time, kind, user, detail, ct);
+        var result = await users.UpdateAsync(user);
+        if (!result.Succeeded)
+            return UserMapping.ToError(result);
+
+        // --- Past the commit point: the flag is stored, so the rest is uncancellable.
+
+        var detail = "lockoutCleared=true";
+        if (command.Disabled) {
+            var revoked = await sessions.RevokeAllForUserAsync(user.Id, CancellationToken.None);
+            detail = $"sessionsRevoked={revoked}";
+        }
+
+        var kind = command.Disabled ? AuthEventKinds.UserDisabled : AuthEventKinds.UserEnabled;
+        await UserMapping.RecordAsync(db, currentUser, time, kind, user, detail);
 
         return new Response(UserMapping.ToDto(user, time.GetUtcNow()));
     }
