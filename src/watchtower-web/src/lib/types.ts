@@ -366,6 +366,41 @@ export interface MetricsRange {
   stepSeconds: number
 }
 
+/** The three metrics backends (ADR-0013). */
+export type MetricsBackend = 'memory' | 'sqlite' | 'influxdb'
+
+/** InfluxDB connection values in the config surface. The token never leaves the server. */
+export interface MetricsInfluxConfig {
+  url: string | null
+  org: string | null
+  bucket: string | null
+  /** True when a token is stored — the UI sends a new one only to replace it. */
+  hasToken: boolean
+  composeProjectTag: string
+  diskMountpoint: string
+}
+
+/** `metrics.getConfig` / `metrics.updateConfig` payload: the effective backend configuration. */
+export interface MetricsConfig {
+  backend: MetricsBackend
+  /** History window of the sqlite backend, in days (1–365). */
+  retentionDays: number
+  historyAvailable: boolean
+  influx: MetricsInfluxConfig
+}
+
+/** `metrics.updateConfig` request. Null influx fields keep the stored values (token included). */
+export interface UpdateMetricsConfigRequest {
+  backend: MetricsBackend
+  retentionDays: number
+  influxUrl?: string | null
+  influxOrg?: string | null
+  influxBucket?: string | null
+  influxToken?: string | null
+  influxComposeProjectTag?: string | null
+  influxDiskMountpoint?: string | null
+}
+
 /** `networks.ports` envelope: the exposure map plus cross-container conflicts. */
 export interface NetworkPortsResult {
   published: PublishedPort[]

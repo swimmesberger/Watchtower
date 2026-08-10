@@ -1,6 +1,8 @@
 # ADR-0007: Pluggable metrics backend — in-memory by default, InfluxDB opt-in
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0013](0013-sqlite-metrics-history.md) (adds a SQLite-persisted
+  backend as the new default, makes the backend runtime-switchable, and reverses the "no SQLite
+  persistence" rejection below; the `IMetricsSource` abstraction and the InfluxDB reader stand)
 - Date: 2026-07-06
 - Related: [ADR-0002](0002-sqlite-via-ef-core.md) (the zero-external-dependency ethos), and
   [host-metrics.md](../host-metrics.md) (the opt-in host `/proc` mount this mirrors).

@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using Watchtower.Application.Config;
 using Watchtower.Application.Modules.Metrics.Handlers;
 using Watchtower.Application.Services;
 
@@ -7,19 +8,49 @@ namespace Watchtower.Application.Modules.Metrics;
 
 /// <summary>
 /// Host and container resource metrics. All handlers read the active <c>IMetricsSource</c> backend
-/// (ADR-0007) — no Docker calls happen on the RPC path (amendment F5).
+/// (ADR-0007, amended by ADR-0013) — no Docker calls happen on the RPC path (amendment F5).
 /// </summary>
 /// <remarks>
 /// Exposes the <c>metrics-history</c> client flag (ADR-0030): true when the active metrics backend can
-/// answer historical time ranges (the InfluxDB backend). Resolved by <c>MetricsFeatureFlagService</c> from
-/// <c>IMetricsSource.Capabilities</c> and surfaced to the frontend via the <c>elarion.session</c> snapshot,
-/// which gates the History view.
+/// answer historical time ranges (the sqlite and influxdb backends). Resolved per session fetch by
+/// <c>MetricsFeatureFlagService</c> from <c>IMetricsSource.Capabilities</c>, so it follows a runtime
+/// backend switch (<c>metrics.updateConfig</c>); the frontend gates the History view on it.
 /// </remarks>
 [AppModule("Metrics")]
 [ClientFeatures("metrics-history")]
 public static partial class MetricsModule {
     /// <summary>Returns the JSON type info resolver for Metrics module types.</summary>
     public static IJsonTypeInfoResolver GetJsonTypeInfoResolver() => MetricsJsonContext.Default;
+}
+
+// ── Backend configuration (ADR-0013) ─────────────────────────────────────────
+
+/// <summary>
+/// The effective metrics-backend configuration surfaced to the Settings page. The InfluxDB token never
+/// leaves the server — <see cref="MetricsInfluxConfig.HasToken"/> stands in for it.
+/// </summary>
+public sealed record MetricsConfig(
+    string Backend,
+    int RetentionDays,
+    bool HistoryAvailable,
+    MetricsInfluxConfig Influx);
+
+/// <summary>InfluxDB connection values for the config surface (token reduced to a flag).</summary>
+public sealed record MetricsInfluxConfig(
+    string? Url,
+    string? Org,
+    string? Bucket,
+    bool HasToken,
+    string ComposeProjectTag,
+    string DiskMountpoint);
+
+/// <summary>Maps the resolved backend to its canonical config-value spelling.</summary>
+internal static class MetricsBackendKindExtensions {
+    public static string ToConfigValue(this MetricsBackendKind kind) => kind switch {
+        MetricsBackendKind.Memory => "memory",
+        MetricsBackendKind.Influxdb => "influxdb",
+        _ => "sqlite",
+    };
 }
 
 // ── Range + capabilities ─────────────────────────────────────────────────────
@@ -113,4 +144,10 @@ public sealed record StackSample(DateTimeOffset T, double CpuPercent, long MemUs
 [JsonSerializable(typeof(GetContainerMetrics.Response), TypeInfoPropertyName = "GetContainerMetricsResponse")]
 [JsonSerializable(typeof(GetStackMetrics.Query), TypeInfoPropertyName = "GetStackMetricsQuery")]
 [JsonSerializable(typeof(GetStackMetrics.Response), TypeInfoPropertyName = "GetStackMetricsResponse")]
+[JsonSerializable(typeof(MetricsConfig))]
+[JsonSerializable(typeof(MetricsInfluxConfig))]
+[JsonSerializable(typeof(GetMetricsConfig.Query), TypeInfoPropertyName = "GetMetricsConfigQuery")]
+[JsonSerializable(typeof(GetMetricsConfig.Response), TypeInfoPropertyName = "GetMetricsConfigResponse")]
+[JsonSerializable(typeof(UpdateMetricsConfig.Command), TypeInfoPropertyName = "UpdateMetricsConfigCommand")]
+[JsonSerializable(typeof(UpdateMetricsConfig.Response), TypeInfoPropertyName = "UpdateMetricsConfigResponse")]
 public sealed partial class MetricsJsonContext : JsonSerializerContext;

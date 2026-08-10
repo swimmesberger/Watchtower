@@ -235,24 +235,44 @@ public sealed record ProxyOptions {
 }
 
 /// <summary>
-/// Selects where the <c>metrics.*</c> handlers read from (ADR-0007). Defaults to the zero-dependency
-/// in-memory sampler; set <see cref="Backend"/> to <c>influxdb</c> to read (including long-range
-/// history) from an InfluxDB that an external collector — OpenTelemetry or Telegraf — populates.
-/// The choice is applied at startup: only the selected backend's collection machinery is registered,
-/// so switching backends requires a restart.
+/// Selects where the <c>metrics.*</c> handlers read from (ADR-0007, amended by ADR-0013). The choice
+/// is resolved per call through <c>IOptionsMonitor</c> and is runtime-switchable — persisting these
+/// keys through the settings store (the <c>metrics.updateConfig</c> handler) re-binds them live, no
+/// restart. The sampler reads the backend each tick, so exactly one collector stays active.
 /// </summary>
 public sealed record MetricsOptions {
     /// <summary>
-    /// <c>memory</c> (default) — the in-memory ring buffer fed by the background sampler; or
-    /// <c>influxdb</c> — read from InfluxDB, with the sampler disabled so there is a single collector.
+    /// <c>sqlite</c> (default) — the in-memory live ring plus SQLite-persisted history with windowed
+    /// retention; <c>memory</c> — the live ring only, nothing written; or <c>influxdb</c> — read from
+    /// an InfluxDB an external collector populates, with the sampler idle so there is a single
+    /// collector. Unknown values resolve to <c>sqlite</c>, matching the default.
     /// </summary>
-    public string Backend { get; init; } = "memory";
+    public string Backend { get; init; } = "sqlite";
+
+    /// <summary>
+    /// How many days of history the <c>sqlite</c> backend keeps (its rollup tier — see ADR-0013).
+    /// Clamped to 1–365 where it is consumed. Ignored by the other backends.
+    /// </summary>
+    public int RetentionDays { get; init; } = 30;
 
     /// <summary>InfluxDB connection + schema mapping. Only used when <see cref="Backend"/> is <c>influxdb</c>.</summary>
     public InfluxOptions Influx { get; init; } = new();
 
+    /// <summary>The backend <see cref="Backend"/> resolves to (case-insensitive; unknown ⇒ <c>sqlite</c>).</summary>
+    public MetricsBackendKind ResolveBackend() =>
+        string.Equals(Backend, "memory", StringComparison.OrdinalIgnoreCase) ? MetricsBackendKind.Memory
+        : string.Equals(Backend, "influxdb", StringComparison.OrdinalIgnoreCase) ? MetricsBackendKind.Influxdb
+        : MetricsBackendKind.Sqlite;
+
     /// <summary>True when <see cref="Backend"/> selects the InfluxDB reader (case-insensitive).</summary>
-    public bool UsesInflux => string.Equals(Backend, "influxdb", StringComparison.OrdinalIgnoreCase);
+    public bool UsesInflux => ResolveBackend() == MetricsBackendKind.Influxdb;
+}
+
+/// <summary>The three metrics backends (ADR-0013): live-only, SQLite-persisted (default), BYO InfluxDB.</summary>
+public enum MetricsBackendKind {
+    Memory,
+    Sqlite,
+    Influxdb,
 }
 
 /// <summary>

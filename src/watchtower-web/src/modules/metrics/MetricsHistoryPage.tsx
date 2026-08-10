@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi } from '@tanstack/react-router'
+import { getRouteApi, Link } from '@tanstack/react-router'
 import { ArrowRight, Info } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { MetricsRange, StackMetrics } from '@/lib/types'
@@ -12,8 +12,6 @@ import { Card } from '@/components/ui/card'
 import { SectionHeader } from '@/components/ui/section-header'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TimeSeriesChart, type ChartSeries } from '@/components/ui/time-series-chart'
-
-const METRICS_HISTORY_DOC = '/docs/metrics-history.md'
 
 const RANGES = [
   { id: '1h', label: '1h', seconds: 3600 },
@@ -44,10 +42,11 @@ const pct = (v: number) => `${Math.round(v)}%`
 const routeApi = getRouteApi('/metrics/history')
 
 /**
- * The metrics history page (ADR-0007). A time-range picker over durable host + per-stack utilization,
- * available only when the InfluxDB backend is active. Availability comes from the boot capability
- * snapshot's `metrics-history` flag (ADR-0030) via the router context — the nav item is `when`-gated on
- * the same flag, so this page's banner only shows on a direct URL hit with the flag off.
+ * The metrics history page (ADR-0007, amended by ADR-0013). A time-range picker over durable host +
+ * per-stack utilization, available on the sqlite (default) and influxdb backends. Availability comes
+ * from the boot capability snapshot's `metrics-history` flag (ADR-0030) via the router context — the
+ * nav item is `when`-gated on the same flag, so this page's banner only shows on a direct URL hit with
+ * the memory backend active (the Settings save reloads the page, which refreshes the snapshot).
  */
 export function MetricsHistoryPage() {
   const [rangeId, setRangeId] = useState<RangeId>('6h')
@@ -101,19 +100,20 @@ export function MetricsHistoryPage() {
           <Banner
             tone="info"
             icon={Info}
-            title="History needs the InfluxDB backend"
+            title="History is turned off"
             action={
-              <a
-                href={METRICS_HISTORY_DOC}
+              <Link
+                to="/settings"
                 className="inline-flex items-center gap-1 text-[13px] font-medium text-brand transition-colors hover:text-[var(--brand-hover)]"
               >
-                How to enable
+                Enable in Settings
                 <ArrowRight className="size-3.5" aria-hidden />
-              </a>
+              </Link>
             }
           >
-            The active metrics backend keeps only a short in-memory window. Point Watchtower at an InfluxDB an
-            external collector fills to unlock durable history. The live Dashboard strip works either way.
+            The metrics backend is set to “Live only”, which keeps a short in-memory window and writes
+            nothing. Switch it to “Persisted” in Settings to keep history — it applies immediately, no
+            restart. The live Dashboard strip works either way.
           </Banner>
         </Card>
       ) : (
@@ -178,7 +178,7 @@ function ChartCard({
               </Button>
             }
           >
-            The InfluxDB query failed. Check the collector and InfluxDB are reachable.
+            The history query failed. On the InfluxDB backend, check the collector and InfluxDB are reachable.
           </Banner>
         ) : query.isLoading ? (
           <Skeleton variant="rect" className="h-[240px] w-full" />
