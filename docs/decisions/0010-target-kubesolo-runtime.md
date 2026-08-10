@@ -53,6 +53,13 @@ What the direction means for code written from now on:
   those interfaces are contracts, not conveniences: they must be designed against both runtimes'
   semantics (what "a service", "a deploy", "down" mean in each), and nothing outside `Services/`
   may learn concepts specific to either.
+
+  **Kube dictates what the contracts can express.** Dual implementations must never mean
+  lowest-common-denominator interfaces: when a feature needs something Docker cannot do or carry,
+  do not water the design down to keep Docker whole — evolve the interface to the Kube-shaped
+  capability and leave the Docker engine behind on it (it reports the capability as unsupported
+  rather than emulating it). The weaker implementation constrains nothing; it only implements what
+  it can of a contract the stronger one defines.
 - **Domain abstractions are already runtime-neutral and must stay so.** Stack, template, tenant,
   route, grant, deploy event — none of these name Docker. The public surfaces (App API, Management
   API) expose status vocabularies and service/container shapes that map cleanly onto pods; their
