@@ -43,6 +43,19 @@ public sealed record MgmtTenantDto(
 /// <param name="Tenants">The tenants.</param>
 public sealed record MgmtTenantsDto(IReadOnlyList<MgmtTenantDto> Tenants);
 
+/// <summary>
+/// One tenant of a managed template that the asserted user may enter
+/// (<c>GET …/tenants/accessible</c>). No <c>current</c> flag: a management stack is not one of the tenants
+/// it lists, so the field would have nothing to be true of.
+/// </summary>
+/// <param name="Slug">Tenant identifier within the template.</param>
+/// <param name="Domain">Primary domain that tenant is served on.</param>
+public sealed record MgmtAccessibleTenantDto(string Slug, string Domain);
+
+/// <summary>The managed template's tenants the asserted user may enter, by slug ascending.</summary>
+/// <param name="Tenants">The accessible tenants.</param>
+public sealed record MgmtAccessibleTenantsDto(IReadOnlyList<MgmtAccessibleTenantDto> Tenants);
+
 /// <summary>A deploy that was accepted onto the queue.</summary>
 /// <param name="Id">Deploy event id tracking it.</param>
 /// <param name="Status">One of <c>queued</c> or <c>running</c>.</param>

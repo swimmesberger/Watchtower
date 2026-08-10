@@ -70,6 +70,19 @@ public sealed record AppVersionServiceDto(string Service, string Image, string? 
 public sealed record AppVersionDto(
     string? Commit, DateTimeOffset? DeployedAt, IReadOnlyList<AppVersionServiceDto> Services);
 
+/// <summary>
+/// One tenant the visiting user may switch to (<c>GET /api/app/tenants/accessible</c>). Deliberately just
+/// enough to render a switcher entry: this response is shown to end users.
+/// </summary>
+/// <param name="Slug">Tenant identifier within the template.</param>
+/// <param name="Domain">Primary domain that tenant is served on.</param>
+/// <param name="Current">True for exactly the stack answering the request.</param>
+public sealed record AppAccessibleTenantDto(string Slug, string Domain, bool Current);
+
+/// <summary>The sibling tenants of the caller's template the visiting user may enter, by slug ascending.</summary>
+/// <param name="Tenants">The accessible tenants, including the caller itself when the user may enter it.</param>
+public sealed record AppAccessibleTenantsDto(IReadOnlyList<AppAccessibleTenantDto> Tenants);
+
 /// <summary>Error body returned by the App API for 400/401/403/404 responses.</summary>
 /// <param name="Error">Human-readable message. Never contains tokens, credentials or deploy output.</param>
 /// <param name="Services">Available compose service names, when the error is "ambiguous service".</param>

@@ -113,6 +113,7 @@ and a single `StackTemplate`.**
   Deferred to central-auth Phase 2, which can add service identities *behind the same grant model*
   rather than beside it.
 - **Put the endpoints under `/api/app/*`.** Convenient — same token, same middleware — but it would
-  destroy that surface's one-sentence security contract, *a stack can only ever see itself*. Reviewers
+  destroy that surface's one-sentence security contract, *a stack can only ever see itself* (since
+  amended by [ADR-0011](0011-user-scoped-tenant-discovery.md) for proven visiting users). Reviewers
   and operators rely on that invariant to reason about the App API without reading the code; a
   surface where some tokens see other stacks is a different thing and gets a different prefix.

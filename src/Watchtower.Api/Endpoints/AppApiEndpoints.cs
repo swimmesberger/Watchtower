@@ -21,20 +21,37 @@ namespace Watchtower.Api.Endpoints;
 /// Responses deliberately exclude deploy output, environment variable values and credentials.
 /// </para>
 /// <para>
+/// One endpoint is not about the caller's own state: <c>/tenants/accessible</c> names sibling tenants.
+/// It is not an exception to the rule above so much as a different question — it answers on behalf of a
+/// visitor the caller proves with their forwarded identity assertion, about apps that visitor could reach
+/// by typing the domain, and it carries nothing operational about those stacks.
+/// </para>
+/// <para>
 /// Per ADR-0003 these are plain minimal-API routes rather than JSON-RPC handlers: they are externally
 /// facing with their own auth semantics, and one of them is a stream.
 /// </para>
 /// </remarks>
 public static class AppApiEndpoints {
+    /// <summary>
+    /// The user-scoped tenant switcher feed. Not "the caller's own state" like the rest of this surface,
+    /// which is why it carries a second credential — see <see cref="MapAccessibleTenants"/>.
+    /// </summary>
+    private const string AccessibleTenantsPath = "/api/app/tenants/accessible";
+
     /// <summary>Maps every <c>/api/app/*</c> route onto the application.</summary>
     /// <param name="app">The web application to map onto.</param>
+    /// <param name="authEnabled">
+    /// Whether central authentication is configured. With it off no identity assertion exists, so the
+    /// tenant-switcher endpoint answers 404 instead of asking for one.
+    /// </param>
     /// <returns>The same application, for chaining.</returns>
-    public static WebApplication MapAppApiEndpoints(this WebApplication app) {
+    public static WebApplication MapAppApiEndpoints(this WebApplication app, bool authEnabled) {
         MapSelf(app);
         MapStatus(app);
         MapDeployments(app);
         MapVersion(app);
         MapLogs(app);
+        MapAccessibleTenants(app, authEnabled);
         return app;
     }
 
@@ -108,6 +125,65 @@ public static class AppApiEndpoints {
             return await SseLogStreaming.ServeLogsAsync(response, docker, containers, service, tail, follow, ct);
         });
 
+    /// <summary>
+    /// The sibling tenants of the caller's own template that the <em>visiting user</em> may switch to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two credentials, and both are load-bearing. The stack authenticates as usual with its App API token,
+    /// and additionally forwards the <c>X-Watchtower-Jwt</c> assertion from the request it is currently
+    /// serving. The assertion is what names the user — no endpoint here accepts a bare user id — and it is
+    /// only accepted when its <c>aud</c> is one of <em>this</em> stack's domains, so an app can only ask
+    /// about somebody actually visiting it.
+    /// </para>
+    /// <para>
+    /// A stack that is not a tenant of a template gets 404: it has nothing to switch between, and it already
+    /// knows its own nature, so saying so discloses nothing. Every assertion failure gets the same 401.
+    /// </para>
+    /// </remarks>
+    private static void MapAccessibleTenants(WebApplication app, bool authEnabled) {
+        // Mapped-but-404 rather than left unmapped: an unmapped /api/app/* path falls through to the SPA
+        // fallback and answers index.html with a 200, which is a baffling reply to an API call. Same shape
+        // as the forward-auth surface takes (see WatchtowerAccessEndpoints).
+        if (!authEnabled) {
+            app.MapGet(AccessibleTenantsPath, () => Results.NotFound());
+            return;
+        }
+
+        app.MapGet(AccessibleTenantsPath, async (
+            HttpRequest request, AppApiService api, TenantDiscoveryService tenants, CancellationToken ct) => {
+            var (failure, caller) = await AuthenticateAsync(request, api, ct);
+            if (failure is not null) return failure;
+
+            var templateId = await tenants.ResolveTenantTemplateIdAsync(caller!.StackId, ct);
+            if (templateId is null)
+                return Results.Json(new AppApiErrorDto("This stack is not a tenant of a template."),
+                    statusCode: StatusCodes.Status404NotFound);
+
+            var userId = await tenants.ResolveAssertionSubjectAsync(
+                caller.StackId, request.Headers[RouteAccessPolicy.JwtHeaderName], ct);
+            if (userId is null) return InvalidUserAssertion();
+
+            var accessible = await tenants.ListAccessibleTenantsAsync(templateId.Value, userId.Value, ct);
+            return Results.Json(new AppAccessibleTenantsDto(accessible
+                .Select(t => new AppAccessibleTenantDto(t.Slug, t.Domain, t.StackId == caller.StackId))
+                .ToList()));
+        });
+    }
+
+    /// <summary>
+    /// 401 for a request whose forwarded identity assertion is missing, unverifiable, minted for another
+    /// app, or names an account that is gone or disabled.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately one message for all of those, shared by both public surfaces: an answer that
+    /// distinguished them would tell a caller which check it tripped, and "wrong audience" versus "no such
+    /// account" is exactly the difference an enumeration attempt is looking for.
+    /// </remarks>
+    internal static IResult InvalidUserAssertion() =>
+        Results.Json(new AppApiErrorDto("Missing or invalid user assertion."),
+            statusCode: StatusCodes.Status401Unauthorized);
+
     /// <summary>503 response used when the Docker daemon cannot be reached.</summary>
     /// <remarks>Shared with the management API, which reads live state through the same client.</remarks>
     internal static IResult DockerUnavailable() =>
@@ -150,9 +226,11 @@ public static class AppApiEndpoints {
 [JsonSerializable(typeof(AppStatusDto))]
 [JsonSerializable(typeof(AppDeploymentsDto))]
 [JsonSerializable(typeof(AppVersionDto))]
+[JsonSerializable(typeof(AppAccessibleTenantsDto))]
 [JsonSerializable(typeof(AppApiErrorDto))]
 [JsonSerializable(typeof(MgmtTemplatesDto))]
 [JsonSerializable(typeof(MgmtTenantsDto))]
+[JsonSerializable(typeof(MgmtAccessibleTenantsDto))]
 [JsonSerializable(typeof(MgmtTenantCreatedDto))]
 [JsonSerializable(typeof(MgmtTenantStatusDto))]
 [JsonSerializable(typeof(MgmtDeployAcceptedDto))]

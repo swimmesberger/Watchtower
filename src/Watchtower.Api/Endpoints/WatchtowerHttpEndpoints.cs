@@ -30,11 +30,14 @@ public static class WatchtowerHttpEndpoints {
         Protect(MapDeployOutputStream(app), authEnabled);
         Protect(MapContainerLogStream(app), authEnabled);
         MapProxyAsk(app);
-        // Public, token-authenticated surface for deployed applications (see AppApiEndpoints).
-        app.MapAppApiEndpoints();
+        // Public, token-authenticated surface for deployed applications (see AppApiEndpoints). The flag is
+        // passed down for its one identity-dependent endpoint: the tenant switcher needs a forwarded
+        // assertion, which does not exist with central auth off, so that route answers 404 there.
+        app.MapAppApiEndpoints(authEnabled);
         // Public, token-authenticated surface for a stack that manages a template's tenants. Same
-        // credential as the App API, plus an operator-managed grant (see MgmtApiEndpoints).
-        app.MapMgmtApiEndpoints();
+        // credential as the App API, plus an operator-managed grant (see MgmtApiEndpoints), and the same
+        // identity-dependent tenant listing behind the same flag.
+        app.MapMgmtApiEndpoints(authEnabled);
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
     }

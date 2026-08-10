@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-08-08
-- Related: [ADR-0003](0003-jsonrpc-primary-transport.md) (why this is not a JSON-RPC handler).
+- Related: [ADR-0003](0003-jsonrpc-primary-transport.md) (why this is not a JSON-RPC handler),
+  [ADR-0011](0011-user-scoped-tenant-discovery.md) (amends the self-only invariant).
 
 ## Context
 

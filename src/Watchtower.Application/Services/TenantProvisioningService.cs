@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Tenancy;
@@ -63,6 +64,21 @@ public sealed class TenantProvisioningService(
     public const string CreateTrigger = "tenant-create";
 
     /// <summary>
+    /// Slugs no tenant may be provisioned under, because a management-API path segment already spells them.
+    /// </summary>
+    /// <remarks>
+    /// <c>accessible</c> is here because <c>GET …/tenants/accessible</c> is a literal route, and ASP.NET
+    /// routing ranks a literal segment above the <c>{slug}</c> parameter — a tenant slugged
+    /// <c>accessible</c> would therefore be unreachable on the tenant-status route. Reserving the word at
+    /// provisioning makes that collision impossible going forward; it deliberately does <em>not</em> touch
+    /// <see cref="TenancyMapping.NormalizeSlug"/>, so any slug already stored keeps resolving exactly as it
+    /// did (normalisation says what a slug <em>is</em>; this says which ones we hand out). A future literal
+    /// segment under <c>…/tenants/</c> belongs in this set on the day it is added.
+    /// </remarks>
+    public static readonly IReadOnlySet<string> ReservedSlugs =
+        FrozenSet.ToFrozenSet(["accessible"], StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Provisions one tenant of <paramref name="templateId"/>.
     /// </summary>
     /// <param name="templateId">Template to instantiate.</param>
@@ -76,6 +92,9 @@ public sealed class TenantProvisioningService(
         if (normalized is null)
             return Failed(TenantProvisionStatus.Validation,
                 "Slug must start with a letter or digit and contain only lowercase letters, digits, and hyphens.");
+        // Checked on the normalized value, so "Accessible" is refused the same way "accessible" is.
+        if (ReservedSlugs.Contains(normalized))
+            return Failed(TenantProvisionStatus.Validation, $"Slug '{normalized}' is reserved.");
         if (envOverrides is { Count: > 0 } && TenancyMapping.FirstDuplicateKey(envOverrides) is { } dup)
             return Failed(TenantProvisionStatus.Validation, $"Duplicate env var key: '{dup}'");
 

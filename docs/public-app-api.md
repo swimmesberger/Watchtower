@@ -11,6 +11,10 @@ JSON-RPC admin API.
 > **A stack can only ever see itself.** Container ids are never accepted from the caller: every
 > Docker lookup is resolved server-side from the authenticated stack's compose project label. No
 > response contains deploy output, environment variable values, credentials, or another stack's data.
+> The one exception is [`/tenants/accessible`](#get-apiapptenantsaccessible)
+> ([ADR-0011](decisions/0011-user-scoped-tenant-discovery.md)), which answers *on behalf of a proven
+> visiting user* — never on the stack's own account — and only about siblings that user could reach
+> by typing their domains anyway.
 
 ## Authentication
 
@@ -41,9 +45,9 @@ Every endpoint can return these:
 | --- | --- |
 | `200` | Success. |
 | `400` | Only on `/logs`: the stack exposes several services and no `service` was given. The body lists them. |
-| `401` | Missing, malformed, or unknown token. |
+| `401` | Missing, malformed, or unknown token — or, on `/tenants/accessible`, an unusable user assertion. |
 | `403` | Valid token, but the App API is switched off for that stack. |
-| `404` | Only on `/logs`: no container matches (the stack is down, or the named service does not exist). |
+| `404` | On `/logs`: no container matches (the stack is down, or the named service does not exist). On `/tenants/accessible`: the caller is not a tenant, or central auth is off. |
 | `503` | The Docker daemon is unreachable, so live container state could not be read. Affects `/status`, `/version` and `/logs`. |
 
 `/self` and `/deployments` read only Watchtower's own database, so they keep working while Docker is
@@ -263,6 +267,67 @@ data:
 So a well-behaved client treats `error` as "this log source is gone" and `done` as "the stream is
 over", and should expect zero or more `error` frames before `done`.
 
+### `GET /api/app/tenants/accessible`
+
+Which sibling tenants may **the user currently visiting you** open? This is the tenant switcher: you
+are a tenant of a template, the person in front of you may have access to some of your siblings, and
+this endpoint tells you which — so your UI can render the menu.
+
+It is the one place the App API answers about stacks other than yourself, and it does so only for a
+user you can *prove* is there. That proof is the [central-auth](central-auth/README.md) identity
+assertion, so this endpoint takes **two** headers:
+
+| Header | Value |
+| --- | --- |
+| `Authorization` | `Bearer wtapp_…` — your own App API token, with the usual `401`/`403` meanings. |
+| `X-Watchtower-Jwt` | The assertion from the request **you are currently serving**, forwarded verbatim. |
+
+```json
+{
+  "tenants": [
+    { "slug": "customer4", "domain": "customer4.example.com", "current": true },
+    { "slug": "customer7", "domain": "customer7.example.com", "current": false }
+  ]
+}
+```
+
+Tenants are sorted by `slug` ascending. Only tenants the user may actually reach are listed: a
+`Public` or `Authenticated` sibling always, a `Restricted` one only when that user holds a grant on
+it. A sibling with no primary route is omitted, since there is nothing to switch to. Deliberately
+absent: stack ids, deploy status, timestamps — this payload is rendered to end users, so it carries
+nothing operational.
+
+**`current` marks the calling stack when it appears** — and your own row is filtered exactly like
+any other, so it is **absent from the list if the visitor cannot reach your own primary domain**.
+That is not a hypothetical: a `Restricted` primary route whose visitor arrived through a different
+domain of yours, or a stack with no primary route at all, both produce a list with no `current: true`
+entry. Do not assume one exists; render the switcher from the list you got, and fall back to what
+you already know about yourself.
+
+| Situation | Response |
+| --- | --- |
+| Your stack is not a tenant of a template | `404` `{"error":"This stack is not a tenant of a template."}` |
+| Central auth is switched off on this Watchtower | `404` |
+| The assertion is missing, expired, tampered with, minted for another domain, or names a disabled user | `401` `{"error":"Missing or invalid user assertion."}` |
+
+**One message covers every assertion failure**, on purpose: a caller must not be able to tell "this
+token is expired" from "this token is not for you" from "that account is disabled". If you are
+debugging an integration, check the obvious three first — that you forwarded the header unchanged,
+that the request really came through the proxy, and that your clock is right.
+
+**Why the `aud` matters.** The assertion Watchtower mints is bound to the domain it was issued for
+(`aud` = the app's domain), and this endpoint accepts it only if that audience is one of **your own
+route domains**. So you can ask about a user who is visiting *you*, and nobody can ask about a user
+who is visiting *them*: an assertion collected on another app's domain is a `401` here, no matter
+how valid it is elsewhere. That binding is what keeps the endpoint from becoming a way to probe
+which tenants an arbitrary user can reach — see
+[ADR-0011](decisions/0011-user-scoped-tenant-discovery.md).
+
+`404` when central auth is off is the honest answer rather than a courtesy: with no proxy issuing
+assertions there is no user to prove, so there is no question to answer. Products whose routes are
+`Public` — they run their own login — never receive an assertion either, and should keep their own
+user-to-tenant mapping.
+
 ## Examples
 
 Using the variables the application already has in its environment:
@@ -287,6 +352,12 @@ curl -sS -N -H "Authorization: Bearer $WATCHTOWER_APP_TOKEN" \
 # Follow the log stream
 curl -sS -N -H "Authorization: Bearer $WATCHTOWER_APP_TOKEN" \
   "$WATCHTOWER_URL/api/app/logs?service=worker&follow=true"
+
+# Tenant switcher: where else may THIS visitor go?
+# $VISITOR_JWT is the X-Watchtower-Jwt of the request you are serving — not a stored value.
+curl -sS -H "Authorization: Bearer $WATCHTOWER_APP_TOKEN" \
+  -H "X-Watchtower-Jwt: $VISITOR_JWT" \
+  "$WATCHTOWER_URL/api/app/tenants/accessible"
 ```
 
 Consuming the stream from JavaScript — note that `EventSource` cannot send an `Authorization`

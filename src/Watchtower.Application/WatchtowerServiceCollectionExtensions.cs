@@ -63,6 +63,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // Public management API (/api/mgmt/*): App API token auth + grant resolution + the tenant
         // read models the host endpoints translate.
         services.AddScoped<MgmtApiService>();
+        // User-scoped tenant discovery behind both public surfaces' /tenants/accessible endpoints: verifies
+        // the forwarded identity assertion against the calling stack's own domains, then filters the
+        // template's tenants by what that user may enter.
+        services.AddScoped<TenantDiscoveryService>();
 
         // Elarion settings — typed key/value store backed by the EF Setting entity. Replaces the
         // hand-rolled SettingsStore; used for self-update config/runtime state and the runtime-editable

@@ -32,12 +32,25 @@ namespace Watchtower.Api.Endpoints;
 /// </para>
 /// </remarks>
 public static class MgmtApiEndpoints {
+    /// <summary>
+    /// The user-scoped tenant feed. The literal <c>accessible</c> segment outranks the <c>{slug}</c>
+    /// parameter when routing, which would shadow a tenant of that name on the tenant-status route — so the
+    /// word is reserved at provisioning (<see cref="TenantProvisioningService.ReservedSlugs"/>) and no such
+    /// tenant can be created. Any literal segment added here later has to join that set.
+    /// </summary>
+    private const string AccessibleTenantsPath = "/api/mgmt/templates/{templateId:int}/tenants/accessible";
+
     /// <summary>Maps every <c>/api/mgmt/*</c> route onto the application.</summary>
     /// <param name="app">The web application to map onto.</param>
+    /// <param name="authEnabled">
+    /// Whether central authentication is configured. With it off no identity assertion exists, so the
+    /// user-filtered tenant listing answers 404 instead of asking for one.
+    /// </param>
     /// <returns>The same application, for chaining.</returns>
-    public static WebApplication MapMgmtApiEndpoints(this WebApplication app) {
+    public static WebApplication MapMgmtApiEndpoints(this WebApplication app, bool authEnabled) {
         MapTemplates(app);
         MapTenants(app);
+        MapAccessibleTenants(app, authEnabled);
         MapCreateTenant(app);
         MapTenantStatus(app);
         MapDeploy(app);
@@ -62,6 +75,48 @@ public static class MgmtApiEndpoints {
             var (failure, _, _) = await AuthorizeAsync(request, api, templateId, ct);
             return failure ?? Results.Json(await api.ListTenantsAsync(templateId, ct));
         });
+
+    /// <summary>
+    /// The managed template's tenants that the <em>visiting user</em> may enter — the same tenant-switcher
+    /// feed the App API serves, for a vendor's management UI.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grant gate runs first and unchanged: an ungranted template is the surface's uniform 404 before
+    /// any assertion is looked at, so this endpoint cannot become the oracle for template ids the rest of
+    /// the surface refuses to be. Only then is the forwarded <c>X-Watchtower-Jwt</c> considered, under
+    /// exactly the App API's rules — its <c>aud</c> must be one of the <em>management</em> stack's own
+    /// domains, and every failure is the same 401.
+    /// </para>
+    /// <para>
+    /// The unfiltered <see cref="MapTenants"/> listing is untouched and remains the operational view; this
+    /// one answers "which of these may the person looking at the screen open?".
+    /// </para>
+    /// </remarks>
+    private static void MapAccessibleTenants(WebApplication app, bool authEnabled) {
+        // Mapped-but-404 with auth off, for the same reason the App API does it: an unmapped path would be
+        // answered by the SPA fallback with index.html and a 200.
+        if (!authEnabled) {
+            app.MapGet(AccessibleTenantsPath, () => Results.NotFound());
+            return;
+        }
+
+        app.MapGet(AccessibleTenantsPath, async (
+            int templateId, HttpRequest request,
+            MgmtApiService api, TenantDiscoveryService tenants, CancellationToken ct) => {
+            var (failure, caller, _) = await AuthorizeAsync(request, api, templateId, ct);
+            if (failure is not null) return failure;
+
+            var userId = await tenants.ResolveAssertionSubjectAsync(
+                caller!.StackId, request.Headers[RouteAccessPolicy.JwtHeaderName], ct);
+            if (userId is null) return AppApiEndpoints.InvalidUserAssertion();
+
+            var accessible = await tenants.ListAccessibleTenantsAsync(templateId, userId.Value, ct);
+            return Results.Json(new MgmtAccessibleTenantsDto(accessible
+                .Select(t => new MgmtAccessibleTenantDto(t.Slug, t.Domain))
+                .ToList()));
+        });
+    }
 
     /// <summary>
     /// Provisions a tenant: a stack of its own, the template's env vars with the request's overrides

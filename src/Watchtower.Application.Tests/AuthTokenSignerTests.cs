@@ -240,6 +240,103 @@ public sealed class AuthTokenSignerTests {
         Assert.Equal(0, userId);
     }
 
+    // ── TryValidate with audiences: the gate on the tenant-discovery endpoints ──
+    //
+    // Same verification as above plus the binding that makes those endpoints safe to expose: the caller
+    // passes the domains it is itself served on, so it can only ever present an assertion minted for one of
+    // them — i.e. one it was handed by a visitor who is actually there.
+
+    [Fact]
+    public void TryValidateWithAudiences_AcceptsATokenMintedForOneOfTheCallersDomains() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), AppDomain);
+
+        // A stack serving several domains (a managed subdomain plus a customer's own, say) accepts an
+        // assertion minted for any of them — they are all "visiting this stack".
+        Assert.True(signer.TryValidate(token, ["first.example.invalid", AppDomain], out var userId));
+        Assert.Equal(7, userId);
+    }
+
+    [Fact]
+    public void TryValidateWithAudiences_RejectsATokenMintedForAnotherApp() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), "other.example.invalid");
+
+        // The anti-enumeration property: an assertion a different app received cannot be replayed here to
+        // ask what its bearer may reach.
+        Assert.False(signer.TryValidate(token, [AppDomain], out var userId));
+        Assert.Equal(0, userId);
+    }
+
+    [Fact]
+    public void TryValidateWithAudiences_MatchesHostNamesCaseInsensitively() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), "App.Example.INVALID");
+
+        // A host name is not a case-sensitive string, and the route row's casing is an operator's typing —
+        // it must not decide whether a visitor's own assertion is accepted.
+        Assert.True(signer.TryValidate(token, [AppDomain], out _));
+    }
+
+    [Fact]
+    public void TryValidateWithAudiences_RejectsWhenTheCallerHasNoDomains() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        var token = signer.Mint(User("alice"), AppDomain);
+
+        // "Nothing to bind to" is not "bind to anything": a stack Watchtower serves no domain for could not
+        // have been forwarded an assertion in the first place.
+        Assert.False(signer.TryValidate(token, [], out _));
+    }
+
+    [Fact]
+    public void TryValidateWithAudiences_StillEnforcesEveryOtherCheck() {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+        var token = signer.Mint(User("alice"), AppDomain);
+        Assert.True(signer.TryValidate(token, [AppDomain], out _));
+
+        // Expiry: the audience being right does not make a stale assertion current.
+        host.Time.Advance(TimeSpan.FromMinutes(30));
+        Assert.False(signer.TryValidate(token, [AppDomain], out _));
+
+        // Tampering, on a token that is otherwise within its window.
+        var fresh = signer.Mint(User("alice"), AppDomain);
+        Assert.False(signer.TryValidate(fresh[..^1] + (fresh[^1] == 'A' ? 'B' : 'A'), [AppDomain], out _));
+
+        // And the algorithm pin — this one carries the *correct* audience, so its rejection can only be the
+        // pin doing its job rather than the audience check masking it.
+        using var secret = new HMACSHA256(RandomNumberGenerator.GetBytes(32));
+        var hs256 = new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor {
+            Issuer = AuthTokenSigner.DefaultIssuer,
+            Audience = AppDomain,
+            Claims = new Dictionary<string, object> { ["sub"] = "7" },
+            Expires = host.Time.Now.AddMinutes(5).UtcDateTime,
+            SigningCredentials = new SigningCredentials(
+                new SymmetricSecurityKey(secret.Key), SecurityAlgorithms.HmacSha256),
+        });
+        Assert.False(signer.TryValidate(hs256, [AppDomain], out _));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not-a-jwt")]
+    public void TryValidateWithAudiences_RejectsMalformedInput(string token) {
+        using var host = AuthTestHost.Start();
+        var signer = host.Services.GetRequiredService<AuthTokenSigner>();
+
+        Assert.False(signer.TryValidate(token, [AppDomain], out var userId));
+        Assert.Equal(0, userId);
+    }
+
     /// <summary>
     /// Validates the way a protected application would: keys from the published JWKS, pinned algorithm,
     /// checked issuer and audience. <paramref name="now"/> stands in for the verifier's clock, since the

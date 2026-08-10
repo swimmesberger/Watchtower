@@ -271,6 +271,32 @@ public sealed class MgmtApiTests {
             s => s.TemplateId == billing, TestContext.Current.CancellationToken)));
     }
 
+    /// <summary>
+    /// <c>accessible</c> is a literal segment of this surface's own tenant routes and outranks
+    /// <c>{slug}</c> when routing, so a tenant of that name would be created and then be unreachable on
+    /// <c>GET …/tenants/{slug}</c>. The shared provisioning path refuses it, which is what makes the
+    /// collision impossible rather than merely documented.
+    /// </summary>
+    [Theory]
+    [InlineData("accessible")]
+    [InlineData("Accessible")]
+    public async Task CreateTenant_RefusesTheReservedSlugWith400(string slug) {
+        using var factory = new WatchtowerApiFactory();
+        var (stackId, token) = await factory.AddCallerStackAsync("vendor-console");
+        var billing = await factory.AddTemplateAsync("billing");
+        await factory.GrantManagementAsync(stackId, billing);
+
+        using var client = factory.CreateApiClient();
+        var response = await SendAsync(client, HttpMethod.Post, $"{Templates}/{billing}/tenants", token,
+            $$"""{"slug":"{{slug}}"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("reserved", await BodyAsync(response), StringComparison.Ordinal);
+        Assert.False(await factory.ReadAsync(db => db.Stacks.AnyAsync(
+            s => s.TemplateId == billing, TestContext.Current.CancellationToken)));
+        Assert.Empty(factory.DeployQueue.Calls);
+    }
+
     [Fact]
     public async Task CreateTenant_RejectsAMalformedBodyWith400() {
         using var factory = new WatchtowerApiFactory();

@@ -30,3 +30,4 @@ live here.
 - [ADR-0008: Deployed applications query themselves through a token-authenticated REST API](0008-public-app-api.md)
 - [ADR-0009: A management stack manages one template's tenants through a granted REST API](0009-public-management-api.md)
 - [ADR-0010: The future runtime target is the Kubernetes API, via KubeSolo](0010-target-kubesolo-runtime.md)
+- [ADR-0011: A stack may ask which sibling tenants the proven visiting user can reach](0011-user-scoped-tenant-discovery.md)

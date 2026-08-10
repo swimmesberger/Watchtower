@@ -101,6 +101,37 @@ public sealed class TenantProvisioningServiceTests {
         await AssertNoTenantAsync(host);
     }
 
+    /// <summary>
+    /// <c>accessible</c> is a literal segment of the management API's tenant routes, and a literal outranks
+    /// <c>{slug}</c> when routing — a tenant of that name would be created successfully and then be
+    /// unreachable on the tenant-status route. It is refused up front instead, on the normalized value, so
+    /// the casing the caller typed makes no difference.
+    /// </summary>
+    [Theory]
+    [InlineData("accessible")]
+    [InlineData("ACCESSIBLE")]
+    [InlineData("  Accessible  ")]
+    public async Task Provision_RejectsAReservedSlug(string slug) {
+        using var host = AuthTestHost.Start(WithQueuedOnlyDeploys);
+        var templateId = await host.AddTemplateAsync("billing");
+
+        var result = await ProvisionAsync(host, templateId, slug);
+
+        Assert.Equal(TenantProvisionStatus.Validation, result.Status);
+        Assert.Equal("Slug 'accessible' is reserved.", result.Error);
+        await AssertNoTenantAsync(host);
+        var queue = (QueuedOnlyDeployQueueService)host.Services.GetRequiredService<DeployQueueService>();
+        Assert.Empty(queue.Calls);
+    }
+
+    /// <summary>
+    /// Reservation is not normalisation: a slug already in the database keeps resolving, whatever the
+    /// reserved set says today. Only new provisioning is refused.
+    /// </summary>
+    [Fact]
+    public void ReservingASlug_DoesNotChangeWhatNormalizationAccepts() =>
+        Assert.Equal("accessible", TenancyMapping.NormalizeSlug("Accessible"));
+
     [Fact]
     public async Task Provision_RejectsDuplicateEnvKeys() {
         using var host = AuthTestHost.Start(WithQueuedOnlyDeploys);

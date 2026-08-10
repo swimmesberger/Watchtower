@@ -64,9 +64,9 @@ stops that tenant querying itself, but does not hide it from, or protect it agai
 | `201` | Tenant created (`POST …/tenants`). |
 | `202` | Deploy accepted and queued (`POST …/deploy`). |
 | `400` | Invalid slug, invalid env variable name, malformed body; on `/logs`, several services and no `service`. |
-| `401` | Missing, malformed, or unknown token. |
+| `401` | Missing, malformed, or unknown token; on `/tenants/accessible`, an unusable user assertion. |
 | `403` | App API switched off for your stack, or `DELETE` without `allowDelete`. |
-| `404` | Unknown/ungranted template, unknown tenant slug; on `/logs`, no container matches. |
+| `404` | Unknown/ungranted template, unknown tenant slug; on `/logs`, no container matches; on `/tenants/accessible`, central auth is off. |
 | `409` | Slug, domain, or stack name already taken; `DELETE` while a deploy is queued or running. |
 | `500` | Only on `DELETE`: the compose teardown failed. Nothing was deleted; the call is safe to retry. |
 | `503` | The Docker daemon is unreachable, so live container state could not be read. |
@@ -114,7 +114,11 @@ curl -sS -X POST "$WATCHTOWER_URL/rpc" -H 'Content-Type: application/json' -d '{
 ## Endpoints
 
 All responses are JSON except `/logs`, which is a Server-Sent-Event stream. Every path is scoped by
-`{templateId}`, and every one of them `404`s unless you hold a grant on that template.
+`{templateId}`, and every one of them `404`s unless you hold a grant on that template. Two of them
+list tenants and they answer different questions: [`…/tenants`](#get-apimgmttemplatestemplateidtenants)
+is the **operations view** — every tenant of the template, whoever is asking — while
+[`…/tenants/accessible`](#get-apimgmttemplatestemplateidtenantsaccessible) is **one user's view**,
+filtered to the tenants a named, proven visitor may actually open.
 
 ### `GET /api/mgmt/templates`
 
@@ -161,6 +165,55 @@ Every tenant of the template, newest first.
 `lastDeployStatus` is `null` for a tenant that has never deployed. Every status value in this API
 comes from the same vocabulary as the App API: `queued`, `running`, `success`, `failed`.
 
+### `GET /api/mgmt/templates/{templateId}/tenants/accessible`
+
+The same template's tenants, but **filtered to what one visiting user may reach** — the support
+agent's view, and the management-stack counterpart to
+[`GET /api/app/tenants/accessible`](public-app-api.md#get-apiapptenantsaccessible). Where
+`…/tenants` answers "which customers exist", this answers "which of them may the person in front of
+me open".
+
+The user is never named by id. You prove them with the [central-auth](central-auth/README.md)
+identity assertion from the request your UI is currently serving, so this endpoint takes a second
+header alongside your bearer token:
+
+```
+X-Watchtower-Jwt: <the assertion, forwarded verbatim>
+```
+
+```json
+{
+  "tenants": [
+    { "slug": "customer4", "domain": "customer4.example.com" },
+    { "slug": "customer7", "domain": "customer7.example.com" }
+  ]
+}
+```
+
+Sorted by `slug` ascending. There is no `current` field — a management stack is not one of the
+tenants it lists, so the App API's "this one is me" marker has nothing to mark. `Public` and
+`Authenticated` tenants are always listed; a `Restricted` one only when that user holds a grant on
+it; a tenant with no primary route is omitted. As on the App API, the payload is meant to be
+rendered to a person, so it carries no stack ids, status, or timestamps.
+
+**The grant comes first.** Ordinary [`404` semantics](#authentication) are unchanged and are decided
+*before* the assertion is looked at: a template you were not granted — or that does not exist — is a
+`404`, so this endpoint tells you nothing new about the host. Only once the grant holds is the
+assertion checked.
+
+| Situation | Response |
+| --- | --- |
+| Unknown or ungranted template | `404` (as everywhere else here) |
+| Central auth is switched off on this Watchtower | `404` |
+| The assertion is missing, expired, tampered with, minted for another domain, or names a disabled user | `401` `{"error":"Missing or invalid user assertion."}` |
+
+**The audience must be yours.** An assertion is bound to the domain it was issued for, and this
+endpoint accepts it only when that `aud` is one of the **management stack's own route domains** —
+the domain your UI is served on, not the tenant's. So you can ask about somebody visiting your
+management UI, and nothing lets you ask about somebody visiting a tenant. One generic `401` covers
+every assertion failure, deliberately: the endpoint must not report *which* check failed. See
+[ADR-0011](decisions/0011-user-scoped-tenant-discovery.md).
+
 ### `POST /api/mgmt/templates/{templateId}/tenants`
 
 Provision a tenant. The slug becomes the subdomain (substituted into the template's
@@ -190,6 +243,8 @@ transaction and the first deploy is queued. Poll the tenant's status (below) to 
 
 - Slugs must start with a letter or digit and contain only lowercase letters, digits, and hyphens;
   anything else is `400`.
+- **`accessible` is a reserved slug** and is refused with `400` — it names the user-filtered listing
+  endpoint above, so a tenant called that could never be addressed at `…/tenants/accessible`.
 - Env keys must be valid variable names — `^[A-Za-z_][A-Za-z0-9_]*$` — or the request is `400`.
   Because `env` is a JSON *object*, a key repeated in the same body is not an error: the JSON parser
   keeps the last occurrence, so the request succeeds with that value.
@@ -316,6 +371,11 @@ curl -sS "${AUTH[@]}" "$WATCHTOWER_URL/api/mgmt/templates"
 
 # All customers of template 3
 curl -sS "${AUTH[@]}" "$WATCHTOWER_URL/api/mgmt/templates/3/tenants"
+
+# ...and only the ones THIS visitor may open ($VISITOR_JWT is the X-Watchtower-Jwt of the
+# request your UI is serving, not a stored value)
+curl -sS "${AUTH[@]}" -H "X-Watchtower-Jwt: $VISITOR_JWT" \
+  "$WATCHTOWER_URL/api/mgmt/templates/3/tenants/accessible"
 
 # Sign-up: provision "customer4" with two per-tenant overrides
 curl -sS "${AUTH[@]}" -X POST -H 'Content-Type: application/json' \
