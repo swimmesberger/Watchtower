@@ -338,11 +338,14 @@ public class CaddyManager : IHostedService, IDisposable {
     /// <param name="routes">The route table.</param>
     /// <param name="auth">Access-control settings; <c>Host</c> is the operator realm's login host.</param>
     /// <param name="realmAuthHosts">
-    /// Every non-null <see cref="Realm.AuthHost"/>. Blanks and duplicates are tolerated — this is a
+    /// Every non-system realm's non-null <see cref="Realm.AuthHost"/>. Required rather than defaulted:
+    /// forgetting the realm hosts silently un-serves every realm's login page and re-gates any route on one
+    /// of those domains, so on a projection this security-relevant it should be a compile error rather than
+    /// an omission. Pass an empty list to mean "no realms". Blanks and duplicates are tolerated — this is a
     /// projection, not a validator, and the handlers are where a bad host is refused.
     /// </param>
     internal static List<CaddySite> ProjectSites(
-        IReadOnlyList<Route> routes, AuthOptions auth, IReadOnlyList<string>? realmAuthHosts = null) {
+        IReadOnlyList<Route> routes, AuthOptions auth, IReadOnlyList<string> realmAuthHosts) {
         var sites = routes
             .Where(r => r.Stack is not null)
             .Select(r => new CaddySite(
@@ -362,7 +365,7 @@ public class CaddyManager : IHostedService, IDisposable {
         // One distinct entry per login host, ordered configuration-first so the operator realm's block is
         // the stable head of the list whatever the realms table happens to return.
         var loginHosts = new List<string>();
-        foreach (var candidate in new[] { auth.Host }.Concat(realmAuthHosts ?? [])) {
+        foreach (var candidate in new[] { auth.Host }.Concat(realmAuthHosts)) {
             if (string.IsNullOrWhiteSpace(candidate)) continue;
             var host = candidate.Trim().ToLowerInvariant();
             if (!loginHosts.Contains(host, StringComparer.Ordinal)) loginHosts.Add(host);

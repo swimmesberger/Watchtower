@@ -143,6 +143,32 @@ public sealed class RealmTokenTests {
         Assert.Equal(pending, issuers[signer.IssuerFor(new RealmIdentity("pending", null, false))]);
     }
 
+    /// <summary>
+    /// <c>Auth:Host</c> is configuration and can be pointed at a host a realm already holds — after the
+    /// handlers, which refuse the reverse order, have had their say. The map still has to be built (the
+    /// auth path cannot start throwing because of a configuration edit), the first realm wins, and the
+    /// loser's assertions are then refused by the caller's own realm check rather than silently attributed
+    /// to the winner. A warning is logged so the symptom is traceable to its cause.
+    /// </summary>
+    [Fact]
+    public async Task ARealmCollidingWithTheConfiguredIssuer_StillYieldsAUsableMap() {
+        using var host = AuthTestHost.Start(("Watchtower:Auth:Host", AuthHost));
+        // Written directly: realms.create refuses this, which is why it can only arise the other way round.
+        var shadowing = await host.AddRealmAsync("shadow", AuthHost);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+        var signer = scope.ServiceProvider.GetRequiredService<AuthTokenSigner>();
+
+        var issuers = await realms.IssuersAsync(TestContext.Current.CancellationToken);
+
+        // One entry for the shared issuer, and it is the operator realm's — ordered by slug, "operator"
+        // comes before "shadow", and either way the loser's tokens resolve to a realm that is not theirs
+        // and are refused.
+        Assert.Equal(Realm.SystemRealmId, issuers[signer.Issuer]);
+        Assert.NotEqual(shadowing, issuers[signer.Issuer]);
+    }
+
     private static User User(string? email = null) => new() {
         Id = 7,
         UserName = "alice",

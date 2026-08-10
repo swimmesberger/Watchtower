@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Elarion.Abstractions;
 using Elarion.Abstractions.Dispatch;
 using Microsoft.AspNetCore.Identity;

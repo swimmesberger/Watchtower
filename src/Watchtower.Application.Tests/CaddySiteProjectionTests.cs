@@ -18,7 +18,8 @@ public sealed class CaddySiteProjectionTests {
             [Route("public.example.invalid", AccessMode.Public),
              Route("members.example.invalid", AccessMode.Authenticated),
              Route("secret.example.invalid", AccessMode.Restricted)],
-            new AuthOptions { Enabled = false, Host = AuthHost });
+            new AuthOptions { Enabled = false, Host = AuthHost },
+            realmAuthHosts: []);
 
         // The escape hatch: turning access control off restores the previous configuration exactly,
         // whatever the route rows happen to say. An operator locked out by a policy mistake needs this to
@@ -33,7 +34,7 @@ public sealed class CaddySiteProjectionTests {
             [Route("public.example.invalid", AccessMode.Public),
              Route("members.example.invalid", AccessMode.Authenticated),
              Route("secret.example.invalid", AccessMode.Restricted)],
-            new AuthOptions { Enabled = true });
+            new AuthOptions { Enabled = true }, realmAuthHosts: []);
 
         Assert.False(Site(sites, "public.example.invalid").Protected);
         Assert.True(Site(sites, "members.example.invalid").Protected);
@@ -44,7 +45,8 @@ public sealed class CaddySiteProjectionTests {
     public void SelfRoute_IsAddedForTheAuthHost_AndIsNeverProtected() {
         var sites = CaddyManager.ProjectSites(
             [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = $"  {AuthHost.ToUpperInvariant()}  " });
+            new AuthOptions { Enabled = true, Host = $"  {AuthHost.ToUpperInvariant()}  " },
+            realmAuthHosts: []);
 
         var self = Site(sites, AuthHost);
         Assert.Equal("watchtower", self.UpstreamHost);
@@ -61,7 +63,8 @@ public sealed class CaddySiteProjectionTests {
         var explicitRoute = Route(AuthHost, AccessMode.Public);
         explicitRoute.ContainerPort = 3000;
 
-        var sites = CaddyManager.ProjectSites([explicitRoute], new AuthOptions { Enabled = true, Host = AuthHost });
+        var sites = CaddyManager.ProjectSites(
+            [explicitRoute], new AuthOptions { Enabled = true, Host = AuthHost }, realmAuthHosts: []);
 
         // The operator has said what that host should do; quietly replacing it would be surprising in the
         // one place surprises are least affordable.
@@ -79,7 +82,8 @@ public sealed class CaddySiteProjectionTests {
 
         var sites = CaddyManager.ProjectSites(
             [authHostRoute, Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = AuthHost });
+            new AuthOptions { Enabled = true, Host = AuthHost },
+            realmAuthHosts: []);
 
         var self = Site(sites, AuthHost);
         Assert.False(self.Protected);
@@ -93,7 +97,7 @@ public sealed class CaddySiteProjectionTests {
     public void WithoutAnAuthHost_NoSelfRouteIsEmitted() {
         var sites = CaddyManager.ProjectSites(
             [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = null });
+            new AuthOptions { Enabled = true, Host = null }, realmAuthHosts: []);
 
         Assert.Single(sites);
     }
@@ -186,7 +190,7 @@ public sealed class CaddySiteProjectionTests {
         var custom = Route("app.customer.invalid", AccessMode.Restricted);
         custom.Kind = DomainKind.Custom;
 
-        var site = Assert.Single(CaddyManager.ProjectSites([custom], new AuthOptions { Enabled = true }));
+        var site = Assert.Single(CaddyManager.ProjectSites([custom], new AuthOptions { Enabled = true }, realmAuthHosts: []));
 
         // Access control and lazy certificate issuance are independent concerns; a customer-owned domain
         // needs both.
@@ -199,7 +203,7 @@ public sealed class CaddySiteProjectionTests {
         var route = Route("members.example.invalid", AccessMode.Authenticated);
         route.IdentityHeaderMode = IdentityHeaderMode.AuthRequest;
 
-        var site = Assert.Single(CaddyManager.ProjectSites([route], new AuthOptions { Enabled = true }));
+        var site = Assert.Single(CaddyManager.ProjectSites([route], new AuthOptions { Enabled = true }, realmAuthHosts: []));
 
         // The proxy config builder reads the mode off the site to decide copy_headers; it originates here.
         Assert.True(site.Protected);

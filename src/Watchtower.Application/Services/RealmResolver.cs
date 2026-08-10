@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
@@ -27,7 +28,10 @@ namespace Watchtower.Application.Services;
 /// system realm does not let a realm account in anywhere, it only decides which login page they see.
 /// </remarks>
 public sealed class RealmResolver(
-    WatchtowerDbContext db, IOptionsMonitor<WatchtowerOptions> options, AuthTokenSigner signer) {
+    WatchtowerDbContext db,
+    IOptionsMonitor<WatchtowerOptions> options,
+    AuthTokenSigner signer,
+    ILogger<RealmResolver> logger) {
     /// <summary>The built-in operator realm — the <see cref="Realm.IsSystem"/> row, seeded by the migration.</summary>
     /// <remarks>
     /// Read rather than assumed from <see cref="Realm.SystemRealmId"/>: the constant is what column defaults
@@ -100,12 +104,18 @@ public sealed class RealmResolver(
     }
 
     /// <summary>
-    /// Every non-null <see cref="Realm.AuthHost"/>, lowercased — the extra site blocks the proxy has to
-    /// serve so each realm's login page is reachable (<see cref="CaddyManager.ProjectSites"/>).
+    /// Every non-system realm's non-null <see cref="Realm.AuthHost"/>, lowercased — the extra site blocks
+    /// the proxy has to serve so each realm's login page is reachable
+    /// (<see cref="CaddyManager.ProjectSites"/>).
     /// </summary>
+    /// <remarks>
+    /// The system realm is excluded here exactly as it is in <see cref="ResolveByHostAsync"/>: its login
+    /// host is the configured <c>Auth:Host</c>, which the projection already adds, and a stored one on that
+    /// row would be a second answer neither reads.
+    /// </remarks>
     public async Task<IReadOnlyList<string>> AuthHostsAsync(CancellationToken ct) =>
         await db.Realms.AsNoTracking()
-            .Where(r => r.AuthHost != null)
+            .Where(r => !r.IsSystem && r.AuthHost != null)
             .Select(r => r.AuthHost!.ToLower())
             .ToListAsync(ct);
 
@@ -120,16 +130,26 @@ public sealed class RealmResolver(
     /// </summary>
     /// <remarks>
     /// One key pair signs every realm's assertions (per-realm keys are not a v1 feature), so the issuer is
-    /// the only thing in a token that says which population it is about. Two realms cannot share one: the
-    /// login host is unique among realms and the handlers refuse a realm host equal to the configured
-    /// operator one. <see cref="Dictionary{TKey,TValue}.TryAdd"/> rather than an indexer assignment so a
-    /// database that somehow held such a pair would still answer rather than throw on the auth path — the
-    /// realm check the caller then makes is what keeps that safe.
+    /// the only thing in a token that says which population it is about. Two realms should not be able to
+    /// share one — the login host is unique among realms and the handlers refuse a realm host equal to the
+    /// configured operator one — but <c>Auth:Host</c> is configuration and can be changed <em>after</em> a
+    /// realm has taken that host, which no handler is in a position to refuse. The first realm wins and the
+    /// collision is logged rather than thrown: the auth path must keep answering, and the loser's tokens
+    /// are refused by the caller's own realm check rather than silently accepted as the winner's. The
+    /// warning is what turns "one realm's users mysteriously cannot use UserInfo" into a fixable line.
     /// </remarks>
     public async Task<IReadOnlyDictionary<string, int>> IssuersAsync(CancellationToken ct) {
         var realms = await ListAsync(ct);
         var issuers = new Dictionary<string, int>(realms.Count, StringComparer.Ordinal);
-        foreach (var realm in realms) issuers.TryAdd(signer.IssuerFor(RealmIdentity.From(realm)), realm.Id);
+        foreach (var realm in realms) {
+            var issuer = signer.IssuerFor(RealmIdentity.From(realm));
+            if (issuers.TryAdd(issuer, realm.Id)) continue;
+            logger.LogWarning(
+                "Realms {WinningRealmId} and {LosingRealm} both resolve to the token issuer '{Issuer}', so " +
+                "assertions minted for the second cannot be attributed to it. Change Watchtower:Auth:Host " +
+                "or the realm's auth host so each population has its own.",
+                issuers[issuer], realm.Slug, issuer);
+        }
         return issuers;
     }
 }

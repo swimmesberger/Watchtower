@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Identity;
 using Microsoft.AspNetCore.Identity;

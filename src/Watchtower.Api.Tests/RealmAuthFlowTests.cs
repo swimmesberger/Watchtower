@@ -205,6 +205,30 @@ public sealed class RealmAuthFlowTests {
         Assert.Equal(HttpStatusCode.Unauthorized, (await UserInfoAsync(client, mismatched)).StatusCode);
     }
 
+    /// <summary>
+    /// UserInfo describes the same account the login principal does, so it applies the same rule: the Admin
+    /// role is only ever reported for an operator-realm account. The handlers refuse to set the flag outside
+    /// that realm, so this is the belt to those braces — a row that acquired it by a direct database edit
+    /// must not be described to an application as holding instance-wide authority.
+    /// </summary>
+    [Fact]
+    public async Task UserInfo_NeverReportsTheAdminRoleForARealmAccount() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+        var alice = await factory.AddUserAsync("alice");
+        await SetAdminAsync(factory, carol);
+        await SetAdminAsync(factory, alice);
+
+        var realmBody = await BodyAsync(await UserInfoAsync(client, await MintAsync(factory, carol, acme)));
+        var operatorBody = await BodyAsync(
+            await UserInfoAsync(client, await MintAsync(factory, alice, Realm.SystemRealmId)));
+
+        Assert.DoesNotContain("\"roles\"", realmBody, StringComparison.Ordinal);
+        Assert.Contains("\"roles\"", operatorBody, StringComparison.Ordinal);
+    }
+
     // ── The management surface is the operator population's ───────────────────
 
     /// <summary>
@@ -235,7 +259,54 @@ public sealed class RealmAuthFlowTests {
         Assert.Contains("\"isAuthenticated\":true", bootstrap, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The same boundary on the surfaces ASP.NET's authorization middleware decides rather than Elarion's
+    /// handler pipeline. The two SSE streams are minimal-API endpoints, so nothing in the handler pipeline
+    /// runs for them: with a bare <c>RequireAuthorization()</c> a customer realm's account holding a
+    /// perfectly valid session on its own login host could stream deploy output and <em>any</em>
+    /// container's logs.
+    /// </summary>
+    [Theory]
+    [InlineData("/api/stacks/events/1/stream")]
+    [InlineData("/api/containers/abc/logs")]
+    public async Task ARealmAccount_IsForbiddenOnTheStreamEndpoints(string path) {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+
+        var authenticated = await GetAsync(client, path, SsoCookie(await factory.SsoSessionAsync(carol)));
+        var anonymous = await GetAsync(client, path, cookie: null);
+
+        // 403, not 401: the session is real and the middleware says so — what it lacks is the realm.
+        Assert.Equal(HttpStatusCode.Forbidden, authenticated.StatusCode);
+        // And an anonymous caller still gets the challenge it always did, rather than being told a session
+        // would not have helped.
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+    }
+
+    [Fact]
+    public async Task AnOperatorAccount_StillReachesTheStreamEndpoints_WithoutBeingAnAdministrator() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        // Deliberately not an administrator: this is a realm boundary, not a re-grading of who may watch
+        // deploy output — a plain operator account could before realms existed and still can.
+        var bob = await factory.AddUserAsync("bob");
+
+        var response = await GetAsync(
+            client, "/api/stacks/events/1/stream", SsoCookie(await factory.SsoSessionAsync(bob)));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static Task<HttpResponseMessage> GetAsync(HttpClient client, string path, string? cookie) {
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        if (cookie is not null) request.Headers.Add("Cookie", cookie);
+        return client.SendAsync(request, Ct);
+    }
+
 
     /// <summary>The id of the bootstrapped operator administrator.</summary>
     private static async Task<int> AdminIdAsync(WatchtowerApiFactory factory) {
@@ -271,6 +342,18 @@ public sealed class RealmAuthFlowTests {
         });
         return token;
     }
+
+    /// <summary>Sets the flag directly — the handlers refuse to for a realm account, which is the point.</summary>
+    private static Task SetAdminAsync(WatchtowerApiFactory factory, int userId) =>
+        factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var user = await db.Users.SingleAsync(u => u.Id == userId, Ct);
+            user.IsAdmin = true;
+            await db.SaveChangesAsync(Ct);
+        });
+
+    private static Task<string> BodyAsync(HttpResponseMessage response) =>
+        response.Content.ReadAsStringAsync(Ct);
 
     private static Task<HttpResponseMessage> UserInfoAsync(HttpClient client, string bearer) {
         var request = new HttpRequestMessage(HttpMethod.Get, "/api/access/userinfo");

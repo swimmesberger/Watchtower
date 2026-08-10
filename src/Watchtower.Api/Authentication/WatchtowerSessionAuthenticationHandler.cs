@@ -12,6 +12,21 @@ namespace Watchtower.Api.Authentication;
 public static class WatchtowerSessionDefaults {
     /// <summary>The ASP.NET authentication scheme backed by the <c>auth_sessions</c> table.</summary>
     public const string AuthenticationScheme = "WatchtowerSession";
+
+    /// <summary>
+    /// ASP.NET authorization policy requiring a signed-in account <em>of the operator realm</em>
+    /// (docs/central-auth/design.md §13) — the middleware-side counterpart of
+    /// <see cref="Watchtower.Application.Services.SystemRealmAuthorizer"/>, which only covers handlers.
+    /// </summary>
+    /// <remarks>
+    /// Needed because the two SSE streams are minimal-API endpoints, not Elarion handlers: nothing in the
+    /// handler pipeline runs for them, so a plain <c>RequireAuthorization()</c> would let any authenticated
+    /// principal — including a customer realm's account holding a perfectly valid session on its own login
+    /// host — stream deploy output and container logs. Both surfaces decide the question through
+    /// <see cref="Watchtower.Application.Services.WatchtowerClaims.IsSystemRealm(System.Security.Claims.ClaimsPrincipal)"/>,
+    /// so there is one rule and not two.
+    /// </remarks>
+    public const string SystemRealmPolicy = "WatchtowerSystemRealm";
 }
 
 /// <summary>

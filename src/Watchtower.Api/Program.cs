@@ -14,6 +14,7 @@ using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 // ── Coordinator mode ──────────────────────────────────────────────────────────
 // Spawned as a sibling container to perform the actual self-update compose run.
@@ -111,7 +112,14 @@ if (authEnabled) {
         .AddAuthentication(WatchtowerSessionDefaults.AuthenticationScheme)
         .AddScheme<AuthenticationSchemeOptions, WatchtowerSessionAuthenticationHandler>(
             WatchtowerSessionDefaults.AuthenticationScheme, configureOptions: null);
-    builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(o => o.AddPolicy(
+        WatchtowerSessionDefaults.SystemRealmPolicy,
+        p => p
+            // Authenticated first, so an anonymous caller still gets the 401 challenge it always did
+            // rather than a 403 that tells it a session would not have helped.
+            .RequireAuthenticatedUser()
+            // …and then the same operator-realm rule the handler pipeline applies, read off the principal.
+            .RequireAssertion(context => WatchtowerClaims.IsSystemRealm(context.User))));
     // Per-IP throttle on the login endpoint (design.md §9). Registered only in this mode because the
     // route it protects is only mapped here; the policy is attached to that one route, not global.
     builder.Services.AddWatchtowerLoginRateLimiter();

@@ -44,13 +44,17 @@ public static class WatchtowerAccessEndpoints {
     private const int MaxOriginalUriLength = 2000;
 
     /// <summary>
-    /// Realms whose missing-login-host warning has already been logged, by slug. Verify runs on every
+    /// Realms whose missing-login-host warning has already been logged, by id. Verify runs on every
     /// proxied request, so a misconfiguration that cannot be fixed from here must not also flood the log —
     /// but one realm having no host says nothing about another, so the suppression is per realm rather
     /// than global.
     /// </summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> WarnedRealms =
-        new(StringComparer.Ordinal);
+    /// <remarks>
+    /// Keyed by id rather than slug: a realm that was deleted and recreated under the same slug is a new
+    /// population with a new misconfiguration, and it should say so again rather than inherit the old
+    /// one's silence.
+    /// </remarks>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> WarnedRealms = new();
 
     /// <summary>
     /// Maps the forward-auth endpoints. With <paramref name="authEnabled"/> false they answer 404 rather
@@ -426,8 +430,13 @@ public static class WatchtowerAccessEndpoints {
         foreach (var group in groups) groupClaims.Add(group);
         claims["groups"] = groupClaims;
 
-        // Real and useful; email_verified is deliberately absent (we do not verify addresses).
-        if (user.IsAdmin) claims["roles"] = new System.Text.Json.Nodes.JsonArray(WatchtowerClaims.AdminRole);
+        // Real and useful; email_verified is deliberately absent (we do not verify addresses). Gated on the
+        // realm by the same rule as the login principal (WatchtowerClaims.ForUser): the Admin role
+        // administers the whole instance, so an account outside the operator realm must not be described as
+        // holding it — an app that maps the claim onto its own roles would otherwise be told otherwise by
+        // the two channels.
+        if (user.IsAdmin && user.RealmId == Realm.SystemRealmId)
+            claims["roles"] = new System.Text.Json.Nodes.JsonArray(WatchtowerClaims.AdminRole);
 
         return Results.Content(claims.ToJsonString(), "application/json", Encoding.UTF8);
     }
@@ -531,7 +540,7 @@ public static class WatchtowerAccessEndpoints {
     /// operator realm, a <c>realms.update</c> for any other.
     /// </summary>
     private static void WarnMissingAuthHostOnce(ILoggerFactory loggerFactory, Realm realm) {
-        if (!WarnedRealms.TryAdd(realm.Slug, 0)) return;
+        if (!WarnedRealms.TryAdd(realm.Id, 0)) return;
         var logger = loggerFactory.CreateLogger(typeof(WatchtowerAccessEndpoints).FullName!);
         if (realm.IsSystem) {
             logger.LogWarning(

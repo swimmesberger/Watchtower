@@ -149,6 +149,30 @@ namespace Watchtower.Application.Persistence.Migrations
             migrationBuilder.Sql("DELETE FROM users WHERE realm_id <> 1;");
             migrationBuilder.Sql("DELETE FROM groups WHERE realm_id <> 1;");
 
+            // Hand-written, and the second edit in this method: the scaffolded DropTable("realms") does not
+            // execute. SQLite drops a foreign key by rebuilding the table, and EF's SQLite generator hoists
+            // every rebuilding operation to the *end* of the migration — so wherever DropTable sits in this
+            // method, it is emitted while users, groups and stack_templates still carry realm_id with a
+            // RESTRICT foreign key, and every row still points at realm 1. DROP TABLE runs an implicit
+            // delete of those rows, which the constraint refuses: 'FOREIGN KEY constraint failed', and the
+            // migration is irreversible. Reordering the C# does not help, because the hoist happens after
+            // this method has run.
+            //
+            // So the drop states its own conditions instead. suppressTransaction is what makes it work at
+            // all: PRAGMA foreign_keys is a no-op inside a transaction, and EF wraps a migration in one.
+            // Enforcement is disabled for this one statement only — deliberately *after* the two DELETEs
+            // above, which need it on so their cascades still take the deleted accounts' sessions,
+            // memberships and route grants with them. The dangling reference the three tables are left
+            // holding until the hoisted rebuild drops the column is never enforced: the rebuild only reads
+            // them, and the tables it writes have no such constraint.
+            migrationBuilder.Sql(
+                """
+                PRAGMA foreign_keys = OFF;
+                DROP TABLE "realms";
+                PRAGMA foreign_keys = ON;
+                """,
+                suppressTransaction: true);
+
             migrationBuilder.DropForeignKey(
                 name: "fk_groups_realms_realm_id",
                 table: "groups");
@@ -160,9 +184,6 @@ namespace Watchtower.Application.Persistence.Migrations
             migrationBuilder.DropForeignKey(
                 name: "fk_users_realms_realm_id",
                 table: "users");
-
-            migrationBuilder.DropTable(
-                name: "realms");
 
             migrationBuilder.DropIndex(
                 name: "ix_users_realm_id_normalized_user_name",

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Watchtower.Api.Authentication;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
@@ -42,9 +43,26 @@ public static class WatchtowerHttpEndpoints {
         return app;
     }
 
-    /// <summary>Requires a valid login session on an endpoint, but only when authentication is configured.</summary>
+    /// <summary>
+    /// Requires a signed-in <em>operator-realm</em> account on an endpoint, but only when authentication is
+    /// configured.
+    /// </summary>
+    /// <remarks>
+    /// The realm half is not optional (docs/central-auth/design.md §13). These are minimal-API endpoints,
+    /// so <see cref="Application.Services.SystemRealmAuthorizer"/> — which decorates Elarion's handler
+    /// pipeline — never sees them: a bare <c>RequireAuthorization()</c> would accept <em>any</em>
+    /// authenticated principal, and a customer realm's account holding a valid <c>__wt_sso</c> on its own
+    /// login host would be able to stream deploy output and any container's logs. The policy is the same
+    /// rule the handler surface applies, read off the principal instead of the <c>ICurrentUser</c>
+    /// snapshot.
+    /// <para>
+    /// Deliberately <em>not</em> also an Admin-role requirement: a non-administrator operator account could
+    /// watch these streams before realms existed, and this is a realm boundary rather than a re-grading of
+    /// who may see deploy output.
+    /// </para>
+    /// </remarks>
     private static void Protect(RouteHandlerBuilder route, bool authEnabled) {
-        if (authEnabled) route.RequireAuthorization();
+        if (authEnabled) route.RequireAuthorization(WatchtowerSessionDefaults.SystemRealmPolicy);
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using Elarion.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Realms;
 using Watchtower.Application.Modules.Realms.Handlers;
@@ -17,13 +18,23 @@ namespace Watchtower.Application.Tests;
 /// while it holds nothing.
 /// </summary>
 public sealed class RealmsModuleTests {
-    /// <summary>Every Realms handler, added the way the generated module registration does.</summary>
+    /// <summary>
+    /// Every Realms handler, added the way the generated module registration does, plus the recording
+    /// proxy manager: a realm's login host is a site block, so every write here has to ask for a reload,
+    /// and the real manager no-ops while the proxy is disabled (which is how every test host runs it).
+    /// </summary>
     private static readonly Action<IServiceCollection> WithRealmsModule = services => {
         services.AddListRealms();
         services.AddCreateRealm();
         services.AddUpdateRealm();
         services.AddDeleteRealm();
+        services.RemoveAll<CaddyManager>();
+        services.AddSingleton<CaddyManager>(sp => ActivatorUtilities.CreateInstance<RecordingCaddyManager>(sp));
     };
+
+    /// <summary>The proxy manager the host runs with, as the double that counts reloads.</summary>
+    private static RecordingCaddyManager Caddy(AuthTestHost host) =>
+        (RecordingCaddyManager)host.Services.GetRequiredService<CaddyManager>();
 
     private const string AuthHost = "watchtower.example.invalid";
 
@@ -285,6 +296,55 @@ public sealed class RealmsModuleTests {
             Assert.False(result.IsSuccess);
             Assert.Equal(ErrorKind.Conflict, result.Error.Kind);
         }
+    }
+
+    // -- Proxy reconcile -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Every realm write changes which hosts Caddy has to serve a login page on, so every one of them asks
+    /// for a reload — the same post-commit, best-effort discipline the route CRUD and <c>proxy.setAccess</c>
+    /// handlers use. Leaving it to the next unrelated reconcile would mean a new realm's visitors are
+    /// redirected to a host nothing answers on, and — worse — that a protected route already on that domain
+    /// stays gated, which is exactly the lockout the force-unprotected self-route exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task EveryWrite_AsksTheProxyToReload() {
+        using var host = AuthTestHost.Start(WithRealmsModule);
+        var caddy = Caddy(host);
+
+        var id = await CreateAsync(host, "acme", "login.acme.invalid");
+        Assert.Equal(1, caddy.ApplyCount);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var updated = await SendAsync<UpdateRealm.Command, UpdateRealm.Response>(
+                scope.ServiceProvider, new UpdateRealm.Command(id, AuthHost: "sso.acme.invalid"));
+            Assert.True(updated.IsSuccess, Describe(updated));
+        }
+        Assert.Equal(2, caddy.ApplyCount);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var deleted = await SendAsync<DeleteRealm.Command, DeleteRealm.Response>(
+                scope.ServiceProvider, new DeleteRealm.Command(id));
+            Assert.True(deleted.IsSuccess, Describe(deleted));
+        }
+        Assert.Equal(3, caddy.ApplyCount);
+    }
+
+    [Fact]
+    public async Task ARefusedWrite_DoesNotTouchTheProxy() {
+        using var host = AuthTestHost.Start(WithRealmsModule);
+        var caddy = Caddy(host);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var badSlug = await SendAsync<CreateRealm.Command, CreateRealm.Response>(
+            scope.ServiceProvider, new CreateRealm.Command("Acme", "NOT A SLUG"));
+        var unknown = await SendAsync<DeleteRealm.Command, DeleteRealm.Response>(
+            scope.ServiceProvider, new DeleteRealm.Command(404));
+
+        // Nothing committed, so nothing to serve differently — the reload rides the commit, not the call.
+        Assert.False(badSlug.IsSuccess);
+        Assert.False(unknown.IsSuccess);
+        Assert.Equal(0, caddy.ApplyCount);
     }
 
     // -- List / authorization --------------------------------------------------------------------

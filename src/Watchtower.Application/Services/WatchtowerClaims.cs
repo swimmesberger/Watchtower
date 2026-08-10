@@ -78,4 +78,17 @@ public static class WatchtowerClaims {
         ArgumentNullException.ThrowIfNull(user);
         return user.HasClaim(RealmSlug, Realm.SystemRealmSlug);
     }
+
+    /// <inheritdoc cref="IsSystemRealm(ICurrentUser)"/>
+    /// <remarks>
+    /// The same rule read off a raw <see cref="ClaimsPrincipal"/>, for the surfaces that are decided by
+    /// ASP.NET's authorization middleware rather than by Elarion's handler pipeline — the SSE streams in
+    /// <c>WatchtowerHttpEndpoints</c>. Two entry points, one rule and one pair of constants: a management
+    /// surface that answered this question differently depending on which pipeline reached it would be a
+    /// hole rather than an inconsistency.
+    /// </remarks>
+    public static bool IsSystemRealm(ClaimsPrincipal principal) {
+        ArgumentNullException.ThrowIfNull(principal);
+        return principal.HasClaim(RealmSlug, Realm.SystemRealmSlug);
+    }
 }

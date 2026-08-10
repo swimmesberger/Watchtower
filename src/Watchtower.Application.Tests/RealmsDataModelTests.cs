@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -315,6 +316,66 @@ public sealed class RealmsDataModelTests {
         Assert.Equal(LegacyDomainPattern, template.DomainPattern);
         Assert.Equal("web", template.TargetServiceName);
         Assert.Equal(3000, template.TargetPort);
+    }
+
+    /// <summary>
+    /// The rollback has to run, not merely compile. On SQLite a foreign key is dropped by rebuilding the
+    /// table, so while the <c>realm_id</c> columns still exist every row is still pointing at realm 1
+    /// through a RESTRICT constraint — removing the <c>realms</c> table before the columns is refused, and
+    /// the migration is then irreversible with no way to notice short of trying it. So this migrates all
+    /// the way up, seeds an operator-realm account, and migrates back down.
+    /// </summary>
+    [Fact]
+    public async Task AddRealms_CanBeRolledBack_WithTheOperatorRealmsRowsIntact() {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+
+        await using var db = new WatchtowerDbContext(
+            new DbContextOptionsBuilder<WatchtowerDbContext>()
+                .UseSqlite(connection)
+                .UseSnakeCaseNamingConvention()
+                .Options);
+
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync(cancellationToken: Ct);
+
+        db.Users.Add(Raw("legacy", Realm.SystemRealmId));
+        db.Groups.Add(new Group {
+            RealmId = Realm.SystemRealmId, Name = "Legacy Staff", NormalizedName = "LEGACY STAFF",
+        });
+        await db.SaveChangesAsync(Ct);
+
+        await migrator.MigrateAsync("AddGroups", Ct);
+
+        // The realm columns and the table are gone…
+        Assert.False(await ColumnExistsAsync(db, "users", "realm_id"));
+        Assert.False(await ColumnExistsAsync(db, "groups", "realm_id"));
+        Assert.False(await ColumnExistsAsync(db, "stack_templates", "realm_id"));
+        Assert.Equal(0, await ScalarAsync(db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'realms'"));
+
+        // …and the operator realm's rows came back with them, under the v1 global unique index.
+        Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM users WHERE normalized_user_name = 'LEGACY'"));
+        Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM groups WHERE normalized_name = 'LEGACY STAFF'"));
+    }
+
+    /// <summary>Whether <paramref name="table"/> currently has <paramref name="column"/>.</summary>
+    private static async Task<bool> ColumnExistsAsync(WatchtowerDbContext db, string table, string column) {
+        // pragma_table_info as a table-valued function: the table name cannot be parameterised in DDL
+        // context, and both arguments here are test literals rather than input.
+        var count = await ScalarAsync(
+            db, $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'");
+        return count > 0;
+    }
+
+    private static async Task<long> ScalarAsync(WatchtowerDbContext db, string sql) {
+        await db.Database.OpenConnectionAsync(Ct);
+        try {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt64(await command.ExecuteScalarAsync(Ct), CultureInfo.InvariantCulture);
+        } finally {
+            await db.Database.CloseConnectionAsync();
+        }
     }
 
     /// <summary>A user row shaped for a direct insert, bypassing <c>UserManager</c> entirely.</summary>
