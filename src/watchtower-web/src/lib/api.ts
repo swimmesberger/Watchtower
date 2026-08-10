@@ -11,11 +11,11 @@ import type {
   ContainerMetrics,
   AddTenantRequest,
   CreateCredentialRequest,
+  CreateRealmRequest,
   CreateRegistryRequest,
   CreateRouteRequest,
   CreateStackRequest,
   CreateTemplateRequest,
-  CreateRealmRequest,
   Credential,
   DeployAccepted,
   DeployEvent,
@@ -340,9 +340,10 @@ export const api = {
         slug: data.slug,
         authHost: data.authHost ?? null,
       })).realm as Realm,
-    // A partial update, unlike every other update on this facade: null means "leave alone", so the fields
-    // are passed straight through rather than normalised with `?? null`. Clearing the auth host is an
-    // empty string — the caller says which of the two it means.
+    // A partial update, unlike every other update on this facade: null means "leave this field alone", so
+    // `?? null` here folds an omitted field into "leave alone" rather than into a cleared value. Clearing
+    // the auth host is therefore an empty string, which survives the `??` — the caller says which of the
+    // two it means by omitting the field or passing ''.
     update: async (id: number, data: UpdateRealmRequest) =>
       (await rpc('realms.update', {
         id,

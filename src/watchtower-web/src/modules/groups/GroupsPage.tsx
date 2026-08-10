@@ -66,6 +66,10 @@ export function GroupsPage() {
       ? groups
       : groups.filter((g) => g.realmId === Number(realmFilter))
 
+  // One rule for every realm-aware control on this screen: the realm column, the filter and the create
+  // dialog's realm select all appear together, and only when there is a choice to be made.
+  const showRealm = realms.length > 1
+
   const [showCreate, setShowCreate] = useState(false)
   const [renaming, setRenaming] = useState<Group | null>(null)
   const [editingMembers, setEditingMembers] = useState<Group | null>(null)
@@ -120,11 +124,17 @@ export function GroupsPage() {
       header: 'Group',
       cell: (g) => <span className="font-medium text-text">{g.name}</span>,
     },
-    {
-      key: 'realm',
-      header: 'Realm',
-      cell: (g) => <span className="text-sm text-text-2">{nameOf(g.realmId)}</span>,
-    },
+    // Shown only once there is more than one population to distinguish — the same rule the filter above
+    // and the create dialog's realm select follow.
+    ...(showRealm
+      ? ([
+          {
+            key: 'realm',
+            header: 'Realm',
+            cell: (g) => <span className="text-sm text-text-2">{nameOf(g.realmId)}</span>,
+          },
+        ] satisfies DataListColumn<Group>[])
+      : []),
     {
       key: 'members',
       header: 'Members',
@@ -161,8 +171,7 @@ export function GroupsPage() {
         </Button>
       </div>
 
-      {/* Only worth showing once there is more than one population to choose between. */}
-      {realms.length > 1 && (
+      {showRealm && (
         <div className="flex flex-wrap items-end gap-3">
           <Field label="Realm" className="w-full sm:w-64">
             {({ id }) => (
@@ -204,7 +213,7 @@ export function GroupsPage() {
           renderCard={(g) => (
             <GroupCard
               group={g}
-              realmName={nameOf(g.realmId)}
+              realmName={showRealm ? nameOf(g.realmId) : null}
               onEditMembers={() => setEditingMembers(g)}
               onRename={() => setRenaming(g)}
               onDelete={() => setPendingDelete(g)}
@@ -335,7 +344,8 @@ function GroupCard({
   onDelete,
 }: {
   group: Group
-  realmName: string
+  /** Null on a single-realm install, where naming the one population everywhere says nothing. */
+  realmName: string | null
   onEditMembers: () => void
   onRename: () => void
   onDelete: () => void
@@ -345,7 +355,8 @@ function GroupCard({
       <div className="min-w-0 flex-1">
         <div className="font-medium text-text">{group.name}</div>
         <div className="mt-1 text-sm text-text-2">
-          {realmName} · {describeMembers(group.memberCount)}
+          {realmName ? `${realmName} · ` : ''}
+          {describeMembers(group.memberCount)}
         </div>
       </div>
       <RowActions

@@ -74,6 +74,10 @@ export function UsersPage() {
       ? users
       : users.filter((u) => u.realmId === Number(realmFilter))
 
+  // One rule for every realm-aware control on this screen: the realm column, the filter and the create
+  // dialog's realm select all appear together, and only when there is a choice to be made.
+  const showRealm = realms.length > 1
+
   const [showCreate, setShowCreate] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
   const [resetting, setResetting] = useState<User | null>(null)
@@ -160,11 +164,18 @@ export function UsersPage() {
       header: 'Email',
       cell: (u) => <span className="text-sm text-text-2">{u.email ?? '—'}</span>,
     },
-    {
-      key: 'realm',
-      header: 'Realm',
-      cell: (u) => <span className="text-sm text-text-2">{nameOf(u.realmId)}</span>,
-    },
+    // Shown only once there is more than one population to distinguish, the same rule the filter above
+    // and the create dialog's realm select follow: on a stock install every row would carry the same
+    // word, which is a column that costs width and says nothing.
+    ...(showRealm
+      ? ([
+          {
+            key: 'realm',
+            header: 'Realm',
+            cell: (u) => <span className="text-sm text-text-2">{nameOf(u.realmId)}</span>,
+          },
+        ] satisfies DataListColumn<User>[])
+      : []),
     {
       key: 'role',
       header: 'Role',
@@ -216,8 +227,7 @@ export function UsersPage() {
         </Button>
       </div>
 
-      {/* Only worth showing once there is more than one population to choose between. */}
-      {realms.length > 1 && (
+      {showRealm && (
         <div className="flex flex-wrap items-end gap-3">
           <Field label="Realm" className="w-full sm:w-64">
             {({ id }) => (
@@ -259,7 +269,7 @@ export function UsersPage() {
           renderCard={(u) => (
             <UserCard
               user={u}
-              realmName={nameOf(u.realmId)}
+              realmName={showRealm ? nameOf(u.realmId) : null}
               onEdit={() => setEditing(u)}
               onResetPassword={() => setResetting(u)}
               onToggleDisabled={() => setPendingToggle(u)}
@@ -453,7 +463,8 @@ function UserCard({
   onDelete,
 }: {
   user: User
-  realmName: string
+  /** Null on a single-realm install, where naming the one population everywhere says nothing. */
+  realmName: string | null
   onEdit: () => void
   onResetPassword: () => void
   onToggleDisabled: () => void
@@ -473,7 +484,7 @@ function UserCard({
         <div className="mt-1 truncate text-sm text-text-2">{user.email ?? '—'}</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-3">
           <StatusBadge user={user} />
-          <span>{realmName}</span>
+          {realmName && <span>{realmName}</span>}
           <span className="tnum" title={absoluteTitle(user.createdAt)}>
             Created {timeAgo(user.createdAt)}
           </span>

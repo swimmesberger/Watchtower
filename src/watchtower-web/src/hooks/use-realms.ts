@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { Realm } from '@/lib/types'
 
 /**
  * The built-in operator realm's id. Seeded by the migration that introduced realms and never re-issued,
@@ -34,13 +33,10 @@ export function useRealms(options?: { enabled?: boolean }) {
 
   return {
     realms,
-    isLoading: query.isLoading,
-    isError: query.isError,
     /** The realm's name, or a placeholder naming the id when the roster hasn't loaded (or it is gone). */
     nameOf: (realmId: number) => byId.get(realmId)?.name ?? `Realm ${realmId}`,
     /** The realm's name, or null when the roster carries no answer — for copy that is better left out. */
     nameOrNull: (realmId: number) => byId.get(realmId)?.name ?? null,
-    get: (realmId: number): Realm | undefined => byId.get(realmId),
     /** Where a new user, group or template goes unless told otherwise. */
     systemRealmId: realms.find((r) => r.isSystem)?.id ?? SYSTEM_REALM_ID,
     isSystem: (realmId: number) => byId.get(realmId)?.isSystem ?? realmId === SYSTEM_REALM_ID,

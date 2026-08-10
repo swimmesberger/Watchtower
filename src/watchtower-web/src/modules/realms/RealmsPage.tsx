@@ -484,7 +484,10 @@ function EditRealmForm({
         e.preventDefault()
         if (!canSubmit || saving) return
         onSubmit({
-          name: name.trim(),
+          // Sent only when it actually changed — that is what the partial contract is for. A save that
+          // only moves the login host should say so and nothing else, rather than restating the current
+          // name as if it were being set.
+          name: name.trim() === realm.name ? undefined : name.trim(),
           // Omitted for the system realm, whose login host is the configured Watchtower:Auth:Host and
           // which the server refuses to set here. Everywhere else the empty string is what clears it —
           // omitting would mean "leave alone", which is a different thing.

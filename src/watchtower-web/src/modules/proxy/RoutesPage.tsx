@@ -658,7 +658,9 @@ export function RoutesPage() {
 /** Loads a route's policy and hosts the editor; the form is remounted per route so its state resets. */
 function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => void }) {
   const open = route != null
-  const { nameOf } = useRealms()
+  // Gated on the dialog being open, like the two rosters below: the Access dialog is mounted for the
+  // whole Routes page, and an administrator who never opens it should not have fetched the realm list.
+  const { nameOrNull } = useRealms({ enabled: open })
 
   const { data: access, isLoading, isError } = useQuery({
     queryKey: ['route-access', route?.id],
@@ -718,7 +720,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
           <AccessForm
             key={route!.id}
             initial={access}
-            realmName={nameOf(access.realmId)}
+            realmName={nameOrNull(access.realmId)}
             users={users}
             groups={groups}
             saving={save.isPending}
@@ -741,8 +743,12 @@ function AccessForm({
   onSubmit,
 }: {
   initial: RouteAccess
-  /** The realm the candidate lists are scoped to — named in the copy so the shorter lists make sense. */
-  realmName: string
+  /**
+   * The realm the candidate lists are scoped to, named in the copy so the shorter lists make sense —
+   * or null while the roster has not answered, in which case the copy says the scoping without naming
+   * it rather than inventing a placeholder name.
+   */
+  realmName: string | null
   users: { id: number; userName: string; email: string | null }[]
   groups: { id: number; name: string; memberCount: number }[]
   saving: boolean
@@ -805,13 +811,19 @@ function AccessForm({
       {mode === 'Restricted' && (
         <Field
           label="Allowed users"
-          hint={`Accounts in the ${realmName} realm — the population this route belongs to. Only they can be granted it.`}
+          hint={
+            realmName
+              ? `Accounts in the ${realmName} realm — the population this route belongs to. Only they can be granted it.`
+              : 'Accounts in the realm this route belongs to. Only they can be granted it.'
+          }
         >
           {() =>
             users.length === 0 ? (
               <p className="text-[13px] text-text-3">
-                No accounts in the {realmName} realm yet. Add them on the Users page, then grant them
-                here.
+                {realmName
+                  ? `No accounts in the ${realmName} realm yet.`
+                  : 'No accounts in this route’s realm yet.'}{' '}
+                Add them on the Users page, then grant them here.
               </p>
             ) : (
               <div className="max-h-52 overflow-y-auto rounded-md border border-border">
@@ -846,8 +858,10 @@ function AccessForm({
           {() =>
             groups.length === 0 ? (
               <p className="text-[13px] text-text-3">
-                No groups in the {realmName} realm yet. Create one on the Groups page to grant several
-                accounts at once.
+                {realmName
+                  ? `No groups in the ${realmName} realm yet.`
+                  : 'No groups in this route’s realm yet.'}{' '}
+                Create one on the Groups page to grant several accounts at once.
               </p>
             ) : (
               <div className="max-h-52 overflow-y-auto rounded-md border border-border">
