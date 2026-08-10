@@ -45,11 +45,14 @@ building for it now. KubeSolo is the practical deployment, not a ceiling.
 
 What the direction means for code written from now on:
 
-- **New runtime-facing code goes behind seams.** The Compose/Docker specifics are already
-  concentrated in a few services (`ComposeCliService`, `DockerEngineClient`, `DeployQueueService`,
-  `CaddyManager`, the provisioning/teardown services). Keep it that way: nothing outside
-  `Services/` should learn Docker concepts, and new features should not deepen the coupling where a
-  neutral shape costs nothing.
+- **New runtime-facing code goes behind seams — and the seams must be sound enough to carry two
+  implementations at once.** The Compose/Docker specifics are already concentrated in a few services
+  (`ComposeCliService`, `DockerEngineClient`, `DeployQueueService`, `CaddyManager`, the
+  provisioning/teardown services). The transition period is expected to run the old Docker engine
+  and the new Kube engine **side by side behind the same interfaces**, not as a big-bang swap — so
+  those interfaces are contracts, not conveniences: they must be designed against both runtimes'
+  semantics (what "a service", "a deploy", "down" mean in each), and nothing outside `Services/`
+  may learn concepts specific to either.
 - **Domain abstractions are already runtime-neutral and must stay so.** Stack, template, tenant,
   route, grant, deploy event — none of these name Docker. The public surfaces (App API, Management
   API) expose status vocabularies and service/container shapes that map cleanly onto pods; their
@@ -70,6 +73,11 @@ What the direction means for code written from now on:
   file" today. A Kube target means manifests or Helm charts (which KubeSolo runs unmodified), and
   possibly compose-to-manifest conversion for continuity. Deliberately deferred to the migration
   ADR.
+- **Feature parity across the two engines is not promised.** During the transition, new features may
+  land only on the Kube seam and never reach the Docker engine — the Docker implementation is
+  maintained, not invested in. The expected end state is that Docker support **fades out** once the
+  Kube runtime carries the product; a superseding ADR will record that retirement when it happens.
+  Docs and UI should say which engine a feature requires once the first Kube-only feature exists.
 - **KubeSolo is young** (1.0 in 2026) and single-vendor. The direction is really "the Kubernetes
   API"; KubeSolo is the distribution bet, and it is replaceable (k3s single-node would run the same
   manifests) if it stalls. Re-verify its state when the migration starts.
