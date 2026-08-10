@@ -36,6 +36,7 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
     private readonly string _bucket;
     private readonly string? _composeProjectTag;
     private readonly string _diskMountpoint;
+    private bool _missingCpuLogged;
 
     public MetricsCapabilities Capabilities { get; } = new("influxdb", HistoryAvailable: true);
 
@@ -139,6 +140,7 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
         // Group flat rows into per-container rings, keyed by container name (stable across restarts,
         // unlike the container id).
         var byContainer = new Dictionary<string, ContainerAccumulator>(StringComparer.Ordinal);
+        var rowsWithCpu = 0;
         foreach (var r in rows) {
             if (!r.TryGetValue(Schema.ContainerNameTag, out var name) || string.IsNullOrEmpty(name)) continue;
             var t = ParseTime(r);
@@ -149,11 +151,28 @@ public sealed class InfluxMetricsSource : IMetricsSource, IDisposable {
                 if (projects is not null && projects.TryGetValue(name, out var project)) acc.Project = project;
                 byContainer[name] = acc;
             }
-            var cpu = TryDouble(r, Schema.ContainerCpuMeasurement) ?? 0;
+            var cpuValue = TryDouble(r, Schema.ContainerCpuMeasurement);
+            if (cpuValue is not null) rowsWithCpu++;
+            var cpu = cpuValue ?? 0;
             var mem = TryDouble(r, Schema.ContainerMemMeasurement) ?? 0;
             acc.MemPercent = TryDouble(r, Schema.ContainerMemPercentMeasurement);
             acc.MemLimit = TryDouble(r, Schema.ContainerMemLimitMeasurement) is { } lim ? (long)lim : null;
             acc.History.Add(new ContainerSampleEntry(t.Value, cpu, (long)mem));
+        }
+
+        // The classic collector-schema drift signature: memory rows exist but the CPU measurement is
+        // absent from the whole result (e.g. an older docker_stats emitting container.cpu.percent
+        // instead of container.cpu.utilization). Without this line every graph reads a silent 0.
+        if (byContainer.Count > 0 && rowsWithCpu == 0) {
+            if (!_missingCpuLogged) {
+                _missingCpuLogged = true;
+                _logger.LogWarning(
+                    "InfluxDB container rows carry no '{Measurement}' values — every container CPU reads 0. " +
+                    "Check the collector version/config (docs/metrics-history.md, 'Verifying your bucket's names').",
+                    Schema.ContainerCpuMeasurement);
+            }
+        } else if (rowsWithCpu > 0) {
+            _missingCpuLogged = false;
         }
 
         var result = new List<ContainerReadout>(byContainer.Count);

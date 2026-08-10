@@ -44,6 +44,10 @@ services:
       # WATCHTOWER__PROXY__ADMINEMAIL: you@example.com
       # Host metrics (opt-in) — needs the /proc mount above; see docs/host-metrics.md.
       # WATCHTOWER_HOST_PROC: /host/proc
+      # Metrics history is ON by default (persisted into the data volume, ~30 days; ADR-0013).
+      # Tune or switch under Settings → Metrics in the UI, or here; see docs/metrics-history.md.
+      # WATCHTOWER__METRICS__BACKEND: sqlite   # sqlite (default) | memory | influxdb
+      # WATCHTOWER__METRICS__RETENTIONDAYS: "30"
     # Replace 999 with the host's docker group GID (see the header comment).
     group_add:
       - "999"

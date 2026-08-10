@@ -1,7 +1,8 @@
 // The capability snapshot resolution reads — fetched once at boot from the backend's `elarion.session`
 // bootstrap (ADR-0030) and wrapped in the generated typed accessors: which modules are enabled, the
-// [ClientFeatures] flags the deployment resolves (e.g. `metrics-history` — true only on the InfluxDB
-// metrics backend, ADR-0007), and who the caller is.
+// [ClientFeatures] flags the deployment resolves (e.g. `metrics-history` — true on the sqlite and
+// influxdb metrics backends, ADR-0013; a runtime backend switch reloads the page to re-fetch), and who
+// the caller is.
 //
 // With `Auth:Enabled` the snapshot carries the signed-in account (and is unauthenticated before login,
 // which is what the router's login guard reads); without it the backend reports an implicit local

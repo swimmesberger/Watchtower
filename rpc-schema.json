@@ -1372,6 +1372,79 @@
         ]
       }
     },
+    "metrics.getConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "retentionDays": {
+                "type": "integer"
+              },
+              "historyAvailable": {
+                "type": "boolean"
+              },
+              "influx": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "org": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "bucket": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasToken": {
+                    "type": "boolean"
+                  },
+                  "composeProjectTag": {
+                    "type": "string"
+                  },
+                  "diskMountpoint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "org",
+                  "bucket",
+                  "hasToken",
+                  "composeProjectTag",
+                  "diskMountpoint"
+                ]
+              }
+            },
+            "required": [
+              "backend",
+              "retentionDays",
+              "historyAvailable",
+              "influx"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ]
+      }
+    },
     "metrics.host": {
       "params": {
         "type": "object",
@@ -1631,6 +1704,133 @@
         "required": [
           "stacks",
           "sampledAt"
+        ]
+      }
+    },
+    "metrics.updateConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "retentionDays": {
+            "type": "integer"
+          },
+          "influxUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "influxOrg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "influxBucket": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "influxToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "influxComposeProjectTag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "influxDiskMountpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "backend",
+          "retentionDays"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "retentionDays": {
+                "type": "integer"
+              },
+              "historyAvailable": {
+                "type": "boolean"
+              },
+              "influx": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "org": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "bucket": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasToken": {
+                    "type": "boolean"
+                  },
+                  "composeProjectTag": {
+                    "type": "string"
+                  },
+                  "diskMountpoint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "org",
+                  "bucket",
+                  "hasToken",
+                  "composeProjectTag",
+                  "diskMountpoint"
+                ]
+              }
+            },
+            "required": [
+              "backend",
+              "retentionDays",
+              "historyAvailable",
+              "influx"
+            ]
+          }
+        },
+        "required": [
+          "config"
         ]
       }
     },

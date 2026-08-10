@@ -70,7 +70,7 @@ See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
 is no longer enough (Docker Swarm vs k3s),
 [docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip,
-[docs/metrics-history.md](docs/metrics-history.md) for switching metrics to a durable InfluxDB backend, and
+[docs/metrics-history.md](docs/metrics-history.md) for the metrics backends (persisted SQLite history by default, BYO InfluxDB opt-in), and
 [docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure
@@ -141,7 +141,8 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` — straight into the containers, no compose changes needed — for the [App API](docs/public-app-api.md). |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
-| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `memory` | Metrics source: `memory` (in-process sampler) or `influxdb` (read a durable store) — see [docs/metrics-history.md](docs/metrics-history.md). |
+| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `sqlite` | Metrics source: `sqlite` (persisted history), `memory` (live only), or `influxdb` (read an external store). Runtime-switchable under Settings → Metrics — see [docs/metrics-history.md](docs/metrics-history.md). |
+| `Metrics:RetentionDays` | `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `sqlite` backend (1–365 days). |
 
 `WATCHTOWER_DOCKER_CONFIG` / `DOCKER_CONFIG` point at a mounted host `config.json` for private pulls.
 

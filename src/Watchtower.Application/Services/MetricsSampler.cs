@@ -1,6 +1,8 @@
 using System.Globalization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 
 namespace Watchtower.Application.Services;
 
@@ -10,12 +12,19 @@ namespace Watchtower.Application.Services;
 /// them into the singleton <see cref="MetricsStore"/>. All <c>metrics.*</c> RPC handlers read only the
 /// store, so no Docker fan-out happens on the request path.
 ///
+/// <para>The active backend is re-read each tick (ADR-0013, runtime-switchable): under <c>sqlite</c>
+/// the tick additionally feeds <see cref="MetricsPersistenceService"/>; under <c>influxdb</c> the tick
+/// does nothing at all, preserving the single-collector invariant — the external collector owns the
+/// numbers and this loop is idle.</para>
+///
 /// <para>Resilience: one failing container's stats never abort a tick; a Docker-unreachable engine
 /// marks the host sample errored/unavailable and the loop keeps ticking.</para>
 /// </summary>
 public sealed class MetricsSampler(
     DockerEngineClient docker,
     MetricsStore store,
+    MetricsPersistenceService persistence,
+    IOptionsMonitor<WatchtowerOptions> options,
     ILogger<MetricsSampler> logger) : BackgroundService {
     private const string ComposeProjectLabel = "com.docker.compose.project";
 
@@ -54,7 +63,10 @@ public sealed class MetricsSampler(
 
         while (!stoppingToken.IsCancellationRequested) {
             try {
-                await SampleAsync(stoppingToken);
+                var backend = options.CurrentValue.Metrics.ResolveBackend();
+                // Under influxdb the external collector is the single source of truth — stay idle.
+                if (backend != MetricsBackendKind.Influxdb)
+                    await SampleAsync(persist: backend == MetricsBackendKind.Sqlite, stoppingToken);
             } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) {
                 return;
             } catch (Exception ex) {
@@ -70,7 +82,7 @@ public sealed class MetricsSampler(
         }
     }
 
-    private async Task SampleAsync(CancellationToken ct) {
+    private async Task SampleAsync(bool persist, CancellationToken ct) {
         // ── Containers first (works with no host mounts) ─────────────────────────
         IReadOnlyList<DockerContainerInfo> containers;
         try {
@@ -82,6 +94,7 @@ public sealed class MetricsSampler(
             return;
         }
 
+        var recorded = new List<ContainerSnapshot>(containers.Count);
         var liveIds = new HashSet<string>(containers.Count);
         var running = new List<DockerContainerInfo>(containers.Count);
         foreach (var c in containers) {
@@ -89,7 +102,7 @@ public sealed class MetricsSampler(
             if (string.Equals(c.State, "running", StringComparison.OrdinalIgnoreCase))
                 running.Add(c);
             else
-                RecordOfflineContainer(c);
+                recorded.Add(RecordOfflineContainer(c));
         }
 
         // Prune rings for containers that disappeared, and forget their CPU-delta baseline.
@@ -97,15 +110,18 @@ public sealed class MetricsSampler(
         foreach (var goneId in _containerSeen.Keys.Where(id => !liveIds.Contains(id)).ToList())
             _containerSeen.Remove(goneId);
 
-        await SampleRunningContainersAsync(running, ct);
+        recorded.AddRange(await SampleRunningContainersAsync(running, ct));
 
         // ── Host sample ──────────────────────────────────────────────────────────
         var host = await BuildHostSnapshotAsync(ct);
         store.RecordHost(host);
+
+        if (persist)
+            await persistence.RecordTickAsync(host, recorded, ct);
     }
 
-    private void RecordOfflineContainer(DockerContainerInfo c) {
-        store.RecordContainer(new ContainerSnapshot {
+    private ContainerSnapshot RecordOfflineContainer(DockerContainerInfo c) {
+        return RecordContainer(new ContainerSnapshot {
             ContainerId = c.Id,
             ContainerName = ContainerName(c),
             StackName = c.Labels.TryGetValue(ComposeProjectLabel, out var p) ? p : null,
@@ -118,7 +134,13 @@ public sealed class MetricsSampler(
         });
     }
 
-    private async Task SampleRunningContainersAsync(IReadOnlyList<DockerContainerInfo> running, CancellationToken ct) {
+    private ContainerSnapshot RecordContainer(ContainerSnapshot snapshot) {
+        store.RecordContainer(snapshot);
+        return snapshot;
+    }
+
+    private async Task<List<ContainerSnapshot>> SampleRunningContainersAsync(
+        IReadOnlyList<DockerContainerInfo> running, CancellationToken ct) {
         using var gate = new SemaphoreSlim(MaxStatsConcurrency);
         var tasks = running.Select(async c => {
             await gate.WaitAsync(ct);
@@ -135,17 +157,19 @@ public sealed class MetricsSampler(
         });
 
         var results = await Task.WhenAll(tasks);
+        var recorded = new List<ContainerSnapshot>(results.Length);
         foreach (var (container, stats, ok) in results) {
             if (!ok || stats is null) {
-                RecordOfflineContainer(container);
+                recorded.Add(RecordOfflineContainer(container));
                 _containerSeen.Remove(container.Id);
                 continue;
             }
-            RecordContainerStats(container, stats);
+            recorded.Add(RecordContainerStats(container, stats));
         }
+        return recorded;
     }
 
-    private void RecordContainerStats(DockerContainerInfo c, DockerContainerStats stats) {
+    private ContainerSnapshot RecordContainerStats(DockerContainerInfo c, DockerContainerStats stats) {
         var firstSample = !_containerSeen.TryGetValue(c.Id, out var seen) || !seen;
         _containerSeen[c.Id] = true;
 
@@ -155,7 +179,7 @@ public sealed class MetricsSampler(
 
         var (memUsed, memLimit, memPercent) = ComputeMemory(stats);
 
-        store.RecordContainer(new ContainerSnapshot {
+        return RecordContainer(new ContainerSnapshot {
             ContainerId = c.Id,
             ContainerName = ContainerName(c),
             StackName = c.Labels.TryGetValue(ComposeProjectLabel, out var p) ? p : null,

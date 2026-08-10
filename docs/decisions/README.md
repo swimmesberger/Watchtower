@@ -32,3 +32,4 @@ live here.
 - [ADR-0010: The future runtime target is the Kubernetes API, via KubeSolo](0010-target-kubesolo-runtime.md)
 - [ADR-0011: A stack may ask which sibling tenants the proven visiting user can reach](0011-user-scoped-tenant-discovery.md)
 - [ADR-0012: Injected variables reach containers directly, through a generated compose override](0012-direct-env-injection.md)
+- [ADR-0013: SQLite-persisted metrics history by default, runtime-switchable backend](0013-sqlite-metrics-history.md)

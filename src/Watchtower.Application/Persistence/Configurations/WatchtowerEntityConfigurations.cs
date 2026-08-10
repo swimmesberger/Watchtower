@@ -346,6 +346,29 @@ public sealed class AuthEventConfiguration : IEntityTypeConfiguration<AuthEvent>
 }
 
 [EntityConfiguration]
+public sealed class MetricHostSampleConfiguration : IEntityTypeConfiguration<MetricHostSample> {
+    public void Configure(EntityTypeBuilder<MetricHostSample> b) {
+        b.ToTable("metric_host_samples");
+        b.HasKey(x => x.Id);
+        // Every read is "one tier over a time range"; unique so a re-run flush/rollup upserts by
+        // conflict rather than duplicating a bucket.
+        b.HasIndex(x => new { x.TierSeconds, x.TUnixSeconds }).IsUnique();
+    }
+}
+
+[EntityConfiguration]
+public sealed class MetricContainerSampleConfiguration : IEntityTypeConfiguration<MetricContainerSample> {
+    public void Configure(EntityTypeBuilder<MetricContainerSample> b) {
+        b.ToTable("metric_container_samples");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.ContainerName).IsRequired();
+        // Same shape as the host index, plus the series identity. The retention delete scans the
+        // (tier, t) prefix; history reads scan the same prefix and group by name in memory.
+        b.HasIndex(x => new { x.TierSeconds, x.TUnixSeconds, x.ContainerName }).IsUnique();
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<StackUpdateCheck> {
     public void Configure(EntityTypeBuilder<StackUpdateCheck> b) {
         b.ToTable("stack_update_checks");

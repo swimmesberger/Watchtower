@@ -1,10 +1,11 @@
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// The default metrics backend (ADR-0007): serves the in-memory ring buffers that
-/// <see cref="MetricsSampler"/> fills. Zero external dependency. It has only the live window — a history
-/// request returns whatever the ~15-minute ring currently holds, and <see cref="Capabilities"/> reports
-/// <c>HistoryAvailable = false</c> so the UI never offers a time-range picker against it.
+/// The live-only metrics backend (<c>memory</c>, opt-in since ADR-0013): serves the in-memory ring
+/// buffers that <see cref="MetricsSampler"/> fills, with nothing persisted. It has only the live
+/// window — a history request returns whatever the ~15-minute ring currently holds, and
+/// <see cref="Capabilities"/> reports <c>HistoryAvailable = false</c> so the UI never offers a
+/// time-range picker against it.
 /// </summary>
 public sealed class InMemoryMetricsSource(MetricsStore store) : IMetricsSource {
     public MetricsCapabilities Capabilities { get; } = new("memory", HistoryAvailable: false);
