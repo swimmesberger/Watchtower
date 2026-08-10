@@ -1,6 +1,6 @@
 # Central Authorization — Access Control Plane for Proxied Webapps
 
-> Status: proposal / design. Nothing here is implemented yet.
+> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 (OIDC upstream, groups, MFA) remains future work.
 > Branch/worktree: `watchtower-central-auth-84057b`.
 > Grounded against the current code (Proxy module, `CaddyManager`/`CaddyConfigBuilder`, `Route`
 > entity, host wiring in `Program.cs`) and Elarion `0.2.3-preview.79.1` (authorization API verified
