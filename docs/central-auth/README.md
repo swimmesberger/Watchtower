@@ -20,7 +20,8 @@ Watchtower is unauthenticated and belongs behind an authenticating reverse proxy
 - Watchtower's own login, on its published port or through its own proxy route.
 - Per-route access policy — **Public**, **Authenticated**, or **Restricted** — enforced by Caddy
   `forward_auth`, with the full cross-domain redirect dance so it works on custom domains too.
-- Signed identity forwarded to upstreams (convenience headers + an ES256 JWT with a public JWKS).
+- Signed identity forwarded to upstreams — an ES256 JWT (always, with a public JWKS) plus opt-in
+  per-route plaintext identity headers, and an OIDC UserInfo endpoint.
 - Per-route **bypass paths** for webhooks/health endpoints, a first-run admin bootstrap, and a
   break-glass recovery hook.
 
@@ -110,20 +111,57 @@ trade Cloudflare makes with `/cdn-cgi/`.
 
 ## How apps consume identity
 
-On an allowed request, the proxy forwards three response headers to the upstream (and strips any
-inbound copies first, so a client cannot spoof them):
+On an allowed request the proxy **always** forwards a signed assertion, and — only when the route opts
+in — a set of plaintext identity headers under ecosystem-standard names. Either way it first strips any
+inbound copies of the whole identity/authz namespace, so a client cannot spoof them.
 
-| Header | Contents |
+### The JWT (default, recommended)
+
+Every protected route forwards `X-Watchtower-Jwt`: a short-lived (5 min) ES256 assertion carrying
+`sub`, `email` (when set), `iss`, `aud` (the app's domain), and `iat`/`exp`. Apps that want a
+cryptographic guarantee verify it against the public key set at **`GET /api/auth/jwks`** (cacheable; it
+changes only when the signing key does) and check that `aud` is their own domain. This is the default
+and the recommended path — **JWT-only is what a route forwards unless you opt into plaintext headers.**
+
+### Plaintext identity headers (optional, per route)
+
+For off-the-shelf apps that read a trusted username header instead of validating a JWT, a route can
+additionally forward plaintext identity headers. Choose the mode in **Routes → the route → Access →
+"Identity forwarding"**:
+
+| Mode | Headers forwarded |
 | --- | --- |
-| `X-Watchtower-User` | The signed-in user name. |
-| `X-Watchtower-Email` | The user's email, when set. |
-| `X-Watchtower-Jwt` | A short-lived (5 min) ES256 assertion: `sub`, `email`, `iss`, `aud` (the app's domain), `iat`/`exp`. |
+| **None** (default) | JWT only — no plaintext identity header. |
+| **Remote** | Authelia/Traefik names: `Remote-User`, `Remote-Name`, `Remote-Email` (email only when the account has one). |
+| **AuthRequest** | oauth2-proxy names: `X-Auth-Request-User`, `X-Auth-Request-Preferred-Username`, `X-Auth-Request-Email` (email only when set). |
 
-Apps that trust the network topology can read the convenience headers directly. Apps that want a
-cryptographic guarantee verify the JWT against the public key set at **`GET /api/auth/jwks`** (cacheable;
-it changes only when the signing key does) and check that `aud` is their own domain. The per-stack
-ingress networks already make the upstream unreachable except through Caddy — the JWT is defense in
-depth on top of that, and the SSO assertion an app with its own login can consume.
+There is no bespoke `X-Watchtower-User`/`-Email` header — an off-the-shelf app does not recognise a
+made-up name, so the plaintext modes speak the names the Authelia and oauth2-proxy ecosystems already
+do.
+
+On every protected route (all modes, including **None**) the proxy strips the **full** identity/authz
+namespace of both ecosystems from the inbound request before forwarding — a superset of what it ever
+sets, including the group headers (`Remote-Groups`, `X-Auth-Request-Groups`), the oauth2-proxy
+access-token header, and the `X-Forwarded-User`/`-Email`/`-Groups`/`-Preferred-Username` family. So a
+client can never forge one (e.g. `Remote-Groups: admins` cannot reach a group-aware app as
+authoritative). The transport `X-Forwarded-For`/`-Proto`/`-Host` are deliberately left intact.
+
+The per-stack ingress networks already make the upstream unreachable except through Caddy — the JWT is
+defense in depth on top of that, and the SSO assertion an app with its own login can consume.
+
+### UserInfo endpoint
+
+For rich or on-demand identity, Watchtower exposes an OIDC UserInfo endpoint (OpenID Connect Core 1.0
+§5.3): **`GET /api/access/userinfo`** on the auth host, plus the same handler mounted at
+**`/.watchtower/userinfo`** on every protected app's own domain (for browser same-origin calls). It
+authenticates the caller two ways:
+
+- `Authorization: Bearer <X-Watchtower-Jwt>` — an app presenting the assertion it received.
+- the `__wt_access` cookie — the browser same-origin path.
+
+On success it returns standard OIDC claim JSON — `sub`, `preferred_username`, `email` (when set), and
+`roles` (only for admins). With no acceptable credential it answers `401` with
+`WWW-Authenticate: Bearer error="invalid_token"`. Groups are Phase 2 and not emitted.
 
 ## Cookies & HTTPS
 
@@ -162,7 +200,9 @@ way.
 ## Known limitations
 
 - **No MFA, OIDC/SSO, or groups yet.** Local password accounts only; these are Phase 2
-  ([design.md §2.8](design.md)).
+  ([design.md §2.8](design.md)). No group header is forwarded and none is emitted by UserInfo — today
+  a protected route forwards only the JWT plus, when a header mode is chosen, that mode's fixed
+  plaintext name set.
 - **No audit-viewing UI.** Every login, denial, policy change, and break-glass recovery is written to
   an `AuthEvent` row, but v1 ships no screen or query API over them — read the table directly if you
   need the trail. A viewing surface is a planned follow-up.

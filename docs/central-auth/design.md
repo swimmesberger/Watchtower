@@ -59,9 +59,16 @@ what the custom-domain story requires anyway. Two cookies exist:
 Plain identity headers are trivially spoofable by clients unless the proxy strips inbound copies —
 and trustworthy to the app only because of network topology. We do both of what Cloudflare does:
 
-- **Convenience headers** on the authenticated request: `X-Watchtower-User`, `X-Watchtower-Email`
-  (and later `-Groups`), copied from the verify response via `forward_auth { copy_headers … }`.
-  Every protected site block **strips these header names from the incoming client request first**.
+- **Convenience headers** on the authenticated request (refined in WI-8): plaintext identity headers
+  are **opt-in per route** and use ecosystem-standard names — Authelia/Traefik `Remote-User`/
+  `Remote-Name`/`Remote-Email` or oauth2-proxy `X-Auth-Request-User`/`-Preferred-Username`/`-Email`,
+  selected by `Route.IdentityHeaderMode` — rather than a bespoke `X-Watchtower-*` name no
+  off-the-shelf app recognises. The default is `None`: **JWT-only, no plaintext header.** Whatever the
+  mode, they are copied from the verify response via `forward_auth { copy_headers … }`, and every
+  protected site block first **strips the full identity/authz namespace of both ecosystems** from the
+  incoming client request — a defense-in-depth **superset** of what we ever forward, including the
+  group headers (`Remote-Groups`, `X-Auth-Request-Groups`) and the `X-Forwarded-*` identity family, so
+  nothing reaching the upstream — not even a header we never set — is client-forgeable.
 - **A signed JWT** (`X-Watchtower-Jwt`, ES256) carrying `sub`, `email`, `iss`, `aud` (the app's
   domain), `iat`/`exp`, verifiable against Watchtower's JWKS endpoint. Apps that care validate
   cryptographically instead of trusting topology; apps with their own auth can consume it as an SSO
@@ -224,9 +231,10 @@ Caddy `forward_auth` sends the original headers (incl. `Cookie`) plus `X-Forward
 2. If `X-Forwarded-Uri` matches a bypass prefix (or the reserved `/.watchtower/*` paths) → 200.
 3. (Later: `Authorization: Bearer` service token → 200 with service identity.)
 4. Validate the `__wt_access` cookie → session row for this `RouteId`, not expired, user not
-   disabled; for `Restricted`, user must hold a grant. On success → **200** with response headers
-   `X-Watchtower-User`, `X-Watchtower-Email`, `X-Watchtower-Jwt` (copied onto the proxied request
-   by `copy_headers`).
+   disabled; for `Restricted`, user must hold a grant. On success → **200** with the response header
+   `X-Watchtower-Jwt` always set, plus — only when the route opted into a header mode — that mode's
+   plaintext identity names (`Remote-*` or `X-Auth-Request-*`); all copied onto the proxied request
+   by `copy_headers`.
 5. On failure: browser navigation requests (`GET`/`HEAD` with `Accept: text/html`) → **302** to
    `https://{authHost}/login?redirect_uri={original URL}` (Caddy forwards the auth response to the
    client on non-2xx, so the redirect just works). Everything else (XHR, POST) → plain **401** —
@@ -261,13 +269,20 @@ app.customer.com {
 		reverse_proxy watchtower:8080
 	}
 	handle {
-		# Clients must not be able to smuggle identity headers.
-		request_header -X-Watchtower-User
-		request_header -X-Watchtower-Email
+		# Clients must not be able to smuggle identity headers: strip the full ecosystem
+		# identity/authz namespace (a superset of anything we forward), so even headers we
+		# never set — e.g. the group headers — cannot be forged.
 		request_header -X-Watchtower-Jwt
+		request_header -Remote-User
+		request_header -Remote-Groups
+		request_header -X-Auth-Request-User
+		request_header -X-Auth-Request-Groups
+		# … full ecosystem identity/authz namespace (Remote-*, X-Auth-Request-*, X-Forwarded-* identity)
 		forward_auth watchtower:8080 {
 			uri /api/access/verify
-			copy_headers X-Watchtower-User X-Watchtower-Email X-Watchtower-Jwt
+			# JWT always; the mode's plaintext names only for a header-mode route
+			# (here: Remote — omit for the default None / JWT-only route).
+			copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email
 		}
 		reverse_proxy myapp-web:3000
 	}
@@ -295,6 +310,7 @@ existing convention for non-RPC/external surfaces):
 | `POST /api/auth/login` | Password login (SPA form); sets `__wt_sso` (+ native Watchtower session). Rate-limited + Identity lockout. Accepts optional `redirect_uri` to continue the dance. |
 | `POST /api/auth/logout` | Global sign-out (revokes SSO + all app sessions). |
 | `GET /api/access/verify` | The `forward_auth` target (§5). Internal (control network). |
+| `GET /api/access/userinfo` | OIDC UserInfo (Core §5.3): identity claims for a Bearer JWT or the app-session cookie. |
 | `GET /.watchtower/callback` | Code redemption on the app domain (§5). |
 | `GET /.watchtower/logout` | Per-app sign-out. |
 | `GET /api/auth/jwks` | Public JWKS for `X-Watchtower-Jwt` verification. |
