@@ -2146,6 +2146,9 @@
             "items": {
               "type": "integer"
             }
+          },
+          "realmId": {
+            "type": "integer"
           }
         },
         "required": [
@@ -2153,7 +2156,8 @@
           "identityHeaderMode",
           "bypassPaths",
           "grantedUserIds",
-          "grantedGroupIds"
+          "grantedGroupIds",
+          "realmId"
         ]
       }
     },
