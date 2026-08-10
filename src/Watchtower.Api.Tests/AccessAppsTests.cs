@@ -69,19 +69,19 @@ public sealed class AccessAppsTests {
     }
 
     /// <summary>
-    /// Alias domains of one stack are one application wearing several names. The portal says so — the
-    /// canonical domain, once — rather than claiming the visitor has three apps.
+    /// Alias domains — several names for one service — are one application. The portal says so, naming the
+    /// canonical domain once, rather than claiming the visitor has three apps.
     /// </summary>
     [Fact]
-    public async Task AliasDomains_CollapseToTheStacksPrimary() {
+    public async Task AliasDomains_CollapseToTheEntryPointsPrimary() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
         var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
         var shop = await factory.AddTemplateAsync("shop", acme);
         var primary = await factory.AddRouteAsync(
             "one.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
-        await factory.AddAliasRouteAsync(primary, "vanity.acme.invalid");
-        await factory.AddAliasRouteAsync(primary, "legacy.acme.invalid");
+        await factory.AddStackRouteAsync(primary, "vanity.acme.invalid");
+        await factory.AddStackRouteAsync(primary, "legacy.acme.invalid");
 
         var carol = await factory.AddUserAsync("carol", realmId: acme);
 
@@ -91,19 +91,47 @@ public sealed class AccessAppsTests {
     }
 
     /// <summary>
-    /// …but only where the primary is actually reachable. A Restricted estate may grant somebody an alias
-    /// and not the canonical domain, and dropping the stack then would hide an application they hold a
-    /// grant for. Showing what they can reach is the honest degradation.
+    /// A second <em>service</em> of one stack is not an alias: a UI and its API are two ways in, and
+    /// collapsing them would hide one the caller may be the only person granted. So the grouping is by
+    /// stack <em>and</em> service — aliases within each still collapse.
     /// </summary>
     [Fact]
-    public async Task AnAliasWithoutTheStacksPrimary_IsStillListed() {
+    public async Task TwoServicesOfOneStack_AreTwoEntryPoints() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        // The stack's canonical domain, on the "web" service AddRouteAsync gives it.
+        var ui = await factory.AddRouteAsync(
+            "app.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
+        // A second name for that same service — still one entry point.
+        await factory.AddStackRouteAsync(ui, "vanity.acme.invalid");
+        // …and a different service of the same stack, which is a second one.
+        await factory.AddStackRouteAsync(ui, "api.shop.example.invalid", serviceName: "api");
+
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+
+        using var doc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+
+        // Two cards, not one and not three. Both carry the stack's name, so the domain beneath is what
+        // tells them apart — which is what the card renders.
+        Assert.Equal(["api.shop.example.invalid", "app.shop.example.invalid"], Domains(doc));
+    }
+
+    /// <summary>
+    /// …but the canonical domain is only preferred where the caller can actually reach it. A Restricted
+    /// estate may grant somebody an alias and not the primary, and dropping the entry point then would hide
+    /// an application they hold a grant for. Showing what they can reach is the honest degradation.
+    /// </summary>
+    [Fact]
+    public async Task AnAliasWithoutTheEntryPointsPrimary_IsStillListed() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
         var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
         var shop = await factory.AddTemplateAsync("shop", acme);
         var primary = await factory.AddRouteAsync(
             "one.shop.example.invalid", AccessMode.Restricted, templateId: shop);
-        var alias = await factory.AddAliasRouteAsync(primary, "vanity.acme.invalid");
+        var alias = await factory.AddStackRouteAsync(primary, "vanity.acme.invalid");
 
         var carol = await factory.AddUserAsync("carol", realmId: acme);
         await factory.GrantAsync(alias, carol);

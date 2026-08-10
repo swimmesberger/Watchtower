@@ -55,7 +55,14 @@ public static class WatchtowerAccessEndpoints {
     /// nothing that any realm account can trigger should pull those into memory at all.
     /// </summary>
     private sealed record AppRouteRow(
-        int Id, string Domain, AccessMode AccessMode, bool TlsEnabled, bool IsPrimary, int StackId, string StackName);
+        int Id,
+        string Domain,
+        AccessMode AccessMode,
+        bool TlsEnabled,
+        bool IsPrimary,
+        int StackId,
+        string ServiceName,
+        string StackName);
 
     /// <summary>Audit kind written when a signed-in visitor is refused an app they hold no grant for.</summary>
     private const string AccessDenied = "access.denied";
@@ -592,13 +599,15 @@ public static class WatchtowerAccessEndpoints {
         // indexed grants query, and Watchtower's scale is tens of routes, so there is nothing to paginate.
         var rows = await db.Routes.AsNoTracking()
             .Select(r => new AppRouteRow(
-                r.Id, r.Domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId, r.Stack!.Name))
+                r.Id, r.Domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId, r.ServiceName, r.Stack!.Name))
             .ToListAsync(ct);
 
-        // The policy takes routes, and the two fields it reads of one are the two carried above. Detached
-        // stand-ins rather than a widened projection, so the columns it does not need are never fetched.
+        // Detached stand-ins rather than a widened projection: AccessibleRouteIdsAsync documents that it
+        // reads Id and AccessMode and nothing else, so those are the only two set here. Domain and
+        // ServiceName are placeholders present because the entity marks them `required`, never values the
+        // policy consults — the real ones stay on the rows above.
         var candidates = rows
-            .Select(r => new Route { Id = r.Id, AccessMode = r.AccessMode, Domain = r.Domain, ServiceName = "" })
+            .Select(r => new Route { Id = r.Id, AccessMode = r.AccessMode, Domain = "", ServiceName = "" })
             .ToList();
         var accessible = await RouteAccessPolicy.AccessibleRouteIdsAsync(db, candidates, session.UserId, ct);
         if (accessible.Count == 0) return Ok(http, []);
@@ -609,7 +618,7 @@ public static class WatchtowerAccessEndpoints {
             .Where(r => realmIds.TryGetValue(r.Id, out var realmId) && realmId == session.User.RealmId);
 
         var apps = mine
-            .GroupBy(r => r.StackId)
+            .GroupBy(r => (r.StackId, r.ServiceName))
             .SelectMany(PreferPrimary)
             .Select(r => new AppLinkDto(r.Domain, r.StackName, $"{(r.TlsEnabled ? "https" : "http")}://{r.Domain}/"))
             // Name first, domain to break ties — a deterministic order so the page does not reshuffle
@@ -622,20 +631,28 @@ public static class WatchtowerAccessEndpoints {
     }
 
     /// <summary>
-    /// One app per stack: its canonical domain when the caller can reach it, otherwise every domain of that
-    /// stack they can.
+    /// One entry per entry point: its canonical domain when the caller can reach it, otherwise every domain
+    /// of that entry point they can.
     /// </summary>
     /// <remarks>
-    /// Alias domains of one stack are one application wearing several names, and a portal that listed each
-    /// separately would be claiming the visitor has three apps when they have one. The fallback matters
-    /// because <see cref="Route.IsPrimary"/> is a property of the stack's routes, not of the caller's:
-    /// a Restricted estate may well grant somebody an alias and not the primary, and silently dropping the
-    /// whole stack in that case would hide an application they are entitled to. Showing the aliases is the
-    /// honest degradation.
+    /// The grouping key is the stack <em>and the service</em>, because that pair is what an entry point
+    /// actually is (<see cref="Route.ServiceName"/> names the container a domain forwards to). Two domains
+    /// pointing at the same service are an <b>alias</b> — one application wearing a second name — and
+    /// listing both would tell the visitor they have two apps when they have one. Two domains pointing at
+    /// <em>different</em> services of one stack are not aliases at all but two ways in (a UI on
+    /// <c>app.example.com</c>, its API on <c>api.example.com</c>), and collapsing those would hide one the
+    /// caller may well be the only person granted. The card carries the domain under the stack's name, so
+    /// two entry points of one stack stay distinguishable.
+    /// <para>
+    /// The fallback matters because <see cref="Route.IsPrimary"/> is a property of the stack's routes, not
+    /// of the caller's: a Restricted estate may well grant somebody an alias and not the primary, and
+    /// silently dropping the entry point in that case would hide an application they are entitled to.
+    /// Showing the aliases is the honest degradation.
+    /// </para>
     /// </remarks>
-    private static IEnumerable<AppRouteRow> PreferPrimary(IGrouping<int, AppRouteRow> stack) {
-        var primary = stack.Where(r => r.IsPrimary).ToList();
-        return primary.Count > 0 ? primary : stack;
+    private static IEnumerable<AppRouteRow> PreferPrimary(IGrouping<(int StackId, string ServiceName), AppRouteRow> entryPoint) {
+        var primary = entryPoint.Where(r => r.IsPrimary).ToList();
+        return primary.Count > 0 ? primary : entryPoint;
     }
 
     /// <summary>

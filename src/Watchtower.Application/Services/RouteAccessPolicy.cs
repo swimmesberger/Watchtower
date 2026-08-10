@@ -284,7 +284,15 @@ public static class RouteAccessPolicy {
     /// answer uses.
     /// </remarks>
     /// <param name="db">Database context to read grants through.</param>
-    /// <param name="routes">Candidate routes; duplicates and unknown modes are harmless.</param>
+    /// <param name="routes">
+    /// Candidate routes; duplicates and unknown modes are harmless. <b>Only <see cref="Route.Id"/> and
+    /// <see cref="Route.AccessMode"/> are read</b>, so a caller may pass detached stand-ins carrying just
+    /// those two — a listing surface projecting the columns it needs has no reason to fetch whole
+    /// <see cref="Route"/> rows (and through them whole <see cref="Stack"/> rows, tokens included) merely to
+    /// ask this question. That is a contract, not an implementation detail: widening what this method reads
+    /// would silently give such a caller a route with a default in the field, so anything else it comes to
+    /// need belongs in the signature instead.
+    /// </param>
     /// <param name="userId">The account being evaluated, already established as live and enabled.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The ids of the routes the account may enter; empty when it may enter none.</returns>

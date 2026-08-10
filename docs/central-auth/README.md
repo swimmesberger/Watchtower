@@ -178,9 +178,11 @@ in without a second prompt. There is no sidebar and no management screen, becaus
 they could use. The list holds only routes of **their own realm** that the access policy already admits
 them to, so it names nothing they could not have reached by typing the address — in particular, another
 realm's public apps are not listed, since that would be exactly the domain enumeration `/api/proxy/ask`
-answers `404` to prevent on these same hosts. Alias domains of one stack appear once, as the app's
-canonical domain. An account that has been granted nothing yet sees a page saying so, and operator-realm
-accounts land on the management UI as before.
+answers `404` to prevent on these same hosts. Several domains pointing at the *same service* are aliases
+— one app under a second name — and appear once, as its canonical domain; domains pointing at *different*
+services of one stack are separate ways in (a UI and its API) and each get their own entry. An account
+that has been granted nothing yet sees a page saying so, and operator-realm accounts land on the
+management UI as before.
 
 ### Deleting a realm
 

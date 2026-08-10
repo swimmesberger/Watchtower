@@ -111,32 +111,36 @@ internal static class AccessTestEstate {
     }
 
     /// <summary>
-    /// Adds another domain for the stack <paramref name="routeId"/> belongs to — an alias, not a second
-    /// application. It carries the same access mode, so what distinguishes it from the primary is only
-    /// <see cref="Route.IsPrimary"/>.
+    /// Adds another domain for the stack <paramref name="routeId"/> belongs to, carrying the same access
+    /// mode so that what distinguishes it is only its service and <see cref="Route.IsPrimary"/>.
     /// </summary>
-    public static async Task<int> AddAliasRouteAsync(
-        this WatchtowerApiFactory factory, int routeId, string domain) {
-        var aliasId = 0;
+    /// <param name="serviceName">
+    /// Which service the new domain forwards to. Omitted it reuses the existing route's, making the new
+    /// domain a true <em>alias</em> — a second name for one entry point. Supplying a different one models a
+    /// stack that serves two (a UI and its API), which is two entry points and not an alias at all.
+    /// </param>
+    public static async Task<int> AddStackRouteAsync(
+        this WatchtowerApiFactory factory, int routeId, string domain, string? serviceName = null) {
+        var addedId = 0;
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var ct = TestContext.Current.CancellationToken;
 
-            var primary = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, ct);
-            var alias = new Route {
-                StackId = primary.StackId,
+            var existing = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, ct);
+            var added = new Route {
+                StackId = existing.StackId,
                 Domain = domain,
-                ServiceName = primary.ServiceName,
-                ContainerPort = primary.ContainerPort,
+                ServiceName = serviceName ?? existing.ServiceName,
+                ContainerPort = existing.ContainerPort,
                 IsPrimary = false,
-                AccessMode = primary.AccessMode,
-                TlsEnabled = primary.TlsEnabled,
+                AccessMode = existing.AccessMode,
+                TlsEnabled = existing.TlsEnabled,
             };
-            db.Routes.Add(alias);
+            db.Routes.Add(added);
             await db.SaveChangesAsync(ct);
-            aliasId = alias.Id;
+            addedId = added.Id;
         });
-        return aliasId;
+        return addedId;
     }
 
     /// <summary>When the session behind <paramref name="rawToken"/> currently expires.</summary>
