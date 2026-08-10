@@ -27,7 +27,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice", "alice@example.invalid"), AppDomain);
+        var token = signer.Mint(User("alice", "alice@example.invalid"), AppDomain, RealmIdentity.System);
         var result = Validate(token, signer, AppDomain);
 
         Assert.True(result.IsValid, result.Exception?.ToString());
@@ -51,7 +51,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
 
         // The whole point of `aud`: a compromised or merely curious upstream cannot replay the assertion
         // it was handed against a different app (design.md §2.3).
@@ -63,7 +63,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
         host.Time.Advance(TimeSpan.FromMinutes(30));
 
         Assert.True(Validate(token, signer, AppDomain).IsValid);
@@ -77,7 +77,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var jwt = new JsonWebToken(signer.Mint(User("alice", email: null), AppDomain));
+        var jwt = new JsonWebToken(signer.Mint(User("alice", email: null), AppDomain, RealmIdentity.System));
 
         Assert.False(jwt.TryGetClaim("email", out _));
         Assert.Equal("alice", jwt.GetClaim("preferred_username").Value);
@@ -88,7 +88,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "watchtower.example.invalid"));
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var result = Validate(signer.Mint(User("alice"), AppDomain), signer, AppDomain,
+        var result = Validate(signer.Mint(User("alice"), AppDomain, RealmIdentity.System), signer, AppDomain,
             issuer: "watchtower.example.invalid");
 
         Assert.True(result.IsValid, result.Exception?.ToString());
@@ -116,7 +116,7 @@ public sealed class AuthTokenSignerTests {
     public void KeyIsPersisted_SoRestartsKeepTheSameKid_AndOldTokensStayValid() {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
         var keyId = signer.KeyId;
 
         // A restart against the same data directory: without persistence every restart would rotate the
@@ -147,9 +147,9 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
 
-        Assert.True(signer.TryValidate(token, out var userId));
+        Assert.True(signer.TryValidate(token, [signer.Issuer], out var userId, out _));
         Assert.Equal(7, userId);
     }
 
@@ -158,27 +158,27 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
-        Assert.True(signer.TryValidate(token, out _));
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
+        Assert.True(signer.TryValidate(token, [signer.Issuer], out _, out _));
 
         // Past the five-minute window (and past the 30 s skew): an assertion about one request is not a
         // credential the caller can hold on to and present later.
         host.Time.Advance(TimeSpan.FromMinutes(30));
-        Assert.False(signer.TryValidate(token, out _));
+        Assert.False(signer.TryValidate(token, [signer.Issuer], out _, out _));
     }
 
     [Fact]
     public void TryValidate_RejectsAWrongIssuer() {
         using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "issuer-a.example.invalid"));
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
 
         // Same signing key (the restart shares the data directory), but the issuer we now vouch for has
         // changed — a token stamped by the old issuer must not validate.
         using var restarted = host.Restart(("Watchtower:Auth:Host", "issuer-b.example.invalid"));
         var reissued = restarted.Services.GetRequiredService<AuthTokenSigner>();
 
-        Assert.False(reissued.TryValidate(token, out _));
+        Assert.False(reissued.TryValidate(token, [reissued.Issuer], out _, out _));
     }
 
     [Fact]
@@ -193,7 +193,7 @@ public sealed class AuthTokenSignerTests {
 
         // The classic downgrade: an attacker strips the signature and sets alg to none. Pinning ES256 (and
         // requiring a signature) rejects it outright.
-        Assert.False(signer.TryValidate($"{header}.{payload}.", out _));
+        Assert.False(signer.TryValidate($"{header}.{payload}.", [signer.Issuer], out _, out _));
     }
 
     [Fact]
@@ -212,7 +212,7 @@ public sealed class AuthTokenSignerTests {
                 new SymmetricSecurityKey(secret.Key), SecurityAlgorithms.HmacSha256),
         });
 
-        Assert.False(signer.TryValidate(hs256, out _));
+        Assert.False(signer.TryValidate(hs256, [signer.Issuer], out _, out _));
     }
 
     [Fact]
@@ -220,11 +220,11 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
         // Flip the last character of the signature segment; the ES256 verification then fails.
         var tampered = token[..^1] + (token[^1] == 'A' ? 'B' : 'A');
 
-        Assert.False(signer.TryValidate(tampered, out _));
+        Assert.False(signer.TryValidate(tampered, [signer.Issuer], out _, out _));
     }
 
     [Theory]
@@ -236,7 +236,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        Assert.False(signer.TryValidate(token, out var userId));
+        Assert.False(signer.TryValidate(token, [signer.Issuer], out var userId, out _));
         Assert.Equal(0, userId);
     }
 
@@ -251,11 +251,11 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
 
         // A stack serving several domains (a managed subdomain plus a customer's own, say) accepts an
         // assertion minted for any of them — they are all "visiting this stack".
-        Assert.True(signer.TryValidate(token, ["first.example.invalid", AppDomain], out var userId));
+        Assert.True(signer.TryValidate(token, [signer.Issuer], ["first.example.invalid", AppDomain], out var userId));
         Assert.Equal(7, userId);
     }
 
@@ -264,11 +264,11 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), "other.example.invalid");
+        var token = signer.Mint(User("alice"), "other.example.invalid", RealmIdentity.System);
 
         // The anti-enumeration property: an assertion a different app received cannot be replayed here to
         // ask what its bearer may reach.
-        Assert.False(signer.TryValidate(token, [AppDomain], out var userId));
+        Assert.False(signer.TryValidate(token, [signer.Issuer], [AppDomain], out var userId));
         Assert.Equal(0, userId);
     }
 
@@ -277,11 +277,11 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), "App.Example.INVALID");
+        var token = signer.Mint(User("alice"), "App.Example.INVALID", RealmIdentity.System);
 
         // A host name is not a case-sensitive string, and the route row's casing is an operator's typing —
         // it must not decide whether a visitor's own assertion is accepted.
-        Assert.True(signer.TryValidate(token, [AppDomain], out _));
+        Assert.True(signer.TryValidate(token, [signer.Issuer], [AppDomain], out _));
     }
 
     [Fact]
@@ -289,27 +289,28 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var token = signer.Mint(User("alice"), AppDomain);
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
 
         // "Nothing to bind to" is not "bind to anything": a stack Watchtower serves no domain for could not
         // have been forwarded an assertion in the first place.
-        Assert.False(signer.TryValidate(token, [], out _));
+        Assert.False(signer.TryValidate(token, [signer.Issuer], [], out _));
     }
 
     [Fact]
     public void TryValidateWithAudiences_StillEnforcesEveryOtherCheck() {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
-        var token = signer.Mint(User("alice"), AppDomain);
-        Assert.True(signer.TryValidate(token, [AppDomain], out _));
+        var token = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
+        Assert.True(signer.TryValidate(token, [signer.Issuer], [AppDomain], out _));
 
         // Expiry: the audience being right does not make a stale assertion current.
         host.Time.Advance(TimeSpan.FromMinutes(30));
-        Assert.False(signer.TryValidate(token, [AppDomain], out _));
+        Assert.False(signer.TryValidate(token, [signer.Issuer], [AppDomain], out _));
 
         // Tampering, on a token that is otherwise within its window.
-        var fresh = signer.Mint(User("alice"), AppDomain);
-        Assert.False(signer.TryValidate(fresh[..^1] + (fresh[^1] == 'A' ? 'B' : 'A'), [AppDomain], out _));
+        var fresh = signer.Mint(User("alice"), AppDomain, RealmIdentity.System);
+        Assert.False(signer.TryValidate(
+            fresh[..^1] + (fresh[^1] == 'A' ? 'B' : 'A'), [signer.Issuer], [AppDomain], out _));
 
         // And the algorithm pin — this one carries the *correct* audience, so its rejection can only be the
         // pin doing its job rather than the audience check masking it.
@@ -322,7 +323,7 @@ public sealed class AuthTokenSignerTests {
             SigningCredentials = new SigningCredentials(
                 new SymmetricSecurityKey(secret.Key), SecurityAlgorithms.HmacSha256),
         });
-        Assert.False(signer.TryValidate(hs256, [AppDomain], out _));
+        Assert.False(signer.TryValidate(hs256, [signer.Issuer], [AppDomain], out _));
     }
 
     [Theory]
@@ -333,7 +334,7 @@ public sealed class AuthTokenSignerTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        Assert.False(signer.TryValidate(token, [AppDomain], out var userId));
+        Assert.False(signer.TryValidate(token, [signer.Issuer], [AppDomain], out var userId));
         Assert.Equal(0, userId);
     }
 

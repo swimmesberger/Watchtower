@@ -13,12 +13,26 @@ namespace Watchtower.Application.Entities;
 public sealed class User {
     public int Id { get; set; }
 
-    /// <summary>Login name as the operator typed it. Unique (case-insensitively, via <see cref="NormalizedUserName"/>).</summary>
+    /// <summary>
+    /// The population this account belongs to (design.md §13). Defaults to the system realm so every
+    /// creation path that predates realms keeps producing an operator account; the handlers that may place
+    /// an account elsewhere set it explicitly.
+    /// </summary>
+    public int RealmId { get; set; } = Realm.SystemRealmId;
+
+    /// <inheritdoc cref="RealmId"/>
+    public Realm? Realm { get; set; }
+
+    /// <summary>
+    /// Login name as the operator typed it. Unique <em>within the realm</em> (case-insensitively, via
+    /// <see cref="NormalizedUserName"/>) — two populations may each have their own <c>admin</c>.
+    /// </summary>
     public required string UserName { get; set; }
 
     /// <summary>
     /// Upper-cased form of <see cref="UserName"/> maintained by Identity's <c>ILookupNormalizer</c>.
-    /// Lookups go through this column so user names are case-insensitive on SQLite too.
+    /// Lookups go through this column so user names are case-insensitive on SQLite too, and uniqueness is
+    /// enforced on <c>(realm_id, normalized_user_name)</c>.
     /// </summary>
     public required string NormalizedUserName { get; set; }
 

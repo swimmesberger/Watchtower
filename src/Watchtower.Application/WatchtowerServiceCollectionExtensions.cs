@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Features;
 using Elarion.Abstractions.Identity;
 using Elarion.Authorization;
@@ -52,6 +53,12 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();
+        // Realms (docs/central-auth/design.md §13). The resolver is the one place a host, a route or a
+        // configuration value is turned into a population; the context is which population the current
+        // request's credential lookups may see, and defaults to the operator realm so nothing that predates
+        // realms changes behaviour. Both scoped — they read through the scoped context.
+        services.AddScoped<RealmResolver>();
+        services.AddScoped<IRealmContext, RealmContext>();
         // Public App API (/api/app/*): token auth + the read models the host endpoints translate.
         // Scoped because it reads through the scoped DbContext; the deploy queue resolves it from a
         // short-lived scope when it needs to materialize a stack's token.
@@ -161,6 +168,16 @@ public static class WatchtowerServiceCollectionExtensions {
         // registration would fail every handler at resolution time rather than fail open.
         services.AddElarionAuthorization();
 
+        // …and then decorated, so the management surface is the operator population's (design.md §13).
+        // The framework's own ClaimsAuthorizer keeps evaluating each handler's declared requirements; the
+        // realm rule is layered on top of it centrally rather than repeated as an attribute per handler,
+        // because a rule that has to be repeated is one a new handler can be written without. Registered by
+        // replacement rather than in front of AddElarionAuthorization: this must win regardless of whether
+        // the framework registers its authorizer with Add or TryAdd.
+        services.RemoveAll<IAuthorizer>();
+        services.AddScoped<ClaimsAuthorizer>();
+        services.AddScoped<IAuthorizer, SystemRealmAuthorizer>();
+
         // First-run admin + break-glass password reset. No-op unless Auth:Enabled.
         services.AddHostedService<AuthBootstrapService>();
 
@@ -185,10 +202,12 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SqliteMetricsSource>();
         services.AddSingleton<IMetricsSource, MetricsSourceRouter>();
 
-        // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates the Metrics module's
-        // [ClientFeatures] names through this service per call — "metrics-history" follows the active
-        // backend, including across a runtime switch.
-        services.AddSingleton<IFeatureFlagService, MetricsFeatureFlagService>();
+        // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates every module's
+        // [ClientFeatures] names through this one service, per call — "metrics-history" follows the
+        // routed metrics backend above (including across a runtime switch), "apps-portal" reflects the
+        // caller's realm. Scoped because the second of those reads ICurrentUser; a singleton could only
+        // answer the deployment-scoped half.
+        services.AddScoped<IFeatureFlagService, WatchtowerFeatureFlagService>();
 
         // Background checkers — always registered. Each loops on a short poll and reads its
         // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the

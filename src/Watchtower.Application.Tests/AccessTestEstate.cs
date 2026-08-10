@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 using Xunit;
 
 // Watchtower's own entity, not Microsoft.AspNetCore.Routing.Route.
@@ -24,20 +25,74 @@ namespace Watchtower.Application.Tests;
 internal static class AccessTestEstate {
     private const string Password = "correct-horse-battery";
 
-    /// <summary>Creates an account through <c>UserManager</c> and returns its id.</summary>
-    public static async Task<int> AddUserAsync(this AuthTestHost host, string userName, bool isAdmin = false) {
+    /// <summary>
+    /// Adds a realm and returns its id. <paramref name="authHost"/> is the login host it claims, or null
+    /// for a realm whose DNS is not ready yet.
+    /// </summary>
+    public static async Task<int> AddRealmAsync(
+        this AuthTestHost host, string slug, string? authHost = null) {
         await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var realm = new Realm {
+            Name = slug,
+            Slug = slug,
+            AuthHost = authHost,
+            CreatedAt = host.Time.GetUtcNow(),
+        };
+        db.Realms.Add(realm);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return realm.Id;
+    }
+
+    /// <summary>
+    /// Creates an account through <c>UserManager</c> and returns its id. The realm context is pinned first,
+    /// exactly as the login endpoint and the administrative handlers do it — otherwise Identity's duplicate
+    /// check would be answered about the wrong population.
+    /// </summary>
+    public static async Task<int> AddUserAsync(
+        this AuthTestHost host, string userName, bool isAdmin = false, int realmId = Realm.SystemRealmId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        scope.ServiceProvider.GetRequiredService<IRealmContext>().SetRealm(realmId);
         var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
         var user = AuthTestHost.NewUser(userName);
         user.IsAdmin = isAdmin;
+        user.RealmId = realmId;
         var created = await users.CreateAsync(user, Password);
         Assert.True(created.Succeeded, string.Join("; ", created.Errors.Select(e => e.Description)));
         return user.Id;
     }
 
-    /// <summary>Adds a stack and a route on it, and returns the route.</summary>
+    /// <summary>
+    /// Adds a template in <paramref name="realmId"/> and returns its id — the realm-aware counterpart of
+    /// <see cref="TenancyTestEstate.AddTemplateAsync"/>, which seeds system-realm categories for the
+    /// provisioning tests.
+    /// </summary>
+    public static async Task<int> AddRealmTemplateAsync(
+        this AuthTestHost host, string name, int realmId = Realm.SystemRealmId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var template = new StackTemplate {
+            RealmId = realmId,
+            Name = name,
+            RepositoryUrl = $"https://example.invalid/{name}.git",
+            ComposeFilePath = "docker-compose.yml",
+            Branch = "main",
+            DomainPattern = $"{{tenant}}.{name}.example.invalid",
+            TargetServiceName = "web",
+            TargetPort = 8080,
+            CreatedAt = host.Time.GetUtcNow(),
+        };
+        db.StackTemplates.Add(template);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return template.Id;
+    }
+
+    /// <summary>
+    /// Adds a stack and a route on it, and returns the route. Passing <paramref name="templateId"/> makes
+    /// the stack a tenant of that category, which is how a route ends up in a non-system realm.
+    /// </summary>
     public static async Task<Route> AddRouteAsync(
-        this AuthTestHost host, string domain, AccessMode mode = AccessMode.Public) {
+        this AuthTestHost host, string domain, AccessMode mode = AccessMode.Public, int? templateId = null) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var ct = TestContext.Current.CancellationToken;
@@ -49,6 +104,8 @@ internal static class AccessTestEstate {
             ComposeFilePath = "docker-compose.yml",
             Branch = "main",
             ComposeProjectName = name,
+            TemplateId = templateId,
+            TenantSlug = templateId is null ? null : name,
         };
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(ct);
@@ -65,14 +122,19 @@ internal static class AccessTestEstate {
         return route;
     }
 
-    /// <summary>Creates a group holding <paramref name="memberIds"/> and returns its id.</summary>
-    public static async Task<int> AddGroupAsync(
-        this AuthTestHost host, string name, params int[] memberIds) {
+    /// <summary>Creates a group in the system realm holding <paramref name="memberIds"/> and returns its id.</summary>
+    public static Task<int> AddGroupAsync(this AuthTestHost host, string name, params int[] memberIds) =>
+        AddGroupInRealmAsync(host, name, Realm.SystemRealmId, memberIds);
+
+    /// <summary>Creates a group in <paramref name="realmId"/> holding <paramref name="memberIds"/>.</summary>
+    public static async Task<int> AddGroupInRealmAsync(
+        this AuthTestHost host, string name, int realmId, params int[] memberIds) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var ct = TestContext.Current.CancellationToken;
 
         var group = new Group {
+            RealmId = realmId,
             Name = name,
             NormalizedName = name.ToUpperInvariant(),
             CreatedAt = host.Time.GetUtcNow(),

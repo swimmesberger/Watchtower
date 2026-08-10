@@ -403,7 +403,9 @@ public sealed class TenantSwitcherTests {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var signer = sp.GetRequiredService<AuthTokenSigner>();
             var user = await db.Users.SingleAsync(u => u.Id == userId, Ct);
-            token = signer.Mint(user, audience);
+            // For the account's own realm, which is what verify would have minted it for.
+            var realm = await db.Realms.SingleAsync(r => r.Id == user.RealmId, Ct);
+            token = signer.Mint(user, audience, RealmIdentity.From(realm));
         });
         return token;
     }

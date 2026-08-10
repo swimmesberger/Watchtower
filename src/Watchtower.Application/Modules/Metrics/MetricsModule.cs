@@ -13,7 +13,7 @@ namespace Watchtower.Application.Modules.Metrics;
 /// <remarks>
 /// Exposes the <c>metrics-history</c> client flag (ADR-0030): true when the active metrics backend can
 /// answer historical time ranges (the sqlite and influxdb backends). Resolved per session fetch by
-/// <c>MetricsFeatureFlagService</c> from <c>IMetricsSource.Capabilities</c>, so it follows a runtime
+/// <c>WatchtowerFeatureFlagService</c> from <c>IMetricsSource.Capabilities</c>, so it follows a runtime
 /// backend switch (<c>metrics.updateConfig</c>); the frontend gates the History view on it.
 /// </remarks>
 [AppModule("Metrics")]

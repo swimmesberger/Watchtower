@@ -1,4 +1,7 @@
+using System.Globalization;
 using System.Security.Claims;
+using Elarion.Abstractions.Identity;
+using Watchtower.Application.Entities;
 
 namespace Watchtower.Application.Services;
 
@@ -21,6 +24,71 @@ public static class WatchtowerClaims {
     /// <summary>Claim type roles are emitted under.</summary>
     public const string Role = ClaimTypes.Role;
 
+    /// <summary>
+    /// Claim carrying the <see cref="Realm.Slug"/> of the population the account belongs to
+    /// (docs/central-auth/design.md §13). Always emitted for an authenticated principal, and the value the
+    /// management surface's system-realm gate is decided on — a slug is immutable and unique, so it names
+    /// exactly one realm for the lifetime of the instance.
+    /// </summary>
+    public const string RealmSlug = "watchtower:realm";
+
     /// <summary>The single role in v1: user management and system configuration (<see cref="Entities.User.IsAdmin"/>).</summary>
     public const string AdminRole = "Admin";
+
+    /// <summary>
+    /// The claims an authenticated principal carries, in one place so every mint produces the same shape.
+    /// </summary>
+    /// <remarks>
+    /// The Admin role is emitted <em>only</em> for a system-realm account, whatever
+    /// <see cref="Entities.User.IsAdmin"/> says. The user handlers already refuse to set that flag outside
+    /// the operator realm, so this is the belt to that braces: were a row ever to acquire it — by a
+    /// direct database edit, or by a realm move some later feature adds — it would still not turn into
+    /// administrative authority over the instance.
+    /// </remarks>
+    /// <param name="user">The authenticated account.</param>
+    /// <param name="realm">Its realm, which decides the realm claim and gates the role.</param>
+    public static List<Claim> ForUser(User user, Realm realm) {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentNullException.ThrowIfNull(realm);
+
+        var claims = new List<Claim>(5) {
+            new(UserId, user.Id.ToString(CultureInfo.InvariantCulture)),
+            new(Name, user.UserName),
+            new(RealmSlug, realm.Slug),
+        };
+        if (!string.IsNullOrWhiteSpace(user.Email))
+            claims.Add(new Claim(Email, user.Email));
+        if (user.IsAdmin && realm.IsSystem)
+            claims.Add(new Claim(Role, AdminRole));
+
+        return claims;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="user"/> belongs to the built-in operator realm — the question the
+    /// management surface is gated on (design.md §13, and <see cref="SystemRealmAuthorizer"/>).
+    /// </summary>
+    /// <remarks>
+    /// Answered from the claim rather than from a database read, because it has to be answerable in the
+    /// authorization pipeline, before any handler runs, on every transport. A principal carrying no realm
+    /// claim at all is not in the system realm: fail-closed, so a future authentication path that forgets
+    /// to state the realm loses the management surface rather than handing it out.
+    /// </remarks>
+    public static bool IsSystemRealm(ICurrentUser user) {
+        ArgumentNullException.ThrowIfNull(user);
+        return user.HasClaim(RealmSlug, Realm.SystemRealmSlug);
+    }
+
+    /// <inheritdoc cref="IsSystemRealm(ICurrentUser)"/>
+    /// <remarks>
+    /// The same rule read off a raw <see cref="ClaimsPrincipal"/>, for the surfaces that are decided by
+    /// ASP.NET's authorization middleware rather than by Elarion's handler pipeline — the SSE streams in
+    /// <c>WatchtowerHttpEndpoints</c>. Two entry points, one rule and one pair of constants: a management
+    /// surface that answered this question differently depending on which pipeline reached it would be a
+    /// hole rather than an inconsistency.
+    /// </remarks>
+    public static bool IsSystemRealm(ClaimsPrincipal principal) {
+        ArgumentNullException.ThrowIfNull(principal);
+        return principal.HasClaim(RealmSlug, Realm.SystemRealmSlug);
+    }
 }

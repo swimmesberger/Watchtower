@@ -29,12 +29,22 @@ public sealed class GetAccess(WatchtowerDbContext db)
         IdentityHeaderMode IdentityHeaderMode,
         string? BypassPaths,
         IReadOnlyList<int> GrantedUserIds,
-        IReadOnlyList<int> GrantedGroupIds);
+        IReadOnlyList<int> GrantedGroupIds,
+        // The population the route's grants may name (docs/central-auth/design.md §13). Not policy, which is
+        // why it comes last: it is the context a grant editor needs to offer only candidates SetAccess would
+        // accept, so the cross-realm refusal is something the caller never has to run into.
+        int RealmId);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var route = await db.Routes.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == query.RouteId, ct);
         if (route is null)
+            return AppError.NotFound($"Route {query.RouteId} not found");
+
+        // Resolved the same way SetAccess resolves it — the stack's category, or the operator realm for a
+        // standalone stack — so the read and the write agree on which population a grant may come from.
+        var realmId = await RouteAccessPolicy.RouteRealmIdAsync(db, route.Id, ct);
+        if (realmId is null)
             return AppError.NotFound($"Route {query.RouteId} not found");
 
         // One read for both subject kinds, split afterwards: a grant row carries exactly one of the two
@@ -49,6 +59,7 @@ public sealed class GetAccess(WatchtowerDbContext db)
             route.IdentityHeaderMode,
             route.BypassPaths,
             [.. grants.Where(g => g.UserId is not null).Select(g => g.UserId!.Value).Order()],
-            [.. grants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).Order()]);
+            [.. grants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).Order()],
+            realmId.Value);
     }
 }

@@ -40,11 +40,26 @@ public sealed class SetGroupMembers(WatchtowerDbContext db, ICurrentUser current
         if (target.Count > 0) {
             var known = await db.Users.AsNoTracking()
                 .Where(u => target.Contains(u.Id))
-                .Select(u => u.Id)
+                .Select(u => new { u.Id, u.RealmId })
                 .ToListAsync(ct);
-            var missing = target.Except(known).OrderBy(id => id).ToList();
+            var missing = target.Except(known.Select(u => u.Id)).OrderBy(id => id).ToList();
             if (missing.Count > 0)
                 return AppError.Validation($"No user exists with id {Describe(missing)}.");
+
+            // A group holds accounts of its own population and no other (design.md §13). Refused at write
+            // time as well as ignored at access time, because a membership that can never take effect is
+            // an administrator's mistake worth naming rather than a row to leave lying around: the route
+            // grants the group unlocks are all in the group's realm, so a foreign member would show up in
+            // the roster as having access it does not have.
+            var foreign = known
+                .Where(u => u.RealmId != group.RealmId)
+                .Select(u => u.Id)
+                .OrderBy(id => id)
+                .ToList();
+            if (foreign.Count > 0) {
+                return AppError.Validation(
+                    $"User {Describe(foreign)} belongs to a different realm than group '{group.Name}'.");
+            }
         }
 
         // Reconcile rather than replace: delete only the rows that fell out of the set, add only the ones

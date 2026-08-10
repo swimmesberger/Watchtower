@@ -4,6 +4,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronLeft } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { TemplateEnvVarInput } from '@/lib/types'
+import { useRealms } from '@/hooks/use-realms'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -19,6 +20,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from '@/components/ui/use-toast'
+import { templateNewRoute } from './module'
 
 const NO_CREDENTIAL = 'none'
 
@@ -27,6 +29,11 @@ export function TemplateNewPage() {
   const navigate = useNavigate()
 
   const { data: credentials = [] } = useQuery({ queryKey: ['credentials'], queryFn: api.credentials.list })
+  // realms.list is [RequireRole("Admin")] and this route is gated on the Tenancy module only, so a
+  // non-administrator must not fetch it. Without the roster the realm select is absent and the omitted
+  // realmId lands the template in the operator realm — exactly what happened before realms existed.
+  const { caps } = templateNewRoute.useRouteContext()
+  const { realms, systemRealmId } = useRealms({ enabled: caps.hasRole('Admin') })
 
   const [form, setForm] = useState({
     name: '',
@@ -37,6 +44,9 @@ export function TemplateNewPage() {
     domainPattern: '{tenant}.example.com',
     targetServiceName: 'web',
     targetPort: '3000',
+    // null until the roster has loaded, at which point the operator realm is the default — the same one
+    // the server picks for an omitted realmId.
+    realmId: null as number | null,
   })
   const [envDraft, setEnvDraft] = useState<TemplateEnvVarInput[]>([{ key: '', value: '' }])
   const [error, setError] = useState<string | null>(null)
@@ -54,10 +64,13 @@ export function TemplateNewPage() {
         targetServiceName: form.targetServiceName,
         targetPort: Number(form.targetPort),
         baseEnvVars: baseEnvVars.length > 0 ? baseEnvVars : null,
+        realmId: form.realmId,
       })
     },
     onSuccess: (t) => {
       qc.invalidateQueries({ queryKey: ['templates'] })
+      // The realm roster carries a templateCount, and the Realms screen's delete guard reads it.
+      qc.invalidateQueries({ queryKey: ['realms'] })
       toast.success(`Template ${t.name} created.`)
       navigate({ to: '/templates/$id', params: { id: String(t.id) } })
     },
@@ -181,6 +194,33 @@ export function TemplateNewPage() {
                   )}
                 </Field>
               </div>
+              {/* Only worth showing once there is more than one population to choose between. Placed with
+                  routing because it is the same kind of decision: which accounts every tenant of this
+                  template signs in with, and which login host they are sent to. */}
+              {realms.length > 1 && (
+                <Field
+                  label="Realm"
+                  hint="The population every tenant of this template belongs to. Moving it later is refused once the template has tenants."
+                >
+                  {({ id, describedBy }) => (
+                    <Select
+                      value={String(form.realmId ?? systemRealmId)}
+                      onValueChange={(v) => set('realmId', Number(v))}
+                    >
+                      <SelectTrigger id={id} aria-describedby={describedBy}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {realms.map((r) => (
+                          <SelectItem key={r.id} value={String(r.id)}>
+                            {r.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </Field>
+              )}
             </div>
           </CardContent>
         </Card>

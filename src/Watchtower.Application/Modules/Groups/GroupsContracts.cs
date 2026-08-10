@@ -1,4 +1,5 @@
 using Elarion.Abstractions.Identity;
+using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 
@@ -9,7 +10,11 @@ namespace Watchtower.Application.Modules.Groups;
 /// rather than stored — a denormalised counter would be one more thing that can disagree with the
 /// membership rows, and the roster is operator-sized.
 /// </summary>
-public sealed record GroupDto(int Id, string Name, int MemberCount);
+/// <param name="RealmId">
+/// The population the group belongs to (docs/central-auth/design.md §13). Group names are unique within a
+/// realm, not across the instance, and a group may only ever hold accounts of its own realm.
+/// </param>
+public sealed record GroupDto(int Id, string Name, int RealmId, int MemberCount);
 
 /// <summary>
 /// The rules every write handler in this module shares: what a group name may be, and the audit trail.
@@ -21,7 +26,13 @@ public static class GroupMapping {
     /// <summary>Projects a group for the API.</summary>
     public static GroupDto ToDto(Group group, int memberCount) {
         ArgumentNullException.ThrowIfNull(group);
-        return new GroupDto(group.Id, group.Name, memberCount);
+        return new GroupDto(group.Id, group.Name, group.RealmId, memberCount);
+    }
+
+    /// <summary>The realm a group is being placed in, or <see langword="null"/> when there is no such realm.</summary>
+    public static Task<Realm?> FindRealmAsync(WatchtowerDbContext db, int realmId, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
+        return db.Realms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == realmId, ct);
     }
 
     /// <summary>The normalized form uniqueness is enforced on — the <see cref="User"/> precedent.</summary>

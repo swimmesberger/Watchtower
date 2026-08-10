@@ -50,6 +50,22 @@ public static class AuthEventKinds {
     /// </summary>
     public const string GroupMembersChanged = "group.members.changed";
 
+    /// <summary>A realm was created. It holds nobody until accounts are created in it.</summary>
+    public const string RealmCreated = "realm.created";
+
+    /// <summary>
+    /// A realm was renamed or had its login host changed. Worth its own kind because changing the host
+    /// moves the realm's cookie jar: every session on the old host is orphaned, and the <c>iss</c> of every
+    /// assertion its applications receive changes with it (design.md §13).
+    /// </summary>
+    public const string RealmUpdated = "realm.updated";
+
+    /// <summary>
+    /// A realm was deleted. Only ever possible while nothing referenced it, so this row records the end of
+    /// an empty population; the slug lives in <see cref="Entities.AuthEvent.Detail"/> so the row survives it.
+    /// </summary>
+    public const string RealmDeleted = "realm.deleted";
+
     /// <summary>An account was created by an administrator.</summary>
     public const string UserCreated = "user.created";
 

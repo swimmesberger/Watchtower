@@ -141,6 +141,7 @@ public sealed class AuthSessionService(
         var hash = HashToken(rawToken);
         var session = await db.AuthSessions
             .Include(s => s.User)
+            .ThenInclude(u => u!.Realm)
             .FirstOrDefaultAsync(s => s.TokenHash == hash, ct);
         if (session is null) return null;
 
@@ -160,8 +161,12 @@ public sealed class AuthSessionService(
         if (string.IsNullOrEmpty(rawToken)) return null;
 
         var hash = HashToken(rawToken);
+        // The realm rides along with the account: the principal minted from an SSO session carries the
+        // realm claim, and the assertion minted from an app session carries the realm's issuer, so both
+        // ends of the session lookup need it and neither should cost a second round trip for it.
         var session = await db.AuthSessions
             .Include(s => s.User)
+            .ThenInclude(u => u!.Realm)
             .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == kind, ct);
         if (session is null) return null;
 

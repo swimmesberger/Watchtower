@@ -1,37 +1,25 @@
 // The app shell renders the navigation from `sidebarItems` contributions — it never imports a feature
 // module. Adding a destination is a contribution in the owning module; the shell doesn't change.
+import { lazy, Suspense } from 'react'
 import { Link, Outlet, useRouteContext, useRouterState } from '@tanstack/react-router'
-import { Eye, LogOut, Moon, Sun } from 'lucide-react'
+import { Eye, LogOut } from 'lucide-react'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
 import { cn } from '@/lib/utils'
-import { useTheme } from '@/lib/theme'
 import { goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } from '@/lib/auth'
 import { Toaster } from '@/components/ui/toast'
+import { ThemeToggle } from '@/components/ui/theme-toggle'
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
 import { sidebarItems, type SidebarItem } from './points'
+
+// Code-split like every route component is: the operator — who never renders this — should not carry the
+// portal in the main chunk, and the realm user pays one extra request on a page that is fetching its list
+// anyway.
+const AppsPage = lazy(() => import('./AppsPage').then((m) => ({ default: m.AppsPage })))
 
 function isActive(currentPath: string, item: SidebarItem): boolean {
   if (item.exact) return currentPath === item.to
   if (item.to === '/') return currentPath === '/'
   return currentPath.startsWith(item.to)
-}
-
-function ThemeToggle({ className }: { className?: string }) {
-  const { resolved, toggle } = useTheme()
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      aria-label={resolved === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-      className={cn(
-        'touch-target inline-flex size-9 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text',
-        'focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
-        className,
-      )}
-    >
-      {resolved === 'dark' ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
-    </button>
-  )
 }
 
 /**
@@ -85,6 +73,7 @@ function Wordmark() {
 
 export function AppShell() {
   const currentPath = useRouterState({ select: (s) => s.location.pathname })
+  const { caps } = useRouteContext({ from: '__root__' })
   const items = useContributions(sidebarItems)
   const mobileItems = items.filter((i) => i.mobile !== false)
 
@@ -94,6 +83,27 @@ export function AppShell() {
     return (
       <TooltipProvider delayDuration={200}>
         <Outlet />
+        <Toaster />
+      </TooltipProvider>
+    )
+  }
+
+  // A signed-in account outside the operator realm gets the applications portal instead — the whole shell,
+  // not just the content column, because every destination in the sidebar is a management screen whose
+  // handlers would answer Forbidden (`SystemRealmAuthorizer`). Rendered in place of the route rather than
+  // as a redirect, so it is also what they see if they type an admin path in by hand.
+  //
+  // The `apps-portal` flag is the backend's answer (ADR-0030, resolved from the realm claim), so this
+  // never has to derive the realm client-side. It is false for the operator realm, for an unauthenticated
+  // boot, and when authentication is switched off — every one of which keeps today's UI exactly.
+  if (caps.isFlagEnabled('apps-portal')) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        {/* No fallback: the page's own skeletons are the loading state, and a spinner for the chunk
+            followed by skeletons for the data would be two waits rendered as three. */}
+        <Suspense fallback={null}>
+          <AppsPage caps={caps} />
+        </Suspense>
         <Toaster />
       </TooltipProvider>
     )

@@ -54,6 +54,30 @@ public sealed class ProxyAccessModuleTests {
     }
 
     [Fact]
+    public async Task GetAccess_ReportsTheRoutesRealm_SystemForAStandaloneStack_TheCategorysForATenant() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var standalone = await SeedRouteIdAsync(host);
+        var tenants = await host.AddRealmAsync("tenants");
+        var template = await host.AddRealmTemplateAsync("shop", tenants);
+        var tenantRoute = (await host.AddRouteAsync("acme.example.invalid", templateId: template)).Id;
+
+        await using var scope = host.Services.CreateAsyncScope();
+
+        // A route on a standalone stack belongs to the operator realm — the same answer SetAccess resolves,
+        // which is what makes the field usable for filtering the candidates a grant editor offers.
+        var system = await SendAsync<GetAccess.Query, GetAccess.Response>(
+            scope.ServiceProvider, new GetAccess.Query(standalone));
+        Assert.True(system.IsSuccess, Describe(system));
+        Assert.Equal(Realm.SystemRealmId, system.Value.RealmId);
+
+        // A tenant route inherits its category's realm rather than carrying one of its own.
+        var tenant = await SendAsync<GetAccess.Query, GetAccess.Response>(
+            scope.ServiceProvider, new GetAccess.Query(tenantRoute));
+        Assert.True(tenant.IsSuccess, Describe(tenant));
+        Assert.Equal(tenants, tenant.Value.RealmId);
+    }
+
+    [Fact]
     public async Task SetAccess_PublicToRestricted_PersistsGrants_AndIsAuthorizedHonoursThem() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
         var routeId = await SeedRouteIdAsync(host);
@@ -509,18 +533,8 @@ public sealed class ProxyAccessModuleTests {
     }
 
     /// <summary>Applies a principal the way every Elarion transport does — through the dispatch-scope rail.</summary>
-    private static void SeedPrincipal(IServiceProvider scope, bool isAdmin) {
-        var claims = new List<Claim> {
-            new(WatchtowerClaims.UserId, "7"),
-            new(WatchtowerClaims.Name, "caller"),
-        };
-        if (isAdmin) claims.Add(new Claim(WatchtowerClaims.Role, WatchtowerClaims.AdminRole));
-
-        var context = new DispatchScopeContext();
-        context.Set(new ClaimsPrincipal(new ClaimsIdentity(
-            claims, "WatchtowerSession", WatchtowerClaims.Name, WatchtowerClaims.Role)));
-        scope.SeedScope(context);
-    }
+    private static void SeedPrincipal(IServiceProvider scope, bool isAdmin) =>
+        TestPrincipal.Seed(scope, isAdmin);
 
     private static string Describe<T>(Result<T> result) =>
         result.IsSuccess ? "success" : $"{result.Error.Kind}: {result.Error.Message}";

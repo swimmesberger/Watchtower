@@ -18,8 +18,17 @@ namespace Watchtower.Application.Services;
 /// <see cref="FindByNameAsync"/> and <see cref="SetNormalizedUserNameAsync"/> have already been put
 /// through Identity's <c>ILookupNormalizer</c> by <see cref="UserManager{TUser}"/>, which is what
 /// makes login case-insensitive on SQLite.
+/// <para>
+/// Every name lookup is scoped to <see cref="IRealmContext"/> (docs/central-auth/design.md §13). That one
+/// filter is what makes a realm a credential space rather than a label: it decides which population a
+/// login can authenticate against <em>and</em>, because Identity's own <c>UserValidator</c> checks for a
+/// duplicate name by calling <see cref="FindByNameAsync"/>, which population "that name is taken" is
+/// answered about. Both readings have to be the same one, which is why there is a single filter and not
+/// two.
+/// </para>
 /// </remarks>
-public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDescriber errors) :
+public sealed class WatchtowerUserStore(
+    WatchtowerDbContext db, IdentityErrorDescriber errors, IRealmContext realm) :
     IUserStore<User>,
     IUserPasswordStore<User>,
     IUserSecurityStampStore<User>,
@@ -111,6 +120,11 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
         return IdentityResult.Success;
     }
 
+    /// <summary>
+    /// By primary key, and deliberately <em>not</em> realm-scoped: an id names exactly one account across
+    /// the whole instance, and the administrative handlers reach accounts of every realm through it. It is
+    /// the name space, not the id space, that a realm partitions.
+    /// </summary>
     public async Task<User?> FindByIdAsync(string userId, CancellationToken cancellationToken) {
         cancellationToken.ThrowIfCancellationRequested();
         return int.TryParse(userId, out var id)
@@ -118,9 +132,12 @@ public sealed class WatchtowerUserStore(WatchtowerDbContext db, IdentityErrorDes
             : null;
     }
 
+    /// <inheritdoc cref="WatchtowerUserStore"/>
     public async Task<User?> FindByNameAsync(string normalizedUserName, CancellationToken cancellationToken) {
         cancellationToken.ThrowIfCancellationRequested();
-        return await db.Users.FirstOrDefaultAsync(u => u.NormalizedUserName == normalizedUserName, cancellationToken);
+        var realmId = realm.RealmId;
+        return await db.Users.FirstOrDefaultAsync(
+            u => u.RealmId == realmId && u.NormalizedUserName == normalizedUserName, cancellationToken);
     }
 
     // -- Password --------------------------------------------------------------------------------

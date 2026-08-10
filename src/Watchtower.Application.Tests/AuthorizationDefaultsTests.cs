@@ -118,25 +118,13 @@ public sealed class AuthorizationDefaultsTests {
             .HandleAsync(new ListCredentials.Query(), TestContext.Current.CancellationToken);
 
     /// <summary>Applies a principal the way every Elarion transport does — through the dispatch-scope rail.</summary>
-    private static void SeedPrincipal(IServiceProvider scope, ClaimsPrincipal principal) {
-        var context = new DispatchScopeContext();
-        context.Set(principal);
-        scope.SeedScope(context);
-    }
+    private static void SeedPrincipal(IServiceProvider scope, ClaimsPrincipal principal) =>
+        TestPrincipal.Seed(scope, principal);
 
     /// <summary>
-    /// The principal <c>WatchtowerSessionAuthenticationHandler</c> mints, rebuilt here from the same
+    /// The principal <c>WatchtowerSessionAuthenticationHandler</c> mints, rebuilt from the same
     /// <see cref="WatchtowerClaims"/> constants — which is the point of those constants existing.
     /// </summary>
-    private static ClaimsPrincipal NewPrincipal(string id, string name, bool isAdmin, string? email = null) {
-        var claims = new List<Claim> {
-            new(WatchtowerClaims.UserId, id),
-            new(WatchtowerClaims.Name, name),
-        };
-        if (email is not null) claims.Add(new Claim(WatchtowerClaims.Email, email));
-        if (isAdmin) claims.Add(new Claim(WatchtowerClaims.Role, WatchtowerClaims.AdminRole));
-
-        return new ClaimsPrincipal(new ClaimsIdentity(
-            claims, "WatchtowerSession", WatchtowerClaims.Name, WatchtowerClaims.Role));
-    }
+    private static ClaimsPrincipal NewPrincipal(string id, string name, bool isAdmin, string? email = null) =>
+        TestPrincipal.New(id, name, isAdmin, email);
 }

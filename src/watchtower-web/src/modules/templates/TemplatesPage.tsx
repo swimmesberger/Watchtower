@@ -27,6 +27,8 @@ export function TemplatesPage() {
     onSuccess: (_d, t) => {
       toast.success(`Deleted template ${t.name}.`)
       qc.invalidateQueries({ queryKey: ['templates'] })
+      // The realm's templateCount just dropped, and the Realms screen's delete guard reads it.
+      qc.invalidateQueries({ queryKey: ['realms'] })
     },
     onError: (err: Error, t) => toast.error(`Failed to delete ${t.name}: ${err.message}`),
     onSettled: () => setPendingDelete(null),

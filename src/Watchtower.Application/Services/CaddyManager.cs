@@ -302,28 +302,50 @@ public class CaddyManager : IHostedService, IDisposable {
         var routes = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
             .ToListAsync(ct);
-        return ProjectSites(routes, _options.CurrentValue.Auth);
+        // Every realm's login page has to be served too, not just the operator one (design.md §13).
+        var realmHosts = await scope.ServiceProvider
+            .GetRequiredService<RealmResolver>()
+            .AuthHostsAsync(ct);
+        return ProjectSites(routes, _options.CurrentValue.Auth, realmHosts);
     }
 
     /// <summary>
-    /// Projects the route table onto the site list, adding the Watchtower self-route when one is needed.
-    /// Split out from <see cref="LoadSitesAsync"/> as a pure function so the access-control decisions can
-    /// be tested without a database or a Docker daemon.
+    /// Projects the route table onto the site list, adding a Watchtower self-route for every login host
+    /// that needs one. Split out from <see cref="LoadSitesAsync"/> as a pure function so the access-control
+    /// decisions can be tested without a database or a Docker daemon.
     /// </summary>
     /// <remarks>
     /// A route is protected only when access control is switched on <em>and</em> the route asks for it, so
     /// turning <c>Auth:Enabled</c> off is a complete escape hatch: the next reconcile emits exactly the
     /// configuration this file produced before access control existed, whatever the route rows say.
     /// <para>
-    /// The self-route is the answer to the bootstrap problem in design.md §11 — a protected app redirects
-    /// to <c>Auth:Host</c>, so that host has to be served before forward-auth is useful for anything. It is
-    /// never <c>Protected</c>: Watchtower authenticates its own UI natively (§2.5), and putting the login
-    /// page behind the gate that redirects to the login page would lock the operator out. An explicit
-    /// <see cref="Route"/> row for the same domain wins — the operator has then said what they want that
-    /// host to do, and silently shadowing it would be worse than honouring it.
+    /// The self-routes are the answer to the bootstrap problem in design.md §11 — a protected app redirects
+    /// to its realm's login host, so that host has to be served before forward-auth is useful for anything.
+    /// There are now N of them: the configured <c>Auth:Host</c> (the operator realm's, which is
+    /// configuration rather than a row so authentication can always find its own login page) plus every
+    /// realm's <see cref="Realm.AuthHost"/>.
+    /// </para>
+    /// <para>
+    /// <b>The invariant: no realm's login host may sit behind its own gate.</b> None of these sites is ever
+    /// <c>Protected</c> — putting a login page behind the forward-auth that redirects to that login page is
+    /// a closed loop, and the only way out of it is the published port. An explicit <see cref="Route"/> row
+    /// for one of those domains still renders, because the operator has said what they want that host to
+    /// serve and silently shadowing it would be worse than honouring it, but it is force-unprotected
+    /// whatever its <see cref="AccessMode"/> says. Watchtower authenticates its own UI natively (§2.5), so
+    /// nothing is lost.
     /// </para>
     /// </remarks>
-    internal static List<CaddySite> ProjectSites(IReadOnlyList<Route> routes, AuthOptions auth) {
+    /// <param name="routes">The route table.</param>
+    /// <param name="auth">Access-control settings; <c>Host</c> is the operator realm's login host.</param>
+    /// <param name="realmAuthHosts">
+    /// Every non-system realm's non-null <see cref="Realm.AuthHost"/>. Required rather than defaulted:
+    /// forgetting the realm hosts silently un-serves every realm's login page and re-gates any route on one
+    /// of those domains, so on a projection this security-relevant it should be a compile error rather than
+    /// an omission. Pass an empty list to mean "no realms". Blanks and duplicates are tolerated — this is a
+    /// projection, not a validator, and the handlers are where a bad host is refused.
+    /// </param>
+    internal static List<CaddySite> ProjectSites(
+        IReadOnlyList<Route> routes, AuthOptions auth, IReadOnlyList<string> realmAuthHosts) {
         var sites = routes
             .Where(r => r.Stack is not null)
             .Select(r => new CaddySite(
@@ -338,20 +360,23 @@ public class CaddyManager : IHostedService, IDisposable {
                 Mode: r.IdentityHeaderMode))
             .ToList();
 
-        if (!auth.Enabled || string.IsNullOrWhiteSpace(auth.Host)) return sites;
+        if (!auth.Enabled) return sites;
 
-        var host = auth.Host.Trim().ToLowerInvariant();
-        var existing = sites.FindIndex(s => string.Equals(s.Domain, host, StringComparison.OrdinalIgnoreCase));
-        if (existing < 0) {
-            sites.Add(new CaddySite(host, SelfAlias, SelfPort, Tls: true));
-            return sites;
+        // One distinct entry per login host, ordered configuration-first so the operator realm's block is
+        // the stable head of the list whatever the realms table happens to return.
+        var loginHosts = new List<string>();
+        foreach (var candidate in new[] { auth.Host }.Concat(realmAuthHosts)) {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            var host = candidate.Trim().ToLowerInvariant();
+            if (!loginHosts.Contains(host, StringComparer.Ordinal)) loginHosts.Add(host);
         }
 
-        // An explicit row for the auth host still renders — the operator has said what that host should
-        // serve — but it is force-unprotected regardless of its AccessMode: gating the login page behind
-        // the gate that redirects to the login page is a lockout loop, leaving the UI reachable only via
-        // the published port. Watchtower authenticates its own UI natively (§2.5), so nothing is lost.
-        sites[existing] = sites[existing] with { Protected = false };
+        foreach (var host in loginHosts) {
+            var existing = sites.FindIndex(s => string.Equals(s.Domain, host, StringComparison.OrdinalIgnoreCase));
+            if (existing < 0) sites.Add(new CaddySite(host, SelfAlias, SelfPort, Tls: true));
+            else sites[existing] = sites[existing] with { Protected = false };
+        }
+
         return sites;
     }
 

@@ -307,12 +307,16 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("normalized_name");
 
+                    b.Property<int>("RealmId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("realm_id");
+
                     b.HasKey("Id")
                         .HasName("pk_groups");
 
-                    b.HasIndex("NormalizedName")
+                    b.HasIndex("RealmId", "NormalizedName")
                         .IsUnique()
-                        .HasDatabaseName("ix_groups_normalized_name");
+                        .HasDatabaseName("ix_groups_realm_id_normalized_name");
 
                     b.ToTable("groups", (string)null);
                 });
@@ -486,6 +490,50 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_metric_host_samples_tier_seconds_t_unix_seconds");
 
                     b.ToTable("metric_host_samples", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.Realm", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AuthHost")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("auth_host");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsSystem")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("is_system");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("slug");
+
+                    b.HasKey("Id")
+                        .HasName("pk_realms");
+
+                    b.HasIndex("AuthHost")
+                        .IsUnique()
+                        .HasDatabaseName("ix_realms_auth_host")
+                        .HasFilter("\"auth_host\" IS NOT NULL");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ix_realms_slug");
+
+                    b.ToTable("realms", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Registry", b =>
@@ -823,6 +871,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("name");
 
+                    b.Property<int>("RealmId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("realm_id");
+
                     b.Property<string>("RepositoryUrl")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -846,6 +898,9 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.HasIndex("Name")
                         .IsUnique()
                         .HasDatabaseName("ix_stack_templates_name");
+
+                    b.HasIndex("RealmId")
+                        .HasDatabaseName("ix_stack_templates_realm_id");
 
                     b.ToTable("stack_templates", (string)null);
                 });
@@ -993,6 +1048,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("password_hash");
 
+                    b.Property<int>("RealmId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("realm_id");
+
                     b.Property<string>("SecurityStamp")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -1006,9 +1065,9 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_users");
 
-                    b.HasIndex("NormalizedUserName")
+                    b.HasIndex("RealmId", "NormalizedUserName")
                         .IsUnique()
-                        .HasDatabaseName("ix_users_normalized_user_name");
+                        .HasDatabaseName("ix_users_realm_id_normalized_user_name");
 
                     b.ToTable("users", (string)null);
                 });
@@ -1074,6 +1133,18 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_deploy_events_stacks_stack_id");
 
                     b.Navigation("Stack");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.Group", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Realm", "Realm")
+                        .WithMany()
+                        .HasForeignKey("RealmId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_groups_realms_realm_id");
+
+                    b.Navigation("Realm");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.GroupMember", b =>
@@ -1208,7 +1279,16 @@ namespace Watchtower.Application.Persistence.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_stack_templates_credentials_credential_id");
 
+                    b.HasOne("Watchtower.Application.Entities.Realm", "Realm")
+                        .WithMany()
+                        .HasForeignKey("RealmId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_stack_templates_realms_realm_id");
+
                     b.Navigation("Credential");
+
+                    b.Navigation("Realm");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackTemplateEnvVar", b =>
@@ -1254,6 +1334,18 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("Stack");
 
                     b.Navigation("Template");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.User", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Realm", "Realm")
+                        .WithMany()
+                        .HasForeignKey("RealmId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_users_realms_realm_id");
+
+                    b.Navigation("Realm");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>

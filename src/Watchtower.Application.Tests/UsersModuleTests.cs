@@ -527,18 +527,8 @@ public sealed class UsersModuleTests {
     }
 
     /// <summary>Applies a principal the way every Elarion transport does — through the dispatch-scope rail.</summary>
-    private static void SeedPrincipal(IServiceProvider scope, bool isAdmin) {
-        var claims = new List<Claim> {
-            new(WatchtowerClaims.UserId, "7"),
-            new(WatchtowerClaims.Name, "caller"),
-        };
-        if (isAdmin) claims.Add(new Claim(WatchtowerClaims.Role, WatchtowerClaims.AdminRole));
-
-        var context = new DispatchScopeContext();
-        context.Set(new ClaimsPrincipal(new ClaimsIdentity(
-            claims, "WatchtowerSession", WatchtowerClaims.Name, WatchtowerClaims.Role)));
-        scope.SeedScope(context);
-    }
+    private static void SeedPrincipal(IServiceProvider scope, bool isAdmin) =>
+        TestPrincipal.Seed(scope, isAdmin);
 
     private static string Describe<T>(Result<T> result) =>
         result.IsSuccess ? "success" : $"{result.Error.Kind}: {result.Error.Message}";

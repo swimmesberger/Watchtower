@@ -10,6 +10,23 @@ namespace Watchtower.Application.Entities;
 /// </summary>
 public sealed class StackTemplate {
     public int Id { get; set; }
+
+    /// <summary>
+    /// The population whose accounts this category's tenants serve (design.md §13): a category lives in
+    /// exactly one realm, and every tenant route created from it inherits that realm. Standalone stacks —
+    /// those with no template — belong to the system realm. Defaults to the system realm, so a deployment
+    /// that never creates a second one behaves exactly as it did before realms existed.
+    /// </summary>
+    public int RealmId { get; set; } = Realm.SystemRealmId;
+
+    /// <inheritdoc cref="RealmId"/>
+    public Realm? Realm { get; set; }
+
+    /// <summary>
+    /// Operator-facing name, unique across the whole instance. Deliberately <em>not</em> realm-scoped in
+    /// v1: templates are administered from the system realm only, so one flat namespace is what an
+    /// operator sees.
+    /// </summary>
     public required string Name { get; set; }
     public required string RepositoryUrl { get; set; }
     /// <summary>Path to the compose file within the repository.</summary>

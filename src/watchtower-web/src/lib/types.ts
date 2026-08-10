@@ -476,7 +476,7 @@ export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
  */
 export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest'
 
-/** The shape `proxy.getAccess` returns and `proxy.setAccess` both accepts and returns. */
+/** The shape `proxy.setAccess` both accepts and returns — the policy itself, with nothing derived. */
 export interface RouteAccess {
   mode: AccessMode
   /** Which plaintext identity headers reach the upstream; `None` forwards the signed JWT only. */
@@ -490,6 +490,16 @@ export interface RouteAccess {
    * granted group is let through, evaluated per request — so membership changes take effect immediately.
    */
   grantedGroupIds: number[]
+}
+
+/**
+ * What `proxy.getAccess` returns: the policy plus the realm the route belongs to. The realm is derived
+ * server-side (the stack's template category, or the operator realm for a standalone stack) and is
+ * read-only — it is here so a grant editor can offer only the users and groups `proxy.setAccess` would
+ * accept, rather than letting a cross-realm grant be composed and refused.
+ */
+export interface RouteAccessView extends RouteAccess {
+  realmId: number
 }
 
 export interface DnsCheckResult {
@@ -515,6 +525,8 @@ export interface StackTemplate {
   domainPattern: string
   targetServiceName: string
   targetPort: number
+  /** The realm every tenant of this category signs in to. Defaults to the operator realm. */
+  realmId: number
   createdAt: string
   instanceCount: number
 }
@@ -562,6 +574,8 @@ export interface CreateTemplateRequest {
   targetServiceName: string
   targetPort: number
   baseEnvVars?: TemplateEnvVarInput[] | null
+  /** Omit for the operator realm. On update the server refuses a move once the category has tenants. */
+  realmId?: number | null
 }
 
 export type UpdateTemplateRequest = CreateTemplateRequest
@@ -586,6 +600,8 @@ export interface User {
   disabled: boolean
   /** Temporarily locked by the brute-force counter. Derived server-side from the lockout deadline. */
   lockedOut: boolean
+  /** The population the account belongs to; its user name is only unique within it. Immutable. */
+  realmId: number
   createdAt: string
 }
 
@@ -594,6 +610,8 @@ export interface CreateUserRequest {
   password: string
   email?: string | null
   isAdmin: boolean
+  /** Omit for the operator realm. Only an operator-realm account may hold the Admin role. */
+  realmId?: number | null
 }
 
 export interface UpdateUserRequest {
@@ -614,6 +632,48 @@ export interface UpdateUserRequest {
 export interface Group {
   id: number
   name: string
+  /** The population the group belongs to; it may only ever hold members of that same realm. */
+  realmId: number
   /** Derived per read rather than stored — a counter could disagree with the membership rows. */
   memberCount: number
+}
+
+// ── Realms ───────────────────────────────────────────────────────────────────
+
+/**
+ * A user population with its own credential space and its own login host — Watchtower's answer to a
+ * Keycloak realm (docs/central-auth/design.md §13). Every user, group and template belongs to exactly
+ * one; the built-in **operator** realm owns this management UI and cannot be deleted.
+ *
+ * The three counts are what the delete guard is made of: a realm that anything still belongs to is
+ * refused by the server with `Conflict`, so the client can say so before the click rather than after.
+ */
+export interface Realm {
+  id: number
+  name: string
+  /** URL-safe identifier, chosen at creation and immutable afterwards. */
+  slug: string
+  /** The host this realm's login page answers on; null until DNS for it is ready. */
+  authHost: string | null
+  /** The operator realm: renameable, never deletable, and its auth host stays the configured `Auth:Host`. */
+  isSystem: boolean
+  userCount: number
+  groupCount: number
+  templateCount: number
+  createdAt: string
+}
+
+export interface CreateRealmRequest {
+  name: string
+  slug: string
+  authHost?: string | null
+}
+
+/**
+ * A partial update: an omitted field is left alone, so renaming a realm never has to restate its auth
+ * host. An empty-string `authHost` clears it — that is how "this realm has no login host yet" is said.
+ */
+export interface UpdateRealmRequest {
+  name?: string | null
+  authHost?: string | null
 }

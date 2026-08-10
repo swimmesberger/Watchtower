@@ -13,6 +13,7 @@ import {
 import { api } from '@/lib/api'
 import type { Tenant, TemplateEnvVarInput, TemplateGrant } from '@/lib/types'
 import { timeAgo } from '@/lib/format'
+import { useRealms } from '@/hooks/use-realms'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -54,6 +55,9 @@ export function TemplateDetailPage() {
   // would fail with Forbidden for a non-admin and the card would lie about there being no grants.
   // templates.removeTenant is NOT admin-gated, so the per-tenant remove action stays visible.
   const canManageGrants = caps.hasRole('Admin')
+  // Same gate, same reason: realms.list is [RequireRole("Admin")], so a non-administrator reading a
+  // template must not fetch a roster it would only be refused. The realm line then simply isn't shown.
+  const { nameOrNull } = useRealms({ enabled: canManageGrants })
 
   const [slug, setSlug] = useState('')
   const [showOverrides, setShowOverrides] = useState(false)
@@ -225,6 +229,8 @@ export function TemplateDetailPage() {
     onSuccess: () => {
       toast.success('Template deleted.')
       qc.invalidateQueries({ queryKey: ['templates'] })
+      // The realm's templateCount just dropped, and the Realms screen's delete guard reads it.
+      qc.invalidateQueries({ queryKey: ['realms'] })
       navigate({ to: '/templates' })
     },
     onError: (err: Error) => toast.error(err.message),
@@ -367,6 +373,10 @@ export function TemplateDetailPage() {
         <CardContent className="space-y-1 pt-5 text-[13px] text-text-2">
           <p className="font-mono">{template.repositoryUrl} · {template.branch}</p>
           <p className="font-mono">{template.domainPattern} → {template.targetServiceName}:{template.targetPort}</p>
+          {/* The realm decides which accounts every tenant of this template signs in with, and which
+              login host they are sent to — read-only here, and the server refuses a move once the
+              template has tenants. */}
+          {nameOrNull(template.realmId) && <p>Realm: {nameOrNull(template.realmId)}</p>}
           <p>{baseEnvVars.length} base env var{baseEnvVars.length === 1 ? '' : 's'}</p>
         </CardContent>
       </Card>

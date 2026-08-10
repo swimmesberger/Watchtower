@@ -212,7 +212,9 @@ public sealed class AccessUserInfoTests {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var signer = sp.GetRequiredService<AuthTokenSigner>();
             var user = await db.Users.SingleAsync(u => u.Id == userId, Ct);
-            token = signer.Mint(user, AppDomain);
+            // For the account's own realm, which is what verify would have minted it for.
+            var realm = await db.Realms.SingleAsync(r => r.Id == user.RealmId, Ct);
+            token = signer.Mint(user, AppDomain, RealmIdentity.From(realm));
         });
         return token;
     }
