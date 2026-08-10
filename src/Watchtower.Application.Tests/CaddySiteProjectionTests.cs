@@ -98,6 +98,89 @@ public sealed class CaddySiteProjectionTests {
         Assert.Single(sites);
     }
 
+    // ── Per-realm login hosts (design.md §13) ─────────────────────────────────
+
+    [Fact]
+    public void EveryRealmLoginHost_GetsItsOwnUnprotectedSelfRoute() {
+        var sites = CaddyManager.ProjectSites(
+            [Route("members.example.invalid", AccessMode.Authenticated)],
+            new AuthOptions { Enabled = true, Host = AuthHost },
+            ["login.acme.invalid", "  LOGIN.Contoso.INVALID  "]);
+
+        // A protected app redirects to its own realm's login page, so that page has to be served — the
+        // same bootstrap argument the operator self-route has always answered, now once per population.
+        foreach (var host in new[] { AuthHost, "login.acme.invalid", "login.contoso.invalid" }) {
+            var self = Site(sites, host);
+            Assert.Equal("watchtower", self.UpstreamHost);
+            Assert.Equal(8080, self.UpstreamPort);
+            Assert.True(self.Tls);
+            Assert.False(self.Protected);
+        }
+        Assert.Equal(4, sites.Count);
+    }
+
+    /// <summary>
+    /// The invariant, stated as a test: <b>no realm's login host may sit behind its own gate.</b> An
+    /// operator who creates an explicit route for one and, meaning well, marks it Authenticated or
+    /// Restricted would otherwise put that login page behind the forward-auth that redirects to it.
+    /// </summary>
+    [Fact]
+    public void AnExplicitRouteForARealmLoginHost_RendersButIsForceUnprotected() {
+        var realmHostRoute = Route("login.acme.invalid", AccessMode.Restricted);
+        realmHostRoute.ContainerPort = 3000;
+
+        var sites = CaddyManager.ProjectSites(
+            [realmHostRoute, Route("members.example.invalid", AccessMode.Authenticated)],
+            new AuthOptions { Enabled = true, Host = AuthHost },
+            ["login.acme.invalid"]);
+
+        var self = Site(sites, "login.acme.invalid");
+        Assert.False(self.Protected);
+        // The operator's own row still renders — only its access mode is overridden.
+        Assert.Equal("watchtower-web", self.UpstreamHost);
+        Assert.Equal(3000, self.UpstreamPort);
+        // Everything else is untouched, including the operator self-route.
+        Assert.True(Site(sites, "members.example.invalid").Protected);
+        Assert.False(Site(sites, AuthHost).Protected);
+    }
+
+    [Fact]
+    public void ARealmSharingTheOperatorLoginHost_ProducesOneSiteBlock() {
+        var sites = CaddyManager.ProjectSites(
+            [],
+            new AuthOptions { Enabled = true, Host = AuthHost },
+            [AuthHost.ToUpperInvariant(), "login.acme.invalid", "login.acme.invalid"]);
+
+        // The handlers refuse to store a realm host equal to the configured one, and duplicates cannot
+        // exist behind the unique index — but a projection that emitted two blocks for one domain would
+        // produce a Caddyfile that does not load, so it collapses them rather than trusting that.
+        Assert.Equal(2, sites.Count);
+        Assert.Single(sites, s => s.Domain == AuthHost);
+        Assert.Single(sites, s => s.Domain == "login.acme.invalid");
+    }
+
+    [Fact]
+    public void WithAuthDisabled_RealmLoginHostsAreNotServedEither() {
+        var sites = CaddyManager.ProjectSites(
+            [Route("members.example.invalid", AccessMode.Authenticated)],
+            new AuthOptions { Enabled = false, Host = AuthHost },
+            ["login.acme.invalid"]);
+
+        // The escape hatch stays total: turning access control off restores exactly the previous
+        // configuration, and a realm's login page is part of access control.
+        Assert.Single(sites);
+        Assert.All(sites, s => Assert.False(s.Protected));
+    }
+
+    [Fact]
+    public void ARealmWithNoLoginHostYet_ContributesNoSite() {
+        var sites = CaddyManager.ProjectSites(
+            [], new AuthOptions { Enabled = true, Host = AuthHost }, ["", "   "]);
+
+        // Nothing to serve: such a realm's routes fail closed at challenge time instead.
+        Assert.Equal(AuthHost, Assert.Single(sites).Domain);
+    }
+
     [Fact]
     public void CustomDomains_KeepOnDemandTls_WhenProtected() {
         var custom = Route("app.customer.invalid", AccessMode.Restricted);
