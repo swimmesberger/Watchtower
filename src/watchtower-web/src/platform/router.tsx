@@ -10,6 +10,7 @@ import { loginRoute } from './login-route'
 import type { AppModule } from './app-module'
 import credentials from '@/modules/credentials'
 import dashboard from '@/modules/dashboard'
+import groups from '@/modules/groups'
 import infrastructure from '@/modules/infrastructure'
 import metrics from '@/modules/metrics'
 import proxy from '@/modules/proxy'
@@ -42,6 +43,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   ...credentials.routes,
   ...dashboard.routes,
+  ...groups.routes,
   ...infrastructure.routes,
   ...metrics.routes,
   ...proxy.routes,

@@ -67,8 +67,8 @@ const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] 
   },
   {
     value: 'Restricted',
-    label: 'Selected users',
-    description: 'Only the users you pick below may enter.',
+    label: 'Selected users and groups',
+    description: 'Only the users and group members you pick below may enter.',
   },
 ]
 
@@ -664,10 +664,16 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
     enabled: open,
   })
 
-  // The grant picker's roster. Fetched lazily with the dialog, and only actually shown for Restricted.
+  // The grant pickers' rosters. Fetched lazily with the dialog, and only actually shown for Restricted.
   const { data: users = [] } = useQuery({
     queryKey: ['users'],
     queryFn: api.users.list,
+    enabled: open,
+  })
+
+  const { data: groups = [] } = useQuery({
+    queryKey: ['groups'],
+    queryFn: api.groups.list,
     enabled: open,
   })
 
@@ -705,6 +711,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
             key={route!.id}
             initial={access}
             users={users}
+            groups={groups}
             saving={save.isPending}
             onCancel={onClose}
             onSubmit={(data) => save.mutate(data)}
@@ -718,12 +725,14 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
 function AccessForm({
   initial,
   users,
+  groups,
   saving,
   onCancel,
   onSubmit,
 }: {
   initial: RouteAccess
   users: { id: number; userName: string; email: string | null }[]
+  groups: { id: number; name: string; memberCount: number }[]
   saving: boolean
   onCancel: () => void
   onSubmit: (data: RouteAccess) => void
@@ -734,9 +743,14 @@ function AccessForm({
   )
   const [bypassPaths, setBypassPaths] = useState(initial.bypassPaths ?? '')
   const [grantedUserIds, setGrantedUserIds] = useState<number[]>(initial.grantedUserIds)
+  const [grantedGroupIds, setGrantedGroupIds] = useState<number[]>(initial.grantedGroupIds)
 
   function toggleUser(id: number) {
     setGrantedUserIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+  }
+
+  function toggleGroup(id: number) {
+    setGrantedGroupIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
   }
 
   return (
@@ -752,6 +766,7 @@ function AccessForm({
           // each for the modes they don't belong to, but don't submit retained text/selection either.
           bypassPaths: mode === 'Public' || bypassPaths.trim() === '' ? null : bypassPaths,
           grantedUserIds: mode === 'Restricted' ? grantedUserIds : [],
+          grantedGroupIds: mode === 'Restricted' ? grantedGroupIds : [],
         })
       }}
     >
@@ -807,6 +822,43 @@ function AccessForm({
         </Field>
       )}
 
+      {mode === 'Restricted' && (
+        <Field
+          label="Allowed groups"
+          hint="Everyone in a ticked group gets in, evaluated per request — so adding or removing a member takes effect immediately."
+        >
+          {() =>
+            groups.length === 0 ? (
+              <p className="text-[13px] text-text-3">
+                No groups yet. Create one on the Groups page to grant several accounts at once.
+              </p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto rounded-md border border-border">
+                {groups.map((g) => (
+                  <label
+                    key={g.id}
+                    className="flex cursor-pointer items-center gap-3 border-b border-border px-3 py-2 last:border-b-0 hover:bg-surface-2"
+                  >
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-brand"
+                      checked={grantedGroupIds.includes(g.id)}
+                      onChange={() => toggleGroup(g.id)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="text-sm text-text">{g.name}</span>
+                      <span className="ml-2 text-xs text-text-3">
+                        {g.memberCount === 1 ? '1 member' : `${g.memberCount} members`}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )
+          }
+        </Field>
+      )}
+
       {mode !== 'Public' && (
         <Field label="Identity forwarding">
           {({ id }) => (
@@ -827,8 +879,9 @@ function AccessForm({
                 </SelectContent>
               </Select>
               <p className="mt-1.5 text-xs text-text-3">
-                Most apps validate the signed JWT (X-Watchtower-Jwt). Choose a header mode only for apps
-                that read a plaintext username header.
+                Most apps validate the signed JWT (X-Watchtower-Jwt), which always carries the user and
+                their groups. Choose a header mode only for apps that read plaintext username and group
+                headers instead.
               </p>
             </>
           )}

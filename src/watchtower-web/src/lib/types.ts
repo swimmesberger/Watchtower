@@ -435,8 +435,8 @@ export interface UpdateRouteRequest {
 
 /**
  * A route's access policy (docs/central-auth/design.md §3/§8). `Public` proxies every request as before;
- * `Authenticated` lets any signed-in user through; `Restricted` allows only the granted users. Mirrors the
- * backend `AccessMode` enum, serialized by name.
+ * `Authenticated` lets any signed-in user through; `Restricted` allows only the granted subjects — users
+ * and groups alike. Mirrors the backend `AccessMode` enum, serialized by name.
  */
 export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
 
@@ -456,8 +456,13 @@ export interface RouteAccess {
   identityHeaderMode: IdentityHeaderMode
   /** Newline-separated request-path prefixes exempt from access control; null when none. */
   bypassPaths: string | null
-  /** Ids of the users granted through the route; only meaningful for `Restricted`. */
+  /** Ids of the users granted through the route directly; only meaningful for `Restricted`. */
   grantedUserIds: number[]
+  /**
+   * Ids of the groups granted through the route; only meaningful for `Restricted`. Every member of a
+   * granted group is let through, evaluated per request — so membership changes take effect immediately.
+   */
+  grantedGroupIds: number[]
 }
 
 export interface DnsCheckResult {
@@ -568,4 +573,20 @@ export interface UpdateUserRequest {
   userName: string
   email?: string | null
   isAdmin: boolean
+}
+
+/**
+ * A named set of accounts that a route can be granted to, as the Groups admin screen sees it. Mirrors the
+ * backend `GroupDto`.
+ *
+ * The name is not just a label: it is forwarded to protected apps in the `Remote-Groups` /
+ * `X-Auth-Request-Groups` header and in the JWT's `groups` claim, so a group-aware app maps it onto its
+ * own roles. That is why the backend constrains it to printable ASCII without commas — the client shows
+ * the refusal rather than pre-validating a rule that has to hold server-side anyway.
+ */
+export interface Group {
+  id: number
+  name: string
+  /** Derived per read rather than stored — a counter could disagree with the membership rows. */
+  memberCount: number
 }

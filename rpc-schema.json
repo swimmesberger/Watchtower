@@ -1042,6 +1042,214 @@
         ]
       }
     },
+    "groups.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "memberCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "memberCount"
+            ]
+          }
+        },
+        "required": [
+          "group"
+        ]
+      }
+    },
+    "groups.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "groups.getMembers": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "userIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "userIds"
+        ]
+      }
+    },
+    "groups.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "memberCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "memberCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "groups"
+        ]
+      }
+    },
+    "groups.rename": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "memberCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "memberCount"
+            ]
+          }
+        },
+        "required": [
+          "group"
+        ]
+      }
+    },
+    "groups.setMembers": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "userIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "userIds"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "userIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "userIds"
+        ]
+      }
+    },
     "metrics.containers": {
       "params": {
         "type": "object",
@@ -1904,13 +2112,20 @@
             "items": {
               "type": "integer"
             }
+          },
+          "grantedGroupIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
           }
         },
         "required": [
           "mode",
           "identityHeaderMode",
           "bypassPaths",
-          "grantedUserIds"
+          "grantedUserIds",
+          "grantedGroupIds"
         ]
       }
     },
@@ -2149,6 +2364,16 @@
               null
             ],
             "default": null
+          },
+          "grantedGroupIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
           }
         },
         "required": [
@@ -2186,13 +2411,20 @@
             "items": {
               "type": "integer"
             }
+          },
+          "grantedGroupIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
           }
         },
         "required": [
           "mode",
           "identityHeaderMode",
           "bypassPaths",
-          "grantedUserIds"
+          "grantedUserIds",
+          "grantedGroupIds"
         ]
       }
     },
@@ -5554,6 +5786,9 @@
         "features": []
       },
       "Deployments": {
+        "features": []
+      },
+      "Groups": {
         "features": []
       },
       "Metrics": {
