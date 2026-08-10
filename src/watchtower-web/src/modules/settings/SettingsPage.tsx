@@ -3,8 +3,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   RefreshCw,
   RotateCcw,
   Timer,
@@ -278,11 +276,7 @@ function SelfUpdateCard({
 }) {
   const [confirmApply, setConfirmApply] = useState(false)
 
-  const effectiveImage = status.imageName ?? status.detectedImageName
-  const effectiveComposePath = status.composeFilePath ?? status.detectedComposeFilePath
-  const effectiveProjectName = status.composeProjectName ?? status.detectedComposeProjectName
-
-  const canCheck = !!effectiveImage
+  const canCheck = !!status.detectedImageName
   const canApply = !!status.canApplyUpdate
   const applyStage = status.applyStage
   const isApplying = applyStage === 'pulling' || applyStage === 'restarting'
@@ -421,25 +415,10 @@ function SelfUpdateCard({
             <div className="overflow-x-auto">
               <dl className="grid min-w-[18rem] grid-cols-[5rem_1fr] gap-x-3 gap-y-1.5 text-xs">
                 <dt className="self-center text-text-3">Image</dt>
-                <dd className="truncate font-mono text-text-2" title={effectiveImage ?? ''}>
-                  {effectiveImage ?? <span className="font-sans italic text-text-3">unknown</span>}
-                  {status.imageName && <OverrideTag />}
-                </dd>
-
-                <dt className="self-center text-text-3">Compose</dt>
-                <dd className="truncate font-mono text-text-2" title={effectiveComposePath ?? ''}>
-                  {effectiveComposePath ?? (
-                    <span className="font-sans italic text-text-3">not started via Compose</span>
+                <dd className="truncate font-mono text-text-2" title={status.detectedImageName ?? ''}>
+                  {status.detectedImageName ?? (
+                    <span className="font-sans italic text-text-3">unknown</span>
                   )}
-                  {status.composeFilePath && <OverrideTag />}
-                </dd>
-
-                <dt className="self-center text-text-3">Project</dt>
-                <dd className="truncate font-mono text-text-2" title={effectiveProjectName ?? ''}>
-                  {effectiveProjectName ?? (
-                    <span className="font-sans italic text-text-3">—</span>
-                  )}
-                  {status.composeProjectName && <OverrideTag />}
                 </dd>
               </dl>
             </div>
@@ -449,27 +428,11 @@ function SelfUpdateCard({
         {/* ── Credential ── */}
         <CredentialRow status={status} onSave={onSave} saving={saving} />
 
-        {/* ── Overrides (collapsible) ── */}
-        <OverridesSection status={status} onSave={onSave} saving={saving} />
-
         {/* ── Check error ── */}
         {checkError && (
           <div className="border-t border-border px-4 py-4 md:px-5">
             <Banner tone="danger" title="Update check failed">
               {checkError}
-            </Banner>
-          </div>
-        )}
-
-        {/* ── Outdated but no compose info ── */}
-        {status.isOutdated && !canApply && (
-          <div className="border-t border-border px-4 py-4 md:px-5">
-            <Banner tone="warn" title="Update available, but automatic apply isn't possible">
-              Compose info is missing. Restart Watchtower manually with{' '}
-              <code className="rounded bg-warn-bg px-1.5 py-0.5 font-mono text-[12px] text-warn">
-                docker compose up -d
-              </code>
-              .
             </Banner>
           </div>
         )}
@@ -529,10 +492,6 @@ function LiveBanner({ tone, children }: { tone: 'run' | 'warn'; children: React.
   )
 }
 
-function OverrideTag() {
-  return <span className="ml-1.5 font-sans not-italic text-text-3">(override)</span>
-}
-
 // ── Credential row ────────────────────────────────────────────────────────────
 
 function CredentialRow({
@@ -554,12 +513,7 @@ function CredentialRow({
   const dirty = value !== initial
 
   function handleSave() {
-    onSave({
-      imageName: status.imageName ?? null,
-      credentialId: value === NO_CREDENTIAL ? null : Number(value),
-      composeFilePath: status.composeFilePath ?? null,
-      composeProjectName: status.composeProjectName ?? null,
-    })
+    onSave({ credentialId: value === NO_CREDENTIAL ? null : Number(value) })
   }
 
   return (
@@ -595,109 +549,6 @@ function CredentialRow({
         >
           Save
         </Button>
-      )}
-    </div>
-  )
-}
-
-// ── Overrides (collapsible) ───────────────────────────────────────────────────
-
-function OverridesSection({
-  status,
-  onSave,
-  saving,
-}: {
-  status: SelfUpdateStatus
-  onSave: (data: UpdateSelfConfigRequest) => void
-  saving: boolean
-}) {
-  const hasOverrides = !!(status.imageName || status.composeFilePath || status.composeProjectName)
-  const [open, setOpen] = useState(hasOverrides)
-
-  const [imageName, setImageName] = useState(status.imageName ?? '')
-  const [composeFilePath, setComposeFilePath] = useState(status.composeFilePath ?? '')
-  const [composeProjectName, setComposeProjectName] = useState(status.composeProjectName ?? '')
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    onSave({
-      imageName: imageName.trim() || null,
-      credentialId: status.credentialId ?? null,
-      composeFilePath: composeFilePath.trim() || null,
-      composeProjectName: composeProjectName.trim() || null,
-    })
-  }
-
-  return (
-    <div className="border-t border-border">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-4 py-3 text-[13px] text-text-2 transition-colors hover:bg-surface-2 hover:text-text md:px-5"
-      >
-        {open ? (
-          <ChevronDown className="size-4 shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight className="size-4 shrink-0" aria-hidden />
-        )}
-        {hasOverrides ? 'Overrides active' : 'Override auto-detected settings'}
-      </button>
-
-      {open && (
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col gap-4 border-t border-border bg-surface-2/40 px-4 py-4 md:px-5"
-        >
-          <p className="text-[13px] text-text-2">
-            Leave a field blank to use the auto-detected value. Set an override to force a specific
-            value.
-          </p>
-          <Field
-            label="Image name"
-            hint="e.g. ghcr.io/owner/watchtower:latest. Defaults to the detected image."
-          >
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                mono
-                placeholder={status.detectedImageName ?? 'ghcr.io/owner/watchtower:latest'}
-                value={imageName}
-                onChange={e => setImageName(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Compose file path" hint="Absolute path on the host, e.g. /opt/watchtower/docker-compose.yml.">
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                mono
-                placeholder={status.detectedComposeFilePath ?? '/opt/watchtower/docker-compose.yml'}
-                value={composeFilePath}
-                onChange={e => setComposeFilePath(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Project name" hint="Compose project name. Defaults to the detected project.">
-            {({ id, describedBy }) => (
-              <Input
-                id={id}
-                aria-describedby={describedBy}
-                mono
-                placeholder={status.detectedComposeProjectName ?? 'watchtower'}
-                value={composeProjectName}
-                onChange={e => setComposeProjectName(e.target.value)}
-              />
-            )}
-          </Field>
-          <div className="flex justify-end">
-            <Button type="submit" variant="primary" loading={saving} className="w-full md:w-auto">
-              Save overrides
-            </Button>
-          </div>
-        </form>
       )}
     </div>
   )
