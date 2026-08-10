@@ -20,6 +20,7 @@ import type {
   DeployEvent,
   DnsCheckResult,
   DockerConfigStatus,
+  Group,
   HostMetrics,
   MetricsRange,
   NetworkInfo,
@@ -209,6 +210,7 @@ export const api = {
         identityHeaderMode: data.identityHeaderMode,
         bypassPaths: data.bypassPaths ?? null,
         grantedUserIds: data.grantedUserIds,
+        grantedGroupIds: data.grantedGroupIds,
       })) as RouteAccess,
   },
 
@@ -300,6 +302,21 @@ export const api = {
     delete: async (id: number) => {
       await rpc('users.delete', { id })
     },
+  },
+
+  groups: {
+    list: async () => (await rpc('groups.list', {})).groups as Group[],
+    create: async (name: string) => (await rpc('groups.create', { name })).group as Group,
+    rename: async (id: number, name: string) =>
+      (await rpc('groups.rename', { id, name })).group as Group,
+    delete: async (id: number) => {
+      await rpc('groups.delete', { id })
+    },
+    getMembers: async (id: number) => (await rpc('groups.getMembers', { id })).userIds as number[],
+    // Whole-set replace: the members dialog knows the set it wants, so it says so rather than
+    // reconstructing a sequence of adds and removes the server would have to trust.
+    setMembers: async (id: number, userIds: number[]) =>
+      (await rpc('groups.setMembers', { id, userIds })).userIds as number[],
   },
 
   system: {

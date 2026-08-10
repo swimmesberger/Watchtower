@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -159,16 +160,34 @@ public static class RouteAccessPolicy {
     };
 
     /// <summary>
+    /// The one reading of "this grant lets that account in", shared by both authorisation entry points so
+    /// they cannot drift: a grant matches when it names the account directly, or when it names a group the
+    /// account is a member of. Group membership is folded into the grant query itself rather than resolved
+    /// first, so the per-request cost stays one round trip whichever kind of grant is in play.
+    /// </summary>
+    /// <remarks>
+    /// The <c>GroupId != null</c> guard is not redundant with the membership subquery: it keeps a
+    /// user-subject row out of the correlated lookup entirely, so the common case is decided on the grant
+    /// row alone.
+    /// </remarks>
+    private static Expression<Func<RouteAccessGrant, bool>> GrantAdmits(WatchtowerDbContext db, int userId) =>
+        g => g.UserId == userId
+             || (g.GroupId != null && db.GroupMembers.Any(m => m.GroupId == g.GroupId && m.UserId == userId));
+
+    /// <summary>
     /// Whether <paramref name="userId"/> may enter <paramref name="route"/>. The account being valid and
     /// enabled is the caller's business; this answers only the policy question.
     /// </summary>
     public static async Task<bool> IsAuthorizedAsync(
         WatchtowerDbContext db, Route route, int userId, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(route);
         return Classify(route.AccessMode) switch {
             AccessDecision.Allow => true,
             AccessDecision.RequiresGrant => await db.RouteAccessGrants.AsNoTracking()
-                .AnyAsync(g => g.RouteId == route.Id && g.UserId == userId, ct),
+                .Where(g => g.RouteId == route.Id)
+                .Where(GrantAdmits(db, userId))
+                .AnyAsync(ct),
             _ => false,
         };
     }
@@ -189,6 +208,7 @@ public static class RouteAccessPolicy {
     /// <returns>The ids of the routes the account may enter; empty when it may enter none.</returns>
     public static async Task<IReadOnlySet<int>> AccessibleRouteIdsAsync(
         WatchtowerDbContext db, IReadOnlyList<Route> routes, int userId, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(routes);
 
         var accessible = new HashSet<int>();
@@ -210,7 +230,8 @@ public static class RouteAccessPolicy {
         if (restricted.Count == 0) return accessible;
 
         var granted = await db.RouteAccessGrants.AsNoTracking()
-            .Where(g => g.UserId == userId && restricted.Contains(g.RouteId))
+            .Where(g => restricted.Contains(g.RouteId))
+            .Where(GrantAdmits(db, userId))
             .Select(g => g.RouteId)
             .ToListAsync(ct);
         accessible.UnionWith(granted);

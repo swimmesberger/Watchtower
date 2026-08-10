@@ -26,7 +26,11 @@ public enum AccessMode {
     Public,
     /// <summary>Any signed-in Watchtower user may enter; anonymous requests are sent to the central login.</summary>
     Authenticated,
-    /// <summary>Only users holding a <see cref="RouteAccessGrant"/> for this route may enter.</summary>
+    /// <summary>
+    /// Only the subjects a <see cref="RouteAccessGrant"/> names for this route may enter: an account
+    /// granted directly, or any member of a granted <see cref="Group"/>. A member holds no grant of their
+    /// own, so membership is resolved per request rather than materialised into grant rows.
+    /// </summary>
     Restricted,
 }
 

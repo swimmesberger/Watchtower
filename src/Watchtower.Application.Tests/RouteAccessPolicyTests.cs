@@ -157,11 +157,62 @@ public sealed class RouteAccessPolicyTests {
         foreach (var name in forwarded)
             Assert.Contains(name, IdentityForwarding.StripHeaderNames);
 
-        // The group/authz names we do NOT forward are still stripped — that is the whole point.
-        Assert.DoesNotContain(IdentityForwarding.RemoteGroups, forwarded);
-        Assert.DoesNotContain(IdentityForwarding.AuthRequestGroups, forwarded);
+        // The two group names we DO forward are in both sets — the invariant every forwarded name has to
+        // satisfy, and the reason a verified group header cannot be a client's.
+        Assert.Contains(IdentityForwarding.RemoteGroups, forwarded);
+        Assert.Contains(IdentityForwarding.AuthRequestGroups, forwarded);
+
+        // The names we never populate are still stripped — that is the whole point of the set being broader.
+        Assert.DoesNotContain(IdentityForwarding.ForwardedGroups, forwarded);
+        Assert.DoesNotContain(IdentityForwarding.ForwardedUser, forwarded);
+        Assert.DoesNotContain(IdentityForwarding.AuthRequestAccessToken, forwarded);
         Assert.True(IdentityForwarding.StripHeaderNames.Length > forwarded.Count);
     }
+
+    [Fact]
+    public void GroupHeader_IsSortedAndCommaJoined() {
+        // Ordinal sort, whatever order the membership rows came back in: what an upstream parses must not
+        // depend on that. The comma is the separator both ecosystems use.
+        Assert.Equal("admins,platform,viewers", GroupHeaderFor(["viewers", "admins", "platform"]));
+    }
+
+    [Fact]
+    public void GroupHeader_IsAbsentForAnAccountInNoGroup() {
+        // Absent, not empty: some upstreams read `Remote-Groups: ` as membership of a group named "".
+        Assert.Null(GroupHeaderFor([]));
+        // The same goes for a list that turns out to contain nothing emittable.
+        Assert.Null(GroupHeaderFor(["  ", "bad,name"]));
+    }
+
+    /// <summary>
+    /// The defense-in-depth filter, and specifically that it drops names <em>individually</em>. Neither of
+    /// these can be created through the Groups module — <c>GroupMapping.ValidateName</c> refuses both — so
+    /// this covers a row written by something else, where the damage of getting it wrong differs per case:
+    /// a comma would fabricate a membership, while a non-ASCII name would fail the caller's header-safety
+    /// filter on the joined value and silently cost the account every other group it is in.
+    /// </summary>
+    [Theory]
+    // Would be read downstream as two memberships.
+    [InlineData("viewers,admins")]
+    // Would take the whole header down with it once HeaderSafe judges the joined value.
+    [InlineData("Überwacher")]
+    [InlineData("view\ners")]
+    [InlineData("viewers\u007F")]
+    public void GroupHeader_DropsOnlyTheUnemittableName_KeepingTheRest(string unemittable) {
+        var header = GroupHeaderFor(["admins", unemittable, "viewers"]);
+
+        Assert.Equal("admins,viewers", header);
+        // And the joined value is something the endpoint's header-safety filter will actually accept.
+        Assert.All(header!, c => Assert.InRange(c, ' ', '~'));
+    }
+
+    /// <summary>The group header a <c>Remote</c> route would forward for <paramref name="groups"/>, or null.</summary>
+    private static string? GroupHeaderFor(string[] groups) =>
+        IdentityForwarding
+            .PlaintextHeaders(IdentityHeaderMode.Remote, "alice", email: null, groups)
+            .Where(h => h.Name == IdentityForwarding.RemoteGroups)
+            .Select(h => h.Value)
+            .SingleOrDefault();
 
     [Fact]
     public void StripSet_NeutralizesGroupAndAccessTokenHeaders_ButNotTheTransportHeaders() {

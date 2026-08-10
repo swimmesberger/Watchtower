@@ -23,8 +23,32 @@ public static class AuthEventKinds {
     /// <summary>A signed-in visitor was refused an app they hold no grant for (and refused <c>redirect_uri</c> handovers).</summary>
     public const string AccessDenied = "access.denied";
 
-    /// <summary>An administrator changed a route's access policy — its mode, bypass paths or the set of granted users.</summary>
+    /// <summary>
+    /// An administrator changed a route's access policy — its mode, bypass paths or the sets of granted
+    /// users and groups.
+    /// </summary>
     public const string RouteAccessChanged = "route.access.changed";
+
+    /// <summary>A group was created. It grants nothing until a route names it and it has members.</summary>
+    public const string GroupCreated = "group.created";
+
+    /// <summary>
+    /// A group was renamed. Worth its own kind because the name is what protected upstreams receive in the
+    /// forwarded group header and the JWT's <c>groups</c> claim — a rename changes what they are told.
+    /// </summary>
+    public const string GroupRenamed = "group.renamed";
+
+    /// <summary>
+    /// A group was deleted, taking its memberships and every route grant that named it. The row survives
+    /// it, so the name lives in <see cref="Entities.AuthEvent.Detail"/>.
+    /// </summary>
+    public const string GroupDeleted = "group.deleted";
+
+    /// <summary>
+    /// A group's membership was replaced. This is the row that explains an access change nobody made to a
+    /// route: joining a granted group is being granted, and leaving one is being revoked.
+    /// </summary>
+    public const string GroupMembersChanged = "group.members.changed";
 
     /// <summary>An account was created by an administrator.</summary>
     public const string UserCreated = "user.created";

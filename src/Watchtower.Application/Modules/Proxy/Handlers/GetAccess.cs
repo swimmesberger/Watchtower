@@ -9,8 +9,8 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// <summary>
 /// Reads a route's access policy (docs/central-auth/design.md §7): its <see cref="AccessMode"/>, the
 /// newline-separated bypass paths, and — for a <see cref="AccessMode.Restricted"/> route — the ids of the
-/// users granted through it. The read side of <see cref="SetAccess"/>; the two share a response shape so a
-/// form can round-trip what it saved.
+/// users and groups granted through it. The read side of <see cref="SetAccess"/>; the two share a response
+/// shape so a form can round-trip what it saved.
 /// </summary>
 /// <remarks>
 /// Deciding who may reach an app is an administrative act, so this carries the same
@@ -28,7 +28,8 @@ public sealed class GetAccess(WatchtowerDbContext db)
         AccessMode Mode,
         IdentityHeaderMode IdentityHeaderMode,
         string? BypassPaths,
-        IReadOnlyList<int> GrantedUserIds);
+        IReadOnlyList<int> GrantedUserIds,
+        IReadOnlyList<int> GrantedGroupIds);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var route = await db.Routes.AsNoTracking()
@@ -36,12 +37,18 @@ public sealed class GetAccess(WatchtowerDbContext db)
         if (route is null)
             return AppError.NotFound($"Route {query.RouteId} not found");
 
-        var grantedUserIds = await db.RouteAccessGrants.AsNoTracking()
+        // One read for both subject kinds, split afterwards: a grant row carries exactly one of the two
+        // (the CHECK constraint on the table says so), so the split is total and loses nothing.
+        var grants = await db.RouteAccessGrants.AsNoTracking()
             .Where(g => g.RouteId == route.Id)
-            .Select(g => g.UserId)
-            .OrderBy(id => id)
+            .Select(g => new { g.UserId, g.GroupId })
             .ToListAsync(ct);
 
-        return new Response(route.AccessMode, route.IdentityHeaderMode, route.BypassPaths, grantedUserIds);
+        return new Response(
+            route.AccessMode,
+            route.IdentityHeaderMode,
+            route.BypassPaths,
+            [.. grants.Where(g => g.UserId is not null).Select(g => g.UserId!.Value).Order()],
+            [.. grants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).Order()]);
     }
 }

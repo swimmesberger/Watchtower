@@ -1,3 +1,4 @@
+using System.Globalization;
 using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -9,14 +10,15 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 
 /// <summary>
 /// Writes a route's access policy (docs/central-auth/design.md §7): its <see cref="AccessMode"/>, bypass
-/// paths and — for <see cref="AccessMode.Restricted"/> — the set of users allowed through. Reconciles the
-/// <see cref="RouteAccessGrant"/> rows to the target set and reloads the proxy, because turning access
-/// control on or off for a route changes whether Caddy emits a <c>forward_auth</c> block for it.
+/// paths and — for <see cref="AccessMode.Restricted"/> — the sets of users and groups allowed through.
+/// Reconciles the <see cref="RouteAccessGrant"/> rows to the target sets and reloads the proxy, because
+/// turning access control on or off for a route changes whether Caddy emits a <c>forward_auth</c> block
+/// for it.
 /// </summary>
 /// <remarks>
 /// Same <c>[RequireRole("Admin")]</c> as the rest of the access surface. The write is fail-fast: an
-/// unparseable bypass line or an unknown user id is rejected as <c>Validation</c> before anything is
-/// persisted, so a partially-applied policy is never committed. Grants are reconciled (removed rows deleted,
+/// unparseable bypass line or an unknown user or group id is rejected as <c>Validation</c> before anything
+/// is persisted, so a partially-applied policy is never committed. Grants are reconciled (removed rows deleted,
 /// new rows added) rather than deleted-and-re-added, so re-saving an unchanged <c>Restricted</c> route
 /// churns no rows. The audit row and the Caddy reload both run only after the policy has committed — the
 /// same post-commit discipline the Users module uses (see <see cref="UserMapping.RecordAsync"/>), so a
@@ -39,13 +41,18 @@ public sealed class SetAccess(
         // Optional and last (a default value is what marks a param non-required in the generated schema): an
         // older client that omits it keeps identity forwarding at the safe JWT-only default rather than being
         // rejected, so the field is a purely additive, non-breaking addition to the wire contract.
-        IdentityHeaderMode? IdentityHeaderMode = null);
+        IdentityHeaderMode? IdentityHeaderMode = null,
+        // Added the same way and for the same reason, which is why it goes after IdentityHeaderMode rather
+        // than next to GrantedUserIds: a client that predates group grants omits it and gets today's
+        // behaviour — the user grants it did send, and no group grants — instead of a rejected write.
+        IReadOnlyList<int>? GrantedGroupIds = null);
 
     public sealed record Response(
         AccessMode Mode,
         IdentityHeaderMode IdentityHeaderMode,
         string? BypassPaths,
-        IReadOnlyList<int> GrantedUserIds);
+        IReadOnlyList<int> GrantedUserIds,
+        IReadOnlyList<int> GrantedGroupIds);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var route = await db.Routes.FirstOrDefaultAsync(r => r.Id == command.RouteId, ct);
@@ -73,19 +80,35 @@ public sealed class SetAccess(
 
         // Grants only mean something for a Restricted route; every other mode stores none, so switching away
         // from Restricted clears enforcement (RouteAccessPolicy.IsAuthorizedAsync no longer consults them).
-        var targetGrants = command.Mode == AccessMode.Restricted
+        // Both subject kinds are cleared together — leaving group grants behind while dropping user ones
+        // would make "not Restricted" mean something different depending on how access had been granted.
+        var targetUserGrants = command.Mode == AccessMode.Restricted
             ? (command.GrantedUserIds ?? []).Distinct().ToList()
             : [];
+        var targetGroupGrants = command.Mode == AccessMode.Restricted
+            ? (command.GrantedGroupIds ?? []).Distinct().ToList()
+            : [];
 
-        if (targetGrants.Count > 0) {
+        // Both existence checks run before any write, so a command naming one good and one unknown subject
+        // is refused whole rather than half-applied.
+        if (targetUserGrants.Count > 0) {
             var known = await db.Users.AsNoTracking()
-                .Where(u => targetGrants.Contains(u.Id))
+                .Where(u => targetUserGrants.Contains(u.Id))
                 .Select(u => u.Id)
                 .ToListAsync(ct);
-            var missing = targetGrants.Except(known).OrderBy(id => id).ToList();
+            var missing = targetUserGrants.Except(known).OrderBy(id => id).ToList();
             if (missing.Count > 0)
-                return AppError.Validation(
-                    $"No user exists with id {(missing.Count == 1 ? missing[0].ToString() : string.Join(", ", missing))}.");
+                return AppError.Validation($"No user exists with id {Describe(missing)}.");
+        }
+
+        if (targetGroupGrants.Count > 0) {
+            var known = await db.Groups.AsNoTracking()
+                .Where(g => targetGroupGrants.Contains(g.Id))
+                .Select(g => g.Id)
+                .ToListAsync(ct);
+            var missing = targetGroupGrants.Except(known).OrderBy(id => id).ToList();
+            if (missing.Count > 0)
+                return AppError.Validation($"No group exists with id {Describe(missing)}.");
         }
 
         route.AccessMode = command.Mode;
@@ -97,13 +120,24 @@ public sealed class SetAccess(
         var currentGrants = await db.RouteAccessGrants
             .Where(g => g.RouteId == route.Id)
             .ToListAsync(ct);
-        var target = targetGrants.ToHashSet();
-        var current = currentGrants.Select(g => g.UserId).ToHashSet();
+        var targetUsers = targetUserGrants.ToHashSet();
+        var targetGroups = targetGroupGrants.ToHashSet();
+        var currentUsers = currentGrants.Where(g => g.UserId is not null).Select(g => g.UserId!.Value).ToHashSet();
+        var currentGroups = currentGrants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).ToHashSet();
 
-        foreach (var grant in currentGrants.Where(g => !target.Contains(g.UserId)))
-            db.RouteAccessGrants.Remove(grant);
-        foreach (var userId in targetGrants.Where(id => !current.Contains(id)))
+        // Each row is judged against the target set of its own subject kind. A row that is somehow neither
+        // (which the table's CHECK constraint forbids) matches nothing and is removed — the fail-closed
+        // reading, since a grant naming no subject is one nobody can account for.
+        foreach (var grant in currentGrants) {
+            var keep = grant.UserId is { } userId
+                ? targetUsers.Contains(userId)
+                : grant.GroupId is { } groupId && targetGroups.Contains(groupId);
+            if (!keep) db.RouteAccessGrants.Remove(grant);
+        }
+        foreach (var userId in targetUserGrants.Where(id => !currentUsers.Contains(id)))
             db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = route.Id, UserId = userId });
+        foreach (var groupId in targetGroupGrants.Where(id => !currentGroups.Contains(id)))
+            db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = route.Id, GroupId = groupId });
 
         await db.SaveChangesAsync(ct);
 
@@ -115,8 +149,18 @@ public sealed class SetAccess(
         await RecordAsync(route, command.Mode);
 
         return new Response(
-            route.AccessMode, route.IdentityHeaderMode, route.BypassPaths, [.. targetGrants.OrderBy(id => id)]);
+            route.AccessMode,
+            route.IdentityHeaderMode,
+            route.BypassPaths,
+            [.. targetUserGrants.Order()],
+            [.. targetGroupGrants.Order()]);
     }
+
+    /// <summary>Renders the ids that could not be resolved for the refusal message.</summary>
+    private static string Describe(IReadOnlyList<int> missing) =>
+        missing.Count == 1
+            ? missing[0].ToString(CultureInfo.InvariantCulture)
+            : string.Join(", ", missing);
 
     /// <summary>
     /// Trims each bypass line, drops the blanks, and rejects the first non-empty line that is not a rooted
