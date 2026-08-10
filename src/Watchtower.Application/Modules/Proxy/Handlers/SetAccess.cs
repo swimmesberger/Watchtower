@@ -44,9 +44,15 @@ public sealed class SetAccess(
         if (route is null)
             return AppError.NotFound($"Route {command.RouteId} not found");
 
-        var bypassPaths = NormalizeBypassPaths(command.BypassPaths, out var offending);
-        if (offending is not null)
-            return AppError.Validation($"Bypass path '{offending}' must start with '/'.");
+        // Bypass paths only mean something for a protected route; a Public route stores none, the same way
+        // grants are cleared below for any non-Restricted mode — its access controls are off, so a stale
+        // bypass line would only be dead state. Validation therefore applies to the modes that keep them.
+        string? bypassPaths = null;
+        if (command.Mode != AccessMode.Public) {
+            bypassPaths = NormalizeBypassPaths(command.BypassPaths, out var offending);
+            if (offending is not null)
+                return AppError.Validation($"Bypass path '{offending}' must start with '/'.");
+        }
 
         // Grants only mean something for a Restricted route; every other mode stores none, so switching away
         // from Restricted clears enforcement (RouteAccessPolicy.IsAuthorizedAsync no longer consults them).

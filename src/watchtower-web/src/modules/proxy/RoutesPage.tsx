@@ -730,8 +730,9 @@ function AccessForm({
         if (saving) return
         onSubmit({
           mode,
-          bypassPaths: bypassPaths.trim() === '' ? null : bypassPaths,
-          // Grants only mean something for Restricted; the backend clears them for the other modes anyway.
+          // Bypass paths only apply to a protected route, and grants only to Restricted; the backend clears
+          // each for the modes they don't belong to, but don't submit retained text/selection either.
+          bypassPaths: mode === 'Public' || bypassPaths.trim() === '' ? null : bypassPaths,
           grantedUserIds: mode === 'Restricted' ? grantedUserIds : [],
         })
       }}

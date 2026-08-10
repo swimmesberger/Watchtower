@@ -106,19 +106,53 @@ public sealed class ProxyAccessModuleTests {
     }
 
     [Fact]
+    public async Task SetAccess_SwitchingToPublic_ClearsBypassPaths_EvenWhenLinesSupplied() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+
+        // Land the route on a protected mode carrying bypass lines...
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Authenticated, "/webhooks/", []));
+            Assert.True(result.IsSuccess, Describe(result));
+        }
+
+        // ...then back to Public while still submitting lines — a Public route stores none.
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Public, "/webhooks/", []));
+            Assert.True(result.IsSuccess, Describe(result));
+            Assert.Equal(AccessMode.Public, result.Value.Mode);
+            Assert.Null(result.Value.BypassPaths);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
+            Assert.Equal(AccessMode.Public, route.AccessMode);
+            Assert.Null(route.BypassPaths);
+        }
+    }
+
+    [Fact]
     public async Task SetAccess_RejectsABypassLineThatIsNotRooted() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
         var routeId = await SeedRouteAsync(host);
 
-        await using var scope = host.Services.CreateAsyncScope();
-        var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
-            scope.ServiceProvider,
-            new SetAccess.Command(routeId, AccessMode.Authenticated, "/ok\nnot-a-path", []));
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Authenticated, "/ok\nnot-a-path", []));
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorKind.Validation, result.Error.Kind);
-        Assert.Contains("not-a-path", result.Error.Message);
-        // Nothing was persisted: the route stays as seeded and no audit row is written.
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+            Assert.Contains("not-a-path", result.Error.Message);
+        }
+
+        // Nothing was persisted: the route stays at its seeded Public/null policy, and no audit row exists.
+        await AssertUnchangedSeededPolicyAsync(host, routeId);
         Assert.Empty(await AuditKindsAsync(host));
     }
 
@@ -128,14 +162,22 @@ public sealed class ProxyAccessModuleTests {
         var routeId = await SeedRouteAsync(host);
         var alice = await SeedUserAsync(host, "alice");
 
-        await using var scope = host.Services.CreateAsyncScope();
-        var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
-            scope.ServiceProvider,
-            new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice, 4040]));
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice, 4040]));
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorKind.Validation, result.Error.Kind);
-        Assert.Contains("4040", result.Error.Message);
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+            Assert.Contains("4040", result.Error.Message);
+        }
+
+        // Nothing was persisted: the route stays at its seeded Public/null policy, no grant, no audit row.
+        await AssertUnchangedSeededPolicyAsync(host, routeId);
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.RouteAccessGrants.AnyAsync(g => g.RouteId == routeId, Ct));
+        }
         Assert.Empty(await AuditKindsAsync(host));
     }
 
@@ -257,6 +299,15 @@ public sealed class ProxyAccessModuleTests {
         var created = await users.CreateAsync(user, "correct-horse-battery");
         Assert.True(created.Succeeded, string.Join("; ", created.Errors.Select(e => e.Description)));
         return user.Id;
+    }
+
+    /// <summary>Reloads the route and asserts its policy is still exactly what <see cref="SeedRouteAsync"/> left.</summary>
+    private static async Task AssertUnchangedSeededPolicyAsync(AuthTestHost host, int routeId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
+        Assert.Equal(AccessMode.Public, route.AccessMode);
+        Assert.Null(route.BypassPaths);
     }
 
     private static async Task<IReadOnlyList<string>> AuditKindsAsync(AuthTestHost host) {
