@@ -52,6 +52,12 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();
+        // Realms (docs/central-auth/design.md §13). The resolver is the one place a host, a route or a
+        // configuration value is turned into a population; the context is which population the current
+        // request's credential lookups may see, and defaults to the operator realm so nothing that predates
+        // realms changes behaviour. Both scoped — they read through the scoped context.
+        services.AddScoped<RealmResolver>();
+        services.AddScoped<IRealmContext, RealmContext>();
         // Public App API (/api/app/*): token auth + the read models the host endpoints translate.
         // Scoped because it reads through the scoped DbContext; the deploy queue resolves it from a
         // short-lived scope when it needs to materialize a stack's token.

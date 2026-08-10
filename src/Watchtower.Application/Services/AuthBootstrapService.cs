@@ -62,10 +62,15 @@ public sealed class AuthBootstrapService(
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    /// <summary>Creates the <c>admin</c> account when the instance has no users at all.</summary>
+    /// <summary>Creates the <c>admin</c> account when the instance has no operator accounts at all.</summary>
+    /// <remarks>
+    /// Scoped to the system realm (docs/central-auth/design.md §13), not to the users table as a whole: a
+    /// deployment whose only accounts live in a customer realm still has nobody who can administer it, and
+    /// a bootstrap that counted those would leave it with no way in.
+    /// </remarks>
     private async Task EnsureAdminAsync(
         UserManager<User> users, WatchtowerDbContext db, AuthOptions auth, CancellationToken ct) {
-        if (await db.Users.AnyAsync(ct)) return;
+        if (await db.Users.AnyAsync(u => u.RealmId == Realm.SystemRealmId, ct)) return;
 
         var generated = string.IsNullOrWhiteSpace(auth.BootstrapPassword);
         var password = generated ? GeneratePassword() : auth.BootstrapPassword!;
@@ -175,8 +180,13 @@ public sealed class AuthBootstrapService(
         await db.SaveChangesAsync(CancellationToken.None);
     }
 
-    /// <summary>A fresh administrator; <see cref="UserManager{TUser}"/> fills in the normalized name, hash and stamps.</summary>
+    /// <summary>
+    /// A fresh administrator; <see cref="UserManager{TUser}"/> fills in the normalized name, hash and
+    /// stamps. The realm is stated rather than left to the entity default: this account is the operator
+    /// population's only way in, and which population it lands in is the whole point.
+    /// </summary>
     private static User NewAdmin() => new() {
+        RealmId = Realm.SystemRealmId,
         UserName = AdminUserName,
         NormalizedUserName = AdminUserName.ToUpperInvariant(),
         PasswordHash = string.Empty,

@@ -15,12 +15,26 @@ namespace Watchtower.Application.Entities;
 public sealed class Group {
     public int Id { get; set; }
 
-    /// <summary>Display name as the administrator typed it. Unique case-insensitively via <see cref="NormalizedName"/>.</summary>
+    /// <summary>
+    /// The population this group belongs to (design.md §13). A group may only ever hold accounts of its own
+    /// realm, which is what keeps a group grant from reaching across populations. Defaults to the system
+    /// realm, like <see cref="User.RealmId"/>.
+    /// </summary>
+    public int RealmId { get; set; } = Realm.SystemRealmId;
+
+    /// <inheritdoc cref="RealmId"/>
+    public Realm? Realm { get; set; }
+
+    /// <summary>
+    /// Display name as the administrator typed it. Unique <em>within the realm</em>, case-insensitively via
+    /// <see cref="NormalizedName"/>.
+    /// </summary>
     public required string Name { get; set; }
 
     /// <summary>
     /// Upper-cased form of <see cref="Name"/>, mirroring the <see cref="User.NormalizedUserName"/>
-    /// precedent: uniqueness is enforced on this column so names are case-insensitive on SQLite too.
+    /// precedent: uniqueness is enforced on <c>(realm_id, normalized_name)</c> so names are
+    /// case-insensitive on SQLite too.
     /// </summary>
     public required string NormalizedName { get; set; }
 

@@ -12,6 +12,25 @@ namespace Watchtower.Application.Persistence.Configurations;
 /// snake_cased by convention (<c>UseSnakeCaseNamingConvention</c>); table names are set explicitly.
 /// </summary>
 [EntityConfiguration]
+public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
+    public void Configure(EntityTypeBuilder<Realm> b) {
+        b.ToTable("realms");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.Slug).IsRequired();
+        // The slug is the realm's identity on the wire (the `realm` JWT claim), so it is unique and the
+        // handlers refuse to change it.
+        b.HasIndex(x => x.Slug).IsUnique();
+        // At most one realm may own a given login host: the host decides which population a visitor is
+        // authenticating into, so two realms sharing one would make that ambiguous. Filtered rather than
+        // plain unique because "no host yet" is a legitimate state for any number of realms — SQLite
+        // already treats NULLs as distinct, but the filter states the intent (the RouteAccessGrant
+        // precedent) and is what a future Postgres backend would need anyway.
+        b.HasIndex(x => x.AuthHost).IsUnique().HasFilter("\"auth_host\" IS NOT NULL");
+    }
+}
+
+[EntityConfiguration]
 public sealed class CredentialConfiguration : IEntityTypeConfiguration<Credential> {
     public void Configure(EntityTypeBuilder<Credential> b) {
         b.ToTable("credentials");
@@ -99,7 +118,15 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
         b.Property(x => x.Branch).IsRequired();
         b.Property(x => x.DomainPattern).IsRequired();
         b.Property(x => x.TargetServiceName).IsRequired();
+        // Deliberately global, not (realm_id, name): a template name is what an operator picks a category
+        // by in the one management surface there is, and that surface is system-realm-only (design.md §13).
         b.HasIndex(x => x.Name).IsUnique();
+        // Restrict, not cascade: deleting a realm must not silently take its categories — and with them
+        // every tenant stack — away. The realms.delete handler refuses while anything still references it.
+        b.HasOne(x => x.Realm)
+            .WithMany()
+            .HasForeignKey(x => x.RealmId)
+            .OnDelete(DeleteBehavior.Restrict);
         b.HasOne(x => x.Credential)
             .WithMany()
             .HasForeignKey(x => x.CredentialId)
@@ -167,6 +194,9 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
         b.Property(x => x.AccessMode).HasConversion<string>();
         // Stored as the enum name (e.g. "None"); "None" is the default so existing routes forward JWT only.
         b.Property(x => x.IdentityHeaderMode).HasConversion<string>();
+        // Global, and staying that way: a domain is a global resource — DNS and the proxy's site blocks
+        // have no notion of realms, so two realms claiming one host could not both be served. A route's
+        // realm is inherited from its stack's template rather than stored here (design.md §13).
         b.HasIndex(x => x.Domain).IsUnique();
         b.HasIndex(x => x.StackId);
         b.HasOne(x => x.Stack)
@@ -187,8 +217,17 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
         b.Property(x => x.SecurityStamp).IsRequired();
         // Optimistic concurrency: the stamp read into memory must still be the stored one at write time.
         b.Property(x => x.ConcurrencyStamp).IsRequired().IsConcurrencyToken();
-        // Every login looks the user up by the normalized name, which is also where uniqueness is enforced.
-        b.HasIndex(x => x.NormalizedUserName).IsUnique();
+        // Every login looks the user up by the normalized name *within its realm*, which is also where
+        // uniqueness is enforced: a realm is a credential space of its own (design.md §13), so two
+        // populations may each have an `admin`, and neither can see the other's. The realm comes first so
+        // the index also serves "the accounts of this realm".
+        b.HasIndex(x => new { x.RealmId, x.NormalizedUserName }).IsUnique();
+        // Restrict: an account may not outlive its population, and deleting a realm out from under its
+        // users would leave sessions pointing at accounts nobody can administer.
+        b.HasOne(x => x.Realm)
+            .WithMany()
+            .HasForeignKey(x => x.RealmId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -244,8 +283,14 @@ public sealed class GroupConfiguration : IEntityTypeConfiguration<Group> {
         b.Property(x => x.Name).IsRequired();
         b.Property(x => x.NormalizedName).IsRequired();
         // Same shape as users: uniqueness lives on the normalized column so names are case-insensitive
-        // on SQLite too, and every lookup that has to be case-blind goes through this index.
-        b.HasIndex(x => x.NormalizedName).IsUnique();
+        // on SQLite too, and every lookup that has to be case-blind goes through this index — scoped to
+        // the realm, because a group belongs to exactly one population (design.md §13).
+        b.HasIndex(x => new { x.RealmId, x.NormalizedName }).IsUnique();
+        // Restrict, as for users: a realm with groups still in it is not deletable.
+        b.HasOne(x => x.Realm)
+            .WithMany()
+            .HasForeignKey(x => x.RealmId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

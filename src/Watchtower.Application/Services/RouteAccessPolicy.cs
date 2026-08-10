@@ -70,6 +70,43 @@ public static class RouteAccessPolicy {
     public static Task<Route?> FindRouteByHostAsync(WatchtowerDbContext db, string host, CancellationToken ct) =>
         db.Routes.AsNoTracking().FirstOrDefaultAsync(r => r.Domain.ToLower() == host, ct);
 
+    /// <summary>One route's realm as the database can project it: null means "standalone stack".</summary>
+    private sealed record RouteRealmRow(int RouteId, int? TemplateRealmId);
+
+    /// <summary>
+    /// The realm each of <paramref name="routeIds"/> belongs to, as one query
+    /// (docs/central-auth/design.md §13). A route inherits its realm from its stack's category
+    /// (<see cref="StackTemplate.RealmId"/>); a standalone stack has no category, so its routes belong to
+    /// the system realm.
+    /// </summary>
+    /// <remarks>
+    /// Routes carry no realm column of their own on purpose: the category is where a population is decided,
+    /// and duplicating it onto every tenant route would be one more thing that can disagree with it. Ids
+    /// that name no route are simply absent from the result, which is what lets a caller tell "belongs to
+    /// the system realm" from "there is no such route".
+    /// </remarks>
+    public static async Task<IReadOnlyDictionary<int, int>> RouteRealmIdsAsync(
+        WatchtowerDbContext db, IReadOnlyCollection<int> routeIds, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(routeIds);
+        if (routeIds.Count == 0) return new Dictionary<int, int>();
+
+        var rows = await db.Routes.AsNoTracking()
+            .Where(r => routeIds.Contains(r.Id))
+            .Select(r => new RouteRealmRow(r.Id, (int?)r.Stack!.Template!.RealmId))
+            .ToListAsync(ct);
+
+        return rows.ToDictionary(x => x.RouteId, x => x.TemplateRealmId ?? Realm.SystemRealmId);
+    }
+
+    /// <summary>
+    /// The realm one route belongs to, or <see langword="null"/> when there is no such route.
+    /// </summary>
+    public static async Task<int?> RouteRealmIdAsync(WatchtowerDbContext db, int routeId, CancellationToken ct) {
+        var realms = await RouteRealmIdsAsync(db, [routeId], ct);
+        return realms.TryGetValue(routeId, out var realmId) ? realmId : null;
+    }
+
     /// <summary>The path portion of an <c>X-Forwarded-Uri</c>, with the query string and fragment removed.</summary>
     public static string ExtractPath(string? forwardedUri) {
         if (string.IsNullOrEmpty(forwardedUri)) return "/";
