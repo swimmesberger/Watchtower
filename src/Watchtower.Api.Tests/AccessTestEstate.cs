@@ -64,15 +64,22 @@ internal static class AccessTestEstate {
     /// Adds a stack and a route for <paramref name="domain"/> and returns the route id. With
     /// <paramref name="templateId"/> the stack is a tenant of that category, so the route inherits its realm.
     /// </summary>
+    /// <param name="stackName">
+    /// Overrides the stack name, which otherwise follows the domain's first label. Only worth setting where
+    /// the difference between the two is the thing under test.
+    /// </param>
+    /// <param name="tlsEnabled">Whether the proxy terminates HTTPS for the domain, as the real column does.</param>
     public static async Task<int> AddRouteAsync(
         this WatchtowerApiFactory factory, string domain, AccessMode mode, string? bypassPaths = null,
-        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None, int? templateId = null) {
+        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None, int? templateId = null,
+        string? stackName = null, bool tlsEnabled = true) {
         var routeId = 0;
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var ct = TestContext.Current.CancellationToken;
 
-            var name = domain.Split('.')[0];
+            var label = domain.Split('.')[0];
+            var name = stackName ?? label;
             var stack = new Stack {
                 Name = name,
                 RepositoryUrl = $"https://example.invalid/{name}.git",
@@ -80,7 +87,7 @@ internal static class AccessTestEstate {
                 Branch = "main",
                 ComposeProjectName = name,
                 TemplateId = templateId,
-                TenantSlug = templateId is null ? null : name,
+                TenantSlug = templateId is null ? null : label,
             };
             db.Stacks.Add(stack);
             await db.SaveChangesAsync(ct);
@@ -94,6 +101,7 @@ internal static class AccessTestEstate {
                 AccessMode = mode,
                 IdentityHeaderMode = identityHeaderMode,
                 BypassPaths = bypassPaths,
+                TlsEnabled = tlsEnabled,
             };
             db.Routes.Add(route);
             await db.SaveChangesAsync(ct);
@@ -101,6 +109,64 @@ internal static class AccessTestEstate {
         });
         return routeId;
     }
+
+    /// <summary>
+    /// Adds another domain for the stack <paramref name="routeId"/> belongs to — an alias, not a second
+    /// application. It carries the same access mode, so what distinguishes it from the primary is only
+    /// <see cref="Route.IsPrimary"/>.
+    /// </summary>
+    public static async Task<int> AddAliasRouteAsync(
+        this WatchtowerApiFactory factory, int routeId, string domain) {
+        var aliasId = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var ct = TestContext.Current.CancellationToken;
+
+            var primary = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, ct);
+            var alias = new Route {
+                StackId = primary.StackId,
+                Domain = domain,
+                ServiceName = primary.ServiceName,
+                ContainerPort = primary.ContainerPort,
+                IsPrimary = false,
+                AccessMode = primary.AccessMode,
+                TlsEnabled = primary.TlsEnabled,
+            };
+            db.Routes.Add(alias);
+            await db.SaveChangesAsync(ct);
+            aliasId = alias.Id;
+        });
+        return aliasId;
+    }
+
+    /// <summary>When the session behind <paramref name="rawToken"/> currently expires.</summary>
+    public static async Task<DateTimeOffset> SessionExpiryAsync(
+        this WatchtowerApiFactory factory, string rawToken) {
+        var expiry = default(DateTimeOffset);
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var hash = AuthSessionService.HashToken(rawToken);
+            expiry = (await db.AuthSessions.AsNoTracking()
+                .SingleAsync(s => s.TokenHash == hash, TestContext.Current.CancellationToken)).ExpiresAt;
+        });
+        return expiry;
+    }
+
+    /// <summary>
+    /// Moves a session's expiry, the way an hour of idling would. Used to put it inside the renewal window
+    /// (less than half the sliding lifetime left), which is the only state in which "does this endpoint
+    /// slide the session?" is a question with two possible answers.
+    /// </summary>
+    public static Task SetSessionExpiryAsync(
+        this WatchtowerApiFactory factory, string rawToken, DateTimeOffset expiresAt) =>
+        factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var ct = TestContext.Current.CancellationToken;
+            var hash = AuthSessionService.HashToken(rawToken);
+            var session = await db.AuthSessions.SingleAsync(s => s.TokenHash == hash, ct);
+            session.ExpiresAt = expiresAt;
+            await db.SaveChangesAsync(ct);
+        });
 
     /// <summary>
     /// Creates an account through <c>UserManager</c> and returns its id. The realm context is pinned first,

@@ -33,16 +33,29 @@ namespace Watchtower.Api.Endpoints;
 /// </para>
 /// </remarks>
 public static class WatchtowerAccessEndpoints {
-    /// <summary>One application a caller may enter: the domain they navigate to, plus a human label.</summary>
+    /// <summary>One application a caller may enter: where to send them, plus what to call it.</summary>
     /// <param name="Domain">The public hostname — what the visitor sees in their own address bar.</param>
     /// <param name="Name">
     /// The stack's name (for a tenant, <c>{category}-{slug}</c>). A display label, deliberately not an id:
     /// nothing here is a handle the caller could use against another surface.
     /// </param>
-    public sealed record AppLinkDto(string Domain, string Name);
+    /// <param name="Url">
+    /// The absolute URL to navigate to, built here rather than in the browser so the scheme follows the
+    /// route's own <see cref="Route.TlsEnabled"/>. A plain-HTTP route linked as <c>https</c> would be a
+    /// connection failure, and the client has nothing to derive the answer from.
+    /// </param>
+    public sealed record AppLinkDto(string Domain, string Name, string Url);
 
     /// <summary>The applications list answered by <c>/api/access/apps</c>.</summary>
     public sealed record AppsResponse(IReadOnlyList<AppLinkDto> Apps);
+
+    /// <summary>
+    /// The columns <c>/api/access/apps</c> reads off a route. A projection rather than the entity, because
+    /// <see cref="Stack"/> carries <see cref="Stack.WebhookToken"/> and <see cref="Stack.AppApiToken"/> and
+    /// nothing that any realm account can trigger should pull those into memory at all.
+    /// </summary>
+    private sealed record AppRouteRow(
+        int Id, string Domain, AccessMode AccessMode, bool TlsEnabled, bool IsPrimary, int StackId, string StackName);
 
     /// <summary>Audit kind written when a signed-in visitor is refused an app they hold no grant for.</summary>
     private const string AccessDenied = "access.denied";
@@ -527,20 +540,41 @@ public static class WatchtowerAccessEndpoints {
     }
 
     /// <summary>
-    /// Answers with the routes <see cref="RouteAccessPolicy.AccessibleRouteIdsAsync"/> says the caller may
-    /// enter, or 401 when the <c>__wt_sso</c> cookie does not resolve to a live session.
+    /// Answers with the applications the caller may enter, or 401 when the <c>__wt_sso</c> cookie does not
+    /// resolve to a live session.
     /// </summary>
     /// <remarks>
-    /// <b>No enumeration risk by construction.</b> Every entry names a route the caller is already
-    /// authorised to enter — a public one, one their realm admits them to, or one they hold a grant for —
-    /// so the answer tells them nothing they could not have learned by navigating. There is no second
-    /// reading of accessibility here: the policy that decides verify decides this, realm invariant included,
-    /// so a route of another population can never appear however its grants are written.
+    /// <b>Nothing outside the caller's own population is named.</b> Two filters, in this order and both
+    /// narrowing:
+    /// <list type="number">
+    ///   <item><description>
+    ///     <see cref="RouteAccessPolicy.AccessibleRouteIdsAsync"/> — the same reading of accessibility
+    ///     verify uses, so there is no second notion of it to drift with.
+    ///   </description></item>
+    ///   <item><description>
+    ///     the caller's realm, from the same <see cref="RouteAccessPolicy.RouteRealmIdsAsync"/> the policy
+    ///     itself consults. An <em>intersection</em>, never a union: it can only ever remove entries the
+    ///     policy allowed, so it cannot widen what this surface discloses.
+    ///   </description></item>
+    /// </list>
+    /// The second filter exists because the first deliberately admits a
+    /// <see cref="AccessMode.Public"/> route to everybody — no identity is consulted for one, so no
+    /// population is either. That is right for "may this request pass" and wrong for "what shall I name to
+    /// you": without it, any realm's account could read off every public domain this instance proxies,
+    /// which is precisely the enumeration <c>GET /api/proxy/ask</c> answers 404 to protect on these same
+    /// hosts. With it, the answer names only routes of the caller's own realm that they could already have
+    /// reached by typing the address.
     /// <para>
-    /// Validated with <see cref="AuthSessionService.ValidateAnyAsync"/> for the same reason UserInfo does:
-    /// this is a read, not a page visit, and listing your applications must not silently extend the life of
-    /// the session doing the listing. Being kind-agnostic costs nothing here — the token is read from the
-    /// host-scoped SSO cookie, and either kind resolves to the same account anyway.
+    /// Validated with <see cref="AuthSessionService.ValidateAsync"/> — the same call
+    /// <c>/api/auth/continue</c> makes, and kind-correct: an <c>__wt_access</c> token presented in the SSO
+    /// cookie is not an SSO session and is refused. Unlike UserInfo this does <em>not</em> reach for the
+    /// non-renewing <c>ValidateAnyAsync</c>, and the reason is worth writing down rather than leaving as an
+    /// apparent inconsistency: this endpoint is served on the auth host, where
+    /// <c>UseAuthentication</c> has already resolved the very same <c>__wt_sso</c> cookie through
+    /// <see cref="AuthSessionService.ValidateAsync"/> before any endpoint runs. The sliding window has
+    /// therefore already been renewed by the time we are called, and a second, non-renewing read here would
+    /// buy no property at all — only the appearance of one. UserInfo's case is genuinely different: it
+    /// reads the per-app <c>__wt_access</c> cookie, which no middleware touches.
     /// </para>
     /// </remarks>
     private static async Task<IResult> AppsAsync(
@@ -548,27 +582,68 @@ public static class WatchtowerAccessEndpoints {
         WatchtowerDbContext db,
         AuthSessionService sessions,
         CancellationToken ct) {
-        // Not ct: validation may delete an expired row on the way past, and a client that hangs up must not
-        // turn that housekeeping write into a cancellation out of the auth check.
-        var session = await sessions.ValidateAnyAsync(
+        // Not ct: validation also writes (the sliding renewal, and the delete of an expired row), and a
+        // client that hangs up must not turn that into a cancellation out of the auth check.
+        var session = await sessions.ValidateAsync(
             http.Request.Cookies[AuthSessionService.SsoCookieName], CancellationToken.None);
-        if (session is null) return Results.Unauthorized();
+        if (session?.User is null) return Results.Unauthorized();
 
-        // The whole table, then the policy: the bulk form settles every route in one indexed grants query,
-        // and Watchtower's scale is tens of routes, so there is nothing to paginate.
-        var routes = await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
-        var accessible = await RouteAccessPolicy.AccessibleRouteIdsAsync(db, routes, session.UserId, ct);
+        // The whole table as a narrow projection, then the policy: the bulk form settles every route in one
+        // indexed grants query, and Watchtower's scale is tens of routes, so there is nothing to paginate.
+        var rows = await db.Routes.AsNoTracking()
+            .Select(r => new AppRouteRow(
+                r.Id, r.Domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId, r.Stack!.Name))
+            .ToListAsync(ct);
 
-        var apps = routes
+        // The policy takes routes, and the two fields it reads of one are the two carried above. Detached
+        // stand-ins rather than a widened projection, so the columns it does not need are never fetched.
+        var candidates = rows
+            .Select(r => new Route { Id = r.Id, AccessMode = r.AccessMode, Domain = r.Domain, ServiceName = "" })
+            .ToList();
+        var accessible = await RouteAccessPolicy.AccessibleRouteIdsAsync(db, candidates, session.UserId, ct);
+        if (accessible.Count == 0) return Ok(http, []);
+
+        var realmIds = await RouteAccessPolicy.RouteRealmIdsAsync(db, [.. accessible], ct);
+        var mine = rows
             .Where(r => accessible.Contains(r.Id))
+            .Where(r => realmIds.TryGetValue(r.Id, out var realmId) && realmId == session.User.RealmId);
+
+        var apps = mine
+            .GroupBy(r => r.StackId)
+            .SelectMany(PreferPrimary)
+            .Select(r => new AppLinkDto(r.Domain, r.StackName, $"{(r.TlsEnabled ? "https" : "http")}://{r.Domain}/"))
             // Name first, domain to break ties — a deterministic order so the page does not reshuffle
-            // between loads. The stack is always present in practice; falling back to the domain keeps a
-            // route whose stack row went missing listed rather than crashing the page it belongs on.
-            .Select(r => new AppLinkDto(r.Domain, string.IsNullOrWhiteSpace(r.Stack?.Name) ? r.Domain : r.Stack.Name))
+            // between loads.
             .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(a => a.Domain, StringComparer.Ordinal)
             .ToList();
 
+        return Ok(http, apps);
+    }
+
+    /// <summary>
+    /// One app per stack: its canonical domain when the caller can reach it, otherwise every domain of that
+    /// stack they can.
+    /// </summary>
+    /// <remarks>
+    /// Alias domains of one stack are one application wearing several names, and a portal that listed each
+    /// separately would be claiming the visitor has three apps when they have one. The fallback matters
+    /// because <see cref="Route.IsPrimary"/> is a property of the stack's routes, not of the caller's:
+    /// a Restricted estate may well grant somebody an alias and not the primary, and silently dropping the
+    /// whole stack in that case would hide an application they are entitled to. Showing the aliases is the
+    /// honest degradation.
+    /// </remarks>
+    private static IEnumerable<AppRouteRow> PreferPrimary(IGrouping<int, AppRouteRow> stack) {
+        var primary = stack.Where(r => r.IsPrimary).ToList();
+        return primary.Count > 0 ? primary : stack;
+    }
+
+    /// <summary>
+    /// The success response. <c>no-store</c> because the body is per-account: a shared cache between the
+    /// browser and here must not be able to hand one visitor's application list to the next one.
+    /// </summary>
+    private static IResult Ok(HttpContext http, IReadOnlyList<AppLinkDto> apps) {
+        http.Response.Headers.CacheControl = "no-store";
         return Results.Ok(new AppsResponse(apps));
     }
 

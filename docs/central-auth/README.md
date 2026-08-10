@@ -175,9 +175,12 @@ and the server refuses the pair.
 Signing in on a realm's login host lands the visitor on **Your applications** — a plain list of the apps
 their account may open, each a link to that app's own domain, where the usual redirect dance signs them
 in without a second prompt. There is no sidebar and no management screen, because there is nothing there
-they could use. The list is exactly what the access policy already admits them to, so it discloses
-nothing they could not have reached by typing the address; an account that has been granted nothing yet
-sees a page saying so. Operator-realm accounts land on the management UI as before.
+they could use. The list holds only routes of **their own realm** that the access policy already admits
+them to, so it names nothing they could not have reached by typing the address — in particular, another
+realm's public apps are not listed, since that would be exactly the domain enumeration `/api/proxy/ask`
+answers `404` to prevent on these same hosts. Alias domains of one stack appear once, as the app's
+canonical domain. An account that has been granted nothing yet sees a page saying so, and operator-realm
+accounts land on the management UI as before.
 
 ### Deleting a realm
 

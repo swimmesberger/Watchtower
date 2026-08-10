@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
 using Xunit;
@@ -35,10 +36,15 @@ public sealed class AccessAppsTests {
         var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
         var shop = await factory.AddTemplateAsync("shop", acme);
 
-        await factory.AddRouteAsync("one.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
-        var granted = await factory.AddRouteAsync("two.shop.example.invalid", AccessMode.Restricted, templateId: shop);
-        var viaGroup = await factory.AddRouteAsync("three.shop.example.invalid", AccessMode.Restricted, templateId: shop);
-        await factory.AddRouteAsync("four.shop.example.invalid", AccessMode.Restricted, templateId: shop);
+        // Stack names chosen to sort the opposite way round from the domains, so the assertion below
+        // distinguishes "sorted by name" from "sorted by domain" rather than agreeing with both.
+        await factory.AddRouteAsync(
+            "aaa.shop.example.invalid", AccessMode.Authenticated, templateId: shop, stackName: "Zephyr");
+        var granted = await factory.AddRouteAsync(
+            "mmm.shop.example.invalid", AccessMode.Restricted, templateId: shop, stackName: "Ledger");
+        var viaGroup = await factory.AddRouteAsync(
+            "zzz.shop.example.invalid", AccessMode.Restricted, templateId: shop, stackName: "Atlas");
+        await factory.AddRouteAsync("nope.shop.example.invalid", AccessMode.Restricted, templateId: shop);
         // Another population's app, reachable by nobody in acme however this endpoint is asked.
         await factory.AddRouteAsync(OperatorApp, AccessMode.Authenticated);
 
@@ -51,13 +57,128 @@ public sealed class AccessAppsTests {
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        // Per-account body: no shared cache between here and the browser may hand it to the next visitor.
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+
         using var doc = await ReadJson(response);
+        // Sorted by name, not by insertion, id, or domain — the page must not reshuffle between loads.
+        Assert.Equal(["Atlas", "Ledger", "Zephyr"], Names(doc));
         Assert.Equal(
-            ["one.shop.example.invalid", "three.shop.example.invalid", "two.shop.example.invalid"],
+            ["zzz.shop.example.invalid", "mmm.shop.example.invalid", "aaa.shop.example.invalid"],
             Domains(doc));
-        // Sorted by name, not by insertion or id — the page must not reshuffle between loads. The label is
-        // the stack's name, which for a tenant is the one in the visitor's own address bar.
-        Assert.Equal(["one", "three", "two"], Names(doc));
+    }
+
+    /// <summary>
+    /// Alias domains of one stack are one application wearing several names. The portal says so — the
+    /// canonical domain, once — rather than claiming the visitor has three apps.
+    /// </summary>
+    [Fact]
+    public async Task AliasDomains_CollapseToTheStacksPrimary() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        var primary = await factory.AddRouteAsync(
+            "one.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
+        await factory.AddAliasRouteAsync(primary, "vanity.acme.invalid");
+        await factory.AddAliasRouteAsync(primary, "legacy.acme.invalid");
+
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+
+        using var doc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+
+        Assert.Equal(["one.shop.example.invalid"], Domains(doc));
+    }
+
+    /// <summary>
+    /// …but only where the primary is actually reachable. A Restricted estate may grant somebody an alias
+    /// and not the canonical domain, and dropping the stack then would hide an application they hold a
+    /// grant for. Showing what they can reach is the honest degradation.
+    /// </summary>
+    [Fact]
+    public async Task AnAliasWithoutTheStacksPrimary_IsStillListed() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        var primary = await factory.AddRouteAsync(
+            "one.shop.example.invalid", AccessMode.Restricted, templateId: shop);
+        var alias = await factory.AddAliasRouteAsync(primary, "vanity.acme.invalid");
+
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+        await factory.GrantAsync(alias, carol);
+
+        using var doc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+
+        Assert.Equal(["vanity.acme.invalid"], Domains(doc));
+    }
+
+    /// <summary>
+    /// The link the page follows carries the route's own scheme. A plain-HTTP route linked as
+    /// <c>https</c> would simply fail to connect, and the browser has nothing to derive the answer from.
+    /// </summary>
+    [Fact]
+    public async Task TheLinkFollowsTheRoutesOwnScheme() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        await factory.AddRouteAsync("secure.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
+        await factory.AddRouteAsync(
+            "plain.shop.example.invalid", AccessMode.Authenticated, templateId: shop, tlsEnabled: false);
+
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+
+        using var doc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+
+        Assert.Equal(
+            ["http://plain.shop.example.invalid/", "https://secure.shop.example.invalid/"],
+            Urls(doc));
+    }
+
+    /// <summary>
+    /// The SSO cookie must hold an SSO session. An <c>__wt_access</c> token names the same account, so
+    /// accepting one would not be an escalation — but it is a session minted for one app's domain, and the
+    /// endpoint that says which apps you may enter is not the place to start treating the two as
+    /// interchangeable.
+    /// </summary>
+    [Fact]
+    public async Task AnAppSessionTokenInTheSsoCookie_Is401() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        var routeId = await factory.AddRouteAsync(
+            "one.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+
+        var appToken = await factory.AppSessionAsync(carol, routeId);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await GetAsync(client, appToken)).StatusCode);
+    }
+
+    /// <summary>
+    /// The endpoint renews the sliding window, and deliberately: it is served on the auth host, where
+    /// <c>UseAuthentication</c> resolves the same <c>__wt_sso</c> cookie through the same renewing
+    /// <c>ValidateAsync</c> before any endpoint runs. A non-renewing read in the handler could not have
+    /// stopped that; it would only have made the code claim a property the pipeline does not have. Pinned
+    /// so the next reader who reaches for <c>ValidateAnyAsync</c> here finds out why it would be theatre.
+    /// </summary>
+    [Fact]
+    public async Task ListingApps_RenewsTheSession_BecauseAuthenticationAlreadyDid() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+        var token = await factory.SsoSessionAsync(carol);
+
+        // Well inside the half-a-sliding-window renewal threshold (the default lifetime is hours), which is
+        // the only state in which renewal is observable at all.
+        await factory.SetSessionExpiryAsync(token, DateTimeOffset.UtcNow.AddMinutes(5));
+        var before = await factory.SessionExpiryAsync(token);
+
+        Assert.Equal(HttpStatusCode.OK, (await GetAsync(client, token)).StatusCode);
+        Assert.True(await factory.SessionExpiryAsync(token) > before);
     }
 
     /// <summary>
@@ -103,22 +224,29 @@ public sealed class AccessAppsTests {
     }
 
     /// <summary>
-    /// A public route is listed for everyone, because the policy this endpoint asks says everyone may enter
-    /// it — it is served to anonymous visitors without so much as a verify call. Naming it therefore
-    /// discloses nothing: the alternative would be a second, different reading of accessibility, which is
-    /// the thing the design refuses to have.
+    /// A public route asks nobody who they are, so the access policy admits everyone to it — right for "may
+    /// this request pass", and wrong for "what shall I name to you". The realm filter is what settles the
+    /// difference: the caller's own realm's public app is listed, another realm's is not. Without it this
+    /// endpoint would hand any account of any population every public domain the instance proxies, which is
+    /// the enumeration <c>/api/proxy/ask</c> already answers 404 to prevent on these same hosts.
     /// </summary>
     [Fact]
-    public async Task APublicRoute_IsListedForEveryRealm() {
+    public async Task APublicRoute_IsListedOnlyToItsOwnRealm() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
         var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        await factory.AddRouteAsync("open.shop.example.invalid", AccessMode.Public, templateId: shop);
         await factory.AddRouteAsync(OperatorApp, AccessMode.Public);
+
         var carol = await factory.AddUserAsync("carol", realmId: acme);
+        var alice = await factory.AddUserAsync("alice");
 
-        using var doc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+        using var realmDoc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+        using var operatorDoc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(alice)));
 
-        Assert.Equal([OperatorApp], Domains(doc));
+        Assert.Equal(["open.shop.example.invalid"], Domains(realmDoc));
+        Assert.Equal([OperatorApp], Domains(operatorDoc));
     }
 
     [Fact]
@@ -181,6 +309,9 @@ public sealed class AccessAppsTests {
 
     private static IReadOnlyList<string> Names(JsonDocument doc) =>
         [.. doc.RootElement.GetProperty("apps").EnumerateArray().Select(e => e.GetProperty("name").GetString()!)];
+
+    private static IReadOnlyList<string> Urls(JsonDocument doc) =>
+        [.. doc.RootElement.GetProperty("apps").EnumerateArray().Select(e => e.GetProperty("url").GetString()!)];
 
     private static async Task<JsonDocument> ReadJson(HttpResponseMessage response) =>
         JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));

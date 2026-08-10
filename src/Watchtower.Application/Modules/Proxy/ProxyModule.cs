@@ -14,6 +14,13 @@ namespace Watchtower.Application.Modules.Proxy;
 /// so an instance with no reverse proxy exposes no portal, consistent with how the rest of the module
 /// disappears. Resolved by <c>Services.WatchtowerFeatureFlagService</c>; the enforcement behind it is
 /// <c>SystemRealmAuthorizer</c>, never this.
+/// <para>
+/// The consequence of that gating, stated plainly: with <c>Modules:Proxy:Enabled</c> off the flag is
+/// absent, so a realm account falls back to the management shell every screen of which answers Forbidden.
+/// That fallback is <em>safe</em> — an operator never loses their UI to a disabled module, which is the
+/// failure that would matter — but it is not graceful for a realm user, and it is the reason the polarity
+/// is "show the portal" rather than "is an operator".
+/// </para>
 /// </remarks>
 [AppModule("Proxy")]
 [ClientFeatures("apps-portal")]
