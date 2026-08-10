@@ -38,12 +38,17 @@ public sealed class RenameGroup(WatchtowerDbContext db, ICurrentUser currentUser
         if (await db.Groups.AsNoTracking().AnyAsync(g => g.Id != group.Id && g.NormalizedName == normalized, ct))
             return AppError.Conflict($"A group named '{name}' already exists.");
 
+        // Read before the commit, not after: a rename cannot change the membership, and every await that
+        // honours the request token has to happen while there is still something to abandon. Past the
+        // commit point the only permitted awaits are the uncancellable ones (see GroupMapping.RecordAsync)
+        // — a count taken there would let a caller that hangs up drop the audit row for a rename that
+        // already happened.
+        var memberCount = await db.GroupMembers.CountAsync(m => m.GroupId == group.Id, ct);
+
         var previous = group.Name;
         group.Name = name;
         group.NormalizedName = normalized;
         await db.SaveChangesAsync(ct);
-
-        var memberCount = await db.GroupMembers.CountAsync(m => m.GroupId == group.Id, ct);
 
         // Past the commit point. The previous name is in the detail because it is the name upstreams were
         // being told until now — an audit row saying only the new one would not explain the change.

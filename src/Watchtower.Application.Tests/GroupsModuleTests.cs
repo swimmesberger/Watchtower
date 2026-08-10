@@ -50,7 +50,7 @@ public sealed class GroupsModuleTests {
         var listed = Assert.Single(await ListAsync(host));
         Assert.Equal("Platform Team", listed.Name);
         Assert.Equal(0, listed.MemberCount);
-        Assert.Equal([AuthEventKinds.GroupCreated], await AuditKindsAsync(host));
+        Assert.Equal([AuthEventKinds.GroupCreated], await host.AuditKindsAsync());
     }
 
     [Fact]
@@ -94,7 +94,7 @@ public sealed class GroupsModuleTests {
         }
 
         Assert.Empty(await ListAsync(host));
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     [Fact]
@@ -123,8 +123,8 @@ public sealed class GroupsModuleTests {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var staff = await CreateAsync(host, "staff");
         await CreateAsync(host, "empty");
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
         await SetMembersAsync(host, staff, [alice, bob]);
 
         var groups = await ListAsync(host);
@@ -140,7 +140,7 @@ public sealed class GroupsModuleTests {
     public async Task Rename_KeepsMembership_AndRecordsThePreviousName() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
+        var alice = await host.AddUserAsync("alice");
         await SetMembersAsync(host, id, [alice]);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
@@ -228,9 +228,9 @@ public sealed class GroupsModuleTests {
     public async Task SetMembers_ReconcilesTheSet_WithoutDuplicatingRows() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
-        var carol = await SeedUserAsync(host, "carol");
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
+        var carol = await host.AddUserAsync("carol");
 
         // Save the same set twice, then shift it: alice stays, bob leaves, carol joins.
         await SetMembersAsync(host, id, [alice, bob]);
@@ -249,8 +249,8 @@ public sealed class GroupsModuleTests {
     public async Task SetMembers_RecordsWhatChanged_NotJustTheResultingSet() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
 
         await SetMembersAsync(host, id, [alice, bob]);
         await SetMembersAsync(host, id, [alice]);
@@ -272,9 +272,9 @@ public sealed class GroupsModuleTests {
     public async Task SetMembers_WithAnUnknownUser_ChangesNothingAtAll() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
+        var alice = await host.AddUserAsync("alice");
         await SetMembersAsync(host, id, [alice]);
-        var bob = await SeedUserAsync(host, "bob");
+        var bob = await host.AddUserAsync("bob");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetGroupMembers.Command, SetGroupMembers.Response>(
@@ -288,14 +288,14 @@ public sealed class GroupsModuleTests {
         // Validated before any write, so the good half of the set was not applied either: alice is still
         // in and bob is still out, and the refused command left no trace beyond the one earlier save.
         Assert.Equal([alice], await MembersAsync(host, id));
-        Assert.Single(await AuditKindsAsync(host), k => k == AuthEventKinds.GroupMembersChanged);
+        Assert.Single(await host.AuditKindsAsync(), k => k == AuthEventKinds.GroupMembersChanged);
     }
 
     [Fact]
     public async Task SetMembers_DeduplicatesRepeatedIds() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
+        var alice = await host.AddUserAsync("alice");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetGroupMembers.Command, SetGroupMembers.Response>(
@@ -314,7 +314,7 @@ public sealed class GroupsModuleTests {
     public async Task SetMembers_CanEmptyAGroup() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
+        var alice = await host.AddUserAsync("alice");
         await SetMembersAsync(host, id, [alice]);
 
         await SetMembersAsync(host, id, []);
@@ -342,7 +342,7 @@ public sealed class GroupsModuleTests {
     [Fact]
     public async Task SetMembers_ReportsAnUnknownGroupAsNotFound() {
         using var host = AuthTestHost.Start(WithGroupsModule);
-        var alice = await SeedUserAsync(host, "alice");
+        var alice = await host.AddUserAsync("alice");
 
         await using var scope = host.Services.CreateAsyncScope();
         var result = await SendAsync<SetGroupMembers.Command, SetGroupMembers.Response>(
@@ -358,10 +358,10 @@ public sealed class GroupsModuleTests {
     public async Task Delete_CascadesMembershipsAndRouteGrants_AndKeepsTheAuditRow() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
+        var alice = await host.AddUserAsync("alice");
         await SetMembersAsync(host, id, [alice]);
-        var routeId = await SeedRouteAsync(host);
-        await GrantToGroupAsync(host, routeId, id);
+        var routeId = await SeedRestrictedRouteIdAsync(host);
+        await host.GrantGroupAsync(routeId, id);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<DeleteGroup.Command, DeleteGroup.Response>(
@@ -401,8 +401,8 @@ public sealed class GroupsModuleTests {
     public async Task DeletingAUser_LeavesTheGroupAndDropsOnlyThatMembership() {
         using var host = AuthTestHost.Start(WithGroupsModule);
         var id = await CreateAsync(host, "staff");
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
         await SetMembersAsync(host, id, [alice, bob]);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
@@ -463,7 +463,7 @@ public sealed class GroupsModuleTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.Groups.AnyAsync(Ct));
         }
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     // -- Helpers ---------------------------------------------------------------------------------
@@ -512,53 +512,9 @@ public sealed class GroupsModuleTests {
         return result.Value.Groups;
     }
 
-    private static async Task<int> SeedUserAsync(AuthTestHost host, string userName) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
-        var user = AuthTestHost.NewUser(userName);
-        var created = await users.CreateAsync(user, Password);
-        Assert.True(created.Succeeded, string.Join("; ", created.Errors.Select(e => e.Description)));
-        return user.Id;
-    }
-
     /// <summary>Seeds a stack and a Restricted route on it, returning the route id.</summary>
-    private static async Task<int> SeedRouteAsync(AuthTestHost host) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var stack = new Stack {
-            Name = "demo",
-            RepositoryUrl = "https://example.invalid/demo.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
-            ComposeProjectName = "demo",
-        };
-        db.Stacks.Add(stack);
-        await db.SaveChangesAsync(Ct);
-
-        var route = new Route {
-            StackId = stack.Id,
-            Domain = "demo.example.invalid",
-            ServiceName = "web",
-            ContainerPort = 8080,
-            AccessMode = AccessMode.Restricted,
-        };
-        db.Routes.Add(route);
-        await db.SaveChangesAsync(Ct);
-        return route.Id;
-    }
-
-    private static async Task GrantToGroupAsync(AuthTestHost host, int routeId, int groupId) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = routeId, GroupId = groupId });
-        await db.SaveChangesAsync(Ct);
-    }
-
-    private static async Task<IReadOnlyList<string>> AuditKindsAsync(AuthTestHost host) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return await db.AuthEvents.OrderBy(e => e.Id).Select(e => e.Kind).ToListAsync(Ct);
-    }
+    private static async Task<int> SeedRestrictedRouteIdAsync(AuthTestHost host) =>
+        (await host.AddRouteAsync("demo.example.invalid", AccessMode.Restricted)).Id;
 
     /// <summary>Applies a principal the way every Elarion transport does — through the dispatch-scope rail.</summary>
     private static void SeedPrincipal(IServiceProvider scope, bool isAdmin) {

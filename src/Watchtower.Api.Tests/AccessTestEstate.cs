@@ -94,7 +94,11 @@ internal static class AccessTestEstate {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var ct = TestContext.Current.CancellationToken;
 
-            var group = new Group { Name = name, NormalizedName = name.ToUpperInvariant() };
+            var group = new Group {
+                Name = name,
+                NormalizedName = name.ToUpperInvariant(),
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
             db.Groups.Add(group);
             await db.SaveChangesAsync(ct);
 

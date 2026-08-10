@@ -123,6 +123,16 @@ namespace Watchtower.Application.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // Hand-written, and the only edited line in this file: everything below is as scaffolded.
+            //
+            // The v1 schema has no group_id column and requires user_id to be NOT NULL, so it simply cannot
+            // represent a group grant — a downgrade has to drop them, and dropping them is the semantically
+            // correct rollback (the route reverts to exactly the direct grants v1 knew about). Without this
+            // the scaffolded rebuild below is actively wrong in two ways: its `IFNULL(user_id, 0)` would
+            // rewrite every group grant into a grant for user 0, and the non-partial unique index it
+            // recreates on (route_id, user_id) would then fail outright for any route holding two of them.
+            migrationBuilder.Sql("DELETE FROM route_access_grants WHERE group_id IS NOT NULL;");
+
             migrationBuilder.DropForeignKey(
                 name: "fk_route_access_grants_groups_group_id",
                 table: "route_access_grants");

@@ -171,19 +171,41 @@ public static class IdentityForwarding {
     /// there is nothing to say.
     /// </summary>
     /// <remarks>
-    /// A name containing the separator is dropped rather than emitted, and dropping it is the conservative
-    /// direction: such a name cannot exist through the Groups module (the charset rule rejects it), so
-    /// meeting one means the row was written by something else — and letting it through would hand the
-    /// upstream <em>two</em> memberships, one of which the account does not have. The name charset also
-    /// keeps the joined value inside what the caller's header-safety filter accepts, so a single odd group
-    /// cannot cost the account its entire group header.
+    /// A name that is not emittable is dropped rather than emitted, and dropping it is the conservative
+    /// direction. No such name can exist through the Groups module — <c>GroupMapping.ValidateName</c>
+    /// rejects exactly this set at creation — so meeting one means the row was written by something else,
+    /// and this filter is the second half of that defense rather than the first. Two kinds are unusable,
+    /// and the reason each is dropped <em>individually</em> is the same: the alternative is worse.
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     A name containing the separator would hand the upstream <em>two</em> memberships, one of which
+    ///     the account does not have.
+    ///   </description></item>
+    ///   <item><description>
+    ///     A name outside printable ASCII would fail the caller's header-safety filter — which judges the
+    ///     <em>joined</em> value — and so cost the account every other group it is in, turning one bad row
+    ///     into a silent, total loss of group identity. Dropping the one name keeps the rest forwardable.
+    ///   </description></item>
+    /// </list>
+    /// Both survive as-is in the JWT's <c>groups</c> claim, which is JSON and has neither problem.
     /// </remarks>
     private static string? FormatGroups(IReadOnlyList<string> groups) {
         ArgumentNullException.ThrowIfNull(groups);
         var usable = groups
-            .Where(g => !string.IsNullOrWhiteSpace(g) && !g.Contains(GroupSeparator, StringComparison.Ordinal))
+            .Where(g => !string.IsNullOrWhiteSpace(g) && IsEmittable(g))
             .OrderBy(g => g, StringComparer.Ordinal)
             .ToList();
         return usable.Count == 0 ? null : string.Join(GroupSeparator, usable);
+    }
+
+    /// <summary>
+    /// Whether a group name can appear in a comma-joined header value: printable ASCII, no separator. The
+    /// same rule <c>GroupMapping.ValidateName</c> applies at creation, restated here because this is the
+    /// boundary where violating it does damage.
+    /// </summary>
+    private static bool IsEmittable(string name) {
+        foreach (var c in name)
+            if (c is < ' ' or > '~' || c == GroupSeparator) return false;
+        return true;
     }
 }

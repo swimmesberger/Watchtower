@@ -26,9 +26,9 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task GetAccess_ReflectsWhatSetAccessPersisted_ForARestrictedRoute() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -56,9 +56,9 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_PublicToRestricted_PersistsGrants_AndIsAuthorizedHonoursThem() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -77,14 +77,14 @@ public sealed class ProxyAccessModuleTests {
             Assert.False(await RouteAccessPolicy.IsAuthorizedAsync(db, route, bob, Ct));
         }
 
-        Assert.Equal([AuthEventKinds.RouteAccessChanged], await AuditKindsAsync(host));
+        Assert.Equal([AuthEventKinds.RouteAccessChanged], await host.AuditKindsAsync());
     }
 
     [Fact]
     public async Task SetAccess_SwitchingAwayFromRestricted_ClearsGrantEnforcement() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -112,7 +112,7 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_SwitchingToPublic_ClearsBypassPaths_EvenWhenLinesSupplied() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
+        var routeId = await SeedRouteIdAsync(host);
 
         // Land the route on a protected mode carrying bypass lines...
         await using (var scope = host.Services.CreateAsyncScope()) {
@@ -143,7 +143,7 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_RejectsABypassLineThatIsNotRooted() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
+        var routeId = await SeedRouteIdAsync(host);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -157,14 +157,14 @@ public sealed class ProxyAccessModuleTests {
 
         // Nothing was persisted: the route stays at its seeded Public/null policy, and no audit row exists.
         await AssertUnchangedSeededPolicyAsync(host, routeId);
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     [Fact]
     public async Task SetAccess_RejectsAnUnknownUserId() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -182,13 +182,13 @@ public sealed class ProxyAccessModuleTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.RouteAccessGrants.AnyAsync(g => g.RouteId == routeId, Ct));
         }
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     [Fact]
     public async Task SetAccess_WithAnOmittedIdentityHeaderMode_DefaultsToNone() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
+        var routeId = await SeedRouteIdAsync(host);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             // A client that never learned about identity forwarding omits the field entirely; the safe
@@ -210,7 +210,7 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_RejectsAnUndefinedAccessMode() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
+        var routeId = await SeedRouteIdAsync(host);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -222,13 +222,13 @@ public sealed class ProxyAccessModuleTests {
         }
 
         await AssertUnchangedSeededPolicyAsync(host, routeId);
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     [Fact]
     public async Task SetAccess_RejectsAnUndefinedIdentityHeaderMode() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
+        var routeId = await SeedRouteIdAsync(host);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -242,16 +242,16 @@ public sealed class ProxyAccessModuleTests {
         }
 
         await AssertUnchangedSeededPolicyAsync(host, routeId);
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     [Fact]
     public async Task SetAccess_ReconcilesGrants_WithoutDuplicatingRows() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
-        var carol = await SeedUserAsync(host, "carol");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
+        var carol = await host.AddUserAsync("carol");
 
         // Save the same set twice, then shift it: alice stays, bob leaves, carol joins.
         await SetGrantsAsync(host, routeId, [alice, bob]);
@@ -275,11 +275,11 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_RoundTripsGroupGrants_AndIsAuthorizedHonoursMembership() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var bob = await SeedUserAsync(host, "bob");
-        var carol = await SeedUserAsync(host, "carol");
-        var staff = await SeedGroupAsync(host, "staff", alice);
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var bob = await host.AddUserAsync("bob");
+        var carol = await host.AddUserAsync("carol");
+        var staff = await host.AddGroupAsync("staff", alice);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -313,10 +313,10 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_ReconcilesGroupGrantsIndependentlyOfUserGrants() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var staff = await SeedGroupAsync(host, "staff", alice);
-        var viewers = await SeedGroupAsync(host, "viewers");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var staff = await host.AddGroupAsync("staff", alice);
+        var viewers = await host.AddGroupAsync("viewers");
 
         await SetAccessAsync(host, routeId, [alice], [staff]);
         // Re-saving the same policy twice must not churn rows, and shifting one axis must not disturb the
@@ -339,9 +339,9 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_SwitchingAwayFromRestricted_ClearsGroupGrantsToo() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var staff = await SeedGroupAsync(host, "staff", alice);
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var staff = await host.AddGroupAsync("staff", alice);
 
         await SetAccessAsync(host, routeId, [alice], [staff]);
 
@@ -365,9 +365,9 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_RejectsAnUnknownGroupId_BeforeAnyWrite() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var staff = await SeedGroupAsync(host, "staff", alice);
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var staff = await host.AddGroupAsync("staff", alice);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
@@ -386,14 +386,14 @@ public sealed class ProxyAccessModuleTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.RouteAccessGrants.AnyAsync(g => g.RouteId == routeId, Ct));
         }
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     [Fact]
     public async Task SetAccess_WithOmittedGroupIds_KeepsTheUserGrantsAClientPredatingGroupsSent() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             // A client that never learned about group grants omits the field entirely; that is read as
@@ -411,9 +411,9 @@ public sealed class ProxyAccessModuleTests {
     [Fact]
     public async Task SetAccess_CanGrantBothAUserAndAGroupTheUserIsIn() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
-        var routeId = await SeedRouteAsync(host);
-        var alice = await SeedUserAsync(host, "alice");
-        var staff = await SeedGroupAsync(host, "staff", alice);
+        var routeId = await SeedRouteIdAsync(host);
+        var alice = await host.AddUserAsync("alice");
+        var staff = await host.AddGroupAsync("staff", alice);
 
         // Overlapping subjects are not a conflict — they are access twice over, and the two partial unique
         // indexes are per subject kind precisely so the pair can coexist.
@@ -442,7 +442,7 @@ public sealed class ProxyAccessModuleTests {
     [InlineData("set")]
     public async Task AccessHandlers_WithAuthEnabled_AreDeniedToANonAdministrator(string operation) {
         using var host = AuthTestHost.Start(WithAccessHandlers, ("Watchtower:Auth:Enabled", "true"));
-        var routeId = await SeedRouteAsync(host);
+        var routeId = await SeedRouteIdAsync(host);
 
         await using var scope = host.Services.CreateAsyncScope();
         var sp = scope.ServiceProvider;
@@ -458,7 +458,7 @@ public sealed class ProxyAccessModuleTests {
 
         // Refused by the decorator before the handler runs, so nothing is persisted or audited.
         Assert.Equal(ErrorKind.Forbidden, kind);
-        Assert.Empty(await AuditKindsAsync(host));
+        Assert.Empty(await host.AuditKindsAsync());
     }
 
     // -- Helpers ---------------------------------------------------------------------------------
@@ -486,29 +486,8 @@ public sealed class ProxyAccessModuleTests {
     }
 
     /// <summary>Seeds a stack and a Public route on it, returning the route id.</summary>
-    private static async Task<int> SeedRouteAsync(AuthTestHost host) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var stack = new Stack {
-            Name = "demo",
-            RepositoryUrl = "https://example.invalid/demo.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
-            ComposeProjectName = "demo",
-        };
-        db.Stacks.Add(stack);
-        await db.SaveChangesAsync(Ct);
-
-        var route = new Route {
-            StackId = stack.Id,
-            Domain = "demo.example.invalid",
-            ServiceName = "web",
-            ContainerPort = 8080,
-        };
-        db.Routes.Add(route);
-        await db.SaveChangesAsync(Ct);
-        return route.Id;
-    }
+    private static async Task<int> SeedRouteIdAsync(AuthTestHost host) =>
+        (await host.AddRouteAsync("demo.example.invalid")).Id;
 
     /// <summary>Saves a Restricted policy naming both subject kinds.</summary>
     private static async Task SetAccessAsync(
@@ -520,44 +499,13 @@ public sealed class ProxyAccessModuleTests {
         Assert.True(result.IsSuccess, Describe(result));
     }
 
-    /// <summary>Creates a group holding <paramref name="memberIds"/> and returns its id.</summary>
-    private static async Task<int> SeedGroupAsync(AuthTestHost host, string name, params int[] memberIds) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-
-        var group = new Group { Name = name, NormalizedName = name.ToUpperInvariant() };
-        db.Groups.Add(group);
-        await db.SaveChangesAsync(Ct);
-
-        foreach (var userId in memberIds)
-            db.GroupMembers.Add(new GroupMember { GroupId = group.Id, UserId = userId });
-        await db.SaveChangesAsync(Ct);
-        return group.Id;
-    }
-
-    private static async Task<int> SeedUserAsync(AuthTestHost host, string userName) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var users = scope.ServiceProvider
-            .GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<User>>();
-        var user = AuthTestHost.NewUser(userName);
-        var created = await users.CreateAsync(user, "correct-horse-battery");
-        Assert.True(created.Succeeded, string.Join("; ", created.Errors.Select(e => e.Description)));
-        return user.Id;
-    }
-
-    /// <summary>Reloads the route and asserts its policy is still exactly what <see cref="SeedRouteAsync"/> left.</summary>
+    /// <summary>Reloads the route and asserts its policy is still exactly what <see cref="SeedRouteIdAsync"/> left.</summary>
     private static async Task AssertUnchangedSeededPolicyAsync(AuthTestHost host, int routeId) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
         Assert.Equal(AccessMode.Public, route.AccessMode);
         Assert.Null(route.BypassPaths);
-    }
-
-    private static async Task<IReadOnlyList<string>> AuditKindsAsync(AuthTestHost host) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return await db.AuthEvents.OrderBy(e => e.Id).Select(e => e.Kind).ToListAsync(Ct);
     }
 
     /// <summary>Applies a principal the way every Elarion transport does — through the dispatch-scope rail.</summary>
