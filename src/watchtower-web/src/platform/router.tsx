@@ -14,6 +14,7 @@ import groups from '@/modules/groups'
 import infrastructure from '@/modules/infrastructure'
 import metrics from '@/modules/metrics'
 import proxy from '@/modules/proxy'
+import realms from '@/modules/realms'
 import registries from '@/modules/registries'
 import settings from '@/modules/settings'
 import stacks from '@/modules/stacks'
@@ -47,6 +48,7 @@ const routeTree = rootRoute.addChildren([
   ...infrastructure.routes,
   ...metrics.routes,
   ...proxy.routes,
+  ...realms.routes,
   ...registries.routes,
   ...settings.routes,
   ...stacks.routes,

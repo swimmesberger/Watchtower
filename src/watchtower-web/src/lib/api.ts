@@ -15,6 +15,7 @@ import type {
   CreateRouteRequest,
   CreateStackRequest,
   CreateTemplateRequest,
+  CreateRealmRequest,
   Credential,
   DeployAccepted,
   DeployEvent,
@@ -27,9 +28,11 @@ import type {
   NetworkPortsResult,
   PruneOrphansResult,
   ProxyStatus,
+  Realm,
   Registry,
   Route,
   RouteAccess,
+  RouteAccessView,
   SelfUpdateStatus,
   Stack,
   StackTemplate,
@@ -41,6 +44,7 @@ import type {
   StackEnvVarInput,
   StackMetricsResult,
   UpdateCredentialRequest,
+  UpdateRealmRequest,
   UpdateRegistryRequest,
   UpdateRouteRequest,
   UpdateSelfConfigRequest,
@@ -202,7 +206,7 @@ export const api = {
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
     getAccess: async (routeId: number) =>
-      (await rpc('proxy.getAccess', { routeId })) as RouteAccess,
+      (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,
     setAccess: async (routeId: number, data: RouteAccess) =>
       (await rpc('proxy.setAccess', {
         routeId,
@@ -229,6 +233,7 @@ export const api = {
         targetServiceName: data.targetServiceName,
         targetPort: data.targetPort,
         baseEnvVars: data.baseEnvVars ?? null,
+        realmId: data.realmId ?? null,
       })).template as StackTemplate,
     update: async (id: number, data: UpdateTemplateRequest) =>
       (await rpc('templates.update', {
@@ -242,6 +247,7 @@ export const api = {
         targetServiceName: data.targetServiceName,
         targetPort: data.targetPort,
         baseEnvVars: data.baseEnvVars ?? null,
+        realmId: data.realmId ?? null,
       })).template as StackTemplate,
     delete: async (id: number) => {
       await rpc('templates.delete', { id })
@@ -278,13 +284,17 @@ export const api = {
   },
 
   users: {
-    list: async () => (await rpc('users.list', {})).users as User[],
+    // Omitting realmId lists every realm's accounts — the management UI is operator-only and sees them
+    // all; passing one narrows the roster to that population.
+    list: async (realmId?: number | null) =>
+      (await rpc('users.list', { realmId: realmId ?? null })).users as User[],
     create: async (data: CreateUserRequest) =>
       (await rpc('users.create', {
         userName: data.userName,
         password: data.password,
         email: data.email ?? null,
         isAdmin: data.isAdmin,
+        realmId: data.realmId ?? null,
       })).user as User,
     update: async (id: number, data: UpdateUserRequest) =>
       (await rpc('users.update', {
@@ -305,8 +315,11 @@ export const api = {
   },
 
   groups: {
-    list: async () => (await rpc('groups.list', {})).groups as Group[],
-    create: async (name: string) => (await rpc('groups.create', { name })).group as Group,
+    // Same realm scoping as users.list: omitted lists every population, supplied narrows to one.
+    list: async (realmId?: number | null) =>
+      (await rpc('groups.list', { realmId: realmId ?? null })).groups as Group[],
+    create: async (name: string, realmId?: number | null) =>
+      (await rpc('groups.create', { name, realmId: realmId ?? null })).group as Group,
     rename: async (id: number, name: string) =>
       (await rpc('groups.rename', { id, name })).group as Group,
     delete: async (id: number) => {
@@ -317,6 +330,28 @@ export const api = {
     // reconstructing a sequence of adds and removes the server would have to trust.
     setMembers: async (id: number, userIds: number[]) =>
       (await rpc('groups.setMembers', { id, userIds })).userIds as number[],
+  },
+
+  realms: {
+    list: async () => (await rpc('realms.list', {})).realms as Realm[],
+    create: async (data: CreateRealmRequest) =>
+      (await rpc('realms.create', {
+        name: data.name,
+        slug: data.slug,
+        authHost: data.authHost ?? null,
+      })).realm as Realm,
+    // A partial update, unlike every other update on this facade: null means "leave alone", so the fields
+    // are passed straight through rather than normalised with `?? null`. Clearing the auth host is an
+    // empty string — the caller says which of the two it means.
+    update: async (id: number, data: UpdateRealmRequest) =>
+      (await rpc('realms.update', {
+        id,
+        name: data.name ?? null,
+        authHost: data.authHost ?? null,
+      })).realm as Realm,
+    remove: async (id: number) => {
+      await rpc('realms.delete', { id })
+    },
   },
 
   system: {

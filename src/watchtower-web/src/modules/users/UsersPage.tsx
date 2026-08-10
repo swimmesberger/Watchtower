@@ -11,8 +11,9 @@ import {
   Users as UsersIcon,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { User, CreateUserRequest, UpdateUserRequest } from '@/lib/types'
+import type { Realm, User, CreateUserRequest, UpdateUserRequest } from '@/lib/types'
 import { timeAgo, absoluteTitle } from '@/lib/format'
+import { ALL_REALMS, useRealms } from '@/hooks/use-realms'
 import { toast } from '@/components/ui/use-toast'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +21,13 @@ import { Banner } from '@/components/ui/banner'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -44,6 +52,12 @@ function messageOf(error: Error, fallback: string): string {
 
 export function UsersPage() {
   const qc = useQueryClient()
+  const { realms, nameOf, systemRealmId, isSystem } = useRealms()
+
+  // "All realms" by default: the management UI is operator-only and sees every population, so the filter
+  // narrows the roster rather than scoping the screen. Filtering client-side keeps one cached ['users']
+  // roster — the same one the Groups members dialog and the route Access dialog read.
+  const [realmFilter, setRealmFilter] = useState<string>(ALL_REALMS)
 
   const {
     data: users = [],
@@ -52,8 +66,13 @@ export function UsersPage() {
     refetch,
   } = useQuery({
     queryKey: ['users'],
-    queryFn: api.users.list,
+    queryFn: () => api.users.list(),
   })
+
+  const visibleUsers =
+    realmFilter === ALL_REALMS
+      ? users
+      : users.filter((u) => u.realmId === Number(realmFilter))
 
   const [showCreate, setShowCreate] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
@@ -63,6 +82,9 @@ export function UsersPage() {
 
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['users'] })
+    // The realm roster carries a userCount, and it is what the Realms screen's delete guard reads —
+    // creating or removing an account changes it.
+    qc.invalidateQueries({ queryKey: ['realms'] })
   }
 
   const create = useMutation({
@@ -139,6 +161,11 @@ export function UsersPage() {
       cell: (u) => <span className="text-sm text-text-2">{u.email ?? '—'}</span>,
     },
     {
+      key: 'realm',
+      header: 'Realm',
+      cell: (u) => <span className="text-sm text-text-2">{nameOf(u.realmId)}</span>,
+    },
+    {
       key: 'role',
       header: 'Role',
       cell: (u) =>
@@ -189,6 +216,29 @@ export function UsersPage() {
         </Button>
       </div>
 
+      {/* Only worth showing once there is more than one population to choose between. */}
+      {realms.length > 1 && (
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Realm" className="w-full sm:w-64">
+            {({ id }) => (
+              <Select value={realmFilter} onValueChange={setRealmFilter}>
+                <SelectTrigger id={id}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_REALMS}>All realms</SelectItem>
+                  {realms.map((r) => (
+                    <SelectItem key={r.id} value={String(r.id)}>
+                      {r.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </Field>
+        </div>
+      )}
+
       {isError ? (
         <Banner
           tone="danger"
@@ -203,12 +253,13 @@ export function UsersPage() {
         </Banner>
       ) : (
         <DataList
-          items={users}
+          items={visibleUsers}
           getKey={(u) => u.id}
           columns={columns}
           renderCard={(u) => (
             <UserCard
               user={u}
+              realmName={nameOf(u.realmId)}
               onEdit={() => setEditing(u)}
               onResetPassword={() => setResetting(u)}
               onToggleDisabled={() => setPendingToggle(u)}
@@ -241,6 +292,13 @@ export function UsersPage() {
             </DialogDescription>
           </DialogHeader>
           <CreateUserForm
+            realms={realms}
+            defaultRealmId={
+              // Pre-select whatever the roster is filtered to — an administrator narrowing to a realm and
+              // then adding an account almost always means "in this one".
+              realmFilter === ALL_REALMS ? systemRealmId : Number(realmFilter)
+            }
+            isSystemRealm={isSystem}
             saving={create.isPending}
             onCancel={() => setShowCreate(false)}
             onSubmit={(data) => create.mutate(data)}
@@ -260,6 +318,8 @@ export function UsersPage() {
             <EditUserForm
               key={editing.id}
               user={editing}
+              realmName={nameOf(editing.realmId)}
+              canBeAdmin={isSystem(editing.realmId)}
               saving={update.isPending}
               onCancel={() => setEditing(null)}
               onSubmit={(data) => update.mutate({ id: editing.id, data })}
@@ -386,12 +446,14 @@ function RowActions({
 
 function UserCard({
   user,
+  realmName,
   onEdit,
   onResetPassword,
   onToggleDisabled,
   onDelete,
 }: {
   user: User
+  realmName: string
   onEdit: () => void
   onResetPassword: () => void
   onToggleDisabled: () => void
@@ -409,8 +471,9 @@ function UserCard({
           )}
         </div>
         <div className="mt-1 truncate text-sm text-text-2">{user.email ?? '—'}</div>
-        <div className="mt-2 flex items-center gap-2 text-xs text-text-3">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-3">
           <StatusBadge user={user} />
+          <span>{realmName}</span>
           <span className="tnum" title={absoluteTitle(user.createdAt)}>
             Created {timeAgo(user.createdAt)}
           </span>
@@ -445,10 +508,16 @@ function AdminToggle({
 }
 
 function CreateUserForm({
+  realms,
+  defaultRealmId,
+  isSystemRealm,
   saving,
   onCancel,
   onSubmit,
 }: {
+  realms: Realm[]
+  defaultRealmId: number
+  isSystemRealm: (realmId: number) => boolean
   saving: boolean
   onCancel: () => void
   onSubmit: (data: CreateUserRequest) => void
@@ -458,7 +527,13 @@ function CreateUserForm({
     password: '',
     email: '',
     isAdmin: false,
+    realmId: defaultRealmId,
   })
+
+  const realmId = form.realmId ?? defaultRealmId
+  // Only an operator-realm account can administer the instance, and users.create refuses the pair
+  // outright — so the toggle is not offered rather than offered and then rejected.
+  const canBeAdmin = isSystemRealm(realmId)
 
   const canSubmit = form.userName.trim() !== '' && form.password !== ''
 
@@ -468,7 +543,13 @@ function CreateUserForm({
       onSubmit={(e) => {
         e.preventDefault()
         if (!canSubmit || saving) return
-        onSubmit({ ...form, userName: form.userName.trim(), email: form.email?.trim() || null })
+        onSubmit({
+          ...form,
+          userName: form.userName.trim(),
+          email: form.email?.trim() || null,
+          realmId,
+          isAdmin: canBeAdmin && form.isAdmin,
+        })
       }}
     >
       <Field label="User name" required>
@@ -483,6 +564,31 @@ function CreateUserForm({
           />
         )}
       </Field>
+
+      {realms.length > 1 && (
+        <Field
+          label="Realm"
+          hint="The population the account belongs to. Fixed once created — its user name is only unique within it."
+        >
+          {({ id, describedBy }) => (
+            <Select
+              value={String(realmId)}
+              onValueChange={(v) => setForm((f) => ({ ...f, realmId: Number(v) }))}
+            >
+              <SelectTrigger id={id} aria-describedby={describedBy}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {realms.map((r) => (
+                  <SelectItem key={r.id} value={String(r.id)}>
+                    {r.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </Field>
+      )}
 
       <Field label="Password" required hint="At least 10 characters.">
         {({ id, describedBy }) => (
@@ -510,10 +616,12 @@ function CreateUserForm({
         )}
       </Field>
 
-      <AdminToggle
-        checked={form.isAdmin}
-        onChange={(isAdmin) => setForm((f) => ({ ...f, isAdmin }))}
-      />
+      {canBeAdmin && (
+        <AdminToggle
+          checked={form.isAdmin}
+          onChange={(isAdmin) => setForm((f) => ({ ...f, isAdmin }))}
+        />
+      )}
 
       <div className="flex justify-end gap-2 pt-1">
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
@@ -529,11 +637,16 @@ function CreateUserForm({
 
 function EditUserForm({
   user,
+  realmName,
+  canBeAdmin,
   saving,
   onCancel,
   onSubmit,
 }: {
   user: User
+  realmName: string
+  /** Only an operator-realm account may hold the Admin role — users.update refuses the pair. */
+  canBeAdmin: boolean
   saving: boolean
   onCancel: () => void
   onSubmit: (data: UpdateUserRequest) => void
@@ -580,10 +693,18 @@ function EditUserForm({
         )}
       </Field>
 
-      <AdminToggle
-        checked={form.isAdmin}
-        onChange={(isAdmin) => setForm((f) => ({ ...f, isAdmin }))}
-      />
+      <Field label="Realm" hint="An account never moves realm — its credentials belong to that population.">
+        {({ id }) => <Input id={id} value={realmName} readOnly disabled />}
+      </Field>
+
+      {/* Hidden outside the operator realm: users.update refuses the Admin role there, so offering it
+          would only produce a rejected save. */}
+      {canBeAdmin && (
+        <AdminToggle
+          checked={form.isAdmin}
+          onChange={(isAdmin) => setForm((f) => ({ ...f, isAdmin }))}
+        />
+      )}
 
       <div className="flex justify-end gap-2 pt-1">
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>

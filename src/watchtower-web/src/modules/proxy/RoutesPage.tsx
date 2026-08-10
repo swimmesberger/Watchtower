@@ -12,6 +12,7 @@ import type {
 } from '@/lib/types'
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { timeAgo } from '@/lib/format'
+import { useRealms } from '@/hooks/use-realms'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -657,6 +658,7 @@ export function RoutesPage() {
 /** Loads a route's policy and hosts the editor; the form is remounted per route so its state resets. */
 function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => void }) {
   const open = route != null
+  const { nameOf } = useRealms()
 
   const { data: access, isLoading, isError } = useQuery({
     queryKey: ['route-access', route?.id],
@@ -665,16 +667,22 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
   })
 
   // The grant pickers' rosters. Fetched lazily with the dialog, and only actually shown for Restricted.
+  // Both are scoped to the realm the route belongs to (its stack's template category, or the operator
+  // realm for a standalone stack — the server resolves it and reports it on the policy). proxy.setAccess
+  // refuses a grant naming a subject from any other population, and such a grant would never admit anyone
+  // anyway, so a cross-realm candidate is a checkbox that can only produce a rejected save.
+  const realmId = access?.realmId
+
   const { data: users = [] } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.users.list,
-    enabled: open,
+    queryKey: ['users', { realmId }],
+    queryFn: () => api.users.list(realmId),
+    enabled: open && realmId != null,
   })
 
   const { data: groups = [] } = useQuery({
-    queryKey: ['groups'],
-    queryFn: api.groups.list,
-    enabled: open,
+    queryKey: ['groups', { realmId }],
+    queryFn: () => api.groups.list(realmId),
+    enabled: open && realmId != null,
   })
 
   const save = useMutation({
@@ -710,6 +718,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
           <AccessForm
             key={route!.id}
             initial={access}
+            realmName={nameOf(access.realmId)}
             users={users}
             groups={groups}
             saving={save.isPending}
@@ -724,6 +733,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
 
 function AccessForm({
   initial,
+  realmName,
   users,
   groups,
   saving,
@@ -731,6 +741,8 @@ function AccessForm({
   onSubmit,
 }: {
   initial: RouteAccess
+  /** The realm the candidate lists are scoped to — named in the copy so the shorter lists make sense. */
+  realmName: string
   users: { id: number; userName: string; email: string | null }[]
   groups: { id: number; name: string; memberCount: number }[]
   saving: boolean
@@ -791,11 +803,15 @@ function AccessForm({
       </p>
 
       {mode === 'Restricted' && (
-        <Field label="Allowed users">
+        <Field
+          label="Allowed users"
+          hint={`Accounts in the ${realmName} realm — the population this route belongs to. Only they can be granted it.`}
+        >
           {() =>
             users.length === 0 ? (
               <p className="text-[13px] text-text-3">
-                No users yet. Add accounts on the Users page, then grant them here.
+                No accounts in the {realmName} realm yet. Add them on the Users page, then grant them
+                here.
               </p>
             ) : (
               <div className="max-h-52 overflow-y-auto rounded-md border border-border">
@@ -830,7 +846,8 @@ function AccessForm({
           {() =>
             groups.length === 0 ? (
               <p className="text-[13px] text-text-3">
-                No groups yet. Create one on the Groups page to grant several accounts at once.
+                No groups in the {realmName} realm yet. Create one on the Groups page to grant several
+                accounts at once.
               </p>
             ) : (
               <div className="max-h-52 overflow-y-auto rounded-md border border-border">

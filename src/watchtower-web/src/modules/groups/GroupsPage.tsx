@@ -2,13 +2,21 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { MoreHorizontal, Pencil, Plus, Trash2, UserCog, UsersRound } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Group } from '@/lib/types'
+import type { Group, Realm } from '@/lib/types'
+import { ALL_REALMS, useRealms } from '@/hooks/use-realms'
 import { toast } from '@/components/ui/use-toast'
 import { Button } from '@/components/ui/button'
 import { Banner } from '@/components/ui/banner'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -38,6 +46,10 @@ function describeMembers(count: number): string {
 
 export function GroupsPage() {
   const qc = useQueryClient()
+  const { realms, nameOf, systemRealmId } = useRealms()
+
+  // Same shape as the Users screen: "All realms" by default, filtered client-side off one cached roster.
+  const [realmFilter, setRealmFilter] = useState<string>(ALL_REALMS)
 
   const {
     data: groups = [],
@@ -46,8 +58,13 @@ export function GroupsPage() {
     refetch,
   } = useQuery({
     queryKey: ['groups'],
-    queryFn: api.groups.list,
+    queryFn: () => api.groups.list(),
   })
+
+  const visibleGroups =
+    realmFilter === ALL_REALMS
+      ? groups
+      : groups.filter((g) => g.realmId === Number(realmFilter))
 
   const [showCreate, setShowCreate] = useState(false)
   const [renaming, setRenaming] = useState<Group | null>(null)
@@ -56,10 +73,13 @@ export function GroupsPage() {
 
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['groups'] })
+    // The realm roster carries a groupCount, and the Realms screen's delete guard reads it.
+    qc.invalidateQueries({ queryKey: ['realms'] })
   }
 
   const create = useMutation({
-    mutationFn: (name: string) => api.groups.create(name),
+    mutationFn: (vars: { name: string; realmId: number }) =>
+      api.groups.create(vars.name, vars.realmId),
     onSuccess: (group) => {
       invalidate()
       setShowCreate(false)
@@ -101,6 +121,11 @@ export function GroupsPage() {
       cell: (g) => <span className="font-medium text-text">{g.name}</span>,
     },
     {
+      key: 'realm',
+      header: 'Realm',
+      cell: (g) => <span className="text-sm text-text-2">{nameOf(g.realmId)}</span>,
+    },
+    {
       key: 'members',
       header: 'Members',
       cell: (g) => <span className="tnum text-sm text-text-2">{describeMembers(g.memberCount)}</span>,
@@ -136,6 +161,29 @@ export function GroupsPage() {
         </Button>
       </div>
 
+      {/* Only worth showing once there is more than one population to choose between. */}
+      {realms.length > 1 && (
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Realm" className="w-full sm:w-64">
+            {({ id }) => (
+              <Select value={realmFilter} onValueChange={setRealmFilter}>
+                <SelectTrigger id={id}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_REALMS}>All realms</SelectItem>
+                  {realms.map((r) => (
+                    <SelectItem key={r.id} value={String(r.id)}>
+                      {r.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </Field>
+        </div>
+      )}
+
       {isError ? (
         <Banner
           tone="danger"
@@ -150,12 +198,13 @@ export function GroupsPage() {
         </Banner>
       ) : (
         <DataList
-          items={groups}
+          items={visibleGroups}
           getKey={(g) => g.id}
           columns={columns}
           renderCard={(g) => (
             <GroupCard
               group={g}
+              realmName={nameOf(g.realmId)}
               onEditMembers={() => setEditingMembers(g)}
               onRename={() => setRenaming(g)}
               onDelete={() => setPendingDelete(g)}
@@ -189,9 +238,16 @@ export function GroupsPage() {
           </DialogHeader>
           <NameForm
             submitLabel="Create"
+            realms={realms}
+            defaultRealmId={
+              // Pre-select whatever the roster is filtered to, like the Users screen does.
+              realmFilter === ALL_REALMS ? systemRealmId : Number(realmFilter)
+            }
             saving={create.isPending}
             onCancel={() => setShowCreate(false)}
-            onSubmit={(name) => create.mutate(name)}
+            onSubmit={(name, realmId) =>
+              create.mutate({ name, realmId: realmId ?? systemRealmId })
+            }
           />
         </DialogContent>
       </Dialog>
@@ -273,11 +329,13 @@ function RowActions({
 
 function GroupCard({
   group,
+  realmName,
   onEditMembers,
   onRename,
   onDelete,
 }: {
   group: Group
+  realmName: string
   onEditMembers: () => void
   onRename: () => void
   onDelete: () => void
@@ -286,7 +344,9 @@ function GroupCard({
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
         <div className="font-medium text-text">{group.name}</div>
-        <div className="mt-1 text-sm text-text-2">{describeMembers(group.memberCount)}</div>
+        <div className="mt-1 text-sm text-text-2">
+          {realmName} · {describeMembers(group.memberCount)}
+        </div>
       </div>
       <RowActions
         group={group}
@@ -300,22 +360,28 @@ function GroupCard({
 
 /**
  * Create and rename share one form: both submit a single name against the same server-side rules, so a
- * second copy would only be a second place for the copy to drift.
+ * second copy would only be a second place for the copy to drift. Create additionally picks a realm —
+ * rename passes no `realms`, and the field is simply absent, because a group never changes population.
  */
 function NameForm({
   initial = '',
   submitLabel,
+  realms,
+  defaultRealmId,
   saving,
   onCancel,
   onSubmit,
 }: {
   initial?: string
   submitLabel: string
+  realms?: Realm[]
+  defaultRealmId?: number
   saving: boolean
   onCancel: () => void
-  onSubmit: (name: string) => void
+  onSubmit: (name: string, realmId?: number) => void
 }) {
   const [name, setName] = useState(initial)
+  const [realmId, setRealmId] = useState<number | undefined>(defaultRealmId)
   const canSubmit = name.trim() !== ''
 
   return (
@@ -324,7 +390,7 @@ function NameForm({
       onSubmit={(e) => {
         e.preventDefault()
         if (!canSubmit || saving) return
-        onSubmit(name.trim())
+        onSubmit(name.trim(), realmId)
       }}
     >
       <Field
@@ -344,6 +410,31 @@ function NameForm({
           />
         )}
       </Field>
+
+      {realms && realms.length > 1 && (
+        <Field
+          label="Realm"
+          hint="The population the group draws its members from. Fixed once created — a group only ever holds accounts from its own realm."
+        >
+          {({ id, describedBy }) => (
+            <Select
+              value={realmId != null ? String(realmId) : undefined}
+              onValueChange={(v) => setRealmId(Number(v))}
+            >
+              <SelectTrigger id={id} aria-describedby={describedBy}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {realms.map((r) => (
+                  <SelectItem key={r.id} value={String(r.id)}>
+                    {r.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </Field>
+      )}
 
       <div className="flex justify-end gap-2 pt-1">
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
@@ -365,9 +456,12 @@ function MembersDialog({ group, onClose }: { group: Group | null; onClose: () =>
   const qc = useQueryClient()
   const open = group != null
 
+  // Scoped to the group's realm, because a group may only ever hold accounts of its own population —
+  // groups.setMembers refuses anything else, so a candidate from another realm is a checkbox that can
+  // only produce a rejected save.
   const { data: users = [], isLoading: usersLoading } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.users.list,
+    queryKey: ['users', { realmId: group?.realmId }],
+    queryFn: () => api.users.list(group!.realmId),
     enabled: open,
   })
 
@@ -403,7 +497,7 @@ function MembersDialog({ group, onClose }: { group: Group | null; onClose: () =>
           <DialogTitle>Members · {group?.name}</DialogTitle>
           <DialogDescription>
             Everyone ticked here reaches every route this group is granted. Changes take effect on the
-            next request.
+            next request. Only accounts in the group’s own realm can be members.
           </DialogDescription>
         </DialogHeader>
 
@@ -463,7 +557,7 @@ function MembersForm({
         {() =>
           users.length === 0 ? (
             <p className="text-[13px] text-text-3">
-              No users yet. Add accounts on the Users page, then put them in this group.
+              No accounts in this realm yet. Add them on the Users page, then put them in this group.
             </p>
           ) : (
             <div className="max-h-52 overflow-y-auto rounded-md border border-border">
