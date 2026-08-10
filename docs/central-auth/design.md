@@ -1,6 +1,6 @@
 # Central Authorization — Access Control Plane for Proxied Webapps
 
-> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 has begun: **groups + group-based grants are implemented** (`Groups` module, group subjects on `RouteAccessGrant`, group forwarding in the JWT and the per-mode ecosystem headers); OIDC upstream, template policy inheritance and MFA remain future work. §12 (product-branded login pages/themes) and §13 (native multi-realm direction) designed 2026-08-10, not yet implemented.
+> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 has begun: **groups + group-based grants are implemented** (`Groups` module, group subjects on `RouteAccessGrant`, group forwarding in the JWT and the per-mode ecosystem headers); OIDC upstream, template policy inheritance and MFA remain future work. **§13 (native multi-realm) was designed and built on 2026-08-10** — realms, per-realm credential spaces and login hosts, the realm access invariant and the operator-realm-only management surface all ship. §12 (product-branded login pages/themes) is designed, not implemented.
 > Branch/worktree: `watchtower-central-auth-84057b`.
 > Grounded against the current code (Proxy module, `CaddyManager`/`CaddyConfigBuilder`, `Route`
 > entity, host wiring in `Program.cs`) and Elarion `0.2.3-preview.79.1` (authorization API verified
@@ -50,7 +50,8 @@ Cloudflare-Access-style dance (§5) and use it for **every** protected app, incl
 subdomains where a wildcard cookie could shortcut it. One code path, works everywhere, and it is
 what the custom-domain story requires anyway. Two cookies exist:
 
-- `__wt_sso` — the central SSO session, host-scoped to the auth host. Established at login.
+- `__wt_sso` — the central SSO session, host-scoped to the auth host — since §13, to *its realm's* auth
+  host, which is what makes the cookie jar and the population the same boundary. Established at login.
 - `__wt_access` — a per-app session, host-scoped to the app's domain. Minted by the callback
   endpoint from a one-time code. Central logout revokes all of them (sessions are DB rows, §4).
 
@@ -114,21 +115,23 @@ When `Auth:Enabled=false` (see §2.6) the anonymous singleton stays, exactly as 
 ### 2.6 Opt-in rollout, explicit bootstrap
 
 `Auth:Enabled` (default `false` for now — existing deployments must not lock themselves out on
-upgrade). First-run bootstrap: if no user exists, create `admin` with the password from
-`WATCHTOWER__AUTH__BOOTSTRAPPASSWORD`, else generate one and print it to the log — no interactive
-step, no SMTP. Forward-auth for apps additionally requires `Proxy:Enabled` (the verify path is
+upgrade). First-run bootstrap: if no **operator-realm** account exists — §13; an instance whose only
+users live in a customer realm still has nobody who can administer it — create `admin` with the
+password from `WATCHTOWER__AUTH__BOOTSTRAPPASSWORD`, else generate one and print it to the log — no
+interactive step, no SMTP. Forward-auth for apps additionally requires `Proxy:Enabled` (the verify path is
 meaningless without Caddy); Watchtower's own login works with the proxy off.
 
 ### 2.7 Scope discipline — what we are *not* building
 
 - **No OIDC/SAML *provider* — for now, and the framing has changed (2026-08-10, see §13).**
   Originally this read "that is exactly the case we delegate to Keycloak". That delegation story is
-  retired: Watchtower is the identity home and must grow real IdP capabilities (multiple realms)
-  natively; external IdPs (Keycloak, Entra, …) are a **per-realm federation feature for customers
-  who already run one** — the §2.1 login button — not Watchtower's growth path. What *survives* of
-  this exclusion is the protocol scope: Watchtower does not expose an authorize endpoint / client
-  registry / consent flow until a concrete integration needs one. Forward-auth + JWT covers the
-  product fleet; the realm design (§13) must not preclude a protocol-level provider later.
+  retired: Watchtower is the identity home and grows real IdP capabilities natively — the first of
+  them, multiple realms, was built the same day (§13); external IdPs (Keycloak, Entra, …) are a
+  **per-realm federation feature for customers who already run one** — the §2.1 login button — not
+  Watchtower's growth path. What *survives* of this exclusion is the protocol scope: Watchtower does
+  not expose an authorize endpoint / client registry / consent flow until a concrete integration
+  needs one. Forward-auth + JWT covers the product fleet; the realm model that shipped does not
+  preclude a protocol-level provider later.
 - **No self-registration, invites, or email flows.** Admin creates users; admin resets passwords.
 - **No MFA in v1** (TOTP/passkeys are v2 — the security-stamp plumbing from Identity core makes
   this a bounded addition).
@@ -143,8 +146,10 @@ meaningless without Caddy); Watchtower's own login works with the proxy off.
 - **Phase 2 — identity federation & groups:** ~~groups + group-based grants~~ *(done)*; generic OIDC
   upstream (= Keycloak, as per-realm federation per §13), template policy inheritance for tenants, TOTP.
 - **Phase 3 (as needed):** service tokens, SCIM; branded login (§12) climbs its own ladder
-  (tokens → per-category auth hosts → runtime themes) as products demand it; realms (§13) land
-  when a second user population actually exists — until then only the seams are kept open.
+  (tokens → per-category auth hosts → runtime themes) as products demand it. ~~Realms land when a
+  second user population actually exists~~ — they landed first instead (§13, 2026-08-10): a second
+  population is now a row rather than a migration, which is what the branded-login ladder's second
+  rung turned out to need anyway.
 
 ## 3. Data model
 
@@ -153,9 +158,20 @@ Conventions mirror the existing entities (`Entities/*.cs` + `[EntityConfiguratio
 `[GenerateDbSets]`), then one EF migration via the design-time factory.
 
 ```csharp
+public sealed class Realm {                              // a user population (§13)
+    public int Id { get; set; }                          // the seeded operator realm is id 1
+    public required string Name { get; set; }            // display name; editable
+    public required string Slug { get; set; }            // unique, immutable — the `realm` claim
+    public string? AuthHost { get; set; }                // this realm's login host = its cookie jar;
+                                                         // unique where set; always null on IsSystem
+    public bool IsSystem { get; set; }                   // exactly one row: the operator realm
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
 public sealed class User {
     public int Id { get; set; }
-    public required string UserName { get; set; }        // unique (normalized column alongside)
+    public int RealmId { get; set; }                     // FK, Restrict; defaults to the operator realm
+    public required string UserName { get; set; }        // unique per realm — (RealmId, normalized)
     public string? Email { get; set; }
     public required string PasswordHash { get; set; }
     public bool IsAdmin { get; set; }                    // maps to the "Admin" role claim
@@ -195,11 +211,17 @@ public enum AccessMode { Public, Authenticated, Restricted }
 // Route (existing entity) gains:
 public AccessMode AccessMode { get; set; } = AccessMode.Public;   // Public = today's behavior
 public string? BypassPaths { get; set; }                           // newline-separated prefixes
+// …and no RealmId: a route's realm is its stack's category's (below).
+
+// StackTemplate (existing entity) gains:
+public int RealmId { get; set; }                                   // a category lives in exactly one
+                                                                   // realm; its routes inherit it
 
 public sealed class Group {                              // a named set of accounts
     public int Id { get; set; }
+    public int RealmId { get; set; }                     // FK, Restrict; groups never cross realms
     public required string Name { get; set; }            // printable ASCII, no comma (see below)
-    public required string NormalizedName { get; set; }  // unique (the User.NormalizedUserName precedent)
+    public required string NormalizedName { get; set; }  // unique per realm (the User precedent)
     public DateTimeOffset CreatedAt { get; set; }
 }
 
@@ -240,6 +262,16 @@ no grant row of their own and revoking membership or deleting the group takes ef
 request, with no cache to invalidate. Group names travel to upstreams (§2.3), so the charset rule is
 enforced where names enter the system rather than escaped at each forwarding site.
 
+The three realm foreign keys are `Restrict`, never `Cascade`: deleting a population must not be the
+operation that discovers its own blast radius, so `realms.delete` refuses while anything still
+points at the row (§13). Uniqueness moved with them — `(realm_id, normalized_user_name)` and
+`(realm_id, normalized_name)`, so two populations may each have an `admin` and neither can see the
+other's. Two names stayed **global** on purpose: `routes.domain`, because a domain is a global
+resource — DNS and Caddy's site blocks have no notion of realms, so two realms claiming one host
+could not both be served — and `stack_templates.name`, because a template name is what an operator
+picks a category by in the one management surface there is, and that surface is operator-realm-only,
+so one flat namespace is exactly what they see.
+
 Signing material: one ES256 key pair, generated on first use, stored under `/data` next to the
 SQLite db (`Auth:KeyPath`, default `/data/auth-keys/`). ASP.NET Data Protection keys (cookie
 encryption) are persisted to the same directory — otherwise every restart logs everyone out.
@@ -276,9 +308,11 @@ Caddy `forward_auth` sends the original headers (incl. `Cookie`) plus `X-Forward
    plaintext identity names (`Remote-*` or `X-Auth-Request-*`); all copied onto the proxied request
    by `copy_headers`.
 5. On failure: browser navigation requests (`GET`/`HEAD` with `Accept: text/html`) → **302** to
-   `https://{authHost}/login?redirect_uri={original URL}` (Caddy forwards the auth response to the
-   client on non-2xx, so the redirect just works). Everything else (XHR, POST) → plain **401** —
-   never redirect a POST into a login page.
+   `https://{authHost}/login?redirect_uri={original URL}`, where `authHost` is **the route's realm's**
+   login host (§13) — a visitor is only ever sent to the login page of the population that could
+   admit them, and a realm with no host yet fails closed with a bare 401 instead. (Caddy forwards the
+   auth response to the client on non-2xx, so the redirect just works.) Everything else (XHR, POST) →
+   plain **401** — never redirect a POST into a login page.
 6. Authenticated but not authorized (`Restricted`, no grant) → **403** with a small "access denied"
    page and an `access.denied` audit event.
 
@@ -335,10 +369,12 @@ is required**: Caddy can already reach Watchtower off the public path. `forward_
 purpose-built shorthand for this exact pattern; SSE/WebSocket upgrades pass through it unaffected
 (only the initial request is checked).
 
-One new requirement: the **auth host** must itself be reachable through Caddy — i.e. Watchtower
+One new requirement: every **auth host** must itself be reachable through Caddy — i.e. Watchtower
 needs a route to itself (`Auth:Host`, e.g. `watchtower.example.com`, emitted as a site block with
-upstream `watchtower:8080`). This also finally gives the Watchtower UI TLS through its own proxy;
-the published port stays as the escape hatch (and is how you recover from a proxy misconfiguration).
+upstream `watchtower:8080`), and since §13 one such self-route per realm login host as well. This
+also finally gives the Watchtower UI TLS through its own proxy; the published port stays as the
+escape hatch (and is how you recover from a proxy misconfiguration). None of these site blocks is
+ever protected — see §13, the one invariant the projection enforces.
 
 ## 7. Backend surface
 
@@ -359,6 +395,9 @@ existing convention for non-RPC/external surfaces):
 
 - `Users` module: `users.list/create/update/delete/resetPassword/setDisabled` — all
   `[RequireRole("Admin")]`.
+- `Realms` module: `realms.list/create/update/delete` — all `[RequireRole("Admin")]`, and
+  operator-realm-only twice over (§13: the role is emitted for system-realm accounts only, and every
+  handler additionally passes the system-realm gate).
 - `Groups` module: `groups.list/create/rename/delete/getMembers/setMembers` — all
   `[RequireRole("Admin")]`, because putting an account in a group grants it every route that group is
   named on. `setMembers` is a whole-set replace, reconciled like `proxy.setAccess`.
@@ -428,8 +467,10 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
 ## 11. Risks / open questions
 
 - **Auth-host bootstrap:** the login page must be reachable *before* auth works — `Auth:Host`
-  requires DNS + the self-route to be set up first. Mitigation: the UI walks the operator through it
-  (create self-route → verify cert → then allow enabling forward-auth on other routes).
+  requires DNS + the self-route to be set up first, and since §13 the same is true of each realm's
+  own login host. Mitigation: the UI walks the operator through it (create self-route → verify cert
+  → then allow enabling forward-auth on other routes); a realm without a host yet is a legitimate
+  state that fails closed rather than redirecting somewhere arbitrary.
 - **Locked-out operator:** wrong policy on the Watchtower self-route could lock the admin out of the
   UI. The published port + native login always works; document it as the recovery path. A
   `WATCHTOWER__AUTH__RESETPASSWORD` env hook (applied at startup) is the break-glass.
@@ -507,11 +548,16 @@ reach the fields), at the cost of styling flexibility inside the form.
 1. **Branding tokens** on `StackTemplate`: product name, logo, brand colors. The SPA theme system
    is already CSS variables (`--brand-*` in `styles.css`), so tokens are data, not code. Covers
    most products.
-2. **Per-category auth hosts**: optional `StackTemplate.AuthHost` (`login.product-a.com`);
-   `CaddyManager` emits one force-unprotected self-route per configured auth host (same mechanism
-   as today's single `Auth:Host`); the `/api/access/verify` 302 picks the login host from the
-   route's template instead of the global `Auth:Host`. Each host is its own cookie jar (§13:
-   this is also the realm boundary mechanism).
+2. **Per-category auth hosts** — *the mechanism landed on 2026-08-10, realm-shaped rather than
+   template-shaped.* `CaddyManager` does emit one force-unprotected self-route per login host, and
+   the `/api/access/verify` 302 does pick the login host per route rather than from the global
+   `Auth:Host` — but the host hangs on `Realm.AuthHost`, not on `StackTemplate.AuthHost`, and the
+   302 follows the route's **realm** (§13). So what a category gets today is a *realm*
+   (`StackTemplate.RealmId`), and its tenants log in on that population's host. That is the stronger
+   of the two shapes for the same effort: a host that is also a cookie jar is a population boundary
+   whether or not anyone meant it to be, so making it one explicitly beats having it be one by
+   accident. What is still unbuilt is a vanity host *per category within one realm*, with the silent
+   hop to the realm host — see §13.8.
 3. **Runtime theme bundles** (§12.4–12.6): full product-designed pages.
 
 ### 12.4 Theme package: an OCI image as delivery vehicle — pulled and extracted, never run
@@ -599,38 +645,181 @@ not separately assignable theme types (Keycloak's login/account/email theme spli
 burden we deliberately don't reproduce). The server-rendered minimal HTML pages
 (`WatchtowerAccessEndpoints.Html`) remain the themeless fallback.
 
-## 13. Native multi-realm direction *(decided 2026-08-10, seams only — no construction yet)*
+## 13. Native multi-realm *(decided and built 2026-08-10)*
 
-**Decision: Watchtower must support multiple realms natively.** External IdPs (Keycloak, Entra) are
-a **per-realm federation feature** for customers who already manage an IdP — the §2.1 login button —
-*not* Watchtower's exit ramp for growing identity needs. Watchtower is the fully-integrated
-identity home. (This inverts the original §2.7 delegation framing; §2.7 has been updated.)
+**Watchtower supports multiple realms natively.** External IdPs (Keycloak, Entra) are a **per-realm
+federation feature** for customers who already manage an IdP — the §2.1 login button — *not*
+Watchtower's exit ramp for growing identity needs. Watchtower is the fully-integrated identity home.
+(This inverts the original §2.7 delegation framing; §2.7 has been updated.)
 
-**A realm is the user-population boundary:** its own credential space (username/email uniqueness
-scoped *per realm*, not global), its own SSO scope, its own login policies, and eventually its own
-federation config and registration/MFA settings. Model shape when it lands: a `Realm` entity,
-`User.RealmId`, `StackTemplate.RealmId` (a category lives in exactly one realm), and
-realm-consistency enforced on grants (a route only grants users from its realm). Realms also give
-the public management API its natural tenancy boundary: a product's management principal is scoped
-to its realm, and cross-population provisioning is structurally impossible.
+This section was written as a direction with seams to keep open, and was built the same day. What
+follows is what exists; §13.8 is what does not.
 
-**SSO scope = cookie jar = auth host.** Each realm gets a primary auth host where `__wt_sso` lives —
-the §12.3 per-category auth host is the same mechanism wearing a branding costume. Per-category
-vanity hosts *within* one realm silently hop to the realm host when a session exists; the
-login-code dance is already a cross-host handover mechanism, so this is reuse, not new machinery.
+### 13.1 A realm is the user-population boundary
 
-**Seams to keep open now (this is the actionable part):**
+The `Realm` entity is deliberately small: a `Name` an administrator can rename freely, a `Slug` that
+is unique and **immutable**, a nullable `AuthHost`, and `IsSystem`. The slug is immutable because it
+is the value of the `realm` claim in every assertion the realm's applications receive — renaming it
+would silently change what an upstream is told about the population an account belongs to, which is
+a different kind of change from renaming a label in a UI. The migration seeds exactly one row: the
+**operator realm** (id 1, slug `operator`), which is the realm every pre-realm row was backfilled
+into, the fallback an unrecognised host resolves to, and the population that administers the
+instance. It cannot be deleted, and it never stores an `AuthHost`: its login page is served on the
+configured `Auth:Host`, because authentication must not need a database row to find its own login
+page.
 
-1. **Uniqueness constraints:** never let new code assume "username/email is globally unique" as an
-   invariant beyond the index itself — the indexes must be able to become `(RealmId, …)`-scoped in
-   one migration.
-2. **Token shape:** keep `AuthTokenSigner` issuer/claims arranged so realm can surface later as an
-   `iss` variant or a claim without breaking existing JWT consumers (the WI-8 per-route header
-   modes made consumers explicit, which helps).
-3. **Per-population settings hang on the right entity:** anything genuinely per-population —
-   password policy, lockout settings, future MFA config — is written as "belongs to realm,
-   currently one implicit realm", not as global config.
+`User.RealmId`, `Group.RealmId` and `StackTemplate.RealmId` all default to the system realm, so a
+deployment that never creates a second realm behaves exactly as it did before realms existed. All
+three foreign keys are `Restrict`: `realms.delete` refuses while a realm still holds accounts,
+groups or categories rather than cascading, because deleting a population would otherwise take every
+credential and every tenant stack with it in one call. Emptying it first is the same work made
+visible, and each step is separately auditable.
 
-**Explicitly not decided:** protocol-level OIDC provider per realm (authorize endpoint, client
-registry, consent). "Fully integrated" will eventually pressure this too; nothing in the realm or
-theme design blocks it, and it is not reached for until something concrete demands it (§2.7).
+Uniqueness moved with the columns — `(realm_id, normalized_user_name)` for users and
+`(realm_id, normalized_name)` for groups, so two populations may each have an `admin` and neither
+can see the other's. Identity's own duplicate-name check runs through `WatchtowerUserStore`, which
+filters on the ambient `IRealmContext`, so the realm scoping is one filter rather than a rule every
+call site has to remember. Two names stayed global, for reasons that are not laziness:
+`routes.domain`, because a domain is a global resource — DNS and Caddy's site blocks have no notion
+of realms, so two realms claiming one host could not both be served — and `stack_templates.name`,
+because a category is picked by name in the one management surface there is, and that surface is
+operator-realm-only (§13.6), so a flat namespace is what an operator actually sees.
+
+Routes carry no realm column at all. A route's realm is its stack's category's, and a standalone
+stack's routes are the operator realm's. The category is where a population is decided; copying it
+onto every tenant route would be one more thing that can disagree with it.
+
+### 13.2 One place a realm is decided, and it fails *safe*
+
+`RealmResolver` answers all three realm questions — which population a host belongs to, which one a
+route serves, which host a realm logs in on — for the same reason `RouteAccessPolicy` exists: three
+surfaces answering separately would eventually answer differently, and a disagreement about which
+population a visitor is in is a hole rather than a bug.
+
+Its failure direction is deliberate and is the opposite of the rest of the auth code: an
+**unrecognised host resolves to the operator realm**, so a request arriving on the published port,
+by IP, or on the configured `Auth:Host` lands on the operator login instead of nowhere. Guessing
+wrong here costs a lockout, and the operator population is the one that can always fix things. It
+costs nothing in isolation, because an account still only ever authenticates within its own realm —
+resolving to the system realm decides which login page a visitor sees, not who gets in.
+
+### 13.3 Realm = cookie jar = auth host
+
+`__wt_sso` is host-scoped, so the host a login page is served on *is* the realm's cookie jar. Login
+therefore resolves the realm from the host it was served on and pins `IRealmContext` before touching
+`UserManager`: a login page can only ever authenticate its own population.
+
+`CaddyManager.ProjectSites` generalised from one self-route to N — the configured `Auth:Host` plus
+every realm's `AuthHost`, deduplicated and configuration-first — and the invariant it enforces is
+stated in one line: **no realm's login host sits behind its own gate.** None of those site blocks is
+ever `Protected`, and an explicit `Route` row for one of those domains still renders (the operator
+said what that host should serve, and silently shadowing it would be worse than honouring it) but is
+force-unprotected whatever its `AccessMode` says. Putting a login page behind the forward-auth that
+redirects to that login page is a closed loop whose only exit is the published port. The projection
+also collapses duplicates and blanks rather than trusting the handlers and the unique index to have
+prevented them: two site blocks for one domain produce a Caddyfile that does not load. Realm CRUD
+calls `ApplyAsync()` after commit, best-effort, like the route handlers — otherwise a new realm's
+login host stays unserved, and a protected route already on that domain stays gated, until some
+unrelated reconcile.
+
+Verify challenges to **the route's realm's** login host. A realm created before its DNS exists has
+no host, and its protected routes then fail closed with a bare 401 — warned once per realm, keyed by
+id so a deleted-and-recreated slug warns again — rather than redirecting somewhere arbitrary.
+
+### 13.4 Tokens: per-realm issuer, always-present `realm` claim, one key pair
+
+`AuthTokenSigner` takes a `RealmIdentity` value rather than a row, so it stays a pure singleton with
+no database of its own. `iss` is the realm's login host for a customer realm and, for the operator
+realm, exactly the issuer this signer produced before realms existed — apps already pinned to it are
+untouched, which is the whole point of not reissuing under a new name. The `realm` claim is
+**always** present, so a consumer never has to infer the population from the issuer.
+
+One key pair signs every realm. That is a deliberate simplification, and it has one consequence
+worth stating: the issuer alone proves nothing about a subject. Every surface that validates a token
+therefore checks both. `TenantDiscovery` pins the issuer to the calling stack's realm and re-checks
+the subject; UserInfo — the one surface with no realm in context, since an app presents whatever it
+was handed — accepts every known realm issuer and then verifies the resolved account is in the realm
+whose issuer was actually presented. An issuer collision is only reachable by pointing `Auth:Host`
+at a host a realm already holds (the handlers refuse the other order), and it is resolved
+system-realm-first so the population that administers the instance is structurally unable to lose
+it, with the loser named in a warning.
+
+### 13.5 The realm invariant lives in `RouteAccessPolicy`, once
+
+**A protected route only ever admits an account of its own realm, whatever its grants say.** Both
+`Authenticated` and `Restricted` carry the check; `Public` is split out of what used to be one
+`Allow` branch precisely because a route that asks nobody who they are has no population to compare
+against. The rule is one expression shared by `IsAuthorizedAsync` and `AccessibleRouteIdsAsync`, so
+the per-route and the bulk answer cannot drift — and the bulk form applies it in bulk (two reads for
+the whole candidate set) rather than looping.
+
+A realm mismatch is **indistinguishable from a missing grant**: both entry points return the same
+`false`, and every surface above collapses it into the same refusal, which preserves the
+anti-enumeration property of the login/continue path (§5). A stale grant left behind by some later
+realm change therefore grants nothing rather than crossing the boundary.
+
+Write-time refusals exist too — `groups.setMembers` and `proxy.setAccess` refuse cross-realm
+subjects, `templates.update` may move a category to another realm only while it has no tenants
+(moving a populated one would re-point every tenant route at another population as a side effect of
+a form save) — but they are ergonomics: a membership or grant the access check can never honour
+reads like access somebody has. The policy is the control.
+
+### 13.6 The management surface belongs to the operator realm
+
+`SystemRealmAuthorizer` decorates the framework authorizer, so **every handler on every transport**
+additionally requires a system-realm principal on top of whatever it declares for itself. Central
+rather than per-handler: a rule that must be repeated is a rule a new handler can be written
+without, and the handler that forgot it would be the one that hands a customer's account the ability
+to administer the instance. Three pass-throughs are deliberate — `[AllowAnonymous]` handlers,
+unauthenticated callers (left to the inner authorizer so a 401 stays a 401), and the implicit local
+administrator used when `Auth:Enabled=false`, which reports the operator realm so that deployment is
+unchanged.
+
+The two SSE streams (deploy output, container logs) are minimal-API endpoints that the handler
+pipeline never sees, so they carry the same rule as an ASP.NET policy reading the same claim through
+the same `WatchtowerClaims.IsSystemRealm` — one rule, one pair of constants. They are not
+additionally Admin-gated: a non-administrator operator account could watch them before, and this is
+a realm boundary rather than a re-grading of who may see deploy output.
+
+`IsAdmin` is refused outside the operator realm by the user handlers, and the Admin role is emitted
+only for a system-realm account by `WatchtowerClaims.ForUser` and by UserInfo — belt to the
+handlers' braces, so a row that acquired the flag by a direct database edit still would not turn
+into authority over the instance.
+
+A realm account's session is perfectly valid otherwise: it signs in, holds a cookie, passes
+forward-auth for its own applications, calls UserInfo. What it cannot do is anything on the
+management API — those are not operations it lacks a permission for, they are operations about the
+instance rather than about its population.
+
+### 13.7 Surface
+
+`realms.list/create/update/delete`, all `[RequireRole("Admin")]`. A slug is validated as a stable
+identifier and never editable; an `authHost` must be a bare host name, unique among realms, and
+never the configured Watchtower login host — one host resolving to two populations would make "who
+administers this instance" ambiguous. The operator realm is renameable, never given a stored host,
+and never deletable. `users`, `groups` and `templates` gained an optional `realmId` (default: the
+operator realm, so existing clients are unaffected) and expose it on their DTOs; `users.list` and
+`groups.list` gained an optional realm filter; `proxy.getAccess` reports the route's realm, so a
+grant editor can scope its candidates instead of discovering the boundary by being refused.
+
+The admin UI gained a Realms screen and realm columns, filters and selects on the screens that name
+a population — shown only when there is more than one realm, since a column whose every cell says
+the same word is noise.
+
+### 13.8 Still future work
+
+- **Per-realm password, lockout and MFA policy.** Today's are instance-wide `Auth:*` options. `Realm`
+  is where they hang when they land — the seam is the entity, and it now exists.
+- **Per-realm federation config** — the §2.1 login button, per population.
+- **Realm-scoped management principals.** The token-authenticated management and app APIs
+  (`TemplateManagementGrant`) do not pass through the system-realm gate; their principals are stacks
+  rather than accounts and are unchanged in v1. "A product's management principal is scoped to its
+  realm, so cross-population provisioning is structurally impossible" is therefore still the design
+  intent rather than the implementation.
+- **Protocol-level OIDC provider per realm** (authorize endpoint, client registry, consent).
+  "Fully integrated" will eventually pressure this; nothing in the realm or theme design blocks it,
+  and it is not reached for until something concrete demands it (§2.7).
+- **Per-category vanity hosts within one realm**, with the silent hop to the realm host when a
+  session already exists. The login-code dance is already a cross-host handover mechanism, so this
+  is reuse rather than new machinery when it is wanted — but a category gets a realm today, not a
+  host of its own (§12.3).
