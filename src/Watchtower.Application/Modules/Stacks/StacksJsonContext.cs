@@ -33,4 +33,8 @@ namespace Watchtower.Application.Modules.Stacks;
 [JsonSerializable(typeof(SetStackEnv.Response), TypeInfoPropertyName = "SetStackEnvResponse")]
 [JsonSerializable(typeof(CheckStackUpdates.Command), TypeInfoPropertyName = "CheckStackUpdatesCommand")]
 [JsonSerializable(typeof(CheckStackUpdates.Response), TypeInfoPropertyName = "CheckStackUpdatesResponse")]
+[JsonSerializable(typeof(GetStackAppApi.Query), TypeInfoPropertyName = "GetStackAppApiQuery")]
+[JsonSerializable(typeof(GetStackAppApi.Response), TypeInfoPropertyName = "GetStackAppApiResponse")]
+[JsonSerializable(typeof(SetStackAppApi.Command), TypeInfoPropertyName = "SetStackAppApiCommand")]
+[JsonSerializable(typeof(SetStackAppApi.Response), TypeInfoPropertyName = "SetStackAppApiResponse")]
 public sealed partial class StacksJsonContext : JsonSerializerContext;

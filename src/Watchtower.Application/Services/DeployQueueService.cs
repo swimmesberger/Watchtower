@@ -1,9 +1,12 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 
@@ -33,8 +36,20 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     private readonly DockerEngineClient _docker;
     private readonly DeployOutputBroadcaster _broadcaster;
     private readonly CaddyManager _caddy;
+    private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<DeployQueueService> _logger;
 
+    /// <param name="scopeFactory">Creates the short-lived scopes all database access runs in.</param>
+    /// <param name="git">Repository clone helper.</param>
+    /// <param name="compose">Docker Compose CLI wrapper.</param>
+    /// <param name="docker">Docker Engine API client.</param>
+    /// <param name="broadcaster">Live deploy-output fan-out for the SSE stream.</param>
+    /// <param name="caddy">Reverse-proxy reconciler invoked after a successful deploy.</param>
+    /// <param name="options">
+    /// Live Watchtower options; <c>PublicBaseUrl</c> is read per deploy to decide whether
+    /// <c>WATCHTOWER_URL</c> is injected into the stack's environment.
+    /// </param>
+    /// <param name="logger">Logger.</param>
     public DeployQueueService(
         IServiceScopeFactory scopeFactory,
         GitCloneService git,
@@ -42,6 +57,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
         CaddyManager caddy,
+        IOptionsMonitor<WatchtowerOptions> options,
         ILogger<DeployQueueService> logger) {
         _scopeFactory = scopeFactory;
         _git = git;
@@ -49,6 +65,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         _docker = docker;
         _broadcaster = broadcaster;
         _caddy = caddy;
+        _options = options;
         _logger = logger;
     }
 
@@ -248,20 +265,31 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             // 3. Build a scoped DOCKER_CONFIG with all configured registry credentials.
             dockerConfigDir = CreateRegistryConfigDir();
 
-            // 4. Write stack-level environment variable overrides to a temp .env file.
+            // 4. Materialize the temp .env consumed by `docker compose --env-file`. Since Watchtower
+            //    always injects reserved variables, --env-file is always passed — and passing it makes
+            //    Compose v2 STOP auto-loading the project directory's own .env. The repo's committed
+            //    .env is therefore merged in explicitly here; without that, a stack whose repository
+            //    ships a .env would silently interpolate every one of those variables to empty on its
+            //    next deploy. See BuildEnvFileContent for the precedence rules.
             var envVars = GetEnvVars(stackId);
-            if (envVars.Count > 0) {
-                envFilePath = Path.Combine(Path.GetTempPath(), $"watchtower-env-{Guid.NewGuid():N}.env");
-                var envContent = new StringBuilder();
-                foreach (var v in envVars) {
-                    var safeValue = v.Value.Contains('\n') || v.Value.Contains('"')
-                        ? $"\"{v.Value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
-                        : v.Value;
-                    envContent.AppendLine($"{v.Key}={safeValue}");
-                }
-                await File.WriteAllTextAsync(envFilePath, envContent.ToString(), ct);
-                WriteHeader($"[Watchtower] Injecting {envVars.Count} environment variable(s)");
-            }
+            var appApiToken = await EnsureAppApiTokenAsync(stackId, ct);
+            var reservedVars = BuildReservedEnvVars(stackId, appApiToken);
+            var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
+            foreach (var droppedKey in repoEnv.DroppedKeys)
+                WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
+
+            envFilePath = Path.Combine(Path.GetTempPath(), $"watchtower-env-{Guid.NewGuid():N}.env");
+            var (envContent, operatorCount, repoCount) =
+                BuildEnvFileContent(repoEnv.Entries, envVars, reservedVars);
+            await File.WriteAllTextAsync(envFilePath, envContent, ct);
+            // The file now always carries WATCHTOWER_APP_TOKEN, so keep it owner-only rather than
+            // leaving it at the process umask in a world-readable temp directory.
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(envFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            WriteHeader(
+                $"[Watchtower] Injecting {operatorCount} environment variable(s), "
+                + $"{repoCount} carried over from the repository .env, "
+                + $"reserved: {string.Join(", ", reservedVars.Select(v => v.Key))}");
 
             // 5. Pull updated images.
             WriteHeader($"[Watchtower] Pulling images for project '{stack.ComposeProjectName}'");
@@ -385,6 +413,215 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return db.Credentials.AsNoTracking()
             .Where(c => c.Id == credentialId).Select(c => c.Token).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// The reserved variables injected into every deploy, in write order. <c>WATCHTOWER_URL</c> is
+    /// only written when a public base URL is configured; the value is read live from
+    /// <see cref="IOptionsMonitor{T}"/> so a settings change applies to the next deploy.
+    /// </summary>
+    private List<(string Key, string Value)> BuildReservedEnvVars(int stackId, string appApiToken) {
+        var vars = new List<(string Key, string Value)> {
+            (AppApiTokens.TokenVariable, appApiToken),
+            (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
+        };
+        var publicBaseUrl = _options.CurrentValue.PublicBaseUrl;
+        if (!string.IsNullOrWhiteSpace(publicBaseUrl))
+            vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
+        return vars;
+    }
+
+    /// <summary>Quotes a value for the compose <c>.env</c> file when it embeds a newline or a quote.</summary>
+    private static string EscapeEnvValue(string value) =>
+        value.Contains('\n') || value.Contains('"')
+            ? $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
+            : value;
+
+    /// <summary>
+    /// Composes the temp env-file body from three layers: Watchtower's reserved variables, the
+    /// operator's <see cref="StackEnvVar"/>s, and whatever remains of the repository's own
+    /// <c>.env</c> — in that physical order.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Precedence — repository lowest, then operator, then reserved — is applied by <em>omission</em>
+    /// rather than by relying on last-wins duplicate-key semantics inside a single file (which is not
+    /// a documented Compose guarantee): a repository key that the operator or Watchtower also defines
+    /// is simply not written, and an operator key using a reserved name is skipped. The three sets of
+    /// keys written are therefore pairwise disjoint, so <em>file order carries no precedence
+    /// meaning</em> and is free to be chosen for safety instead.
+    /// </para>
+    /// <para>
+    /// It is chosen so that the repository block comes <em>last</em>. Repository lines are copied
+    /// through verbatim to preserve their original quoting and escaping, which means Watchtower is not
+    /// the authority on where a repository's quoted value ends — dotenv's escaping rules have corners
+    /// (<c>KEY="C:\Users\"</c>) that a line-oriented reader can misjudge. Emitting Watchtower-owned and
+    /// operator-owned lines first makes it structurally impossible for a repository value to swallow
+    /// them, whatever the parser concludes: a mis-parsed repository block can at worst corrupt the rest
+    /// of the repository's own variables. The reserved <c>WATCHTOWER_*</c> lines are always intact.
+    /// </para>
+    /// </remarks>
+    /// <param name="repoEntries">Entries parsed from the repository's <c>.env</c>, in file order.</param>
+    /// <param name="operatorVars">The stack's operator-defined variables.</param>
+    /// <param name="reservedVars">Watchtower's reserved variables, highest precedence.</param>
+    /// <returns>The file body plus the number of operator and repository variables written.</returns>
+    private static (string Content, int OperatorCount, int RepoCount) BuildEnvFileContent(
+        IReadOnlyList<(string Key, string RawText)> repoEntries,
+        IReadOnlyList<(string Key, string Value)> operatorVars,
+        IReadOnlyList<(string Key, string Value)> reservedVars) {
+        // Keys a higher-precedence layer defines; a repository entry for any of these is dropped
+        // rather than overwritten, which is what frees the physical ordering below.
+        var overridden = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var v in operatorVars)
+            if (!AppApiTokens.Reserved.Contains(v.Key)) overridden.Add(v.Key);
+        foreach (var v in reservedVars) overridden.Add(v.Key);
+
+        var content = new StringBuilder();
+
+        // 1. Reserved, first — nothing the repository writes can reach back over these.
+        foreach (var (key, value) in reservedVars)
+            content.AppendLine($"{key}={EscapeEnvValue(value)}");
+
+        // 2. Operator variables. Values are re-encoded here, so their quoting is Watchtower's own.
+        var operatorCount = 0;
+        foreach (var v in operatorVars) {
+            // An operator variable using a reserved name is skipped so the injected value wins.
+            if (AppApiTokens.Reserved.Contains(v.Key)) continue;
+            content.AppendLine($"{v.Key}={EscapeEnvValue(v.Value)}");
+            operatorCount++;
+        }
+
+        // 3. The repository block last, verbatim and in file order (so duplicate keys inside the
+        //    repository's own file still resolve the way Compose would have resolved them).
+        var repoCount = 0;
+        foreach (var (key, rawText) in repoEntries) {
+            if (overridden.Contains(key)) continue;
+            content.AppendLine(rawText);
+            repoCount++;
+        }
+
+        return (content.ToString(), operatorCount, repoCount);
+    }
+
+    /// <summary>
+    /// Reads the repository's own <c>.env</c> — the file Compose would have auto-loaded from the
+    /// project directory (the compose file's directory) had <c>--env-file</c> not been passed.
+    /// Returns an empty list when the repository ships no <c>.env</c> or it cannot be read.
+    /// </summary>
+    /// <param name="composeFilePath">Absolute path to the cloned compose file.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The parsed entries, in file order.</returns>
+    private async Task<RepoEnv> ReadRepoEnvEntriesAsync(string composeFilePath, CancellationToken ct) {
+        var projectDir = Path.GetDirectoryName(composeFilePath);
+        if (string.IsNullOrEmpty(projectDir)) return RepoEnv.Empty;
+        var repoEnvPath = Path.Combine(projectDir, ".env");
+        if (!File.Exists(repoEnvPath)) return RepoEnv.Empty;
+        try {
+            return ParseEnvEntries(await File.ReadAllLinesAsync(repoEnvPath, ct));
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // An unreadable .env must never fail the deploy — degrade to "no repository env".
+            _logger.LogWarning(ex, "Could not read repository .env at {Path}; continuing without it", repoEnvPath);
+            return RepoEnv.Empty;
+        }
+    }
+
+    /// <summary>Entries parsed from a repository <c>.env</c>, plus the keys that had to be discarded.</summary>
+    /// <param name="Entries">Usable entries, in file order.</param>
+    /// <param name="DroppedKeys">Keys discarded as malformed; surfaced in the deploy output.</param>
+    private sealed record RepoEnv(
+        IReadOnlyList<(string Key, string RawText)> Entries, IReadOnlyList<string> DroppedKeys) {
+        /// <summary>No repository <c>.env</c>, or one that could not be read.</summary>
+        public static readonly RepoEnv Empty = new([], []);
+    }
+
+    /// <summary>
+    /// Parses simple <c>KEY=VALUE</c> entries, keeping each entry's source text verbatim. Blank lines
+    /// and comments are dropped; an <c>export </c> prefix is tolerated; a value opening a quote that
+    /// the line never closes continues onto the following lines and is kept with the entry.
+    /// </summary>
+    /// <remarks>
+    /// An entry whose opening quote is never closed before end-of-file is <em>discarded</em>, not
+    /// salvaged, and only that entry is lost: parsing resumes at the next line so the assignments
+    /// after it are still read. This protects the repository's own remaining variables from one
+    /// malformed line.
+    /// <para>
+    /// It is deliberately <em>not</em> what protects Watchtower's injected variables. This reader is
+    /// line-oriented and does not model dotenv's backslash escaping, so it can misjudge where a quoted
+    /// value ends (<c>KEY="C:\Users\"</c> looks closed to it and open to Compose). That is tolerable
+    /// only because <see cref="BuildEnvFileContent"/> emits the repository block <em>last</em>: there
+    /// are no Watchtower-owned or operator-owned lines after it for a runaway value to swallow.
+    /// Ordering is the guarantee; this drop is a courtesy to the repository.
+    /// </para>
+    /// </remarks>
+    /// <param name="lines">The env file's lines.</param>
+    /// <returns>The usable entries in file order, plus the keys discarded as malformed.</returns>
+    private static RepoEnv ParseEnvEntries(string[] lines) {
+        var entries = new List<(string, string)>();
+        var dropped = new List<string>();
+        for (var i = 0; i < lines.Length; i++) {
+            if (ParseEnvKey(lines[i]) is not { } key) continue;
+
+            // Single-line value: the common case.
+            if (UnterminatedQuote(lines[i]) is not { } quote) {
+                entries.Add((key, lines[i]));
+                continue;
+            }
+
+            // The value opens a quote. Look ahead for the line that closes it WITHOUT consuming
+            // anything yet, so that a quote which is never closed costs only its own line.
+            var closingLine = -1;
+            for (var j = i + 1; j < lines.Length; j++) {
+                if (!lines[j].Contains(quote)) continue;
+                closingLine = j;
+                break;
+            }
+
+            if (closingLine < 0) {
+                // Malformed: drop just this entry and carry on parsing the remaining lines. Consuming
+                // to end-of-file instead would silently swallow every later assignment as part of the
+                // broken value — losing valid repository variables on top of the malformed one.
+                dropped.Add(key);
+                continue;
+            }
+
+            var block = new StringBuilder(lines[i]);
+            for (var j = i + 1; j <= closingLine; j++)
+                block.Append('\n').Append(lines[j]);
+            entries.Add((key, block.ToString()));
+            i = closingLine;
+        }
+        return new RepoEnv(entries, dropped);
+    }
+
+    /// <summary>Returns the assigned key of a <c>KEY=VALUE</c> line, or null when the line is not one.</summary>
+    private static string? ParseEnvKey(string line) {
+        var text = line.TrimStart();
+        if (text.Length == 0 || text[0] == '#') return null;
+        if (text.StartsWith("export ", StringComparison.Ordinal)) text = text[7..].TrimStart();
+        var equals = text.IndexOf('=');
+        if (equals <= 0) return null;
+        var key = text[..equals].TrimEnd();
+        // Anything with whitespace inside is not an assignment (e.g. a wrapped value line).
+        return key.Length == 0 || key.Any(char.IsWhiteSpace) ? null : key;
+    }
+
+    /// <summary>The quote character a value opens but does not close on this line, if any.</summary>
+    private static char? UnterminatedQuote(string line) {
+        var equals = line.IndexOf('=');
+        if (equals < 0) return null;
+        var value = line[(equals + 1)..].TrimStart();
+        if (value.Length == 0 || (value[0] != '"' && value[0] != '\'')) return null;
+        return value.IndexOf(value[0], 1) >= 0 ? null : value[0];
+    }
+
+    /// <summary>
+    /// Reads (generating and persisting on first use) the stack's App API token, so the value written
+    /// into the deploy environment is the same one <c>/api/app/*</c> will authenticate against.
+    /// </summary>
+    private async Task<string> EnsureAppApiTokenAsync(int stackId, CancellationToken ct) {
+        using var scope = _scopeFactory.CreateScope();
+        var appApi = scope.ServiceProvider.GetRequiredService<AppApiService>();
+        return await appApi.EnsureTokenAsync(stackId, ct);
     }
 
     private List<(string Key, string Value)> GetEnvVars(int stackId) {

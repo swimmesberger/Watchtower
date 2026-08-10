@@ -13,21 +13,24 @@ public static class WatchtowerHttpEndpoints {
     public sealed record WebhookDeployResult(int DeployEventId, string Status);
 
     /// <summary>
-    /// Maps the non-RPC surfaces. With <paramref name="authEnabled"/> the two SSE streams — which carry
+    /// Maps the non-RPC surfaces: the deploy webhook, the two SSE streams, the proxy TLS gate, the public
+    /// App API, and <c>/health</c>. With <paramref name="authEnabled"/> the two SSE streams — which carry
     /// deploy output and container logs, i.e. exactly the data the JSON-RPC handlers now protect — require a
     /// login session too; <c>EventSource</c> sends cookies on same-origin requests, so the UI is unaffected.
     /// </summary>
     /// <remarks>
-    /// Three endpoints stay open by design (design.md §11): <c>/health</c> is a liveness probe with no data,
+    /// Endpoints that stay open by design (design.md §11): <c>/health</c> is a liveness probe with no data,
     /// the deploy webhook authenticates callers with its own per-stack bearer token (a CI runner has no
-    /// browser session), and <c>/api/proxy/ask</c> is Caddy's on-demand-TLS gate, reachable only from the
-    /// internal control network and consulted before any user is involved.
+    /// browser session), <c>/api/proxy/ask</c> is Caddy's on-demand-TLS gate reachable only from the internal
+    /// control network, and the App API carries its own per-application token auth (see AppApiEndpoints).
     /// </remarks>
     public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app, bool authEnabled) {
         MapWebhook(app);
         Protect(MapDeployOutputStream(app), authEnabled);
         Protect(MapContainerLogStream(app), authEnabled);
         MapProxyAsk(app);
+        // Public, token-authenticated surface for deployed applications (see AppApiEndpoints).
+        app.MapAppApiEndpoints();
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
     }

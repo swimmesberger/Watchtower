@@ -26,6 +26,15 @@ public sealed record WatchtowerOptions {
     public string DockerApiVersion { get; init; } = "1.43";
 
     /// <summary>
+    /// Publicly reachable base URL of this Watchtower instance, e.g. <c>https://watchtower.example.com</c>
+    /// (no trailing path). When set, every deploy injects it into the stack's environment as
+    /// <c>WATCHTOWER_URL</c> so a deployed application knows where to reach the App API
+    /// (<c>/api/app/*</c>) without hard-coding it. Optional: when unset the variable is simply not
+    /// injected — set via <c>WATCHTOWER__PUBLICBASEURL</c> or appsettings.json.
+    /// </summary>
+    public string? PublicBaseUrl { get; init; }
+
+    /// <summary>
     /// When true, a background service periodically checks for a newer Watchtower image
     /// so the UI badge stays up to date without a manual check.
     /// Set via <c>WATCHTOWER__AUTOCHECKENABLED=true</c> or appsettings.json.

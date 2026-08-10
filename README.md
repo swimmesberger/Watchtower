@@ -21,8 +21,8 @@ client generated from the exported schema.
 > Restricted access, with signed identity forwarded upstream) — see the operator guide,
 > [docs/central-auth/README.md](docs/central-auth/README.md).
 > `WATCHTOWER__AUTH__RESETPASSWORD` is the break-glass hook if you lock yourself out.
-> Either way, only the `/api/webhooks/*` routes are designed to be reachable by unauthenticated
-> external callers, and each is protected by a per-stack bearer token.
+> Either way, only the `/api/webhooks/*` and `/api/app/*` routes are designed to be reachable by
+> unauthenticated external callers, and each is protected by a per-stack (or per-application) bearer token.
 
 ## Tech stack
 
@@ -42,11 +42,17 @@ client generated from the exported schema.
                                     └───────────────────────────────┘                 └────────────┘
 ```
 
-- **JSON-RPC** (`POST /rpc`) serves every CRUD/action operation — see the 29 methods in
+- **JSON-RPC** (`POST /rpc`) serves every CRUD/action operation — see the methods in
   [`rpc-schema.json`](rpc-schema.json) (`credentials.*`, `registries.*`, `stacks.*`, `containers.*`,
   `deployments.active`, `system.*`).
-- **Plain HTTP** endpoints handle what JSON-RPC can't: the deploy webhook and two Server-Sent-Event
-  streams (live deploy output + container logs), plus `/health`.
+- **Plain HTTP** endpoints handle what JSON-RPC can't: the deploy webhook, two Server-Sent-Event
+  streams (live deploy output + container logs), the App API, and `/health`.
+- **App API** (`/api/app/*`): deployed applications can query **their own** deployment status,
+  version, deploy history and logs. Watchtower injects a per-stack bearer token into every deploy as
+  `WATCHTOWER_APP_TOKEN` (alongside `WATCHTOWER_STACK_ID` and, when configured, `WATCHTOWER_URL`),
+  and each endpoint resolves the caller's containers server-side from its compose project — so a
+  stack can only ever see itself, never another stack, deploy output, or credentials. See
+  [docs/public-app-api.md](docs/public-app-api.md) and [ADR-0008](docs/decisions/0008-public-app-api.md).
 - **Deploy engine:** an in-process per-stack queue with coalescing — at most one deploy runs per stack,
   with one pending slot. A deploy clones the repo, builds a scoped `DOCKER_CONFIG`, writes a temp
   `.env` from the stack's variables, then `docker compose pull` + `up -d --remove-orphans`.
@@ -126,6 +132,7 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | --- | --- | --- | --- |
 | `DbPath` | `WATCHTOWER__DBPATH` | `/data/watchtower.db` | SQLite database file path. |
 | `DockerApiVersion` | `WATCHTOWER__DOCKERAPIVERSION` | `1.43` | Docker Engine API version used for direct calls and `docker compose`. |
+| `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` for the [App API](docs/public-app-api.md). |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
 | `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `memory` | Metrics source: `memory` (in-process sampler) or `influxdb` (read a durable store) — see [docs/metrics-history.md](docs/metrics-history.md). |

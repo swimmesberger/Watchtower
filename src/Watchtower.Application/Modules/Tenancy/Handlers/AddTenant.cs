@@ -11,7 +11,8 @@ namespace Watchtower.Application.Modules.Tenancy.Handlers;
 /// deploy. The route's service container joins the edge network on the first successful deploy.
 /// </summary>
 [Handler("templates.addTenant")]
-public sealed class AddTenant(WatchtowerDbContext db, DeployQueueService deployQueue)
+public sealed class AddTenant(
+    WatchtowerDbContext db, DeployQueueService deployQueue, SelfProjectNameProvider selfProjects)
     : IHandler<AddTenant.Command, Result<AddTenant.Response>> {
     public sealed record Command(int TemplateId, string Slug, IReadOnlyList<TemplateEnvVarInput>? EnvOverrides);
     public sealed record Response(TenantDto Tenant);
@@ -39,15 +40,27 @@ public sealed class AddTenant(WatchtowerDbContext db, DeployQueueService deployQ
         if (await db.Routes.AnyAsync(r => r.Domain == domain, ct))
             return AppError.Validation($"Domain '{domain}' is already routed.");
 
+        // Tenant isolation depends on each instance owning its compose project name: sharing one
+        // would let a tenant's App API token read another tenant's containers and logs — or, for
+        // Watchtower's own reserved project, Watchtower's.
+        var projectName = TenancyMapping.ProjectName(template.Name, slug);
+        if (await StackProjectNames.ValidateAsync(db, selfProjects, projectName, excludeStackId: null, ct)
+            is { } projectNameError)
+            return AppError.Validation(projectNameError);
+
         var stack = new Stack {
             Name = stackName,
             RepositoryUrl = template.RepositoryUrl,
             ComposeFilePath = template.ComposeFilePath,
             Branch = template.Branch,
-            ComposeProjectName = TenancyMapping.ProjectName(template.Name, slug),
+            ComposeProjectName = projectName,
             CredentialId = template.CredentialId,
             TemplateId = template.Id,
             TenantSlug = slug,
+            // Each tenant instance is its own stack and gets its own App API token — a tenant can
+            // never read another tenant's status, logs or version.
+            AppApiToken = AppApiTokens.Generate(),
+            AppApiEnabled = true,
             CreatedAt = DateTimeOffset.UtcNow,
         };
 

@@ -58,10 +58,13 @@ var builder = WebApplication.CreateSlimBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddSimpleConsole(o => o.SingleLine = true);
 
-// JSON for the plain minimal-API endpoints (webhook + SSE): camelCase, omit nulls.
+// JSON for the plain minimal-API endpoints (webhook + App API): camelCase, omit nulls. The
+// source-generated context is inserted ahead of the default resolver so these bodies serialize
+// without reflection; its own [JsonSourceGenerationOptions] carry the same naming/null policy.
 builder.Services.ConfigureHttpJsonOptions(o => {
     o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
     o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    o.SerializerOptions.TypeInfoResolverChain.Insert(0, WatchtowerHttpJsonContext.Default);
 });
 
 // CORS for development: when the SPA runs on the Vite dev server (a different origin — e.g. under the
