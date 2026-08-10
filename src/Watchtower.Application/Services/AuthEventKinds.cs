@@ -43,4 +43,11 @@ public static class AuthEventKinds {
 
     /// <summary>A suspended account was brought back.</summary>
     public const string UserEnabled = "user.enabled";
+
+    /// <summary>
+    /// The startup break-glass hook (<c>WATCHTOWER__AUTH__RESETPASSWORD</c>) reset the <c>admin</c>
+    /// password or recreated the account (design.md §11). Recorded so an out-of-band recovery leaves a
+    /// row in the trail rather than only a log line.
+    /// </summary>
+    public const string BreakGlass = "auth.breakglass";
 }

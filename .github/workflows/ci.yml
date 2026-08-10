@@ -36,9 +36,13 @@ jobs:
 
       - name: Verify RPC schema is up to date
         run: |
-          dotnet run --project src/Watchtower.Api --configuration Release --no-build -- --export-schema rpc-schema.json
+          # `dotnet run --project` runs the app with its CWD set to the project dir (via launchSettings),
+          # so a RELATIVE output path lands in src/Watchtower.Api/, never the repo-root file this step
+          # then diffs — which is why the check used to pass on any drift. Write to an ABSOLUTE repo-root
+          # path ($PWD is the checkout root here) so the export hits the file git actually compares.
+          dotnet run --project src/Watchtower.Api --configuration Release --no-build -- --export-schema "$PWD/rpc-schema.json"
           git diff --exit-code -- rpc-schema.json \
-            || (echo "::error::rpc-schema.json is stale. Run: dotnet run --project src/Watchtower.Api -- --export-schema rpc-schema.json" && exit 1)
+            || (echo "::error::rpc-schema.json is stale. Regenerate from the repo root: dotnet run --project src/Watchtower.Api -- --export-schema \"\$PWD/rpc-schema.json\"" && exit 1)
 
       # ── Frontend ──
       - uses: actions/setup-node@v6

@@ -153,6 +153,33 @@ public sealed class AuthBootstrapServiceTests {
         Assert.Equal(2, await CountUsersAsync(recovered));
     }
 
+    [Fact]
+    public async Task ResetPassword_LeavesABreakGlassAuditRow_WhereOrdinaryBootstrapDoesNot() {
+        using var host = AuthTestHost.Start(Enabled, Bootstrap);
+        await host.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        // First run created the admin, but touched no break-glass hook — so no such row yet.
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.AuthEvents
+                .AnyAsync(e => e.Kind == AuthEventKinds.BreakGlass, TestContext.Current.CancellationToken));
+        }
+
+        using var recovered = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", "break-glass-recovery"));
+        await recovered.CreateBootstrapService().StartAsync(TestContext.Current.CancellationToken);
+
+        // An out-of-band recovery must leave a row in the trail, not only a log line.
+        await using (var scope = recovered.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+            var row = await db.AuthEvents
+                .SingleAsync(e => e.Kind == AuthEventKinds.BreakGlass, TestContext.Current.CancellationToken);
+            Assert.Equal(admin!.Id, row.UserId);
+            Assert.False(string.IsNullOrWhiteSpace(row.Detail));
+        }
+    }
+
     /// <summary>
     /// Leaves the admin account both locked out <em>and</em> carrying a non-zero failure count.
     /// Stopping one attempt short of the threshold matters: Identity zeroes

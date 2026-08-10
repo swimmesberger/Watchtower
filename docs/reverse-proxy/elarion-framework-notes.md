@@ -49,14 +49,21 @@ feature currently polls for.
 
 ### B1. `--export-schema <relative path>` resolves against the process CWD — silent staleness
 `Program.cs` does `File.WriteAllText(path, …)` verbatim; the toolchain assumes `rpc-schema.json` at the
-repo root (frontend reads `../../rpc-schema.json`, Dockerfile/CI use root). Run the documented command
-from `src/Watchtower.Api` and the file lands in the project dir; the frontend then regenerates against
-the **stale committed** schema and nothing complains until CI's `git diff`. (Already bitten this project
-— it's in session memory.)
+repo root (frontend reads `../../rpc-schema.json`, Dockerfile/CI use root). The trap is worse than "run
+it from the wrong directory": `dotnet run --project src/Watchtower.Api` runs the app with its CWD set to
+the **project directory** (via launchSettings), so a bare relative `rpc-schema.json` lands in
+`src/Watchtower.Api/` *regardless of where you invoke the command from*. The frontend then regenerates
+against the **stale committed** schema and nothing complains.
 
-Request: resolve the output relative to a stable anchor (git/solution root or nearest
-`Directory.Build.props`), refuse a bare relative path, or print a prominent warning with the absolute
-resolved path vs. the last committed location.
+CI itself used to hide this: the freshness step exported to a relative path (→ project dir) and then
+`git diff`ed the repo-root file it never touched, so the check passed on any drift — a vacuous gate.
+Fixed by exporting to an **absolute repo-root path** (`--export-schema "$PWD/rpc-schema.json"`), both in
+CI (`.github/workflows/ci.yml`) and in every doc that shows the command (WI-6). An absolute path
+sidesteps the CWD entirely.
+
+Request (still open, framework side): resolve a relative output against a stable anchor (git/solution
+root or nearest `Directory.Build.props`), refuse a bare relative path, or print a prominent warning with
+the absolute resolved path vs. the last committed location — so the safe invocation is the default.
 
 ### B2. (Low priority) Opt-in EF conventions for common SQLite value shapes
 The EF configs repeat SQLite boilerplate: enums via `HasConversion<string>()` on every property, a

@@ -343,16 +343,19 @@ component. Alternatively, poll `proxy.listRoutes` on an interval — status chan
 
 ## 11. Schema regeneration + CI
 
-After the backend handlers exist, regenerate the RPC schema **from the repo root** (the exporter writes
-the path relative to the process CWD; running it from `src/Watchtower.Api` silently writes a stale file
-that the frontend then builds against — CI's `git diff` check catches drift but locally it's silent):
+After the backend handlers exist, regenerate the RPC schema with an **absolute repo-root output path**.
+The exporter does `File.WriteAllText(path, …)` verbatim, and `dotnet run --project` runs the app with
+its CWD set to the project directory (via launchSettings) — so a bare relative path lands in
+`src/Watchtower.Api/`, a stale file the frontend then builds against, no matter which directory you
+invoked the command from. An absolute path sidesteps the CWD entirely:
 
 ```bash
-dotnet run --project src/Watchtower.Api -- --export-schema rpc-schema.json   # run from repo root
+dotnet run --project src/Watchtower.Api -- --export-schema "$PWD/rpc-schema.json"   # $PWD = repo root
 ```
 
 The frontend `prebuild` regenerates its client from `../../rpc-schema.json` automatically on
-`npm run build`. CI already enforces schema freshness (`.github/workflows/ci.yml:36-38`).
+`npm run build`. CI enforces schema freshness (`.github/workflows/ci.yml`) — and now actually catches
+drift, because it exports to the same repo-root path it diffs.
 
 ## 12. Milestones / task breakdown
 

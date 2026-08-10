@@ -17,6 +17,9 @@ client generated from the exported schema.
 > Authelia, oauth2-proxy, …). Set `WATCHTOWER__AUTH__ENABLED=true` to use built-in local accounts
 > instead: the first start creates an `admin` user from `WATCHTOWER__AUTH__BOOTSTRAPPASSWORD` (or logs a
 > generated one), the UI gains a login page, and every handler and log stream requires a session.
+> Enabling it also lets you protect **other proxied apps** centrally (per-app Public / Authenticated /
+> Restricted access, with signed identity forwarded upstream) — see the operator guide,
+> [docs/central-auth/README.md](docs/central-auth/README.md).
 > `WATCHTOWER__AUTH__RESETPASSWORD` is the break-glass hook if you lock yourself out.
 > Either way, only the `/api/webhooks/*` routes are designed to be reachable by unauthenticated
 > external callers, and each is protected by a per-stack bearer token.
@@ -99,11 +102,15 @@ dotnet run --project src/Watchtower.Api                 # API on http://localhos
 ```
 
 The frontend's typed RPC client is generated from `rpc-schema.json` on every build (`prebuild` →
-`generate:rpc`). After changing a handler's request/response types, regenerate the schema:
+`generate:rpc`). After changing a handler's request/response types, regenerate the schema — pass an
+**absolute path** to the repo-root file:
 
 ```bash
-dotnet run --project src/Watchtower.Api -- --export-schema rpc-schema.json
+dotnet run --project src/Watchtower.Api -- --export-schema "$PWD/rpc-schema.json"
 ```
+
+A bare relative path (`rpc-schema.json`) would land in `src/Watchtower.Api/` instead: `dotnet run
+--project` runs the app with its working directory set to the project folder, not where you invoked it.
 
 ## Deployment
 

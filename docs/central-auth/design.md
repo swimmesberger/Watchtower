@@ -324,8 +324,11 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
 - **Users page** (new `users` frontend module, gated `when: { module: 'Users' }` + admin role).
 - **Route form** gains an *Access* section: mode selector (`Public` / `Any authenticated user` /
   `Selected users`), user picker, bypass-path list.
-- Schema regeneration as usual (`dotnet run --project src/Watchtower.Api -- --export-schema
-  rpc-schema.json` **from the repo root**; CI already enforces freshness).
+- Schema regeneration as usual — pass an **absolute repo-root path** for the output:
+  `dotnet run --project src/Watchtower.Api -- --export-schema "$PWD/rpc-schema.json"`. A bare relative
+  path lands in `src/Watchtower.Api/` because `dotnet run --project` runs the app with its CWD set to the
+  project directory (via launchSettings), not the repo root; CI enforces freshness against the repo-root
+  file.
 
 ## 9. Security hardening checklist (v1-blocking)
 

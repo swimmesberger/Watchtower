@@ -29,8 +29,10 @@ pinned once via `ElarionVersion` in [`Directory.Packages.props`](../Directory.Pa
 - **Persistence** uses `[GenerateDbSets]` on the concrete `WatchtowerDbContext` and `[EntityConfiguration]`
   on each `IEntityTypeConfiguration<T>`. Because the singleton deploy engine and background services can't
   hold a scoped `DbContext`, they open short-lived scopes via `IServiceScopeFactory`.
-- **Schema export** — `dotnet run --project src/Watchtower.Api -- --export-schema rpc-schema.json`
-  regenerates the JSON-RPC schema the frontend client generator consumes.
+- **Schema export** — `dotnet run --project src/Watchtower.Api -- --export-schema "$PWD/rpc-schema.json"`
+  regenerates the JSON-RPC schema the frontend client generator consumes. Pass an **absolute** repo-root
+  path: `dotnet run --project` runs the app with its CWD set to the project directory, so a bare relative
+  path writes to `src/Watchtower.Api/` instead of the repo-root file the toolchain reads.
 
 To upgrade the framework, bump `ElarionVersion` (and the npm generator version in
 [`src/watchtower-web/package.json`](../src/watchtower-web/package.json)), then rebuild and re-export

@@ -180,7 +180,10 @@ public static class WatchtowerAuthEndpoints {
             return continueUrl is null
                 ? Results.Json(AccessNotPermitted, statusCode: StatusCodes.Status403Forbidden)
                 : Results.Ok(new LoginResponse(user.UserName, user.IsAdmin, continueUrl));
-        });
+        })
+        // The coarse per-IP backstop on top of the per-account lockout (design.md §9). Attached only to
+        // the real login route; the 404 stubs mapped when auth is off carry no limiter.
+        .RequireRateLimiting(LoginRateLimiting.PolicyName);
     }
 
     /// <summary>

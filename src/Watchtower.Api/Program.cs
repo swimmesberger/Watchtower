@@ -109,6 +109,9 @@ if (authEnabled) {
         .AddScheme<AuthenticationSchemeOptions, WatchtowerSessionAuthenticationHandler>(
             WatchtowerSessionDefaults.AuthenticationScheme, configureOptions: null);
     builder.Services.AddAuthorization();
+    // Per-IP throttle on the login endpoint (design.md §9). Registered only in this mode because the
+    // route it protects is only mapped here; the policy is attached to that one route, not global.
+    builder.Services.AddWatchtowerLoginRateLimiter();
 }
 
 // Trust X-Forwarded-Proto so HttpContext.Request.IsHttps reflects the scheme the *browser* used, not the
@@ -156,6 +159,9 @@ if (authEnabled) {
     app.UseAuthentication();
     app.UseElarionCurrentUser();
     app.UseAuthorization();
+    // After routing has selected the endpoint (WebApplication inserts UseRouting at the front of the
+    // pipeline), so the login route's RequireRateLimiting metadata is in effect here.
+    app.UseRateLimiter();
 }
 
 // Login/logout/continue (only mapped when Auth:Enabled).

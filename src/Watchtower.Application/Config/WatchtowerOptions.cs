@@ -148,6 +148,21 @@ public sealed record AuthOptions {
     public string KeyPath { get; init; } = "/data/auth-keys";
 
     /// <summary>
+    /// How many <c>POST /api/auth/login</c> attempts one client IP may make per minute before the
+    /// endpoint answers <c>429</c> — a coarse backstop layered on top of the per-account Identity
+    /// lockout (docs/central-auth/design.md §9). Set via <c>WATCHTOWER__AUTH__LOGINRATELIMITPERMINUTE</c>.
+    /// A value below 1 is treated as 1 so a mistyped 0 cannot silently disable the backstop.
+    /// <para>
+    /// The partition is the <em>connection</em> remote IP, not <c>X-Forwarded-For</c> (which Watchtower
+    /// deliberately does not process, see the forwarded-headers note in <c>Program.cs</c>): behind the
+    /// single reverse proxy every request shares Caddy's address, so the limit is effectively
+    /// instance-global there; on the published port it is genuinely per-client. Raise it on a busy
+    /// multi-user instance reached through the proxy.
+    /// </para>
+    /// </summary>
+    public int LoginRateLimitPerMinute { get; init; } = 10;
+
+    /// <summary>
     /// Password for the <c>admin</c> account created on first start. A value configured here is a
     /// secret and is never written to the log. When it is left unset a random password is generated
     /// instead, and <em>that</em> one is logged once — it has no other way of reaching the operator.

@@ -24,6 +24,7 @@ namespace Watchtower.Application.Services;
 public sealed class AuthBootstrapService(
     IServiceScopeFactory scopeFactory,
     IOptions<WatchtowerOptions> options,
+    TimeProvider time,
     ILogger<AuthBootstrapService> logger) : IHostedService {
 
     /// <summary>Login name of the account created on first start.</summary>
@@ -47,7 +48,7 @@ public sealed class AuthBootstrapService(
 
             // Break-glass runs first: on an instance that has no administrator it creates one, which
             // then makes the ordinary first-run bootstrap a no-op instead of a competing account.
-            await ApplyBreakGlassResetAsync(users, sessions, auth, cancellationToken);
+            await ApplyBreakGlassResetAsync(users, sessions, db, auth, cancellationToken);
             await EnsureAdminAsync(users, db, auth, cancellationToken);
         } catch (Exception ex) {
             // Never take the host down: a transient database problem here must not turn into a boot
@@ -109,14 +110,17 @@ public sealed class AuthBootstrapService(
     /// </para>
     /// </remarks>
     private async Task ApplyBreakGlassResetAsync(
-        UserManager<User> users, AuthSessionService sessions, AuthOptions auth, CancellationToken ct) {
+        UserManager<User> users, AuthSessionService sessions, WatchtowerDbContext db, AuthOptions auth,
+        CancellationToken ct) {
         if (string.IsNullOrWhiteSpace(auth.ResetPassword)) return;
         ct.ThrowIfCancellationRequested();
 
         var admin = await users.FindByNameAsync(AdminUserName);
         if (admin is null) {
-            var created = await users.CreateAsync(NewAdmin(), auth.ResetPassword!);
+            var newAdmin = NewAdmin();
+            var created = await users.CreateAsync(newAdmin, auth.ResetPassword!);
             if (created.Succeeded) {
+                await RecordBreakGlassAsync(db, newAdmin.Id, "created admin account (none existed)", ct);
                 logger.LogWarning(
                     "Break-glass recovery: there was no '{UserName}' account, so one was created from " +
                     "WATCHTOWER__AUTH__RESETPASSWORD. Remove that setting once you are signed in.",
@@ -146,11 +150,29 @@ public sealed class AuthBootstrapService(
         // Recovery is only recovery if it also ends whatever sessions are already out there.
         var revoked = await sessions.RevokeAllForUserAsync(admin.Id, ct);
 
+        await RecordBreakGlassAsync(
+            db, admin.Id, $"reset admin password, cleared lockout, revoked {revoked} session(s)", ct);
         logger.LogWarning(
             "Break-glass reset applied: the '{UserName}' password was reset from configuration, its lockout " +
             "cleared, and {Revoked} existing session(s) revoked. Remove WATCHTOWER__AUTH__RESETPASSWORD once " +
             "you are signed in.",
             AdminUserName, revoked);
+    }
+
+    /// <summary>
+    /// Writes the audit row for a successful break-glass recovery. The trail must show that access was
+    /// restored out of band; it is committed on its own <see cref="CancellationToken.None"/> so a shutdown
+    /// racing startup cannot drop the record of a recovery that did happen.
+    /// </summary>
+    private async Task RecordBreakGlassAsync(WatchtowerDbContext db, int adminId, string detail, CancellationToken ct) {
+        ct.ThrowIfCancellationRequested();
+        db.AuthEvents.Add(new AuthEvent {
+            Kind = AuthEventKinds.BreakGlass,
+            UserId = adminId,
+            Detail = detail,
+            CreatedAt = time.GetUtcNow(),
+        });
+        await db.SaveChangesAsync(CancellationToken.None);
     }
 
     /// <summary>A fresh administrator; <see cref="UserManager{TUser}"/> fills in the normalized name, hash and stamps.</summary>
