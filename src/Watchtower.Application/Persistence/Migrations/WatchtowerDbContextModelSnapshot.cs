@@ -744,6 +744,42 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("stack_update_checks", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.TemplateManagementGrant", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("AllowDelete")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("allow_delete");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("StackId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("stack_id");
+
+                    b.Property<int>("TemplateId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("template_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_template_management_grants");
+
+                    b.HasIndex("TemplateId")
+                        .HasDatabaseName("ix_template_management_grants_template_id");
+
+                    b.HasIndex("StackId", "TemplateId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_template_management_grants_stack_id_template_id");
+
+                    b.ToTable("template_management_grants", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.User", b =>
                 {
                     b.Property<int>("Id")
@@ -1003,6 +1039,27 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_stack_update_checks_stacks_stack_id");
 
                     b.Navigation("Stack");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.TemplateManagementGrant", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Stack", "Stack")
+                        .WithMany()
+                        .HasForeignKey("StackId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_template_management_grants_stacks_stack_id");
+
+                    b.HasOne("Watchtower.Application.Entities.StackTemplate", "Template")
+                        .WithMany()
+                        .HasForeignKey("TemplateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_template_management_grants_stack_templates_template_id");
+
+                    b.Navigation("Stack");
+
+                    b.Navigation("Template");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>

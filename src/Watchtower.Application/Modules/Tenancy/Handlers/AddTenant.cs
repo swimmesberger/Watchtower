@@ -1,6 +1,3 @@
-using Microsoft.EntityFrameworkCore;
-using Watchtower.Application.Entities;
-using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Tenancy.Handlers;
@@ -10,83 +7,25 @@ namespace Watchtower.Application.Modules.Tenancy.Handlers;
 /// the merged env vars, a managed route derived from the template's domain pattern, and an initial
 /// deploy. The route's service container joins the edge network on the first successful deploy.
 /// </summary>
+/// <remarks>
+/// A thin wrapper over <see cref="TenantProvisioningService"/>, which the public management API's
+/// tenant-creation endpoint shares, so both surfaces provision through one code path. Only the error
+/// projection differs: a collision is a <c>Validation</c> failure here — the shape this method has
+/// always returned, and what the operator UI renders — while the REST surface maps the same outcome
+/// onto <c>409</c>.
+/// </remarks>
 [Handler("templates.addTenant")]
-public sealed class AddTenant(
-    WatchtowerDbContext db, DeployQueueService deployQueue, SelfProjectNameProvider selfProjects)
+public sealed class AddTenant(TenantProvisioningService provisioning)
     : IHandler<AddTenant.Command, Result<AddTenant.Response>> {
     public sealed record Command(int TemplateId, string Slug, IReadOnlyList<TemplateEnvVarInput>? EnvOverrides);
     public sealed record Response(TenantDto Tenant);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        var slug = TenancyMapping.NormalizeSlug(command.Slug);
-        if (slug is null)
-            return AppError.Validation("Slug must start with a letter or digit and contain only lowercase letters, digits, and hyphens.");
-        if (command.EnvOverrides is { Count: > 0 } && TenancyMapping.FirstDuplicateKey(command.EnvOverrides) is { } dup)
-            return AppError.Validation($"Duplicate env var key: '{dup}'");
-
-        var template = await db.StackTemplates.Include(t => t.BaseEnvVars)
-            .FirstOrDefaultAsync(t => t.Id == command.TemplateId, ct);
-        if (template is null)
-            return AppError.NotFound($"Template {command.TemplateId} not found");
-
-        if (await db.Stacks.AnyAsync(s => s.TemplateId == template.Id && s.TenantSlug == slug, ct))
-            return AppError.Validation($"Tenant '{slug}' already exists for this template.");
-
-        var stackName = $"{template.Name}-{slug}";
-        if (await db.Stacks.AnyAsync(s => s.Name == stackName, ct))
-            return AppError.Validation($"A stack named '{stackName}' already exists.");
-
-        var domain = TenancyMapping.RenderDomain(template.DomainPattern, slug);
-        if (await db.Routes.AnyAsync(r => r.Domain == domain, ct))
-            return AppError.Validation($"Domain '{domain}' is already routed.");
-
-        // Tenant isolation depends on each instance owning its compose project name: sharing one
-        // would let a tenant's App API token read another tenant's containers and logs — or, for
-        // Watchtower's own reserved project, Watchtower's.
-        var projectName = TenancyMapping.ProjectName(template.Name, slug);
-        if (await StackProjectNames.ValidateAsync(db, selfProjects, projectName, excludeStackId: null, ct)
-            is { } projectNameError)
-            return AppError.Validation(projectNameError);
-
-        var stack = new Stack {
-            Name = stackName,
-            RepositoryUrl = template.RepositoryUrl,
-            ComposeFilePath = template.ComposeFilePath,
-            Branch = template.Branch,
-            ComposeProjectName = projectName,
-            CredentialId = template.CredentialId,
-            TemplateId = template.Id,
-            TenantSlug = slug,
-            // Each tenant instance is its own stack and gets its own App API token — a tenant can
-            // never read another tenant's status, logs or version.
-            AppApiToken = AppApiTokens.Generate(),
-            AppApiEnabled = true,
-            CreatedAt = DateTimeOffset.UtcNow,
+        var result = await provisioning.ProvisionAsync(command.TemplateId, command.Slug, command.EnvOverrides, ct);
+        return result.Status switch {
+            TenantProvisionStatus.Created => new Response(result.Tenant!),
+            TenantProvisionStatus.TemplateNotFound => AppError.NotFound(result.Error!),
+            _ => AppError.Validation(result.Error!),
         };
-
-        await using (var tx = await db.Database.BeginTransactionAsync(ct)) {
-            db.Stacks.Add(stack);
-            await db.SaveChangesAsync(ct);
-
-            foreach (var v in TenancyMapping.MergeEnv(template.BaseEnvVars, command.EnvOverrides))
-                db.StackEnvVars.Add(new StackEnvVar { StackId = stack.Id, Key = v.Key, Value = v.Value });
-
-            db.Routes.Add(new Route {
-                StackId = stack.Id,
-                Domain = domain,
-                ServiceName = template.TargetServiceName,
-                ContainerPort = template.TargetPort,
-                TlsEnabled = true,
-                IsPrimary = true,
-                Kind = DomainKind.Managed,
-                Status = RouteStatus.Pending,
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-            await db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-        }
-
-        var enq = deployQueue.Enqueue(stack.Id, "tenant-create");
-        return new Response(new TenantDto(stack.Id, slug, stack.Name, domain, enq.Status, null));
     }
 }

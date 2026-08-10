@@ -125,7 +125,39 @@ public sealed class AuthTokenSigner : IDisposable {
     /// UserInfo, where an app presents an assertion it itself received.
     /// </summary>
     /// <returns><see langword="true"/> and the subject id when valid; otherwise <see langword="false"/>.</returns>
-    public bool TryValidate(string? token, out int userId) {
+    public bool TryValidate(string? token, out int userId) =>
+        TryValidateCore(token, validAudiences: null, out userId);
+
+    /// <summary>
+    /// Verifies an assertion exactly as <see cref="TryValidate(string?, out int)"/> does and additionally
+    /// binds it to the caller: its <c>aud</c> must name one of <paramref name="validAudiences"/>, compared
+    /// case-insensitively because host names are.
+    /// </summary>
+    /// <remarks>
+    /// The overload the user-scoped discovery endpoints authenticate with, and the whole of their
+    /// anti-enumeration property: a stack passes the domains <em>it</em> is served on, so it can only ask
+    /// about a visitor who is actually standing in front of it. An assertion some other app was handed
+    /// carries that app's <c>aud</c> and is refused here, however cryptographically sound it is.
+    /// </remarks>
+    /// <param name="token">The assertion the caller presented.</param>
+    /// <param name="validAudiences">
+    /// Audiences to accept. An empty collection accepts nothing: "no domain to bind to" is not "any domain".
+    /// </param>
+    /// <param name="userId">The subject when the assertion is valid; otherwise zero.</param>
+    /// <returns><see langword="true"/> and the subject id when valid; otherwise <see langword="false"/>.</returns>
+    public bool TryValidate(string? token, IReadOnlyCollection<string> validAudiences, out int userId) {
+        ArgumentNullException.ThrowIfNull(validAudiences);
+        userId = 0;
+        if (validAudiences.Count == 0) return false;
+        return TryValidateCore(
+            token, new HashSet<string>(validAudiences, StringComparer.OrdinalIgnoreCase), out userId);
+    }
+
+    /// <summary>
+    /// The one verification both overloads run. <paramref name="validAudiences"/> null means the audience is
+    /// not constrained (the UserInfo case); non-null means the <c>aud</c> must be one of them.
+    /// </summary>
+    private bool TryValidateCore(string? token, IReadOnlySet<string>? validAudiences, out int userId) {
         userId = 0;
         if (string.IsNullOrWhiteSpace(token)) return false;
 
@@ -133,8 +165,9 @@ public sealed class AuthTokenSigner : IDisposable {
         var parameters = new TokenValidationParameters {
             ValidIssuer = Issuer,
             ValidateIssuer = true,
-            // The aud binds a token to one app; at UserInfo any of ours is fine, so we do not constrain it.
-            ValidateAudience = false,
+            // The aud binds a token to one app. At UserInfo any of ours is fine, so it is left unconstrained;
+            // the discovery endpoints pass the caller's own domains and the delegate below decides.
+            ValidateAudience = validAudiences is not null,
             IssuerSigningKey = material.ValidationKey,
             ValidateIssuerSigningKey = true,
             // Pin the algorithm: the single line that closes off `alg: none` and key-confusion attacks.
@@ -149,6 +182,15 @@ public sealed class AuthTokenSigner : IDisposable {
                 return notBefore is not { } nbf || nbf <= now + ClockSkew;
             },
         };
+
+        if (validAudiences is not null) {
+            // Not ValidAudiences: the library compares audiences ordinally, and a host name is not a
+            // case-sensitive string. A delegate replaces default audience processing entirely — and, unlike
+            // the flag above, is consulted whatever ValidateAudience says, so it cannot be switched off by
+            // a later edit that means to relax something else.
+            parameters.AudienceValidator = (audiences, _, _) =>
+                audiences is not null && audiences.Any(validAudiences.Contains);
+        }
 
         TokenValidationResult result;
         // ECDsa instance members are not thread-safe; serialise verification the same way signing is.

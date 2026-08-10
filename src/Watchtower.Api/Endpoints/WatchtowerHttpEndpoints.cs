@@ -22,15 +22,22 @@ public static class WatchtowerHttpEndpoints {
     /// Endpoints that stay open by design (design.md §11): <c>/health</c> is a liveness probe with no data,
     /// the deploy webhook authenticates callers with its own per-stack bearer token (a CI runner has no
     /// browser session), <c>/api/proxy/ask</c> is Caddy's on-demand-TLS gate reachable only from the internal
-    /// control network, and the App API carries its own per-application token auth (see AppApiEndpoints).
+    /// control network, and the App API and management API carry their own per-stack token auth (see
+    /// AppApiEndpoints and MgmtApiEndpoints).
     /// </remarks>
     public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app, bool authEnabled) {
         MapWebhook(app);
         Protect(MapDeployOutputStream(app), authEnabled);
         Protect(MapContainerLogStream(app), authEnabled);
         MapProxyAsk(app);
-        // Public, token-authenticated surface for deployed applications (see AppApiEndpoints).
-        app.MapAppApiEndpoints();
+        // Public, token-authenticated surface for deployed applications (see AppApiEndpoints). The flag is
+        // passed down for its one identity-dependent endpoint: the tenant switcher needs a forwarded
+        // assertion, which does not exist with central auth off, so that route answers 404 there.
+        app.MapAppApiEndpoints(authEnabled);
+        // Public, token-authenticated surface for a stack that manages a template's tenants. Same
+        // credential as the App API, plus an operator-managed grant (see MgmtApiEndpoints), and the same
+        // identity-dependent tenant listing behind the same flag.
+        app.MapMgmtApiEndpoints(authEnabled);
         app.MapGet("/health", () => Results.Ok("healthy"));
         return app;
     }

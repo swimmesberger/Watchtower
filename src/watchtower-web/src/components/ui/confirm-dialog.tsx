@@ -13,6 +13,12 @@ export interface ConfirmDialogProps {
   trigger?: React.ReactNode
   title: string
   description?: React.ReactNode
+  /**
+   * Extra content between the description and the confirm gate — for controls that change *what*
+   * the action does (e.g. an opt-in destructive sub-option). Kept out of `description` because that
+   * renders as the dialog's `aria-describedby` paragraph, which takes no interactive content.
+   */
+  extra?: React.ReactNode
   confirmLabel?: string
   cancelLabel?: string
   tone?: 'danger' | 'brand'
@@ -37,6 +43,7 @@ export function ConfirmDialog({
   trigger,
   title,
   description,
+  extra,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   tone = 'brand',
@@ -71,6 +78,8 @@ export function ConfirmDialog({
               </AlertDialog.Description>
             )}
           </div>
+
+          {extra}
 
           {requireText && (
             <div className="flex flex-col gap-1.5">

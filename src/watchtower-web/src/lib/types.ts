@@ -507,6 +507,19 @@ export interface Tenant {
   lastDeployedAt: string | null
 }
 
+/**
+ * One stack allowed to drive this template through the public Management API (`/api/mgmt/*`)
+ * with its App-API token. Mirrors the backend `TemplateGrantDto`.
+ */
+export interface TemplateGrant {
+  /** The granted stack (the caller, typically a vendor's central-management UI). */
+  stackId: number
+  stackName: string
+  /** Additionally permits deprovisioning tenants of this template. */
+  allowDelete: boolean
+  createdAt: string
+}
+
 export interface CreateTemplateRequest {
   name: string
   repositoryUrl: string

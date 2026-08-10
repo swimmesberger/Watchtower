@@ -37,7 +37,8 @@ internal static class CoordinatorMode {
         // The image was already pulled by the main process before spawning this coordinator,
         // so only the compose up -d restart step is needed here.
         var (exitCode, output) = await compose.UpAsync(
-            composeFile, projectName, dockerConfigDir: null, envFilePath: null, onLine: null, CancellationToken.None);
+            composeFile, projectName, dockerConfigDir: null, envFilePath: null, overrideFilePath: null,
+            onLine: null, CancellationToken.None);
 
         Console.WriteLine(output);
         Environment.Exit(exitCode);

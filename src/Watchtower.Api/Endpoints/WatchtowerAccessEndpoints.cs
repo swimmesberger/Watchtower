@@ -346,7 +346,8 @@ public static class WatchtowerAccessEndpoints {
     ///   <item><description>
     ///     <c>Authorization: Bearer &lt;Watchtower JWT&gt;</c> — the standard UserInfo path, where an app
     ///     presents the assertion it received. The signature, algorithm, expiry and issuer are all checked
-    ///     (<see cref="AuthTokenSigner.TryValidate"/>).
+    ///     (<see cref="AuthTokenSigner.TryValidate(string?, out int)"/> — the overload that does not
+    ///     constrain the audience, since an app may present an assertion minted for its own domain).
     ///   </description></item>
     ///   <item><description>
     ///     the <c>__wt_access</c> cookie — the browser same-origin path, resolved to its session by hash.

@@ -6,6 +6,11 @@ output, checks registries for newer images, and updates itself. That model buys 
 one Docker daemon, one SQLite file, one image, no cluster to babysit. This document is about the day
 that stops being enough, and what the stack looks like on the other side.
 
+> **Direction note (2026-08).** [ADR-0010](decisions/0010-target-kubesolo-runtime.md) has since set
+> Watchtower's future runtime target to the Kubernetes API via **KubeSolo** — single-node Kubernetes
+> with the clustering machinery removed. That reframes this document: the k3s path becomes "same
+> API, bigger distribution" rather than a rewrite, and the Swarm option loses its main appeal.
+
 Two candidates get examined: **Docker Swarm** (lowest-friction path from compose) and **k3s** (the
 recommended path for real multi-node). The scenario throughout is concrete: **~5 physical nodes**
 running a small set (1–10) of applications, in a homelab or small-prod setting, where you still want

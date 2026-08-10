@@ -1,9 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { ChevronLeft, ExternalLink, PlayCircle, Plus, Trash2, Users } from 'lucide-react'
+import {
+  ChevronLeft,
+  ExternalLink,
+  PlayCircle,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  Users,
+} from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Tenant, TemplateEnvVarInput } from '@/lib/types'
+import type { Tenant, TemplateEnvVarInput, TemplateGrant } from '@/lib/types'
 import { timeAgo } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -16,22 +24,51 @@ import { EnvVarEditor } from '@/components/env-var-editor'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { SectionHeader } from '@/components/ui/section-header'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { StatusBadge } from '@/components/ui/status-badge'
+import { Switch } from '@/components/ui/switch'
+import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 
 const routeApi = getRouteApi('/templates/$id')
+
+/** A deploy is in flight — the backend refuses teardown (409) until it settles. */
+const isDeploying = (t: Tenant) =>
+  t.lastDeployStatus === 'running' || t.lastDeployStatus === 'queued'
 
 export function TemplateDetailPage() {
   const { id } = routeApi.useParams()
   const templateId = Number(id)
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { caps } = routeApi.useRouteContext()
+  // UX projection only: every templates.*Management / listGrants handler carries
+  // [RequireRole("Admin")], which is what actually refuses the call. Without this the grants query
+  // would fail with Forbidden for a non-admin and the card would lie about there being no grants.
+  // templates.removeTenant is NOT admin-gated, so the per-tenant remove action stays visible.
+  const canManageGrants = caps.hasRole('Admin')
 
   const [slug, setSlug] = useState('')
   const [showOverrides, setShowOverrides] = useState(false)
   const [overrides, setOverrides] = useState<TemplateEnvVarInput[]>([{ key: '', value: '' }])
   const [confirmDeleteTemplate, setConfirmDeleteTemplate] = useState(false)
+  const [grantStackId, setGrantStackId] = useState('')
+  const [grantAllowDelete, setGrantAllowDelete] = useState(false)
+  const [pendingRevoke, setPendingRevoke] = useState<TemplateGrant | null>(null)
+  const [pendingRemoveTenant, setPendingRemoveTenant] = useState<Tenant | null>(null)
+  const [removeVolumes, setRemoveVolumes] = useState(false)
+  // A single mutation observer only exposes its latest call's variables, so concurrent toggles on
+  // different rows need their own pending bookkeeping to keep each row disabled until it settles.
+  const [allowDeletePendingIds, setAllowDeletePendingIds] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  )
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['template', templateId],
@@ -41,11 +78,40 @@ export function TemplateDetailPage() {
   const { data: tenants = [] } = useQuery({
     queryKey: ['tenants', templateId],
     queryFn: () => api.templates.listTenants(templateId),
-    refetchInterval: (q) =>
-      (q.state.data ?? []).some((t) => t.lastDeployStatus === 'running' || t.lastDeployStatus === 'queued')
-        ? 2000
-        : false,
+    refetchInterval: (q) => ((q.state.data ?? []).some(isDeploying) ? 2000 : false),
   })
+
+  const grantsQuery = useQuery({
+    queryKey: ['template-grants', templateId],
+    queryFn: () => api.templates.listGrants(templateId),
+    enabled: canManageGrants,
+  })
+  const grants = grantsQuery.data ?? []
+
+  const stacksQuery = useQuery({
+    queryKey: ['stacks'],
+    queryFn: api.stacks.list,
+    enabled: canManageGrants,
+  })
+  const stacks = stacksQuery.data ?? []
+
+  // The backend rejects granting a template's own tenants. Already-granted stacks are filtered out
+  // too — their grant is edited in place on its row rather than re-added here.
+  const tenantStackIds = new Set(tenants.map((t) => t.stackId))
+  const grantedStackIds = new Set(grants.map((g) => g.stackId))
+  const grantableStacks = stacks.filter(
+    (s) => !tenantStackIds.has(s.id) && !grantedStackIds.has(s.id),
+  )
+  const grantableKey = grantableStacks.map((s) => s.id).join(',')
+  const pickerReady = grantsQuery.isSuccess && stacksQuery.isSuccess
+  const pickerFailed = grantsQuery.isError || stacksQuery.isError
+  const noGrantableStacks = pickerReady && grantableStacks.length === 0
+
+  // A refetch can drop the picked stack out of the list (someone else granted it, or it became a
+  // tenant), so clear the selection rather than let Grant submit a choice the backend would reject.
+  useEffect(() => {
+    if (grantStackId && !grantableKey.split(',').includes(grantStackId)) setGrantStackId('')
+  }, [grantStackId, grantableKey])
 
   const addTenant = useMutation({
     mutationFn: () => {
@@ -76,6 +142,84 @@ export function TemplateDetailPage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const removeTenant = useMutation({
+    mutationFn: (t: Tenant) => api.templates.removeTenant(templateId, t.tenantSlug, removeVolumes),
+    onSuccess: (slug) => {
+      toast.success(`Tenant ${slug} removed.`)
+      // Teardown deletes the stack row, cascading its routes away, and drops instanceCount.
+      qc.invalidateQueries({ queryKey: ['tenants', templateId] })
+      qc.invalidateQueries({ queryKey: ['template', templateId] })
+      qc.invalidateQueries({ queryKey: ['templates'] })
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      qc.invalidateQueries({ queryKey: ['routes'] })
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSettled: () => setPendingRemoveTenant(null),
+  })
+
+  const grantManagement = useMutation({
+    mutationFn: () =>
+      api.templates.grantManagement(templateId, Number(grantStackId), grantAllowDelete),
+    onSuccess: (g) => {
+      toast.success(`${g.stackName} can now manage tenants of this template.`)
+      setGrantStackId('')
+      setGrantAllowDelete(false)
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['template-grants', templateId] }),
+  })
+
+  // grantManagement is an upsert that preserves CreatedAt, so flipping allowDelete on an existing
+  // grant is the same call — no revoke/re-grant round trip.
+  const setAllowDelete = useMutation({
+    mutationFn: (v: { grant: TemplateGrant; allowDelete: boolean }) =>
+      api.templates.grantManagement(templateId, v.grant.stackId, v.allowDelete),
+    // Optimistically flip the row so the Switch tracks the click even on slow links; the snapshot
+    // is restored on error.
+    onMutate: async (v) => {
+      setAllowDeletePendingIds((ids) => new Set(ids).add(v.grant.stackId))
+      await qc.cancelQueries({ queryKey: ['template-grants', templateId] })
+      const previous = qc.getQueryData<TemplateGrant[]>(['template-grants', templateId])
+      qc.setQueryData<TemplateGrant[]>(['template-grants', templateId], (old) =>
+        old?.map((g) =>
+          g.stackId === v.grant.stackId ? { ...g, allowDelete: v.allowDelete } : g,
+        ),
+      )
+      return { previous }
+    },
+    onSuccess: (g) =>
+      toast.success(
+        g.allowDelete
+          ? `${g.stackName} may now delete tenants.`
+          : `${g.stackName} may no longer delete tenants.`,
+      ),
+    onError: (err: Error, _v, ctx) => {
+      if (ctx?.previous) qc.setQueryData(['template-grants', templateId], ctx.previous)
+      toast.error(err.message)
+    },
+    onSettled: (_g, _err, v) => {
+      setAllowDeletePendingIds((ids) => {
+        const next = new Set(ids)
+        next.delete(v.grant.stackId)
+        return next
+      })
+      qc.invalidateQueries({ queryKey: ['template-grants', templateId] })
+    },
+  })
+
+  const revokeManagement = useMutation({
+    mutationFn: (g: TemplateGrant) => api.templates.revokeManagement(templateId, g.stackId),
+    onSuccess: (removed) =>
+      removed
+        ? toast.success('Management access revoked.')
+        : toast.info('Grant was already revoked.'),
+    onError: (err: Error) => toast.error(err.message),
+    onSettled: () => {
+      setPendingRevoke(null)
+      qc.invalidateQueries({ queryKey: ['template-grants', templateId] })
+    },
+  })
+
   const removeTemplate = useMutation({
     mutationFn: () => api.templates.delete(templateId),
     onSuccess: () => {
@@ -98,6 +242,35 @@ export function TemplateDetailPage() {
     )
 
   const { template, baseEnvVars } = data
+
+  // The volumes opt-in is per-confirmation, so it resets every time the dialog opens.
+  const openRemoveTenant = (t: Tenant) => {
+    setRemoveVolumes(false)
+    setPendingRemoveTenant(t)
+  }
+
+  // Shared by the table cell and the mobile card so the disabled-state reason travels with both.
+  const removeTenantButton = (t: Tenant) => {
+    const deploying = isDeploying(t)
+    return (
+      <Tooltip label={deploying ? 'Deploy in progress' : 'Remove tenant'}>
+        {/* A disabled button swallows pointer events and can't take focus, so the wrapping span is
+            the trigger — made focusable while deploying so keyboard users get the reason too. */}
+        <span className="inline-flex" tabIndex={deploying ? 0 : undefined}>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            disabled={deploying}
+            aria-label={`Remove ${t.tenantSlug}`}
+            onClick={() => openRemoveTenant(t)}
+            className="text-text-2 hover:text-danger"
+          >
+            <Trash2 />
+          </Button>
+        </span>
+      </Tooltip>
+    )
+  }
 
   const columns: DataListColumn<Tenant>[] = [
     {
@@ -145,6 +318,13 @@ export function TemplateDetailPage() {
         ) : (
           <span className="text-text-3">never</span>
         ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      className: 'w-px',
+      cell: (t) => removeTenantButton(t),
     },
   ]
 
@@ -231,6 +411,142 @@ export function TemplateDetailPage() {
         </CardContent>
       </Card>
 
+      {canManageGrants && (
+        <Card>
+          <CardContent className="pt-5">
+            <SectionHeader
+              title="Management API"
+              description="Granted stacks may provision and manage this template's tenants through Watchtower's public Management API with their own App-API token."
+            />
+            <div className="space-y-4">
+              {grantsQuery.isLoading ? (
+                <div className="flex justify-center py-4">
+                  <Spinner />
+                </div>
+              ) : grantsQuery.isError ? (
+                <Banner tone="danger" title="Couldn’t load grants">
+                  {(grantsQuery.error as Error)?.message}
+                </Banner>
+              ) : grants.length === 0 ? (
+                <p className="text-[13px] text-text-3">No stacks are granted management access.</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-lg border border-border">
+                  {grants.map((g) => {
+                    const pending = allowDeletePendingIds.has(g.stackId)
+                    return (
+                      <li
+                        key={g.stackId}
+                        className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Link
+                            to="/stacks/$id"
+                            params={{ id: String(g.stackId) }}
+                            className="truncate font-medium text-text hover:text-brand"
+                          >
+                            {g.stackName}
+                          </Link>
+                          {g.allowDelete && (
+                            <Badge tone="warn" size="sm">
+                              allow delete
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <label className="flex items-center gap-2">
+                            <Switch
+                              checked={g.allowDelete}
+                              disabled={pending}
+                              onCheckedChange={(allowDelete) =>
+                                setAllowDelete.mutate({ grant: g, allowDelete })
+                              }
+                              aria-label={`Allow ${g.stackName} to delete tenants`}
+                            />
+                            <span className="text-[13px] text-text-2">Allow delete</span>
+                          </label>
+                          <span className="tnum text-[13px] text-text-3">
+                            {timeAgo(g.createdAt)}
+                          </span>
+                          <Tooltip label="Revoke access">
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label={`Revoke ${g.stackName}`}
+                              onClick={() => setPendingRevoke(g)}
+                              className="text-text-2 hover:text-danger"
+                            >
+                              <Trash2 />
+                            </Button>
+                          </Tooltip>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+
+              {stacksQuery.isError && (
+                <Banner tone="danger" title="Couldn’t load stacks">
+                  {(stacksQuery.error as Error)?.message}
+                </Banner>
+              )}
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <Field
+                  label="Stack"
+                  className="sm:w-64"
+                  hint={
+                    noGrantableStacks
+                      ? 'Every stack is already a tenant of this template or granted.'
+                      : undefined
+                  }
+                >
+                  {({ id: fid, describedBy }) => (
+                    <Select value={grantStackId} onValueChange={setGrantStackId}>
+                      <SelectTrigger
+                        id={fid}
+                        aria-describedby={describedBy}
+                        disabled={!pickerReady || noGrantableStacks}
+                      >
+                        <SelectValue
+                          placeholder={
+                            noGrantableStacks
+                              ? 'No stacks left to grant'
+                              : pickerReady
+                                ? 'Select a stack'
+                                : pickerFailed
+                                  ? 'Unavailable'
+                                  : 'Loading…'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {grantableStacks.map((s) => (
+                          <SelectItem key={s.id} value={String(s.id)}>
+                            {s.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </Field>
+                <label className="flex h-9 items-center gap-3">
+                  <Switch checked={grantAllowDelete} onCheckedChange={setGrantAllowDelete} />
+                  <span className="text-sm text-text">Allow delete</span>
+                </label>
+                <Button
+                  loading={grantManagement.isPending}
+                  disabled={!pickerReady || !grantStackId}
+                  onClick={() => grantManagement.mutate()}
+                >
+                  <ShieldCheck /> Grant
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <DataList
         items={tenants}
         getKey={(t) => t.stackId}
@@ -241,7 +557,10 @@ export function TemplateDetailPage() {
               <Link to="/stacks/$id" params={{ id: String(t.stackId) }} className="font-medium text-text hover:text-brand">
                 {t.tenantSlug}
               </Link>
-              <StatusBadge status={t.lastDeployStatus} />
+              <div className="flex items-center gap-2">
+                <StatusBadge status={t.lastDeployStatus} />
+                {removeTenantButton(t)}
+              </div>
             </div>
             {t.domain && <p className="font-mono text-[13px] text-text-2">{t.domain}</p>}
           </div>
@@ -250,6 +569,47 @@ export function TemplateDetailPage() {
           <EmptyState icon={Users} title="No tenants yet" description="Add your first tenant above." />
         }
         aria-label="Tenants"
+      />
+
+      <ConfirmDialog
+        open={pendingRemoveTenant != null}
+        onOpenChange={(open) => {
+          if (!open && !removeTenant.isPending) setPendingRemoveTenant(null)
+        }}
+        title={pendingRemoveTenant ? `Remove ${pendingRemoveTenant.tenantSlug}?` : 'Remove tenant?'}
+        description="This permanently deletes the tenant's stack, its route, its environment and its deployment history, and removes its containers. Cannot be undone."
+        extra={
+          <label className="flex items-center gap-3">
+            <Switch
+              checked={removeVolumes}
+              onCheckedChange={setRemoveVolumes}
+              disabled={removeTenant.isPending}
+            />
+            <span className="text-sm text-text">Also remove volumes (destroys tenant data)</span>
+          </label>
+        }
+        confirmLabel="Remove"
+        tone="danger"
+        requireText={pendingRemoveTenant?.tenantSlug}
+        loading={removeTenant.isPending}
+        onConfirm={() => {
+          if (pendingRemoveTenant) removeTenant.mutate(pendingRemoveTenant)
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingRevoke != null}
+        onOpenChange={(open) => {
+          if (!open && !revokeManagement.isPending) setPendingRevoke(null)
+        }}
+        title={pendingRevoke ? `Revoke ${pendingRevoke.stackName}?` : 'Revoke management access?'}
+        description="That stack's App-API token will stop being accepted by this template's Management API. Tenants it created keep running."
+        confirmLabel="Revoke"
+        tone="danger"
+        loading={revokeManagement.isPending}
+        onConfirm={() => {
+          if (pendingRevoke) revokeManagement.mutate(pendingRevoke)
+        }}
       />
 
       <ConfirmDialog

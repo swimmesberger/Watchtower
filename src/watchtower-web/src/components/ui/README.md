@@ -186,6 +186,7 @@ Also exports `DialogPortal`, `DialogOverlay`. Use for the mobile "add" forms (re
   trigger?={<Button variant="danger">Delete</Button>}   // … or trigger-based
   title="Delete web-app?"
   description={<>This permanently deletes …</>}
+  extra?={<label>…<Switch/></label>}   // interactive opt-ins; sits outside the description <p>
   confirmLabel="Delete" cancelLabel?="Cancel"
   tone?="danger|brand"
   loading?={mutation.isPending}

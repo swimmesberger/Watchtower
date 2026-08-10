@@ -26,7 +26,7 @@ public sealed record DeployEnqueueResult(int DeployEventId, string Status);
 /// through short-lived scopes resolved from <see cref="IServiceScopeFactory"/> because the
 /// singleton must not capture a scoped <see cref="WatchtowerDbContext"/>.
 /// </summary>
-public sealed class DeployQueueService : IHostedService, IDisposable {
+public class DeployQueueService : IHostedService, IDisposable {
     private readonly ConcurrentDictionary<int, StackSlot> _slots = new();
     private readonly CancellationTokenSource _cts = new();
 
@@ -103,7 +103,13 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     /// coalesced onto a pending plain deploy (or vice-versa), the pending slot keeps the UNION of the
     /// volume lists so a recreate is never silently downgraded to a plain deploy.
     /// </param>
-    public DeployEnqueueResult Enqueue(int stackId, string triggeredBy, IReadOnlyList<string>? removeVolumes = null) {
+    /// <remarks>
+    /// Virtual, and the class is not sealed, so a test host can accept work without spawning a worker:
+    /// the worker clones a repository and shells out to compose, neither of which exists in a test, and
+    /// it would do so on a background thread racing the test's own database connection.
+    /// </remarks>
+    public virtual DeployEnqueueResult Enqueue(
+        int stackId, string triggeredBy, IReadOnlyList<string>? removeVolumes = null) {
         var slot = _slots.GetOrAdd(stackId, _ => new StackSlot());
 
         lock (slot.Lock) {
@@ -180,11 +186,16 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
     }
 
     /// <summary>
-    /// Runs the full clone → [down + volume-rm] → pull → up pipeline for one deploy event.
+    /// Runs the full clone → [down + volume-rm] → config → pull → up pipeline for one deploy event.
     /// When <paramref name="removeVolumes"/> is non-empty, the stack is brought down and each named
     /// volume is deleted after the clone and before pull/up (the data-wipe recreate flow).
     /// </summary>
-    private async Task ExecuteDeployAsync(
+    /// <remarks>
+    /// Internal rather than private so a test can drive one deploy to completion on its own thread. The
+    /// public entry point is <see cref="Enqueue"/>, which starts a background worker — awaiting a
+    /// deploy through it would mean racing that worker for the test's single SQLite connection.
+    /// </remarks>
+    internal async Task ExecuteDeployAsync(
         int stackId, int eventId, IReadOnlyList<string>? removeVolumes, CancellationToken ct) {
         var stack = GetStack(stackId);
         if (stack is null) {
@@ -207,6 +218,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
         var tempRepoDir = Path.Combine(Path.GetTempPath(), $"watchtower-clone-{Guid.NewGuid():N}");
         string? dockerConfigDir = null;
         string? envFilePath = null;
+        string? overrideFilePath = null;
 
         try {
             // 1. Resolve git credential for cloning.
@@ -273,7 +285,9 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             //    next deploy. See BuildEnvFileContent for the precedence rules.
             var envVars = GetEnvVars(stackId);
             var appApiToken = await EnsureAppApiTokenAsync(stackId, ct);
-            var reservedVars = BuildReservedEnvVars(stackId, appApiToken);
+            // Read once: the .env and the override below must agree, and IOptionsMonitor is live.
+            var publicBaseUrl = _options.CurrentValue.PublicBaseUrl;
+            var reservedVars = BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl);
             var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
             foreach (var droppedKey in repoEnv.DroppedKeys)
                 WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
@@ -291,11 +305,53 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
                 + $"{repoCount} carried over from the repository .env, "
                 + $"reserved: {string.Join(", ", reservedVars.Select(v => v.Key))}");
 
+            // 4b. Generate the compose override that puts the reserved variables directly into the
+            //     services' `environment:`. Without it they would only be available for interpolation,
+            //     so a repository that forgot to pass them through would deploy fine and then fail
+            //     every App API call with a 401 that points at nothing. See ADR-0012.
+            var configResult = await _compose.ConfigJsonAsync(
+                composePath, stack.ComposeProjectName, envFilePath, ct);
+            if (configResult.ExitCode != 0) {
+                // The same file is about to be handed to pull/up, so this would have failed there
+                // anyway — failing here just reports it against the step that actually noticed.
+                WriteHeader("[Watchtower] Reading the compose project failed:");
+                // Line by line so the live stream carries the reason too, not just the headline. Only
+                // Compose's stderr is echoed: its stdout is the resolved project, values and all.
+                foreach (var line in configResult.Diagnostics.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    WriteHeader(line.TrimEnd('\r'));
+                CompleteEvent(eventId, "failed", output.ToString());
+                UpdateDeployStatus(stackId, DeployStatus.Failed);
+                return;
+            }
+
+            var plan = EnvInjectionPlan.Create(new EnvInjectionRequest(
+                ComposeOverrideFile.ParseServices(configResult.Json),
+                stackId,
+                appApiToken,
+                publicBaseUrl,
+                GetTemplateTargetService(stack.TemplateId)));
+            foreach (var warning in plan.Warnings)
+                WriteHeader($"[Watchtower] {warning}");
+
+            if (ComposeOverrideFile.Render(plan) is { } overrideContent) {
+                overrideFilePath = Path.Combine(
+                    Path.GetTempPath(), $"watchtower-override-{Guid.NewGuid():N}.yml");
+                await File.WriteAllTextAsync(overrideFilePath, overrideContent, ct);
+                // It may carry the App API token, so it gets the same treatment as the generated .env.
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(overrideFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                foreach (var service in plan.Services)
+                    WriteHeader(
+                        $"[Watchtower] Injecting {string.Join(", ", service.Variables.Select(v => v.Key))} "
+                        + $"into service '{service.ServiceName}'");
+            }
+
             // 5. Pull updated images.
             WriteHeader($"[Watchtower] Pulling images for project '{stack.ComposeProjectName}'");
             UpdateOutput(eventId, output.ToString());
             var pullResult = await _compose.PullAsync(
-                composePath, stack.ComposeProjectName, dockerConfigDir, envFilePath, OnSubprocessLine, ct);
+                composePath, stack.ComposeProjectName, dockerConfigDir, envFilePath, overrideFilePath,
+                OnSubprocessLine, ct);
             output.Append(pullResult.Output);
             UpdateOutput(eventId, output.ToString());
             if (pullResult.ExitCode != 0) {
@@ -308,7 +364,8 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             WriteHeader("[Watchtower] Starting services");
             UpdateOutput(eventId, output.ToString());
             var upResult = await _compose.UpAsync(
-                composePath, stack.ComposeProjectName, dockerConfigDir, envFilePath, OnSubprocessLine, ct);
+                composePath, stack.ComposeProjectName, dockerConfigDir, envFilePath, overrideFilePath,
+                OnSubprocessLine, ct);
             output.Append(upResult.Output);
 
             var finalStatus = upResult.ExitCode == 0 ? "success" : "failed";
@@ -344,6 +401,7 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
             SafeDelete(tempRepoDir);
             if (dockerConfigDir is not null) SafeDelete(dockerConfigDir);
             if (envFilePath is not null) SafeDeleteFile(envFilePath);
+            if (overrideFilePath is not null) SafeDeleteFile(overrideFilePath);
         }
     }
 
@@ -417,18 +475,35 @@ public sealed class DeployQueueService : IHostedService, IDisposable {
 
     /// <summary>
     /// The reserved variables injected into every deploy, in write order. <c>WATCHTOWER_URL</c> is
-    /// only written when a public base URL is configured; the value is read live from
-    /// <see cref="IOptionsMonitor{T}"/> so a settings change applies to the next deploy.
+    /// only written when a public base URL is configured.
     /// </summary>
-    private List<(string Key, string Value)> BuildReservedEnvVars(int stackId, string appApiToken) {
+    /// <param name="stackId">The stack being deployed.</param>
+    /// <param name="appApiToken">The stack's App API bearer token.</param>
+    /// <param name="publicBaseUrl">
+    /// Configured <c>Watchtower:PublicBaseUrl</c>. Passed in rather than read here so the env file and
+    /// the compose override of one deploy cannot disagree about it.
+    /// </param>
+    private static List<(string Key, string Value)> BuildReservedEnvVars(
+        int stackId, string appApiToken, string? publicBaseUrl) {
         var vars = new List<(string Key, string Value)> {
             (AppApiTokens.TokenVariable, appApiToken),
             (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
         };
-        var publicBaseUrl = _options.CurrentValue.PublicBaseUrl;
         if (!string.IsNullOrWhiteSpace(publicBaseUrl))
             vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
         return vars;
+    }
+
+    /// <summary>
+    /// The service a tenant's template routes to — the default recipient of the App API token when no
+    /// service opts in by label. Null for a standalone stack, or when the template has gone.
+    /// </summary>
+    private string? GetTemplateTargetService(int? templateId) {
+        if (templateId is not { } id) return null;
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return db.StackTemplates.AsNoTracking()
+            .Where(t => t.Id == id).Select(t => t.TargetServiceName).FirstOrDefault();
     }
 
     /// <summary>Quotes a value for the compose <c>.env</c> file when it embeds a newline or a quote.</summary>

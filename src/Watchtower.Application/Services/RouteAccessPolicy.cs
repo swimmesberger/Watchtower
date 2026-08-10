@@ -137,6 +137,27 @@ public static class RouteAccessPolicy {
         return false;
     }
 
+    /// <summary>What a route's <see cref="AccessMode"/> means for a signed-in account.</summary>
+    private enum AccessDecision {
+        /// <summary>Not accessible, and nothing to look up — the fail-closed answer for an unknown mode.</summary>
+        Deny,
+        /// <summary>Accessible to any signed-in account.</summary>
+        Allow,
+        /// <summary>Accessible only with a <see cref="RouteAccessGrant"/> for this route.</summary>
+        RequiresGrant,
+    }
+
+    /// <summary>
+    /// The single reading of <see cref="AccessMode"/> that both authorisation entry points below share, so
+    /// the per-route and the bulk answer cannot drift apart — a disagreement between them would be a hole.
+    /// </summary>
+    private static AccessDecision Classify(AccessMode mode) => mode switch {
+        AccessMode.Public or AccessMode.Authenticated => AccessDecision.Allow,
+        AccessMode.Restricted => AccessDecision.RequiresGrant,
+        // A mode this build does not know about is not a licence to let the request through.
+        _ => AccessDecision.Deny,
+    };
+
     /// <summary>
     /// Whether <paramref name="userId"/> may enter <paramref name="route"/>. The account being valid and
     /// enabled is the caller's business; this answers only the policy question.
@@ -144,14 +165,56 @@ public static class RouteAccessPolicy {
     public static async Task<bool> IsAuthorizedAsync(
         WatchtowerDbContext db, Route route, int userId, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(route);
-        return route.AccessMode switch {
-            AccessMode.Public => true,
-            AccessMode.Authenticated => true,
-            AccessMode.Restricted => await db.RouteAccessGrants.AsNoTracking()
+        return Classify(route.AccessMode) switch {
+            AccessDecision.Allow => true,
+            AccessDecision.RequiresGrant => await db.RouteAccessGrants.AsNoTracking()
                 .AnyAsync(g => g.RouteId == route.Id && g.UserId == userId, ct),
-            // A mode this build does not know about is not a licence to let the request through.
             _ => false,
         };
+    }
+
+    /// <summary>
+    /// Which of <paramref name="routes"/> <paramref name="userId"/> may enter, as the set of their ids.
+    /// </summary>
+    /// <remarks>
+    /// The bulk form of <see cref="IsAuthorizedAsync"/>, and deliberately not a loop over it: the entire
+    /// restricted subset is settled by one indexed grants query, so answering for a template with fifty
+    /// tenants costs a single round trip rather than fifty. The set shape is what makes that structural —
+    /// a caller holding the whole answer has nothing left to ask per route.
+    /// </remarks>
+    /// <param name="db">Database context to read grants through.</param>
+    /// <param name="routes">Candidate routes; duplicates and unknown modes are harmless.</param>
+    /// <param name="userId">The account being evaluated, already established as live and enabled.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The ids of the routes the account may enter; empty when it may enter none.</returns>
+    public static async Task<IReadOnlySet<int>> AccessibleRouteIdsAsync(
+        WatchtowerDbContext db, IReadOnlyList<Route> routes, int userId, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(routes);
+
+        var accessible = new HashSet<int>();
+        var restricted = new List<int>();
+        foreach (var route in routes) {
+            switch (Classify(route.AccessMode)) {
+                case AccessDecision.Allow:
+                    accessible.Add(route.Id);
+                    break;
+                case AccessDecision.RequiresGrant:
+                    restricted.Add(route.Id);
+                    break;
+                default:
+                    // Fail-closed: an unrecognised mode contributes nothing, not even a grant lookup.
+                    break;
+            }
+        }
+
+        if (restricted.Count == 0) return accessible;
+
+        var granted = await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.UserId == userId && restricted.Contains(g.RouteId))
+            .Select(g => g.RouteId)
+            .ToListAsync(ct);
+        accessible.UnionWith(granted);
+        return accessible;
     }
 
     /// <summary>

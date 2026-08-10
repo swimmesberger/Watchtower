@@ -32,6 +32,16 @@ public sealed record TenantDto(
     string? LastDeployStatus,
     DateTimeOffset? LastDeployedAt);
 
+/// <summary>
+/// One stack's permission to manage a template's tenants through the public management API
+/// (<c>/api/mgmt/*</c>).
+/// </summary>
+/// <param name="StackId">The granted stack — the one whose App API token unlocks the surface.</param>
+/// <param name="StackName">That stack's operator-visible name, so a grant list is readable without a second lookup.</param>
+/// <param name="AllowDelete">Whether the grant also permits deprovisioning tenants (and purging their volumes).</param>
+/// <param name="CreatedAt">When management was first granted; unchanged by later capability edits.</param>
+public sealed record TemplateGrantDto(int StackId, string StackName, bool AllowDelete, DateTimeOffset CreatedAt);
+
 /// <summary>In-memory projection + validation helpers (not translatable to SQL).</summary>
 public static partial class TenancyMapping {
     public static StackTemplateDto ToDto(StackTemplate t, int instanceCount) => new(
