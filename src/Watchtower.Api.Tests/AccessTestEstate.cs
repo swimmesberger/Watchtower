@@ -86,6 +86,44 @@ internal static class AccessTestEstate {
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         });
 
+    /// <summary>Creates a group holding <paramref name="memberIds"/> and returns its id.</summary>
+    public static async Task<int> AddGroupAsync(
+        this WatchtowerApiFactory factory, string name, params int[] memberIds) {
+        var groupId = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var ct = TestContext.Current.CancellationToken;
+
+            var group = new Group { Name = name, NormalizedName = name.ToUpperInvariant() };
+            db.Groups.Add(group);
+            await db.SaveChangesAsync(ct);
+
+            foreach (var userId in memberIds)
+                db.GroupMembers.Add(new GroupMember { GroupId = group.Id, UserId = userId });
+            await db.SaveChangesAsync(ct);
+            groupId = group.Id;
+        });
+        return groupId;
+    }
+
+    /// <summary>Lets every member of <paramref name="groupId"/> through a <c>Restricted</c> route.</summary>
+    public static Task GrantGroupAsync(this WatchtowerApiFactory factory, int routeId, int groupId) =>
+        factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = routeId, GroupId = groupId });
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        });
+
+    /// <summary>Removes one account from one group, the way an administrator revoking membership does.</summary>
+    public static Task RemoveFromGroupAsync(this WatchtowerApiFactory factory, int groupId, int userId) =>
+        factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var ct = TestContext.Current.CancellationToken;
+            var member = await db.GroupMembers.SingleAsync(m => m.GroupId == groupId && m.UserId == userId, ct);
+            db.GroupMembers.Remove(member);
+            await db.SaveChangesAsync(ct);
+        });
+
     /// <summary>Mints an app session the way the callback does, and returns the raw cookie token.</summary>
     public static async Task<string> AppSessionAsync(this WatchtowerApiFactory factory, int userId, int routeId) {
         var token = string.Empty;

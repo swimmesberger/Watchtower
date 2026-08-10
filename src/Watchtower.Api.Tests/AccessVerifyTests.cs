@@ -348,6 +348,170 @@ public sealed class AccessVerifyTests {
         Assert.Equal("alice", jwt.GetClaim("preferred_username").Value);
     }
 
+    // ── Group grants and group forwarding ─────────────────────────────────────
+
+    /// <summary>
+    /// The end-to-end shape of a group grant: a member of a granted group passes verify and is handed the
+    /// identity headers, while a signed-in account that is neither a member nor directly granted is refused
+    /// with the same 403 a missing direct grant produces.
+    /// </summary>
+    [Fact]
+    public async Task AMemberOfAGrantedGroup_PassesVerify_AndANonMemberIsRefused() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Restricted, identityHeaderMode: IdentityHeaderMode.Remote);
+        var alice = await factory.AddUserAsync("alice", "alice@example.invalid");
+        var bob = await factory.AddUserAsync("bob");
+        var groupId = await factory.AddGroupAsync("platform", alice);
+        await factory.GrantGroupAsync(routeId, groupId);
+
+        var allowed = await Send(client, Verify(
+            AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(alice, routeId))));
+        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+        Assert.True(allowed.Headers.Contains(RouteAccessPolicy.JwtHeaderName));
+        Assert.Equal("alice", Header(allowed, IdentityForwarding.RemoteUser));
+        Assert.Equal("platform", Header(allowed, IdentityForwarding.RemoteGroups));
+
+        var refused = await Send(client, Verify(
+            AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(bob, routeId))));
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+        AssertNoIdentityHeaders(refused);
+    }
+
+    /// <summary>
+    /// Membership is read per request, so revoking it takes effect on the next one — there is no cached
+    /// decision to invalidate, and the app session minted while she was a member does not survive it.
+    /// </summary>
+    [Fact]
+    public async Task RevokingMembership_ClosesTheRouteOnTheVeryNextRequest() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Restricted);
+        var alice = await factory.AddUserAsync("alice");
+        var groupId = await factory.AddGroupAsync("platform", alice);
+        await factory.GrantGroupAsync(routeId, groupId);
+        var cookie = AccessCookie(await factory.AppSessionAsync(alice, routeId));
+
+        Assert.Equal(HttpStatusCode.OK, (await Send(client, Verify(AppDomain, "/", cookie: cookie))).StatusCode);
+
+        await factory.RemoveFromGroupAsync(groupId, alice);
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden, (await Send(client, Verify(AppDomain, "/", cookie: cookie))).StatusCode);
+    }
+
+    /// <summary>
+    /// The header form of a multi-group membership: one comma-joined value in ordinal order, so what an
+    /// upstream parses does not depend on the order the membership rows came back in.
+    /// </summary>
+    [Theory]
+    [InlineData(IdentityHeaderMode.Remote)]
+    [InlineData(IdentityHeaderMode.AuthRequest)]
+    public async Task GroupsAreForwarded_CommaJoinedAndSorted_UnderTheModesOwnName(IdentityHeaderMode mode) {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Authenticated, identityHeaderMode: mode);
+        var alice = await factory.AddUserAsync("alice");
+        // Created out of order on purpose — the emitted order must be the sort, not the insertion.
+        await factory.AddGroupAsync("viewers", alice);
+        await factory.AddGroupAsync("admins", alice);
+
+        var response = await Send(client, Verify(
+            AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(alice, routeId))));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var (own, other) = mode == IdentityHeaderMode.Remote
+            ? (IdentityForwarding.RemoteGroups, IdentityForwarding.AuthRequestGroups)
+            : (IdentityForwarding.AuthRequestGroups, IdentityForwarding.RemoteGroups);
+
+        Assert.Equal("admins,viewers", Header(response, own));
+        // Only the mode's own vocabulary is populated — the other ecosystem's name stays absent.
+        Assert.False(response.Headers.Contains(other));
+        Assert.False(response.Headers.Contains(IdentityForwarding.ForwardedGroups));
+    }
+
+    [Fact]
+    public async Task AnAccountInNoGroup_OmitsTheGroupHeaderRatherThanSendingItEmpty() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Authenticated, identityHeaderMode: IdentityHeaderMode.Remote);
+        var alice = await factory.AddUserAsync("alice");
+
+        var response = await Send(client, Verify(
+            AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(alice, routeId))));
+
+        Assert.Equal("alice", Header(response, IdentityForwarding.RemoteUser));
+        // An empty header is not the same statement as an absent one: some upstreams read `Remote-Groups: `
+        // as membership of a group whose name is the empty string.
+        Assert.False(response.Headers.Contains(IdentityForwarding.RemoteGroups));
+    }
+
+    /// <summary>
+    /// A <c>None</c> route forwards no plaintext group header — but the assertion still carries the groups,
+    /// because the JWT is the trusted channel, not a mode-gated convenience.
+    /// </summary>
+    [Fact]
+    public async Task JwtOnlyMode_CarriesGroupsInTheAssertion_AndNoGroupHeader() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated);
+        var alice = await factory.AddUserAsync("alice");
+        await factory.AddGroupAsync("viewers", alice);
+        await factory.AddGroupAsync("admins", alice);
+
+        var response = await Send(client, Verify(
+            AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(alice, routeId))));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(response.Headers.Contains(IdentityForwarding.RemoteGroups));
+        Assert.False(response.Headers.Contains(IdentityForwarding.AuthRequestGroups));
+
+        var jwt = new JsonWebToken(Header(response, RouteAccessPolicy.JwtHeaderName));
+        Assert.Equal(["admins", "viewers"], GroupsOf(jwt));
+    }
+
+    [Fact]
+    public async Task TheAssertionsGroupsClaim_IsPresentAndEmptyForAnAccountInNoGroup() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated);
+        var alice = await factory.AddUserAsync("alice");
+
+        var response = await Send(client, Verify(
+            AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(alice, routeId))));
+
+        // Stated rather than omitted: an app mapping groups onto roles has to be able to tell "in no group"
+        // apart from "this deployment does not answer group questions".
+        var jwt = new JsonWebToken(Header(response, RouteAccessPolicy.JwtHeaderName));
+        Assert.True(jwt.TryGetPayloadValue<string[]>("groups", out var groups));
+        Assert.Empty(groups);
+    }
+
+    /// <summary>
+    /// The second half of the anti-spoofing property (the first is the strip list in the generated Caddy
+    /// config): what we answer with is derived from the account's memberships, never echoed from the
+    /// request. A low-privilege user asserting <c>Remote-Groups: admins</c> gets their real groups back.
+    /// </summary>
+    [Fact]
+    public async Task ASmuggledGroupHeader_IsReplacedByTheVerifiedMembership() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var routeId = await factory.AddRouteAsync(
+            AppDomain, AccessMode.Authenticated, identityHeaderMode: IdentityHeaderMode.Remote);
+        var alice = await factory.AddUserAsync("alice");
+        await factory.AddGroupAsync("viewers", alice);
+
+        var request = Verify(AppDomain, "/", cookie: AccessCookie(await factory.AppSessionAsync(alice, routeId)));
+        request.Headers.Add(IdentityForwarding.RemoteGroups, "admins");
+
+        var response = await Send(client, request);
+
+        Assert.Equal("viewers", Header(response, IdentityForwarding.RemoteGroups));
+    }
+
     [Fact]
     public async Task WithAuthDisabled_TheForwardAuthSurfaceIsNotThere() {
         using var factory = new WatchtowerApiFactory();
@@ -384,6 +548,15 @@ public sealed class AccessVerifyTests {
 
     private static string Header(HttpResponseMessage response, string name) =>
         Assert.Single(response.Headers.GetValues(name));
+
+    /// <summary>
+    /// The <c>groups</c> claim of a minted assertion, read off the payload rather than through
+    /// <c>Claims</c> — the claim is a JSON array, and the flattened claim collection would report it as
+    /// several single-valued entries (or none at all when it is empty), which is not the shape an upstream
+    /// parsing the payload sees.
+    /// </summary>
+    private static IReadOnlyList<string> GroupsOf(JsonWebToken jwt) =>
+        jwt.GetPayloadValue<string[]>("groups");
 
     private static void AssertNoIdentityHeaders(HttpResponseMessage response) {
         Assert.False(response.Headers.Contains(RouteAccessPolicy.JwtHeaderName),

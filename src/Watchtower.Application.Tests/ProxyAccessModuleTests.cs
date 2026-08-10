@@ -270,6 +270,160 @@ public sealed class ProxyAccessModuleTests {
         Assert.Equal([alice, carol], grants);
     }
 
+    // -- Group grants ----------------------------------------------------------------------------
+
+    [Fact]
+    public async Task SetAccess_RoundTripsGroupGrants_AndIsAuthorizedHonoursMembership() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+        var alice = await SeedUserAsync(host, "alice");
+        var bob = await SeedUserAsync(host, "bob");
+        var carol = await SeedUserAsync(host, "carol");
+        var staff = await SeedGroupAsync(host, "staff", alice);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Restricted, null, [bob], null, [staff]));
+
+            Assert.True(result.IsSuccess, Describe(result));
+            Assert.Equal([bob], result.Value.GrantedUserIds);
+            Assert.Equal([staff], result.Value.GrantedGroupIds);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<GetAccess.Query, GetAccess.Response>(
+                scope.ServiceProvider, new GetAccess.Query(routeId));
+            Assert.True(result.IsSuccess, Describe(result));
+            // The two subject kinds come back separately, so a form can restore exactly what it submitted.
+            Assert.Equal([bob], result.Value.GrantedUserIds);
+            Assert.Equal([staff], result.Value.GrantedGroupIds);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
+            // alice holds no grant of her own; the group is what lets her in. carol has neither.
+            Assert.True(await RouteAccessPolicy.IsAuthorizedAsync(db, route, alice, Ct));
+            Assert.True(await RouteAccessPolicy.IsAuthorizedAsync(db, route, bob, Ct));
+            Assert.False(await RouteAccessPolicy.IsAuthorizedAsync(db, route, carol, Ct));
+        }
+    }
+
+    [Fact]
+    public async Task SetAccess_ReconcilesGroupGrantsIndependentlyOfUserGrants() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+        var alice = await SeedUserAsync(host, "alice");
+        var staff = await SeedGroupAsync(host, "staff", alice);
+        var viewers = await SeedGroupAsync(host, "viewers");
+
+        await SetAccessAsync(host, routeId, [alice], [staff]);
+        // Re-saving the same policy twice must not churn rows, and shifting one axis must not disturb the
+        // other: the user grant stays put while the group grant is swapped.
+        await SetAccessAsync(host, routeId, [alice], [staff]);
+        await SetAccessAsync(host, routeId, [alice], [viewers]);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var grants = await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.RouteId == routeId)
+            .Select(g => new { g.UserId, g.GroupId })
+            .ToListAsync(Ct);
+
+        Assert.Equal(2, grants.Count);
+        Assert.Equal([alice], grants.Where(g => g.UserId is not null).Select(g => g.UserId!.Value));
+        Assert.Equal([viewers], grants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value));
+    }
+
+    [Fact]
+    public async Task SetAccess_SwitchingAwayFromRestricted_ClearsGroupGrantsToo() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+        var alice = await SeedUserAsync(host, "alice");
+        var staff = await SeedGroupAsync(host, "staff", alice);
+
+        await SetAccessAsync(host, routeId, [alice], [staff]);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Authenticated, null, [alice], null, [staff]));
+            Assert.True(result.IsSuccess, Describe(result));
+            Assert.Empty(result.Value.GrantedUserIds);
+            // Both kinds go together: "not Restricted" must not mean something different depending on how
+            // access happened to have been granted.
+            Assert.Empty(result.Value.GrantedGroupIds);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.RouteAccessGrants.AnyAsync(g => g.RouteId == routeId, Ct));
+        }
+    }
+
+    [Fact]
+    public async Task SetAccess_RejectsAnUnknownGroupId_BeforeAnyWrite() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+        var alice = await SeedUserAsync(host, "alice");
+        var staff = await SeedGroupAsync(host, "staff", alice);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice], null, [staff, 4040]));
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+            Assert.Contains("4040", result.Error.Message);
+        }
+
+        // The good half of the command was not applied either: the route keeps its seeded policy, no grant
+        // of either kind exists, and nothing was audited.
+        await AssertUnchangedSeededPolicyAsync(host, routeId);
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            Assert.False(await db.RouteAccessGrants.AnyAsync(g => g.RouteId == routeId, Ct));
+        }
+        Assert.Empty(await AuditKindsAsync(host));
+    }
+
+    [Fact]
+    public async Task SetAccess_WithOmittedGroupIds_KeepsTheUserGrantsAClientPredatingGroupsSent() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+        var alice = await SeedUserAsync(host, "alice");
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            // A client that never learned about group grants omits the field entirely; that is read as
+            // "no group grants" rather than rejected, which is what makes the addition non-breaking.
+            var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+                scope.ServiceProvider,
+                new SetAccess.Command(routeId, AccessMode.Restricted, null, [alice]));
+
+            Assert.True(result.IsSuccess, Describe(result));
+            Assert.Equal([alice], result.Value.GrantedUserIds);
+            Assert.Empty(result.Value.GrantedGroupIds);
+        }
+    }
+
+    [Fact]
+    public async Task SetAccess_CanGrantBothAUserAndAGroupTheUserIsIn() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteAsync(host);
+        var alice = await SeedUserAsync(host, "alice");
+        var staff = await SeedGroupAsync(host, "staff", alice);
+
+        // Overlapping subjects are not a conflict — they are access twice over, and the two partial unique
+        // indexes are per subject kind precisely so the pair can coexist.
+        await SetAccessAsync(host, routeId, [alice], [staff]);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        Assert.Equal(2, await db.RouteAccessGrants.CountAsync(g => g.RouteId == routeId, Ct));
+    }
+
     [Fact]
     public async Task SetAccess_ReportsAnUnknownRouteAsNotFound() {
         using var host = AuthTestHost.Start(WithAccessHandlers);
@@ -354,6 +508,31 @@ public sealed class ProxyAccessModuleTests {
         db.Routes.Add(route);
         await db.SaveChangesAsync(Ct);
         return route.Id;
+    }
+
+    /// <summary>Saves a Restricted policy naming both subject kinds.</summary>
+    private static async Task SetAccessAsync(
+        AuthTestHost host, int routeId, IReadOnlyList<int> userIds, IReadOnlyList<int> groupIds) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<SetAccess.Command, SetAccess.Response>(
+            scope.ServiceProvider,
+            new SetAccess.Command(routeId, AccessMode.Restricted, null, userIds, null, groupIds));
+        Assert.True(result.IsSuccess, Describe(result));
+    }
+
+    /// <summary>Creates a group holding <paramref name="memberIds"/> and returns its id.</summary>
+    private static async Task<int> SeedGroupAsync(AuthTestHost host, string name, params int[] memberIds) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+
+        var group = new Group { Name = name, NormalizedName = name.ToUpperInvariant() };
+        db.Groups.Add(group);
+        await db.SaveChangesAsync(Ct);
+
+        foreach (var userId in memberIds)
+            db.GroupMembers.Add(new GroupMember { GroupId = group.Id, UserId = userId });
+        await db.SaveChangesAsync(Ct);
+        return group.Id;
     }
 
     private static async Task<int> SeedUserAsync(AuthTestHost host, string userName) {

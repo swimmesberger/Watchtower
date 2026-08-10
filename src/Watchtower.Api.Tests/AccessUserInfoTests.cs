@@ -68,6 +68,32 @@ public sealed class AccessUserInfoTests {
     }
 
     [Fact]
+    public async Task Bearer_ReturnsTheGroupsTheAccountIsIn_SortedAndFresh() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var userId = await factory.AddUserAsync("alice");
+        // Created out of order on purpose — the answer must be the sort, not the insertion order.
+        await factory.AddGroupAsync("viewers", userId);
+        var admins = await factory.AddGroupAsync("admins", userId);
+        var bearer = await BearerForAsync(factory, userId);
+
+        using (var doc = await ReadJson(await client.SendAsync(WithBearer(ApiPath, bearer), Ct))) {
+            Assert.Equal(["admins", "viewers"], Groups(doc));
+        }
+
+        await factory.RemoveFromGroupAsync(admins, userId);
+
+        // Identity is answered as of now, not as of when the assertion was minted: the same bearer token
+        // returns the reduced membership, which is what makes UserInfo the on-demand channel.
+        using (var doc = await ReadJson(await client.SendAsync(WithBearer(ApiPath, bearer), Ct))) {
+            Assert.Equal(["viewers"], Groups(doc));
+        }
+    }
+
+    private static IReadOnlyList<string> Groups(JsonDocument doc) =>
+        [.. doc.RootElement.GetProperty("groups").EnumerateArray().Select(e => e.GetString()!)];
+
+    [Fact]
     public async Task Cookie_OnTheAppDomainPath_ReturnsClaims() {
         using var factory = new WatchtowerApiFactory(AuthOn());
         using var client = factory.CreateApiClient();
