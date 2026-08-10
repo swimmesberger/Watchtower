@@ -8,10 +8,16 @@ import { goToLogin, LOGIN_PATH } from './auth'
 
 /** One application the visitor may open. */
 export interface AppLink {
-  /** The public hostname — the same one that ends up in their address bar. */
+  /** The public hostname — the same one that ends up in their address bar. What the card shows. */
   domain: string
   /** A human label for the deployment behind it. Never an identifier. */
   name: string
+  /**
+   * Where to navigate. Built by the backend from the route's own TLS setting, so a plain-HTTP route is
+   * linked as `http` — the client has nothing to derive that from, and guessing `https` would be a
+   * connection failure rather than a redirect.
+   */
+  url: string
 }
 
 /**

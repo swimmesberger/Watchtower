@@ -4,13 +4,14 @@
 // capability module behind it. Realm accounts have none.
 import { useQuery } from '@tanstack/react-query'
 import { AppWindow, ArrowUpRight, Eye } from 'lucide-react'
-import { listApps } from '@/lib/apps'
+import { listApps, type AppLink } from '@/lib/apps'
 import { goToLogin, logout, LOCAL_USER_ID } from '@/lib/auth'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ThemeToggle } from '@/components/ui/theme-toggle'
 import type { SessionCapabilities } from '@/generated/session-client'
 
 export function AppsPage({ caps }: { caps: SessionCapabilities }) {
@@ -33,7 +34,10 @@ export function AppsPage({ caps }: { caps: SessionCapabilities }) {
           </span>
           <span className="text-[15px] font-bold tracking-tight text-text">Watchtower</span>
         </span>
-        <SignOutButton caps={caps} />
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          <SignOutButton caps={caps} />
+        </div>
       </header>
 
       <main className="mx-auto w-full max-w-[1200px] px-4 py-8 md:px-6 md:py-10">
@@ -60,10 +64,12 @@ export function AppsPage({ caps }: { caps: SessionCapabilities }) {
           ) : isLoading ? (
             <AppGrid>
               {[0, 1, 2].map((i) => (
-                <Card key={i} className="p-4 md:p-5">
-                  <Skeleton variant="line" className="w-1/2" />
-                  <Skeleton variant="line" className="mt-3 w-3/4" />
-                </Card>
+                <li key={i}>
+                  <Card className="p-4 md:p-5">
+                    <Skeleton variant="line" className="w-1/2" />
+                    <Skeleton variant="line" className="mt-3 w-3/4" />
+                  </Card>
+                </li>
               ))}
             </AppGrid>
           ) : apps.length === 0 ? (
@@ -75,7 +81,7 @@ export function AppsPage({ caps }: { caps: SessionCapabilities }) {
           ) : (
             <AppGrid>
               {apps.map((app) => (
-                <AppCard key={app.domain} domain={app.domain} name={app.name} />
+                <AppCard key={app.domain} app={app} />
               ))}
             </AppGrid>
           )}
@@ -92,20 +98,21 @@ function AppGrid({ children }: { children: React.ReactNode }) {
 /**
  * A plain `<a>`, and it has to be: opening an application is a full document load onto another origin,
  * where the verify redirect and the silent-SSO hand-over do the actual signing in. Client-side routing has
- * nothing to offer here.
+ * nothing to offer here. The href is the backend's `url` rather than a scheme assembled here, so a
+ * plain-HTTP route is linked as one.
  */
-function AppCard({ domain, name }: { domain: string; name: string }) {
+function AppCard({ app }: { app: AppLink }) {
   return (
     <li>
       <a
-        href={`https://${domain}/`}
+        href={app.url}
         className="block rounded-lg focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]"
       >
         <Card interactive className="p-4 md:p-5">
           <div className="flex items-start justify-between gap-3">
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium text-text">{name}</span>
-              <span className="mt-1 block truncate font-mono text-[13px] text-text-2">{domain}</span>
+              <span className="block truncate font-medium text-text">{app.name}</span>
+              <span className="mt-1 block truncate font-mono text-[13px] text-text-2">{app.domain}</span>
             </span>
             <ArrowUpRight className="size-4 shrink-0 text-text-3" aria-hidden />
           </div>
