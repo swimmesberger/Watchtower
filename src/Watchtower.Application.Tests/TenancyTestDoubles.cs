@@ -92,6 +92,17 @@ internal sealed class StubComposeCliService()
         StackExistedAtDown = StackProbe?.Invoke();
         return Task.FromResult((DownExitCode, "stubbed compose down"));
     }
+
+    // Every verb except the stubbed down would reach the process-spawning seams below; a test that
+    // grows such a call site must fail loudly instead of shelling out to a real docker CLI.
+    protected override Task<(int ExitCode, string Output)> RunAsync(
+        string[] args, string? dockerConfigDir, Action<string>? onLine, CancellationToken ct) =>
+        throw new InvalidOperationException(
+            $"StubComposeCliService only stubs 'down'; unexpected compose invocation: {string.Join(' ', args)}");
+
+    protected override Task<ComposeConfigResult> RunCapturedAsync(string[] args, CancellationToken ct) =>
+        throw new InvalidOperationException(
+            $"StubComposeCliService only stubs 'down'; unexpected compose invocation: {string.Join(' ', args)}");
 }
 
 /// <summary>

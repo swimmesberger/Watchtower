@@ -8,7 +8,12 @@ namespace Watchtower.Application.Services;
 /// Each deploy clones fresh to ensure the latest commit is used; the temp
 /// directory is the caller's responsibility to delete after use.
 /// </summary>
-public sealed class GitCloneService {
+/// <remarks>
+/// Not sealed, and the two calls a deploy makes are virtual, so the deploy pipeline can be exercised
+/// against a checkout that never existed: every stack in a test names a repository that is not there,
+/// and a clone is the first thing a deploy does.
+/// </remarks>
+public class GitCloneService {
     /// <summary>
     /// Clones <paramref name="repositoryUrl"/> at <paramref name="branch"/> into <paramref name="targetDir"/>.
     /// Uses a depth-1 shallow clone to minimise bandwidth.
@@ -20,7 +25,7 @@ public sealed class GitCloneService {
     /// <param name="onLine">Optional callback invoked for each output line as it arrives.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Exit code and captured output from git.</returns>
-    public Task<(int ExitCode, string Output)> CloneAsync(
+    public virtual Task<(int ExitCode, string Output)> CloneAsync(
         string repositoryUrl, string branch, string? token, string targetDir,
         Action<string>? onLine, CancellationToken ct) {
         var authenticatedUrl = token is null ? repositoryUrl : EmbedToken(repositoryUrl, token);
@@ -43,7 +48,7 @@ public sealed class GitCloneService {
     }
 
     /// <summary>Returns the checked-out HEAD commit SHA of a local clone, or null when it can't be read.</summary>
-    public async Task<string?> GetHeadCommitAsync(string repoDir, CancellationToken ct) {
+    public virtual async Task<string?> GetHeadCommitAsync(string repoDir, CancellationToken ct) {
         var (exitCode, output) = await RunGitAsync(["-C", repoDir, "rev-parse", "HEAD"], onLine: null, ct);
         if (exitCode != 0) return null;
         var sha = output.Trim();

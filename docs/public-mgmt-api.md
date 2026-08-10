@@ -252,6 +252,10 @@ transaction and the first deploy is queued. Poll the tenant's status (below) to 
   project name is `409`.
 - **Env override values are write-only.** They are never returned by this API, by any later read of
   the tenant, or in any error message. If your UI needs to show them, keep your own copy.
+- **The tenant gets its Watchtower variables with no compose changes.** `WATCHTOWER_APP_TOKEN`,
+  `WATCHTOWER_STACK_ID` and `WATCHTOWER_URL` are injected directly into the template's
+  `targetServiceName` — see
+  [injected environment variables](public-app-api.md#injected-environment-variables).
 
 ### `GET /api/mgmt/templates/{templateId}/tenants/{slug}`
 

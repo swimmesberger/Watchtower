@@ -68,19 +68,68 @@ they keep presenting the old value and will receive `401`.
 
 ## Injected environment variables
 
-At deploy time Watchtower writes these into the temporary `.env` it passes to
-`docker compose --env-file`, **after** the operator's own stack variables. Reserved names always win:
-an operator variable using one of these keys is skipped.
+Watchtower puts these **into your containers itself**. At deploy time it generates a small compose
+override file and merges it into the deploy with a second `-f`, so the variables land straight in the
+`environment:` of the services that should have them — your own compose file does not have to mention
+them at all.
 
-| Variable | Value | Always present |
+| Variable | Value | Which services receive it |
 | --- | --- | --- |
-| `WATCHTOWER_APP_TOKEN` | The stack's App API bearer token | yes |
-| `WATCHTOWER_STACK_ID` | Watchtower's numeric stack id | yes |
-| `WATCHTOWER_URL` | Watchtower's public base URL | only when `Watchtower:PublicBaseUrl` is configured |
+| `WATCHTOWER_STACK_ID` | Watchtower's numeric stack id | every service, always |
+| `WATCHTOWER_URL` | Watchtower's public base URL | every service, when `Watchtower:PublicBaseUrl` is configured |
+| `WATCHTOWER_APP_TOKEN` | The stack's App API bearer token | the services chosen by the rules [below](#which-services-receive-the-token) |
 
 Set the base URL with `WATCHTOWER__PUBLICBASEURL=https://watchtower.example.com` (or the
 `Watchtower:PublicBaseUrl` config key). Without it the variable is simply not injected and the
 application must know where Watchtower lives by other means.
+
+All three are *also* written into the temporary `.env` Watchtower passes to
+`docker compose --env-file`, **after** the operator's own stack variables, so they stay available for
+[interpolation](#interpolation-still-works-if-you-want-to-place-them-yourself). Reserved names always
+win: an operator variable using one of these keys is skipped.
+
+### Which services receive the token
+
+`WATCHTOWER_STACK_ID` and `WATCHTOWER_URL` are not secrets, so every service gets them. The token is
+a credential — on a stack with a management grant it can create and delete tenants — so it reaches
+only the services chosen like this:
+
+- Every service labelled `watchtower.inject-token: "true"` receives it. Label as many as you like.
+- A service labelled `watchtower.inject-token: "false"` **never** receives it, whatever the defaults
+  below would have said. This is the opt-out.
+- Both values are matched **case-insensitively, with surrounding whitespace ignored**, so `"True"`
+  and `" false "` do what you expect.
+- If **no** service is labelled `"true"`, exactly one default applies:
+  - a **tenant** of a template → the template's `targetServiceName`, if the compose file defines it;
+  - a **plain stack with exactly one service** → that service;
+  - a **plain stack with several services** → *no service*. Watchtower will not guess which container
+    is the application; label one, or pass the variable through yourself. "One service" means one
+    service in the **resolved** configuration, so if you use `profiles:`, do not lean on this
+    default — whether a service behind an inactive profile is counted depends on your compose
+    version, and that can silently flip a stack between the one-service and several-services rules.
+    Set the label instead.
+
+```yaml
+services:
+  web:
+    image: ghcr.io/example/app:latest
+    labels:
+      watchtower.inject-token: "true"    # the app itself: give it the token
+  worker:
+    image: ghcr.io/example/worker:latest
+    labels:
+      watchtower.inject-token: "false"   # never, even if it were the only service
+```
+
+Anything other than `"true"` or `"false"` is treated as if the label were absent, and the deploy
+output says so. A tenant whose template names a target service the compose file does not define also
+gets a warning line and no default token injection — so when the token is missing, the deploy output
+is the first place to look. It carries one line per service, naming the variables that service
+received; values are never printed:
+
+```
+[Watchtower] Injecting WATCHTOWER_APP_TOKEN, WATCHTOWER_STACK_ID into service 'web'
+```
 
 ### Your repository's own `.env` still works
 
@@ -106,13 +155,16 @@ deploy output says so (`Warning: dropped malformed .env entry 'MOTD' (unterminat
 continues with the next line, so only that one entry is lost.
 
 The generated file always contains `WATCHTOWER_APP_TOKEN`, so on Linux it is created `0600` and
-deleted at the end of the deploy.
+deleted at the end of the deploy. The compose override file carries the token too and is handled
+exactly the same way: both are temporary files sitting beside the deploy's clone directory rather
+than inside it, and each is deleted individually when the deploy ends.
 
-### ⚠️ Compose only *interpolates* env-file variables — reference them explicitly
+### Interpolation still works, if you want to place them yourself
 
-This is the part that trips people up. `--env-file` variables are available for **interpolation in
-the compose file**; they are *not* automatically placed inside your containers. Your compose file has
-to pass them through:
+`--env-file` variables are available for **interpolation in the compose file**; on their own they are
+not placed inside containers, which is why the override file exists. Writing the passthrough yourself
+is therefore no longer required — but it is still fully supported, and it is how you take explicit
+control of where a variable lands:
 
 ```yaml
 services:
@@ -125,8 +177,20 @@ services:
 ```
 
 The `:-` default on `WATCHTOWER_URL` keeps `docker compose` quiet when no public base URL is
-configured. If you omit these lines, the variables exist during the compose run but never reach your
-application, and every call will fail with `401`.
+configured.
+
+You get the **identical value** either way, so the two mechanisms cannot disagree about what the
+token is. Where they do overlap, the override wins per key: it is merged last, so for a service
+Watchtower injects into, the injected value is the one in the container. That holds whichever form
+your `environment:` uses — compose normalises the list form (`- "KEY=value"`) and the map form
+(`KEY: value`) to the same thing and merges them key by key, so only the keys Watchtower injects are
+affected and your other entries survive untouched. `environment:` also outranks `env_file:`, so an
+injected key is not shadowed by a file your service loads. Passthrough is the way to
+put the token into a service the default rules would skip — a plain multi-service stack, say — though
+labelling that service `watchtower.inject-token: "true"` does the same job in one line.
+
+Operator-defined stack variables are unaffected by any of this: they reach containers the classic
+way, through the env file and your own `environment:` entries.
 
 ## Endpoints
 
@@ -281,6 +345,11 @@ assertion, so this endpoint takes **two** headers:
 | --- | --- |
 | `Authorization` | `Bearer wtapp_…` — your own App API token, with the usual `401`/`403` meanings. |
 | `X-Watchtower-Jwt` | The assertion from the request **you are currently serving**, forwarded verbatim. |
+
+A tenant needs no compose changes to hold up its end of this: the variables are injected into the
+template's target service directly (see
+[injected environment variables](#injected-environment-variables)), so a switcher works in a template
+whose compose file never mentions Watchtower.
 
 ```json
 {

@@ -136,7 +136,7 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | --- | --- | --- | --- |
 | `DbPath` | `WATCHTOWER__DBPATH` | `/data/watchtower.db` | SQLite database file path. |
 | `DockerApiVersion` | `WATCHTOWER__DOCKERAPIVERSION` | `1.43` | Docker Engine API version used for direct calls and `docker compose`. |
-| `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` for the [App API](docs/public-app-api.md). |
+| `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` — straight into the containers, no compose changes needed — for the [App API](docs/public-app-api.md). |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
 | `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `memory` | Metrics source: `memory` (in-process sampler) or `influxdb` (read a durable store) — see [docs/metrics-history.md](docs/metrics-history.md). |
