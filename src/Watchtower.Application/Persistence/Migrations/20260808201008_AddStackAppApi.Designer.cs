@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Watchtower.Application.Persistence;
 
@@ -10,9 +11,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260808201008_AddStackAppApi")]
+    partial class AddStackAppApi
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -51,64 +54,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasName("pk_elarion_settings");
 
                     b.ToTable("elarion_settings", (string)null);
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("id");
-
-                    b.Property<bool>("AllowDockerSocket")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("allow_docker_socket");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("created_at");
-
-                    b.Property<int>("CredentialId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("credential_id");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("enabled");
-
-                    b.Property<string>("ExtraLabels")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("extra_labels");
-
-                    b.Property<int>("MaxConcurrentRunners")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("max_concurrent_runners");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("name");
-
-                    b.Property<string>("Owner")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("owner");
-
-                    b.Property<string>("RunnerImage")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("runner_image");
-
-                    b.HasKey("Id")
-                        .HasName("pk_ci_repos");
-
-                    b.HasIndex("CredentialId")
-                        .HasDatabaseName("ix_ci_repos_credential_id");
-
-                    b.HasIndex("Owner", "Name")
-                        .IsUnique()
-                        .HasDatabaseName("ix_ci_repos_owner_name");
-
-                    b.ToTable("ci_repos", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Credential", b =>
@@ -553,18 +498,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasName("pk_stack_update_checks");
 
                     b.ToTable("stack_update_checks", (string)null);
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>
-                {
-                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
-                        .WithMany()
-                        .HasForeignKey("CredentialId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
-                        .HasConstraintName("fk_ci_repos_credentials_credential_id");
-
-                    b.Navigation("Credential");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.DeployEvent", b =>

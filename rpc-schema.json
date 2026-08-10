@@ -3042,6 +3042,41 @@
         ]
       }
     },
+    "stacks.getAppApi": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          },
+          "injectedVarNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "token",
+          "injectedVarNames"
+        ]
+      }
+    },
     "stacks.getEnv": {
       "params": {
         "type": "object",
@@ -3217,6 +3252,55 @@
         },
         "required": [
           "stacks"
+        ]
+      }
+    },
+    "stacks.setAppApi": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "regenerateToken": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "stackId",
+          "enabled",
+          "regenerateToken"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          },
+          "injectedVarNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "token",
+          "injectedVarNames"
         ]
       }
     },
