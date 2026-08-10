@@ -20,8 +20,6 @@ namespace Watchtower.Application.Tests;
 /// reconciliation, the cascades a delete relies on, and the audit trail.
 /// </summary>
 public sealed class GroupsModuleTests {
-    private const string Password = "correct-horse-battery";
-
     /// <summary>Every Groups handler, added the way the generated module registration does.</summary>
     private static readonly Action<IServiceCollection> WithGroupsModule = services => {
         services.AddListGroups();

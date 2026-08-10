@@ -216,7 +216,6 @@ public sealed class RouteAccessGrant {                   // subjects allowed whe
     public int? GroupId { get; set; }                    // CHECK ck_route_access_grants_subject
 }
 
-
 public sealed class AuthEvent {                          // audit trail (login, denial, policy change)
     public int Id { get; set; }
     public required string Kind { get; set; }            // login.ok / login.failed / access.denied / …
@@ -423,8 +422,8 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
 7. End-to-end verification: protected app on a custom domain, full dance, silent SSO on a second
    app, denial page, bypass path, header-smuggling attempt rejected.
 
-**Phase 2** — generic OIDC upstream (JIT provisioning, `issuer+sub` linking), groups + group
-grants, template access inheritance, TOTP.
+**Phase 2** — ~~groups + group grants~~ *(done)*; generic OIDC upstream (JIT provisioning,
+`issuer+sub` linking), template access inheritance, TOTP.
 
 ## 11. Risks / open questions
 
