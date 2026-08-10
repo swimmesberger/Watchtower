@@ -43,11 +43,14 @@ public static class WatchtowerAuthEndpoints {
     /// <summary>The single failure body every rejected login gets, whatever the actual reason was.</summary>
     public sealed record AuthErrorResponse(string Message);
 
-    /// <summary>Audit kinds written by this file (design.md §9; the full audit surface is a later work item).</summary>
-    private const string LoginOk = "login.ok";
-    private const string LoginFailed = "login.failed";
-    private const string Logout = "logout";
-    private const string AccessDenied = "access.denied";
+    /// <summary>
+    /// Audit kinds written by this file. The vocabulary itself lives in
+    /// <see cref="AuthEventKinds"/>, shared with the Users module, which writes the other half of the trail.
+    /// </summary>
+    private const string LoginOk = AuthEventKinds.LoginOk;
+    private const string LoginFailed = AuthEventKinds.LoginFailed;
+    private const string Logout = AuthEventKinds.Logout;
+    private const string AccessDenied = AuthEventKinds.AccessDenied;
 
     /// <summary>
     /// One message for a bad password, an unknown name, a disabled account and a locked-out one alike:

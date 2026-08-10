@@ -499,3 +499,33 @@ export interface AddTenantRequest {
   slug: string
   envOverrides?: TemplateEnvVarInput[] | null
 }
+
+/**
+ * A Watchtower account, as the Users admin screen sees it. Mirrors the backend `UserDto`, which
+ * deliberately carries no password hash or security stamps.
+ */
+export interface User {
+  id: number
+  userName: string
+  email: string | null
+  /** Holds the Admin role: user management and system configuration. */
+  isAdmin: boolean
+  /** Suspended: the account exists but may neither sign in nor pass access verification. */
+  disabled: boolean
+  /** Temporarily locked by the brute-force counter. Derived server-side from the lockout deadline. */
+  lockedOut: boolean
+  createdAt: string
+}
+
+export interface CreateUserRequest {
+  userName: string
+  password: string
+  email?: string | null
+  isAdmin: boolean
+}
+
+export interface UpdateUserRequest {
+  userName: string
+  email?: string | null
+  isAdmin: boolean
+}
