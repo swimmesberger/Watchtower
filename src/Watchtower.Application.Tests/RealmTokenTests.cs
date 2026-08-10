@@ -146,15 +146,24 @@ public sealed class RealmTokenTests {
     /// <summary>
     /// <c>Auth:Host</c> is configuration and can be pointed at a host a realm already holds — after the
     /// handlers, which refuse the reverse order, have had their say. The map still has to be built (the
-    /// auth path cannot start throwing because of a configuration edit), the first realm wins, and the
+    /// auth path cannot start throwing because of a configuration edit), the operator realm wins, and the
     /// loser's assertions are then refused by the caller's own realm check rather than silently attributed
     /// to the winner. A warning is logged so the symptom is traceable to its cause.
     /// </summary>
-    [Fact]
-    public async Task ARealmCollidingWithTheConfiguredIssuer_StillYieldsAUsableMap() {
+    /// <remarks>
+    /// Both slugs are exercised on purpose: <c>shadow</c> sorts after the operator realm's <c>operator</c>
+    /// and <c>acme</c> sorts before it, so the second case fails if the winner is ever decided by the slug
+    /// order the realm list happens to arrive in. The operator realm has to win either way — it is the
+    /// population that administers the instance, and a customer realm that took its issuer would be the one
+    /// collision nobody could log their way out of.
+    /// </remarks>
+    [Theory]
+    [InlineData("shadow")]
+    [InlineData("acme")]
+    public async Task ARealmCollidingWithTheConfiguredIssuer_StillYieldsAUsableMap(string slug) {
         using var host = AuthTestHost.Start(("Watchtower:Auth:Host", AuthHost));
         // Written directly: realms.create refuses this, which is why it can only arise the other way round.
-        var shadowing = await host.AddRealmAsync("shadow", AuthHost);
+        var shadowing = await host.AddRealmAsync(slug, AuthHost);
 
         await using var scope = host.Services.CreateAsyncScope();
         var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
@@ -162,9 +171,8 @@ public sealed class RealmTokenTests {
 
         var issuers = await realms.IssuersAsync(TestContext.Current.CancellationToken);
 
-        // One entry for the shared issuer, and it is the operator realm's — ordered by slug, "operator"
-        // comes before "shadow", and either way the loser's tokens resolve to a realm that is not theirs
-        // and are refused.
+        // One entry for the shared issuer, and it is the operator realm's; the loser's tokens resolve to a
+        // realm that is not theirs and are refused.
         Assert.Equal(Realm.SystemRealmId, issuers[signer.Issuer]);
         Assert.NotEqual(shadowing, issuers[signer.Issuer]);
     }

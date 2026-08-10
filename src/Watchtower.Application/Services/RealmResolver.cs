@@ -137,11 +137,21 @@ public sealed class RealmResolver(
     /// collision is logged rather than thrown: the auth path must keep answering, and the loser's tokens
     /// are refused by the caller's own realm check rather than silently accepted as the winner's. The
     /// warning is what turns "one realm's users mysteriously cannot use UserInfo" into a fixable line.
+    /// <para>
+    /// Which realm is "first" is decided here rather than inherited from <see cref="ListAsync"/>: on its
+    /// slug order the operator realm would win a collision only because <c>operator</c> happens to sort
+    /// early, and a customer realm slugged <c>acme</c> would take the operator issuer instead — the one
+    /// outcome that must not be reachable, since the losing population is then the one that administers
+    /// this instance. Ordering the system realm first makes it structurally unable to lose, so the tie-break
+    /// no longer depends on a name somebody else chooses.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyDictionary<string, int>> IssuersAsync(CancellationToken ct) {
         var realms = await ListAsync(ct);
         var issuers = new Dictionary<string, int>(realms.Count, StringComparer.Ordinal);
-        foreach (var realm in realms) {
+        // Stable within each group (OrderByDescending is a stable sort), so the customer realms keep the
+        // slug order ListAsync established and only the operator one is lifted out of it.
+        foreach (var realm in realms.OrderByDescending(r => r.IsSystem)) {
             var issuer = signer.IssuerFor(RealmIdentity.From(realm));
             if (issuers.TryAdd(issuer, realm.Id)) continue;
             logger.LogWarning(
