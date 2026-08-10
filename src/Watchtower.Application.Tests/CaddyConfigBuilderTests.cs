@@ -130,7 +130,7 @@ public sealed class CaddyConfigBuilderTests {
             		request_header -X-Forwarded-Preferred-Username
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
-            			copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email
+            			copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email Remote-Groups
             		}
             		reverse_proxy other-api:9000
             	}
@@ -146,9 +146,11 @@ public sealed class CaddyConfigBuilderTests {
 
     [Theory]
     [InlineData(IdentityHeaderMode.None, "copy_headers X-Watchtower-Jwt")]
-    [InlineData(IdentityHeaderMode.Remote, "copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email")]
+    [InlineData(IdentityHeaderMode.Remote,
+        "copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email Remote-Groups")]
     [InlineData(IdentityHeaderMode.AuthRequest,
-        "copy_headers X-Watchtower-Jwt X-Auth-Request-User X-Auth-Request-Preferred-Username X-Auth-Request-Email")]
+        "copy_headers X-Watchtower-Jwt X-Auth-Request-User X-Auth-Request-Preferred-Username " +
+        "X-Auth-Request-Email X-Auth-Request-Groups")]
     public void EveryMode_StripsTheFullNamespace_AndCopiesOnlyItsOwnSet(IdentityHeaderMode mode, string expectedCopy) {
         var caddyfile = CaddyConfigBuilder.Build(
             [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
@@ -166,23 +168,45 @@ public sealed class CaddyConfigBuilderTests {
     [InlineData(IdentityHeaderMode.None)]
     [InlineData(IdentityHeaderMode.Remote)]
     [InlineData(IdentityHeaderMode.AuthRequest)]
-    public void GroupHeaders_AreStripped_InEveryMode_EvenThoughWeNeverForwardThem(IdentityHeaderMode mode) {
+    public void GroupHeaders_AreStrippedInEveryMode_AndCopiedBackOnlyByTheModeThatOwnsThem(
+        IdentityHeaderMode mode) {
         var caddyfile = CaddyConfigBuilder.Build(
             [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
             Globals);
 
         // The escalation vector this guards: forward_auth's copy_headers governs only the response, so a
         // client-sent group header would otherwise reach a group-aware upstream (Grafana/Nextcloud) as
-        // authoritative. It must be stripped whatever the mode — including None, which forwards no plaintext.
+        // authoritative. It must be stripped whatever the mode — including None, which forwards no plaintext,
+        // and including the mode that goes on to set its own verified value, since the strip is what makes
+        // that value trustworthy in the first place.
         Assert.Contains($"request_header -{IdentityForwarding.RemoteGroups}\n", caddyfile, StringComparison.Ordinal);
         Assert.Contains(
             $"request_header -{IdentityForwarding.AuthRequestGroups}\n", caddyfile, StringComparison.Ordinal);
         Assert.Contains(
             $"request_header -{IdentityForwarding.ForwardedGroups}\n", caddyfile, StringComparison.Ordinal);
 
-        // ...but never the group header appears in copy_headers — we do not forward groups (Phase 2).
-        var copyLine = caddyfile.Split('\n').Single(l => l.TrimStart().StartsWith("copy_headers", StringComparison.Ordinal));
-        Assert.DoesNotContain("Groups", copyLine, StringComparison.Ordinal);
+        // Group forwarding is live, but strictly per ecosystem: a route copies back its own mode's group
+        // name and no other. Copying a name this mode never sets would leave the upstream reading a header
+        // the verify response does not populate.
+        var copyLine = caddyfile.Split('\n')
+            .Single(l => l.TrimStart().StartsWith("copy_headers", StringComparison.Ordinal));
+        var expected = mode switch {
+            IdentityHeaderMode.Remote => IdentityForwarding.RemoteGroups,
+            IdentityHeaderMode.AuthRequest => IdentityForwarding.AuthRequestGroups,
+            _ => null,
+        };
+
+        foreach (var name in new[] {
+            IdentityForwarding.RemoteGroups,
+            IdentityForwarding.AuthRequestGroups,
+            // Never copied under any mode: we adopted two vocabularies, not three.
+            IdentityForwarding.ForwardedGroups,
+        }) {
+            if (name == expected)
+                Assert.Contains($" {name}", copyLine, StringComparison.Ordinal);
+            else
+                Assert.DoesNotContain(name, copyLine, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

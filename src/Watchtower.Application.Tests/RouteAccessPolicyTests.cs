@@ -157,9 +157,15 @@ public sealed class RouteAccessPolicyTests {
         foreach (var name in forwarded)
             Assert.Contains(name, IdentityForwarding.StripHeaderNames);
 
-        // The group/authz names we do NOT forward are still stripped — that is the whole point.
-        Assert.DoesNotContain(IdentityForwarding.RemoteGroups, forwarded);
-        Assert.DoesNotContain(IdentityForwarding.AuthRequestGroups, forwarded);
+        // The two group names we DO forward are in both sets — the invariant every forwarded name has to
+        // satisfy, and the reason a verified group header cannot be a client's.
+        Assert.Contains(IdentityForwarding.RemoteGroups, forwarded);
+        Assert.Contains(IdentityForwarding.AuthRequestGroups, forwarded);
+
+        // The names we never populate are still stripped — that is the whole point of the set being broader.
+        Assert.DoesNotContain(IdentityForwarding.ForwardedGroups, forwarded);
+        Assert.DoesNotContain(IdentityForwarding.ForwardedUser, forwarded);
+        Assert.DoesNotContain(IdentityForwarding.AuthRequestAccessToken, forwarded);
         Assert.True(IdentityForwarding.StripHeaderNames.Length > forwarded.Count);
     }
 

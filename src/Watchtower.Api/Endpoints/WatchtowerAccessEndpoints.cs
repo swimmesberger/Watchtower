@@ -121,7 +121,9 @@ public static class WatchtowerAccessEndpoints {
             if (!await RouteAccessPolicy.IsAuthorizedAsync(db, route, session.UserId, ct))
                 return await DenyAsync(db, time, route, session.UserId, http);
 
-            WriteIdentityHeaders(http, session.User, route, signer);
+            // 5. Authorised. One membership read feeds both forwarding channels — see WriteIdentityHeaders.
+            var groups = await GroupMembership.NamesAsync(db, session.UserId, ct);
+            WriteIdentityHeaders(http, session.User, route, signer, groups);
             return Results.Ok();
         });
     }
@@ -199,14 +201,23 @@ public static class WatchtowerAccessEndpoints {
     /// Caddy strips every forwardable name from the inbound request before calling us, so what the upstream
     /// receives is only ever what is written here.
     /// </summary>
-    private static void WriteIdentityHeaders(HttpContext http, User user, Route route, AuthTokenSigner signer) {
-        // Source of truth, forwarded for every protected route regardless of mode.
-        http.Response.Headers[RouteAccessPolicy.JwtHeaderName] = signer.Mint(user, route.Domain);
+    /// <param name="groups">
+    /// The account's group names, read once by the caller and used for both channels. Reading them twice —
+    /// once for the assertion and once for the header — would let a membership change in between put an
+    /// upstream in the position of seeing two different answers to the same question in one request.
+    /// </param>
+    private static void WriteIdentityHeaders(
+        HttpContext http, User user, Route route, AuthTokenSigner signer, IReadOnlyList<string> groups) {
+        // Source of truth, forwarded for every protected route regardless of mode. It carries the groups
+        // even on a None route: the signed assertion is where a group-aware app should read them from.
+        http.Response.Headers[RouteAccessPolicy.JwtHeaderName] = signer.Mint(user, route.Domain, groups);
 
         // Plaintext convenience headers: only for a route that asked for them, and only values safe to put
-        // in a header (the email entry is already omitted by the helper when the account has none).
-        foreach (var (headerName, value) in
-                 IdentityForwarding.PlaintextHeaders(route.IdentityHeaderMode, user.UserName, user.Email)) {
+        // in a header (the email and group entries are already omitted by the helper when there is nothing
+        // to say). Group names are constrained to printable ASCII at creation time, so the joined value the
+        // helper produces survives HeaderSafe intact.
+        foreach (var (headerName, value) in IdentityForwarding.PlaintextHeaders(
+                     route.IdentityHeaderMode, user.UserName, user.Email, groups)) {
             var safe = HeaderSafe(value);
             if (safe is not null) http.Response.Headers[headerName] = safe;
         }
@@ -370,7 +381,17 @@ public static class WatchtowerAccessEndpoints {
             ["preferred_username"] = user.UserName,
         };
         if (!string.IsNullOrWhiteSpace(user.Email)) claims["email"] = user.Email;
-        // Real and useful; groups and email_verified are deliberately absent (Phase 2 / not verified).
+
+        // Groups are always stated, empty array included: the same reasoning as the JWT claim — a caller
+        // mapping groups onto its own roles has to be able to tell "in no group" from "not answered". Read
+        // as of now against the freshly reloaded account, so a membership revoked a moment ago is gone here
+        // even if an assertion minted minutes earlier still lists it.
+        var groups = await GroupMembership.NamesAsync(db, user.Id, CancellationToken.None);
+        var groupClaims = new System.Text.Json.Nodes.JsonArray();
+        foreach (var group in groups) groupClaims.Add(group);
+        claims["groups"] = groupClaims;
+
+        // Real and useful; email_verified is deliberately absent (we do not verify addresses).
         if (user.IsAdmin) claims["roles"] = new System.Text.Json.Nodes.JsonArray(WatchtowerClaims.AdminRole);
 
         return Results.Content(claims.ToJsonString(), "application/json", Encoding.UTF8);

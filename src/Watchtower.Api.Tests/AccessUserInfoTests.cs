@@ -42,9 +42,12 @@ public sealed class AccessUserInfoTests {
             root.GetProperty("sub").GetString());
         Assert.Equal("alice", root.GetProperty("preferred_username").GetString());
         Assert.Equal("alice@example.invalid", root.GetProperty("email").GetString());
-        // Not an admin, not group-bearing, and we do not claim to verify email: those keys are absent.
+        // In no group — but the claim is still stated, as an empty array. "This account has no groups" and
+        // "this deployment does not answer group questions" are different facts, and an app mapping groups
+        // onto roles has to be able to tell them apart.
+        Assert.Empty(root.GetProperty("groups").EnumerateArray());
+        // Not an admin, and we do not claim to verify email: those keys are absent.
         Assert.False(root.TryGetProperty("roles", out _));
-        Assert.False(root.TryGetProperty("groups", out _));
         Assert.False(root.TryGetProperty("email_verified", out _));
     }
 

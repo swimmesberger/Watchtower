@@ -82,17 +82,27 @@ public sealed class AuthTokenSigner : IDisposable {
     /// Mints an assertion for <paramref name="user"/> scoped to <paramref name="routeDomain"/>, which
     /// becomes the <c>aud</c> claim.
     /// </summary>
-    public string Mint(User user, string routeDomain) {
+    /// <param name="groups">
+    /// The account's group names, which become the <c>groups</c> claim. Unlike <c>email</c> the claim is
+    /// <em>always</em> present — an empty array is the positive statement "this account is in no group",
+    /// which an app mapping groups to roles needs in order to tell "no memberships" apart from "this
+    /// deployment does not do groups". Omitting the argument is therefore read as the empty set, which is
+    /// the fail-closed direction: an app would grant too few roles, never too many.
+    /// </param>
+    public string Mint(User user, string routeDomain, IReadOnlyList<string>? groups = null) {
         ArgumentNullException.ThrowIfNull(user);
         ArgumentException.ThrowIfNullOrWhiteSpace(routeDomain);
 
         var material = Material;
         var now = _time.GetUtcNow();
-        var claims = new Dictionary<string, object>(3, StringComparer.Ordinal) {
+        var claims = new Dictionary<string, object>(4, StringComparer.Ordinal) {
             // Identity-forwarding claims: the stable key is `sub`; `preferred_username` is the display
             // name and may be renamed by an administrator, so apps must not key records off it.
             ["sub"] = user.Id.ToString(CultureInfo.InvariantCulture),
             ["preferred_username"] = user.UserName,
+            // The trusted channel for group membership: signed, so unlike the plaintext group header it
+            // does not depend on the proxy having stripped a forged copy first (design.md §2.3).
+            ["groups"] = groups is null ? Array.Empty<string>() : groups.ToArray(),
         };
         if (!string.IsNullOrWhiteSpace(user.Email))
             claims["email"] = user.Email;

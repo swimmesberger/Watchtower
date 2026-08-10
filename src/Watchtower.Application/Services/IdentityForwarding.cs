@@ -36,8 +36,12 @@ namespace Watchtower.Application.Services;
 /// <c>X-Forwarded-*</c> prefix, precisely so those survive.
 /// </para>
 /// <para>
-/// Groups are Phase 2. When group forwarding lands, its name must be added to <see cref="CopyHeaderNames"/>
-/// — it is already present in <see cref="StripHeaderNames"/>. Any new forwarded name must appear in both.
+/// Group forwarding has since landed: <c>Remote-Groups</c> and <c>X-Auth-Request-Groups</c> are now in
+/// <em>both</em> sets — their mode's <see cref="CopyHeaderNames"/> as well as
+/// <see cref="StripHeaderNames"/> — which is the invariant every forwarded name has to satisfy. The
+/// oauth2-proxy <c>--pass-user-headers</c> family (<c>X-Forwarded-User</c> and friends, including
+/// <c>X-Forwarded-Groups</c>) remains strip-only: we adopted two vocabularies, not three, and a name we
+/// never populate is one less thing an upstream can be confused by.
 /// </para>
 /// </remarks>
 public static class IdentityForwarding {
@@ -52,7 +56,7 @@ public static class IdentityForwarding {
     /// <summary>Authelia/Traefik verified email, forwarded only when the account has one.</summary>
     public const string RemoteEmail = "Remote-Email";
 
-    /// <summary>Authelia/Traefik group list. Not forwarded (groups are Phase 2), but stripped — see remarks.</summary>
+    /// <summary>Authelia/Traefik group list: the account's group names, comma-joined. Forwarded and stripped.</summary>
     public const string RemoteGroups = "Remote-Groups";
 
     // ── X-Auth-Request-* (oauth2-proxy --set-xauthrequest) ─────────────────────
@@ -66,7 +70,7 @@ public static class IdentityForwarding {
     /// <summary>oauth2-proxy verified email, forwarded only when the account has one.</summary>
     public const string AuthRequestEmail = "X-Auth-Request-Email";
 
-    /// <summary>oauth2-proxy group list. Not forwarded (Phase 2), but stripped — see remarks.</summary>
+    /// <summary>oauth2-proxy group list: the account's group names, comma-joined. Forwarded and stripped.</summary>
     public const string AuthRequestGroups = "X-Auth-Request-Groups";
 
     /// <summary>oauth2-proxy upstream access token. Never forwarded, but stripped so a client cannot fake one.</summary>
@@ -88,10 +92,18 @@ public static class IdentityForwarding {
     public const string ForwardedPreferredUsername = "X-Forwarded-Preferred-Username";
 
     /// <summary>The plaintext names a <see cref="IdentityHeaderMode.Remote"/> route forwards, in order.</summary>
-    private static readonly string[] RemoteNames = [RemoteUser, RemoteName, RemoteEmail];
+    private static readonly string[] RemoteNames = [RemoteUser, RemoteName, RemoteEmail, RemoteGroups];
 
     /// <summary>The plaintext names an <see cref="IdentityHeaderMode.AuthRequest"/> route forwards, in order.</summary>
-    private static readonly string[] AuthRequestNames = [AuthRequestUser, AuthRequestPreferredUsername, AuthRequestEmail];
+    private static readonly string[] AuthRequestNames = [
+        AuthRequestUser, AuthRequestPreferredUsername, AuthRequestEmail, AuthRequestGroups];
+
+    /// <summary>
+    /// The separator both ecosystems use in their group headers, and the reason group names are constrained
+    /// to a charset that excludes it at the point they are created (see the Groups module): a name carrying
+    /// a comma would be read downstream as two group memberships the account does not have.
+    /// </summary>
+    public const char GroupSeparator = ',';
 
     /// <summary>
     /// The defense-in-depth deny-list: every identity/authz header name the two ecosystems we adopted define,
@@ -124,24 +136,54 @@ public static class IdentityForwarding {
 
     /// <summary>
     /// The plaintext identity headers to set on a verified request for <paramref name="mode"/>, as
-    /// name/value pairs mapped from the account's <paramref name="userName"/> and <paramref name="email"/>.
-    /// The email entry is omitted when the account has none; <see cref="IdentityHeaderMode.None"/> yields
-    /// nothing (the JWT, set separately, is the whole story). The caller is still responsible for filtering
-    /// each value for header-safety before setting it.
+    /// name/value pairs mapped from the account's <paramref name="userName"/>, <paramref name="email"/> and
+    /// <paramref name="groups"/>. The email entry is omitted when the account has none and the group entry
+    /// when it is in none — an empty header is not the same statement as an absent one, and some upstreams
+    /// read <c>Remote-Groups: </c> as membership of a group whose name is the empty string.
+    /// <see cref="IdentityHeaderMode.None"/> yields nothing (the JWT, set separately, is the whole story).
+    /// The caller is still responsible for filtering each value for header-safety before setting it.
     /// </summary>
+    /// <param name="groups">
+    /// The account's group names. Emitted comma-joined in ordinal order, so the value a given account
+    /// produces does not depend on the order the membership rows happened to come back in.
+    /// </param>
     public static IEnumerable<(string Name, string Value)> PlaintextHeaders(
-        IdentityHeaderMode mode, string userName, string? email) {
+        IdentityHeaderMode mode, string userName, string? email, IReadOnlyList<string> groups) {
+        var groupList = FormatGroups(groups);
         switch (mode) {
             case IdentityHeaderMode.Remote:
                 yield return (RemoteUser, userName);
                 yield return (RemoteName, userName);
                 if (!string.IsNullOrWhiteSpace(email)) yield return (RemoteEmail, email);
+                if (groupList is not null) yield return (RemoteGroups, groupList);
                 break;
             case IdentityHeaderMode.AuthRequest:
                 yield return (AuthRequestUser, userName);
                 yield return (AuthRequestPreferredUsername, userName);
                 if (!string.IsNullOrWhiteSpace(email)) yield return (AuthRequestEmail, email);
+                if (groupList is not null) yield return (AuthRequestGroups, groupList);
                 break;
         }
+    }
+
+    /// <summary>
+    /// The header form of a group list — sorted ordinal and comma-joined — or <see langword="null"/> when
+    /// there is nothing to say.
+    /// </summary>
+    /// <remarks>
+    /// A name containing the separator is dropped rather than emitted, and dropping it is the conservative
+    /// direction: such a name cannot exist through the Groups module (the charset rule rejects it), so
+    /// meeting one means the row was written by something else — and letting it through would hand the
+    /// upstream <em>two</em> memberships, one of which the account does not have. The name charset also
+    /// keeps the joined value inside what the caller's header-safety filter accepts, so a single odd group
+    /// cannot cost the account its entire group header.
+    /// </remarks>
+    private static string? FormatGroups(IReadOnlyList<string> groups) {
+        ArgumentNullException.ThrowIfNull(groups);
+        var usable = groups
+            .Where(g => !string.IsNullOrWhiteSpace(g) && !g.Contains(GroupSeparator, StringComparison.Ordinal))
+            .OrderBy(g => g, StringComparer.Ordinal)
+            .ToList();
+        return usable.Count == 0 ? null : string.Join(GroupSeparator, usable);
     }
 }

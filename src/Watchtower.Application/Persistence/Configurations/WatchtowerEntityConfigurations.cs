@@ -237,12 +237,57 @@ public sealed class LoginCodeConfiguration : IEntityTypeConfiguration<LoginCode>
 }
 
 [EntityConfiguration]
+public sealed class GroupConfiguration : IEntityTypeConfiguration<Group> {
+    public void Configure(EntityTypeBuilder<Group> b) {
+        b.ToTable("groups");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.NormalizedName).IsRequired();
+        // Same shape as users: uniqueness lives on the normalized column so names are case-insensitive
+        // on SQLite too, and every lookup that has to be case-blind goes through this index.
+        b.HasIndex(x => x.NormalizedName).IsUnique();
+    }
+}
+
+[EntityConfiguration]
+public sealed class GroupMemberConfiguration : IEntityTypeConfiguration<GroupMember> {
+    public void Configure(EntityTypeBuilder<GroupMember> b) {
+        b.ToTable("group_members");
+        b.HasKey(x => x.Id);
+        // One row per (group, user): re-adding a member is idempotent rather than duplicated, which also
+        // keeps the membership subquery in RouteAccessPolicy an existence check over an index.
+        b.HasIndex(x => new { x.GroupId, x.UserId }).IsUnique();
+        // Both ends cascade — a membership outliving either side would be a grant nobody can see.
+        b.HasOne(x => x.Group)
+            .WithMany()
+            .HasForeignKey(x => x.GroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class RouteAccessGrantConfiguration : IEntityTypeConfiguration<RouteAccessGrant> {
     public void Configure(EntityTypeBuilder<RouteAccessGrant> b) {
-        b.ToTable("route_access_grants");
+        // A grant names exactly one subject. Enforced in the schema, not only in the handlers: a row with
+        // neither column set grants nobody, and one with both has two readings — and this table is what
+        // the verify path consults on every proxied request.
+        b.ToTable("route_access_grants", t => t.HasCheckConstraint(
+            "ck_route_access_grants_subject",
+            "(\"user_id\" IS NOT NULL) <> (\"group_id\" IS NOT NULL)"));
         b.HasKey(x => x.Id);
-        // One grant per (route, user) — re-granting is idempotent rather than duplicated.
-        b.HasIndex(x => new { x.RouteId, x.UserId }).IsUnique();
+        // One grant per (route, subject) — re-granting is idempotent rather than duplicated. Two partial
+        // indexes rather than one composite: the pair is unique *within* a subject kind, and the rows of
+        // the other kind must not be dragged into the constraint. SQLite already treats NULLs as distinct
+        // (see the Stack.AppApiToken note above), but the filter states the intent rather than relying on
+        // it, and is what a future Postgres backend would need anyway.
+        b.HasIndex(x => new { x.RouteId, x.UserId }).IsUnique()
+            .HasFilter("\"user_id\" IS NOT NULL");
+        b.HasIndex(x => new { x.RouteId, x.GroupId }).IsUnique()
+            .HasFilter("\"group_id\" IS NOT NULL");
         b.HasOne(x => x.Route)
             .WithMany()
             .HasForeignKey(x => x.RouteId)
@@ -250,6 +295,11 @@ public sealed class RouteAccessGrantConfiguration : IEntityTypeConfiguration<Rou
         b.HasOne(x => x.User)
             .WithMany()
             .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        // Deleting a group revokes every grant that named it, the same way deleting a user does.
+        b.HasOne(x => x.Group)
+            .WithMany()
+            .HasForeignKey(x => x.GroupId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
