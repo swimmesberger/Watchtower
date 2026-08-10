@@ -1,6 +1,6 @@
 # Central Authorization — Access Control Plane for Proxied Webapps
 
-> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 (OIDC upstream, groups, MFA) remains future work. §12 (product-branded login pages/themes) and §13 (native multi-realm direction) designed 2026-08-10, not yet implemented.
+> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 has begun: **groups + group-based grants are implemented** (`Groups` module, group subjects on `RouteAccessGrant`, group forwarding in the JWT and the per-mode ecosystem headers); OIDC upstream, template policy inheritance and MFA remain future work. §12 (product-branded login pages/themes) and §13 (native multi-realm direction) designed 2026-08-10, not yet implemented.
 > Branch/worktree: `watchtower-central-auth-84057b`.
 > Grounded against the current code (Proxy module, `CaddyManager`/`CaddyConfigBuilder`, `Route`
 > entity, host wiring in `Program.cs`) and Elarion `0.2.3-preview.79.1` (authorization API verified
@@ -67,12 +67,21 @@ and trustworthy to the app only because of network topology. We do both of what 
   mode, they are copied from the verify response via `forward_auth { copy_headers … }`, and every
   protected site block first **strips the full identity/authz namespace of both ecosystems** from the
   incoming client request — a defense-in-depth **superset** of what we ever forward, including the
-  group headers (`Remote-Groups`, `X-Auth-Request-Groups`) and the `X-Forwarded-*` identity family, so
-  nothing reaching the upstream — not even a header we never set — is client-forgeable.
-- **A signed JWT** (`X-Watchtower-Jwt`, ES256) carrying `sub`, `email`, `iss`, `aud` (the app's
-  domain), `iat`/`exp`, verifiable against Watchtower's JWKS endpoint. Apps that care validate
-  cryptographically instead of trusting topology; apps with their own auth can consume it as an SSO
-  assertion. The per-stack `watchtower-ingress-{stackId}` networks already guarantee the upstream is
+  `X-Forwarded-*` identity family we never set, so nothing reaching the upstream is client-forgeable.
+  A mode also forwards **its own ecosystem's group header** — `Remote-Groups` or
+  `X-Auth-Request-Groups` — carrying the account's group names sorted ordinal and comma-joined, and
+  omitted entirely when the account is in no group (an empty header reads to some upstreams as
+  membership of a group named `""`). Group names are constrained at creation to printable ASCII
+  without commas precisely so this encoding is lossless. Both group names are in the strip set as well
+  as the copy set, which is the invariant every forwarded name must satisfy.
+- **A signed JWT** (`X-Watchtower-Jwt`, ES256) carrying `sub`, `preferred_username`, `email`,
+  `groups`, `iss`, `aud` (the app's domain), `iat`/`exp`, verifiable against Watchtower's JWKS
+  endpoint. `groups` is an array and is **always present** — empty when the account is in no group, so
+  an app mapping groups onto roles can tell "no memberships" from "not answered" — and it is the
+  trusted channel for group membership: unlike the plaintext header it does not depend on the proxy
+  having stripped a forged copy first, and it is carried even by a `None` route. Apps that care
+  validate cryptographically instead of trusting topology; apps with their own auth can consume it as
+  an SSO assertion. The per-stack `watchtower-ingress-{stackId}` networks already guarantee the upstream is
   unreachable except through Caddy — that stays as defense in depth, not the load-bearing control.
 
 ### 2.4 Identity storage: ASP.NET Identity *core*, not the frame
@@ -131,8 +140,8 @@ meaningless without Caddy); Watchtower's own login works with the proxy off.
 
 - **Phase 1 — the control plane:** users + sessions, native Watchtower login (app #0), per-route
   policy, forward-auth + redirect dance + JWT, bypass paths, audit events.
-- **Phase 2 — identity federation & groups:** generic OIDC upstream (= Keycloak, as per-realm
-  federation per §13), groups + group-based grants, template policy inheritance for tenants, TOTP.
+- **Phase 2 — identity federation & groups:** ~~groups + group-based grants~~ *(done)*; generic OIDC
+  upstream (= Keycloak, as per-realm federation per §13), template policy inheritance for tenants, TOTP.
 - **Phase 3 (as needed):** service tokens, SCIM; branded login (§12) climbs its own ladder
   (tokens → per-category auth hosts → runtime themes) as products demand it; realms (§13) land
   when a second user population actually exists — until then only the seams are kept open.
@@ -187,11 +196,26 @@ public enum AccessMode { Public, Authenticated, Restricted }
 public AccessMode AccessMode { get; set; } = AccessMode.Public;   // Public = today's behavior
 public string? BypassPaths { get; set; }                           // newline-separated prefixes
 
+public sealed class Group {                              // a named set of accounts
+    public int Id { get; set; }
+    public required string Name { get; set; }            // printable ASCII, no comma (see below)
+    public required string NormalizedName { get; set; }  // unique (the User.NormalizedUserName precedent)
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public sealed class GroupMember {                        // unique (GroupId, UserId); both FKs cascade
+    public int Id { get; set; }
+    public int GroupId { get; set; }
+    public int UserId { get; set; }
+}
+
 public sealed class RouteAccessGrant {                   // subjects allowed when Restricted
     public int Id { get; set; }
     public int RouteId { get; set; }
-    public int UserId { get; set; }                      // v2: nullable + GroupId (principal kinds)
+    public int? UserId { get; set; }                     // exactly one of the two is set — enforced by
+    public int? GroupId { get; set; }                    // CHECK ck_route_access_grants_subject
 }
+
 
 public sealed class AuthEvent {                          // audit trail (login, denial, policy change)
     public int Id { get; set; }
@@ -207,6 +231,15 @@ Policy attaches to **`Route`** — the domain is the "app" as users experience i
 forward_auth, just proxy" (apps with their own login). Phase-2 templates get
 `StackTemplate.AccessMode` (+ template-level grants) copied to the auto-created route at add-tenant
 time, same as env vars are merged today.
+
+A grant names **one** subject, a user or a group, which is why uniqueness is two *partial* unique
+indexes — `(RouteId, UserId) WHERE user_id IS NOT NULL` and `(RouteId, GroupId) WHERE group_id IS NOT
+NULL` — rather than one composite index: the pair is unique within a subject kind, and a route may
+name both a user and a group that user belongs to (that is simply access twice over, not a conflict).
+Membership is resolved **per request** inside the grant query (`RouteAccessPolicy`), so a member holds
+no grant row of their own and revoking membership or deleting the group takes effect on the next
+request, with no cache to invalidate. Group names travel to upstreams (§2.3), so the charset rule is
+enforced where names enter the system rather than escaped at each forwarding site.
 
 Signing material: one ES256 key pair, generated on first use, stored under `/data` next to the
 SQLite db (`Auth:KeyPath`, default `/data/auth-keys/`). ASP.NET Data Protection keys (cookie
@@ -327,6 +360,9 @@ existing convention for non-RPC/external surfaces):
 
 - `Users` module: `users.list/create/update/delete/resetPassword/setDisabled` — all
   `[RequireRole("Admin")]`.
+- `Groups` module: `groups.list/create/rename/delete/getMembers/setMembers` — all
+  `[RequireRole("Admin")]`, because putting an account in a group grants it every route that group is
+  named on. `setMembers` is a whole-set replace, reconciled like `proxy.setAccess`.
 - `Access` handlers (fold into the existing `Proxy` module — policy is route-scoped):
   `proxy.getAccess` / `proxy.setAccess` (mode + grants + bypass paths), calling
   `CaddyManager.ApplyAsync()` on change like the route CRUD does.
@@ -346,8 +382,10 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
 - **Login page** (pre-auth route in the SPA) posting to `/api/auth/login`; the session bootstrap's
   `isAuthenticated` drives the redirect-to-login gate.
 - **Users page** (new `users` frontend module, gated `when: { module: 'Users' }` + admin role).
+- **Groups page** (new `groups` frontend module, gated the same way): group CRUD plus a members
+  roster over the account list.
 - **Route form** gains an *Access* section: mode selector (`Public` / `Any authenticated user` /
-  `Selected users`), user picker, bypass-path list.
+  `Selected users and groups`), user picker, group picker, bypass-path list.
 - Schema regeneration as usual — pass an **absolute repo-root path** for the output:
   `dotnet run --project src/Watchtower.Api -- --export-schema "$PWD/rpc-schema.json"`. A bare relative
   path lands in `src/Watchtower.Api/` because `dotnet run --project` runs the app with its CWD set to the

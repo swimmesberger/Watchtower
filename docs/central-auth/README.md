@@ -22,10 +22,12 @@ Watchtower is unauthenticated and belongs behind an authenticating reverse proxy
   `forward_auth`, with the full cross-domain redirect dance so it works on custom domains too.
 - Signed identity forwarded to upstreams — an ES256 JWT (always, with a public JWKS) plus opt-in
   per-route plaintext identity headers, and an OIDC UserInfo endpoint.
+- **Groups** — named sets of accounts that a route can be granted to in one go, and whose names are
+  forwarded to apps so they can map them onto their own roles.
 - Per-route **bypass paths** for webhooks/health endpoints, a first-run admin bootstrap, and a
   break-glass recovery hook.
 
-Not yet (Phase 2): OIDC/SSO upstream, groups, MFA/TOTP, and service tokens. See
+Not yet (Phase 2): OIDC/SSO upstream, MFA/TOTP, template policy inheritance, and service tokens. See
 [design.md §2.7–§2.8](design.md).
 
 ## Enabling it
@@ -132,8 +134,14 @@ additionally forward plaintext identity headers. Choose the mode in **Routes →
 | Mode | Headers forwarded |
 | --- | --- |
 | **None** (default) | JWT only — no plaintext identity header. |
-| **Remote** | Authelia/Traefik names: `Remote-User`, `Remote-Name`, `Remote-Email` (email only when the account has one). |
-| **AuthRequest** | oauth2-proxy names: `X-Auth-Request-User`, `X-Auth-Request-Preferred-Username`, `X-Auth-Request-Email` (email only when set). |
+| **Remote** | Authelia/Traefik names: `Remote-User`, `Remote-Name`, `Remote-Email`, `Remote-Groups` (email and groups only when the account has them). |
+| **AuthRequest** | oauth2-proxy names: `X-Auth-Request-User`, `X-Auth-Request-Preferred-Username`, `X-Auth-Request-Email`, `X-Auth-Request-Groups` (email and groups only when set). |
+
+The group header carries the account's group names sorted and comma-joined (`admins,platform`), which
+is what group-aware apps such as Grafana and Nextcloud expect. It is **omitted entirely** rather than
+sent empty when the account is in no group — an empty value reads to some apps as membership of a
+group named `""`. Group names are restricted to printable ASCII without commas when you create them,
+so this encoding cannot be ambiguous.
 
 There is no bespoke `X-Watchtower-User`/`-Email` header — an off-the-shelf app does not recognise a
 made-up name, so the plaintext modes speak the names the Authelia and oauth2-proxy ecosystems already
@@ -141,10 +149,11 @@ do.
 
 On every protected route (all modes, including **None**) the proxy strips the **full** identity/authz
 namespace of both ecosystems from the inbound request before forwarding — a superset of what it ever
-sets, including the group headers (`Remote-Groups`, `X-Auth-Request-Groups`), the oauth2-proxy
-access-token header, and the `X-Forwarded-User`/`-Email`/`-Groups`/`-Preferred-Username` family. So a
-client can never forge one (e.g. `Remote-Groups: admins` cannot reach a group-aware app as
-authoritative). The transport `X-Forwarded-For`/`-Proto`/`-Host` are deliberately left intact.
+sets, including the group headers, the oauth2-proxy access-token header, and the
+`X-Forwarded-User`/`-Email`/`-Groups`/`-Preferred-Username` family it never populates. So a client can
+never forge one: a low-privilege user sending `Remote-Groups: admins` has it stripped, and whatever
+the route then forwards is derived from their real membership. The transport
+`X-Forwarded-For`/`-Proto`/`-Host` are deliberately left intact.
 
 The per-stack ingress networks already make the upstream unreachable except through Caddy — the JWT is
 defense in depth on top of that, and the SSO assertion an app with its own login can consume.
@@ -159,9 +168,11 @@ authenticates the caller two ways:
 - `Authorization: Bearer <X-Watchtower-Jwt>` — an app presenting the assertion it received.
 - the `__wt_access` cookie — the browser same-origin path.
 
-On success it returns standard OIDC claim JSON — `sub`, `preferred_username`, `email` (when set), and
-`roles` (only for admins). With no acceptable credential it answers `401` with
-`WWW-Authenticate: Bearer error="invalid_token"`. Groups are Phase 2 and not emitted.
+On success it returns standard OIDC claim JSON — `sub`, `preferred_username`, `email` (when set),
+`groups` (always present; an empty array when the account is in none), and `roles` (only for admins).
+Identity is answered *as of now* against a freshly reloaded account, so a membership revoked a moment
+ago is already gone here even if an assertion minted minutes earlier still lists it. With no
+acceptable credential it answers `401` with `WWW-Authenticate: Bearer error="invalid_token"`.
 
 ## Cookies & HTTPS
 
@@ -199,10 +210,12 @@ way.
 
 ## Known limitations
 
-- **No MFA, OIDC/SSO, or groups yet.** Local password accounts only; these are Phase 2
-  ([design.md §2.8](design.md)). No group header is forwarded and none is emitted by UserInfo — today
-  a protected route forwards only the JWT plus, when a header mode is chosen, that mode's fixed
-  plaintext name set.
+- **No MFA or OIDC/SSO yet.** Local password accounts only; these are Phase 2
+  ([design.md §2.8](design.md)). Groups have landed — see **Groups** in the sidebar — but group
+  membership comes from Watchtower's own directory, not from a federated identity provider.
+- **Groups are not inherited by tenant routes.** A stack template carries no access policy yet, so a
+  route auto-created for a new tenant starts at the default and has to be granted explicitly. Also
+  Phase 2 ([design.md §2.8](design.md)).
 - **No audit-viewing UI.** Every login, denial, policy change, and break-glass recovery is written to
   an `AuthEvent` row, but v1 ships no screen or query API over them — read the table directly if you
   need the trail. A viewing surface is a planned follow-up.
