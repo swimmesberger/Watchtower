@@ -64,6 +64,11 @@ export function TemplateDetailPage() {
   const [pendingRevoke, setPendingRevoke] = useState<TemplateGrant | null>(null)
   const [pendingRemoveTenant, setPendingRemoveTenant] = useState<Tenant | null>(null)
   const [removeVolumes, setRemoveVolumes] = useState(false)
+  // A single mutation observer only exposes its latest call's variables, so concurrent toggles on
+  // different rows need their own pending bookkeeping to keep each row disabled until it settles.
+  const [allowDeletePendingIds, setAllowDeletePendingIds] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  )
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['template', templateId],
@@ -99,6 +104,8 @@ export function TemplateDetailPage() {
   )
   const grantableKey = grantableStacks.map((s) => s.id).join(',')
   const pickerReady = grantsQuery.isSuccess && stacksQuery.isSuccess
+  const pickerFailed = grantsQuery.isError || stacksQuery.isError
+  const noGrantableStacks = pickerReady && grantableStacks.length === 0
 
   // A refetch can drop the picked stack out of the list (someone else granted it, or it became a
   // tenant), so clear the selection rather than let Grant submit a choice the backend would reject.
@@ -167,14 +174,37 @@ export function TemplateDetailPage() {
   const setAllowDelete = useMutation({
     mutationFn: (v: { grant: TemplateGrant; allowDelete: boolean }) =>
       api.templates.grantManagement(templateId, v.grant.stackId, v.allowDelete),
+    // Optimistically flip the row so the Switch tracks the click even on slow links; the snapshot
+    // is restored on error.
+    onMutate: async (v) => {
+      setAllowDeletePendingIds((ids) => new Set(ids).add(v.grant.stackId))
+      await qc.cancelQueries({ queryKey: ['template-grants', templateId] })
+      const previous = qc.getQueryData<TemplateGrant[]>(['template-grants', templateId])
+      qc.setQueryData<TemplateGrant[]>(['template-grants', templateId], (old) =>
+        old?.map((g) =>
+          g.stackId === v.grant.stackId ? { ...g, allowDelete: v.allowDelete } : g,
+        ),
+      )
+      return { previous }
+    },
     onSuccess: (g) =>
       toast.success(
         g.allowDelete
           ? `${g.stackName} may now delete tenants.`
           : `${g.stackName} may no longer delete tenants.`,
       ),
-    onError: (err: Error) => toast.error(err.message),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['template-grants', templateId] }),
+    onError: (err: Error, _v, ctx) => {
+      if (ctx?.previous) qc.setQueryData(['template-grants', templateId], ctx.previous)
+      toast.error(err.message)
+    },
+    onSettled: (_g, _err, v) => {
+      setAllowDeletePendingIds((ids) => {
+        const next = new Set(ids)
+        next.delete(v.grant.stackId)
+        return next
+      })
+      qc.invalidateQueries({ queryKey: ['template-grants', templateId] })
+    },
   })
 
   const revokeManagement = useMutation({
@@ -217,6 +247,29 @@ export function TemplateDetailPage() {
   const openRemoveTenant = (t: Tenant) => {
     setRemoveVolumes(false)
     setPendingRemoveTenant(t)
+  }
+
+  // Shared by the table cell and the mobile card so the disabled-state reason travels with both.
+  const removeTenantButton = (t: Tenant) => {
+    const deploying = isDeploying(t)
+    return (
+      <Tooltip label={deploying ? 'Deploy in progress' : 'Remove tenant'}>
+        {/* A disabled button swallows pointer events and can't take focus, so the wrapping span is
+            the trigger — made focusable while deploying so keyboard users get the reason too. */}
+        <span className="inline-flex" tabIndex={deploying ? 0 : undefined}>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            disabled={deploying}
+            aria-label={`Remove ${t.tenantSlug}`}
+            onClick={() => openRemoveTenant(t)}
+            className="text-text-2 hover:text-danger"
+          >
+            <Trash2 />
+          </Button>
+        </span>
+      </Tooltip>
+    )
   }
 
   const columns: DataListColumn<Tenant>[] = [
@@ -271,23 +324,7 @@ export function TemplateDetailPage() {
       header: '',
       align: 'right',
       className: 'w-px',
-      cell: (t) => (
-        <Tooltip label={isDeploying(t) ? 'Deploy in progress' : 'Remove tenant'}>
-          {/* A disabled button swallows pointer events, so the trigger is the wrapping span. */}
-          <span className="inline-flex">
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              disabled={isDeploying(t)}
-              aria-label={`Remove ${t.tenantSlug}`}
-              onClick={() => openRemoveTenant(t)}
-              className="text-text-2 hover:text-danger"
-            >
-              <Trash2 />
-            </Button>
-          </span>
-        </Tooltip>
-      ),
+      cell: (t) => removeTenantButton(t),
     },
   ]
 
@@ -395,9 +432,7 @@ export function TemplateDetailPage() {
               ) : (
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {grants.map((g) => {
-                    const pending =
-                      setAllowDelete.isPending &&
-                      setAllowDelete.variables?.grant.stackId === g.stackId
+                    const pending = allowDeletePendingIds.has(g.stackId)
                     return (
                       <li
                         key={g.stackId}
@@ -457,15 +492,33 @@ export function TemplateDetailPage() {
               )}
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                <Field label="Stack" className="sm:w-64">
+                <Field
+                  label="Stack"
+                  className="sm:w-64"
+                  hint={
+                    noGrantableStacks
+                      ? 'Every stack is already a tenant of this template or granted.'
+                      : undefined
+                  }
+                >
                   {({ id: fid, describedBy }) => (
                     <Select value={grantStackId} onValueChange={setGrantStackId}>
                       <SelectTrigger
                         id={fid}
                         aria-describedby={describedBy}
-                        disabled={!pickerReady}
+                        disabled={!pickerReady || noGrantableStacks}
                       >
-                        <SelectValue placeholder={pickerReady ? 'Select a stack' : 'Loading…'} />
+                        <SelectValue
+                          placeholder={
+                            noGrantableStacks
+                              ? 'No stacks left to grant'
+                              : pickerReady
+                                ? 'Select a stack'
+                                : pickerFailed
+                                  ? 'Unavailable'
+                                  : 'Loading…'
+                          }
+                        />
                       </SelectTrigger>
                       <SelectContent>
                         {grantableStacks.map((s) => (
@@ -506,16 +559,7 @@ export function TemplateDetailPage() {
               </Link>
               <div className="flex items-center gap-2">
                 <StatusBadge status={t.lastDeployStatus} />
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  disabled={isDeploying(t)}
-                  aria-label={`Remove ${t.tenantSlug}`}
-                  onClick={() => openRemoveTenant(t)}
-                  className="text-text-2 hover:text-danger"
-                >
-                  <Trash2 />
-                </Button>
+                {removeTenantButton(t)}
               </div>
             </div>
             {t.domain && <p className="font-mono text-[13px] text-text-2">{t.domain}</p>}
