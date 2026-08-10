@@ -388,7 +388,7 @@ public sealed class AccessVerifyTests {
     private static void AssertNoIdentityHeaders(HttpResponseMessage response) {
         Assert.False(response.Headers.Contains(RouteAccessPolicy.JwtHeaderName),
             $"{RouteAccessPolicy.JwtHeaderName} must not be set here.");
-        foreach (var header in IdentityForwarding.AllForwardableHeaderNames)
+        foreach (var header in IdentityForwarding.StripHeaderNames)
             Assert.False(response.Headers.Contains(header), $"{header} must not be set here.");
     }
 }

@@ -128,12 +128,12 @@ public sealed class RouteAccessPolicyTests {
     [InlineData(IdentityHeaderMode.Remote)]
     [InlineData(IdentityHeaderMode.AuthRequest)]
     public void EveryCopiedHeader_IsAlsoStripped(IdentityHeaderMode mode) {
-        // The generated Caddy config strips the full union and copies a per-mode subset. A name copied but
-        // not stripped would be client-spoofable, which is the failure mode §2.3 exists to prevent — so the
-        // copy set for every mode must be contained in the strip set.
-        var strip = IdentityForwarding.AllForwardableHeaderNames;
+        // The generated Caddy config strips the full ecosystem authz namespace and copies a per-mode subset.
+        // A name copied but not stripped would be client-spoofable, which is the failure mode §2.3 exists to
+        // prevent — so the copy set for every mode must be contained in the strip set (the load-bearing
+        // invariant: CopyHeaderNames(mode) ⊆ StripHeaderNames).
         foreach (var copied in IdentityForwarding.CopyHeaderNames(mode))
-            Assert.Contains(copied, strip);
+            Assert.Contains(copied, IdentityForwarding.StripHeaderNames);
     }
 
     [Fact]
@@ -145,13 +145,38 @@ public sealed class RouteAccessPolicyTests {
     }
 
     [Fact]
-    public void StripSet_IsTheUnionOfEveryModesCopySet() {
-        // Defense in depth: a JWT-only route still strips the names some other mode would honour, so nothing
-        // a client sends under any forwardable name can survive to the upstream.
-        var union = Enum.GetValues<IdentityHeaderMode>()
+    public void StripSet_IsABroaderSupersetThanWhatIsForwarded() {
+        // copy_headers governs only the verify response; every other client header reaches the upstream
+        // untouched. So the strip set is deliberately broader than the union of what any mode forwards — it
+        // neutralizes the full ecosystem authz vocabulary, including names we never populate.
+        var forwarded = Enum.GetValues<IdentityHeaderMode>()
             .SelectMany(IdentityForwarding.CopyHeaderNames)
-            .Distinct();
-        foreach (var name in union)
-            Assert.Contains(name, IdentityForwarding.AllForwardableHeaderNames);
+            .Distinct()
+            .ToList();
+
+        foreach (var name in forwarded)
+            Assert.Contains(name, IdentityForwarding.StripHeaderNames);
+
+        // The group/authz names we do NOT forward are still stripped — that is the whole point.
+        Assert.DoesNotContain(IdentityForwarding.RemoteGroups, forwarded);
+        Assert.DoesNotContain(IdentityForwarding.AuthRequestGroups, forwarded);
+        Assert.True(IdentityForwarding.StripHeaderNames.Length > forwarded.Count);
+    }
+
+    [Fact]
+    public void StripSet_NeutralizesGroupAndAccessTokenHeaders_ButNotTheTransportHeaders() {
+        var strip = IdentityForwarding.StripHeaderNames;
+
+        // The escalation vector: a group-aware upstream must never see a client-supplied group header.
+        Assert.Contains(IdentityForwarding.RemoteGroups, strip);
+        Assert.Contains(IdentityForwarding.AuthRequestGroups, strip);
+        Assert.Contains(IdentityForwarding.ForwardedGroups, strip);
+        Assert.Contains(IdentityForwarding.AuthRequestAccessToken, strip);
+        Assert.Contains(IdentityForwarding.ForwardedUser, strip);
+
+        // ...but the transport headers Caddy sets legitimately are left alone (enumerated by name, no prefix).
+        Assert.DoesNotContain("X-Forwarded-For", strip);
+        Assert.DoesNotContain("X-Forwarded-Proto", strip);
+        Assert.DoesNotContain("X-Forwarded-Host", strip);
     }
 }

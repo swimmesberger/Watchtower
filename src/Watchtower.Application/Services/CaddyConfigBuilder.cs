@@ -84,10 +84,13 @@ public static class CaddyConfigBuilder {
     ///     matched first because those paths must work while the visitor is still anonymous.
     ///   </description></item>
     ///   <item><description>
-    ///     Every forwardable identity name is stripped from the inbound request <em>before</em>
-    ///     <c>forward_auth</c> adds the verified ones — the full <see cref="IdentityForwarding.AllForwardableHeaderNames"/>
-    ///     union, regardless of this route's mode, so a JWT-only route still strips <c>Remote-User</c> and
-    ///     the rest and nothing a client sends under any of those names survives. <c>copy_headers</c> then
+    ///     The full ecosystem identity+authz namespace (<see cref="IdentityForwarding.StripHeaderNames"/>) is
+    ///     stripped from the inbound request <em>before</em> <c>forward_auth</c> adds the verified ones,
+    ///     regardless of this route's mode — <c>copy_headers</c> governs only the verify <em>response</em>, so
+    ///     every other client header (including <c>Remote-Groups</c>, which a group-aware upstream would
+    ///     honour) passes through untouched unless stripped here. The strip set is therefore a deliberate
+    ///     superset of what we forward: a JWT-only route still strips <c>Remote-User</c>, <c>Remote-Groups</c>
+    ///     and the rest, so nothing a client sends under any of those names survives. <c>copy_headers</c>
     ///     copies back only what this route's mode forwards (the JWT always, plus that mode's plaintext
     ///     names), which is by construction a subset of what was stripped. Emitting a <c>copy_headers</c>
     ///     name without the matching <c>request_header -…</c> line would let any client assert that identity,
@@ -100,9 +103,9 @@ public static class CaddyConfigBuilder {
         sb.Append($"\t\treverse_proxy {globals.SelfUpstream}\n");
         sb.Append("\t}\n");
         sb.Append("\thandle {\n");
-        // Strip the whole union, not just this mode's copy set: defense in depth means a client cannot
-        // smuggle in a header that some *other* mode would have honoured.
-        foreach (var header in IdentityForwarding.AllForwardableHeaderNames)
+        // Strip the whole ecosystem authz namespace, not just this mode's copy set: defense in depth means a
+        // client cannot smuggle in a header (a group claim, another mode's name) the upstream would honour.
+        foreach (var header in IdentityForwarding.StripHeaderNames)
             sb.Append($"\t\trequest_header -{header}\n");
         sb.Append($"\t\tforward_auth {globals.SelfUpstream} {{\n");
         sb.Append($"\t\t\turi {RouteAccessPolicy.VerifyPath}\n");

@@ -34,9 +34,12 @@ public sealed class SetAccess(
     public sealed record Command(
         int RouteId,
         AccessMode Mode,
-        IdentityHeaderMode IdentityHeaderMode,
         string? BypassPaths,
-        IReadOnlyList<int> GrantedUserIds);
+        IReadOnlyList<int> GrantedUserIds,
+        // Optional and last (a default value is what marks a param non-required in the generated schema): an
+        // older client that omits it keeps identity forwarding at the safe JWT-only default rather than being
+        // rejected, so the field is a purely additive, non-breaking addition to the wire contract.
+        IdentityHeaderMode? IdentityHeaderMode = null);
 
     public sealed record Response(
         AccessMode Mode,
@@ -49,10 +52,14 @@ public sealed class SetAccess(
         if (route is null)
             return AppError.NotFound($"Route {command.RouteId} not found");
 
-        // Reject an undefined enum value before touching anything — an unknown mode must not be persisted
-        // and read back later as a value the forwarding helper cannot map.
-        if (!Enum.IsDefined(command.IdentityHeaderMode))
-            return AppError.Validation($"Unknown identity header mode '{command.IdentityHeaderMode}'.");
+        // Reject an undefined enum value before touching anything — an unknown value must not be persisted
+        // and read back later as something the switch statements cannot map. Both enums are guarded, fail-
+        // closed and symmetric; an omitted identity header mode defaults to the safe JWT-only None.
+        if (!Enum.IsDefined(command.Mode))
+            return AppError.Validation($"Unknown access mode '{command.Mode}'.");
+        var identityHeaderMode = command.IdentityHeaderMode ?? IdentityHeaderMode.None;
+        if (!Enum.IsDefined(identityHeaderMode))
+            return AppError.Validation($"Unknown identity header mode '{identityHeaderMode}'.");
 
         // Bypass paths only mean something for a protected route; a Public route stores none, the same way
         // grants are cleared below for any non-Restricted mode — its access controls are off, so a stale
@@ -82,7 +89,7 @@ public sealed class SetAccess(
         }
 
         route.AccessMode = command.Mode;
-        route.IdentityHeaderMode = command.IdentityHeaderMode;
+        route.IdentityHeaderMode = identityHeaderMode;
         route.BypassPaths = bypassPaths;
 
         // Reconcile rather than replace: delete only the rows that fell out of the set, add only the ones

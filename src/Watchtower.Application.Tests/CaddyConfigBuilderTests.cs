@@ -57,7 +57,7 @@ public sealed class CaddyConfigBuilderTests {
         // One of each: an app that does its own auth, one behind "any signed-in user" that forwards JWT only
         // (the default), one behind an explicit grant list that opted into the Authelia/Traefik Remote-*
         // headers, and Watchtower's own self-route (never protected — see CaddyManager). Every protected
-        // block strips the *whole* forwardable union regardless of its mode; only copy_headers differs.
+        // block strips the *whole* ecosystem authz namespace regardless of its mode; only copy_headers differs.
         var sites = new[] {
             new CaddySite("public.example.invalid", "demo-web", 8080, Tls: true),
             new CaddySite("members.example.invalid", "demo-web", 3000, Tls: true, Protected: true),
@@ -84,9 +84,16 @@ public sealed class CaddyConfigBuilderTests {
             		request_header -Remote-User
             		request_header -Remote-Name
             		request_header -Remote-Email
+            		request_header -Remote-Groups
             		request_header -X-Auth-Request-User
             		request_header -X-Auth-Request-Preferred-Username
             		request_header -X-Auth-Request-Email
+            		request_header -X-Auth-Request-Groups
+            		request_header -X-Auth-Request-Access-Token
+            		request_header -X-Forwarded-User
+            		request_header -X-Forwarded-Email
+            		request_header -X-Forwarded-Groups
+            		request_header -X-Forwarded-Preferred-Username
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
             			copy_headers X-Watchtower-Jwt
@@ -111,9 +118,16 @@ public sealed class CaddyConfigBuilderTests {
             		request_header -Remote-User
             		request_header -Remote-Name
             		request_header -Remote-Email
+            		request_header -Remote-Groups
             		request_header -X-Auth-Request-User
             		request_header -X-Auth-Request-Preferred-Username
             		request_header -X-Auth-Request-Email
+            		request_header -X-Auth-Request-Groups
+            		request_header -X-Auth-Request-Access-Token
+            		request_header -X-Forwarded-User
+            		request_header -X-Forwarded-Email
+            		request_header -X-Forwarded-Groups
+            		request_header -X-Forwarded-Preferred-Username
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
             			copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email
@@ -135,21 +149,60 @@ public sealed class CaddyConfigBuilderTests {
     [InlineData(IdentityHeaderMode.Remote, "copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email")]
     [InlineData(IdentityHeaderMode.AuthRequest,
         "copy_headers X-Watchtower-Jwt X-Auth-Request-User X-Auth-Request-Preferred-Username X-Auth-Request-Email")]
-    public void EveryMode_StripsTheFullUnion_AndCopiesOnlyItsOwnSet(IdentityHeaderMode mode, string expectedCopy) {
+    public void EveryMode_StripsTheFullNamespace_AndCopiesOnlyItsOwnSet(IdentityHeaderMode mode, string expectedCopy) {
         var caddyfile = CaddyConfigBuilder.Build(
             [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
             Globals);
 
-        // The strip set is the full union in all three modes — nothing a client sends can survive.
-        foreach (var header in IdentityForwarding.AllForwardableHeaderNames)
+        // The strip set is the full ecosystem namespace in all three modes — nothing a client sends can survive.
+        foreach (var header in IdentityForwarding.StripHeaderNames)
             Assert.Contains($"request_header -{header}\n", caddyfile, StringComparison.Ordinal);
 
         // copy_headers carries exactly this mode's set (JWT always + the mode's plaintext names).
         Assert.Contains($"\t\t\t{expectedCopy}\n", caddyfile, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(IdentityHeaderMode.None)]
+    [InlineData(IdentityHeaderMode.Remote)]
+    [InlineData(IdentityHeaderMode.AuthRequest)]
+    public void GroupHeaders_AreStripped_InEveryMode_EvenThoughWeNeverForwardThem(IdentityHeaderMode mode) {
+        var caddyfile = CaddyConfigBuilder.Build(
+            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
+            Globals);
+
+        // The escalation vector this guards: forward_auth's copy_headers governs only the response, so a
+        // client-sent group header would otherwise reach a group-aware upstream (Grafana/Nextcloud) as
+        // authoritative. It must be stripped whatever the mode — including None, which forwards no plaintext.
+        Assert.Contains($"request_header -{IdentityForwarding.RemoteGroups}\n", caddyfile, StringComparison.Ordinal);
+        Assert.Contains(
+            $"request_header -{IdentityForwarding.AuthRequestGroups}\n", caddyfile, StringComparison.Ordinal);
+        Assert.Contains(
+            $"request_header -{IdentityForwarding.ForwardedGroups}\n", caddyfile, StringComparison.Ordinal);
+
+        // ...but never the group header appears in copy_headers — we do not forward groups (Phase 2).
+        var copyLine = caddyfile.Split('\n').Single(l => l.TrimStart().StartsWith("copy_headers", StringComparison.Ordinal));
+        Assert.DoesNotContain("Groups", copyLine, StringComparison.Ordinal);
+    }
+
     [Fact]
-    public void HeaderStripping_PrecedesForwardAuth_ForEveryForwardableHeader() {
+    public void AForgedGroupHeader_IsInTheStripListForAJwtOnlyRoute() {
+        // A low-privilege user on a mode=None route sends `Remote-Groups: admins`. The generated config must
+        // neutralize it before the upstream — even though this route forwards nothing but the JWT.
+        var caddyfile = CaddyConfigBuilder.Build(
+            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
+                Mode: IdentityHeaderMode.None)],
+            Globals);
+
+        var stripAt = caddyfile.IndexOf(
+            $"request_header -{IdentityForwarding.RemoteGroups}\n", StringComparison.Ordinal);
+        var forwardAuthAt = caddyfile.IndexOf("forward_auth", StringComparison.Ordinal);
+        Assert.True(stripAt > 0, "Remote-Groups is not stripped on a JWT-only route — escalation vector open.");
+        Assert.True(stripAt < forwardAuthAt, "Remote-Groups is stripped after forward_auth, not before.");
+    }
+
+    [Fact]
+    public void HeaderStripping_PrecedesForwardAuth_ForEveryStrippedHeader() {
         var caddyfile = CaddyConfigBuilder.Build(
             [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
                 Mode: IdentityHeaderMode.AuthRequest)],
@@ -158,13 +211,25 @@ public sealed class CaddyConfigBuilderTests {
         var forwardAuthAt = caddyfile.IndexOf("forward_auth", StringComparison.Ordinal);
         Assert.True(forwardAuthAt > 0);
 
-        foreach (var header in IdentityForwarding.AllForwardableHeaderNames) {
+        foreach (var header in IdentityForwarding.StripHeaderNames) {
             var stripAt = caddyfile.IndexOf($"request_header -{header}\n", StringComparison.Ordinal);
             // Order is the whole control: a header stripped *after* forward_auth ran would erase the
             // verified value, and one never stripped would let the client assert it (design.md §2.3).
             Assert.True(stripAt > 0, $"{header} is never stripped from the inbound request.");
             Assert.True(stripAt < forwardAuthAt, $"{header} is stripped after forward_auth, not before.");
         }
+    }
+
+    [Fact]
+    public void TransportForwardedHeaders_AreNotStripped() {
+        var caddyfile = CaddyConfigBuilder.Build(
+            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true)], Globals);
+
+        // Caddy sets these legitimately for the upstream; stripping them (via a careless prefix) would break
+        // client-IP, scheme and host propagation. The deny-list is enumerated by exact name for this reason.
+        Assert.DoesNotContain("request_header -X-Forwarded-For\n", caddyfile, StringComparison.Ordinal);
+        Assert.DoesNotContain("request_header -X-Forwarded-Proto\n", caddyfile, StringComparison.Ordinal);
+        Assert.DoesNotContain("request_header -X-Forwarded-Host\n", caddyfile, StringComparison.Ordinal);
     }
 
     [Fact]

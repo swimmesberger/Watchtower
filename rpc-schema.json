@@ -2129,13 +2129,6 @@
               "Restricted"
             ]
           },
-          "identityHeaderMode": {
-            "enum": [
-              "None",
-              "Remote",
-              "AuthRequest"
-            ]
-          },
           "bypassPaths": {
             "type": [
               "string",
@@ -2147,12 +2140,20 @@
             "items": {
               "type": "integer"
             }
+          },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest",
+              null
+            ],
+            "default": null
           }
         },
         "required": [
           "routeId",
           "mode",
-          "identityHeaderMode",
           "bypassPaths",
           "grantedUserIds"
         ]
