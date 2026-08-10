@@ -1,18 +1,33 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Globe, Plus, Trash2, X } from 'lucide-react'
+import { ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CreateRouteRequest, Route, RouteStatus } from '@/lib/types'
+import type {
+  AccessMode,
+  CreateRouteRequest,
+  IdentityHeaderMode,
+  Route,
+  RouteAccess,
+  RouteStatus,
+} from '@/lib/types'
+import { LOCAL_USER_ID } from '@/lib/auth'
 import { timeAgo } from '@/lib/format'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
-import { Input, type InputProps } from '@/components/ui/input'
+import { Input, type InputProps, Textarea } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SectionHeader } from '@/components/ui/section-header'
 import {
@@ -22,9 +37,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
+import { routesRoute } from './module'
 
 const STATUS_TONE: Record<RouteStatus, BadgeTone> = {
   active: 'ok',
@@ -39,6 +56,28 @@ const STATUS_LABEL: Record<RouteStatus, string> = {
   awaitingdns: 'Awaiting DNS',
   pending: 'Pending',
 }
+
+/** The three access modes in menu order, with the copy the Access dialog shows for each. */
+const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] = [
+  { value: 'Public', label: 'Public', description: 'No access control — every request is proxied.' },
+  {
+    value: 'Authenticated',
+    label: 'Any authenticated user',
+    description: 'Any signed-in Watchtower user may enter; anonymous requests go to the login page.',
+  },
+  {
+    value: 'Restricted',
+    label: 'Selected users',
+    description: 'Only the users you pick below may enter.',
+  },
+]
+
+/** The identity-forwarding modes in menu order, with the label the Access dialog shows for each. */
+const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
+  { value: 'None', label: 'JWT only (default)' },
+  { value: 'Remote', label: 'Remote-* headers (Authelia/Traefik)' },
+  { value: 'AuthRequest', label: 'X-Auth-Request-* headers (oauth2-proxy)' },
+]
 
 const emptyForm = {
   stackId: '',
@@ -140,9 +179,15 @@ function ComboField({
 
 export function RoutesPage() {
   const qc = useQueryClient()
+  const { caps } = routesRoute.useRouteContext()
+  // Access policy is meaningless without auth (the proxy only emits forward_auth when it is on) and is an
+  // admin operation, so the affordance is shown only to an administrator on an auth-enabled deployment. The
+  // implicit local administrator (Auth:Enabled=false) reports the reserved `local` id — see auth.ts.
+  const canManageAccess = caps.hasRole('Admin') && caps.user.id !== LOCAL_USER_ID
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...emptyForm })
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
+  const [accessRoute, setAccessRoute] = useState<Route | null>(null)
 
   const { data: status } = useQuery({ queryKey: ['proxy-status'], queryFn: api.proxy.getStatus })
 
@@ -287,17 +332,32 @@ export function RoutesPage() {
       header: '',
       align: 'right',
       cell: (r) => (
-        <Tooltip label="Delete route">
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label={`Delete ${r.domain}`}
-            onClick={() => setPendingDelete(r)}
-            className="text-text-2 hover:text-danger"
-          >
-            <Trash2 />
-          </Button>
-        </Tooltip>
+        <div className="flex items-center justify-end gap-1">
+          {canManageAccess && (
+            <Tooltip label="Access control">
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={`Access control for ${r.domain}`}
+                onClick={() => setAccessRoute(r)}
+                className="text-text-2 hover:text-text"
+              >
+                <Lock />
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip label="Delete route">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`Delete ${r.domain}`}
+              onClick={() => setPendingDelete(r)}
+              className="text-text-2 hover:text-danger"
+            >
+              <Trash2 />
+            </Button>
+          </Tooltip>
+        </div>
       ),
     },
   ]
@@ -325,15 +385,28 @@ export function RoutesPage() {
       </p>
       <div className="flex items-center justify-between border-t border-border pt-3">
         <span className="text-xs text-text-3">created {timeAgo(r.createdAt)}</span>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label={`Delete ${r.domain}`}
-          onClick={() => setPendingDelete(r)}
-          className="text-text-2 hover:text-danger"
-        >
-          <Trash2 />
-        </Button>
+        <div className="flex items-center gap-1">
+          {canManageAccess && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`Access control for ${r.domain}`}
+              onClick={() => setAccessRoute(r)}
+              className="text-text-2 hover:text-text"
+            >
+              <Lock />
+            </Button>
+          )}
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`Delete ${r.domain}`}
+            onClick={() => setPendingDelete(r)}
+            className="text-text-2 hover:text-danger"
+          >
+            <Trash2 />
+          </Button>
+        </div>
       </div>
     </div>
   )
@@ -573,6 +646,222 @@ export function RoutesPage() {
           if (pendingDelete) remove.mutate(pendingDelete)
         }}
       />
+
+      {canManageAccess && (
+        <AccessDialog route={accessRoute} onClose={() => setAccessRoute(null)} />
+      )}
     </div>
+  )
+}
+
+/** Loads a route's policy and hosts the editor; the form is remounted per route so its state resets. */
+function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => void }) {
+  const open = route != null
+
+  const { data: access, isLoading, isError } = useQuery({
+    queryKey: ['route-access', route?.id],
+    queryFn: () => api.proxy.getAccess(route!.id),
+    enabled: open,
+  })
+
+  // The grant picker's roster. Fetched lazily with the dialog, and only actually shown for Restricted.
+  const { data: users = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: api.users.list,
+    enabled: open,
+  })
+
+  const save = useMutation({
+    mutationFn: (data: RouteAccess) => api.proxy.setAccess(route!.id, data),
+    onSuccess: () => {
+      toast.success(`Access updated for ${route!.domain}.`)
+      onClose()
+    },
+    // The backend's AppError text (a rejected bypass line, an unknown user) rides RpcError.message.
+    onError: (err: Error) => toast.error(err.message || 'Failed to update access.'),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && !save.isPending && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Access · {route?.domain}</DialogTitle>
+          <DialogDescription>
+            Decide who may reach this app. The proxy enforces it on every request.
+          </DialogDescription>
+        </DialogHeader>
+
+        {isError ? (
+          <Banner tone="danger" title="Couldn’t load the access policy">
+            Something went wrong while fetching this route’s policy.
+          </Banner>
+        ) : isLoading || !access ? (
+          <div className="flex flex-col gap-3 py-2">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : (
+          <AccessForm
+            key={route!.id}
+            initial={access}
+            users={users}
+            saving={save.isPending}
+            onCancel={onClose}
+            onSubmit={(data) => save.mutate(data)}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function AccessForm({
+  initial,
+  users,
+  saving,
+  onCancel,
+  onSubmit,
+}: {
+  initial: RouteAccess
+  users: { id: number; userName: string; email: string | null }[]
+  saving: boolean
+  onCancel: () => void
+  onSubmit: (data: RouteAccess) => void
+}) {
+  const [mode, setMode] = useState<AccessMode>(initial.mode)
+  const [identityHeaderMode, setIdentityHeaderMode] = useState<IdentityHeaderMode>(
+    initial.identityHeaderMode,
+  )
+  const [bypassPaths, setBypassPaths] = useState(initial.bypassPaths ?? '')
+  const [grantedUserIds, setGrantedUserIds] = useState<number[]>(initial.grantedUserIds)
+
+  function toggleUser(id: number) {
+    setGrantedUserIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+  }
+
+  return (
+    <form
+      className="mt-1 flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (saving) return
+        onSubmit({
+          mode,
+          identityHeaderMode,
+          // Bypass paths only apply to a protected route, and grants only to Restricted; the backend clears
+          // each for the modes they don't belong to, but don't submit retained text/selection either.
+          bypassPaths: mode === 'Public' || bypassPaths.trim() === '' ? null : bypassPaths,
+          grantedUserIds: mode === 'Restricted' ? grantedUserIds : [],
+        })
+      }}
+    >
+      <Field label="Who can access">
+        {({ id }) => (
+          <Select value={mode} onValueChange={(v) => setMode(v as AccessMode)}>
+            <SelectTrigger id={id}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ACCESS_MODES.map((m) => (
+                <SelectItem key={m.value} value={m.value}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </Field>
+      <p className="-mt-2 text-xs text-text-3">
+        {ACCESS_MODES.find((m) => m.value === mode)?.description}
+      </p>
+
+      {mode === 'Restricted' && (
+        <Field label="Allowed users">
+          {() =>
+            users.length === 0 ? (
+              <p className="text-[13px] text-text-3">
+                No users yet. Add accounts on the Users page, then grant them here.
+              </p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto rounded-md border border-border">
+                {users.map((u) => (
+                  <label
+                    key={u.id}
+                    className="flex cursor-pointer items-center gap-3 border-b border-border px-3 py-2 last:border-b-0 hover:bg-surface-2"
+                  >
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-brand"
+                      checked={grantedUserIds.includes(u.id)}
+                      onChange={() => toggleUser(u.id)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="text-sm text-text">{u.userName}</span>
+                      {u.email && <span className="ml-2 text-xs text-text-3">{u.email}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )
+          }
+        </Field>
+      )}
+
+      {mode !== 'Public' && (
+        <Field label="Identity forwarding">
+          {({ id }) => (
+            <>
+              <Select
+                value={identityHeaderMode}
+                onValueChange={(v) => setIdentityHeaderMode(v as IdentityHeaderMode)}
+              >
+                <SelectTrigger id={id}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {IDENTITY_HEADER_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1.5 text-xs text-text-3">
+                Most apps validate the signed JWT (X-Watchtower-Jwt). Choose a header mode only for apps
+                that read a plaintext username header.
+              </p>
+            </>
+          )}
+        </Field>
+      )}
+
+      {mode !== 'Public' && (
+        <Field
+          label="Bypass paths"
+          hint="Paths exempt from access control, e.g. /api/webhooks/*. One per line."
+        >
+          {({ id, describedBy }) => (
+            <Textarea
+              id={id}
+              aria-describedby={describedBy}
+              mono
+              value={bypassPaths}
+              onChange={(e) => setBypassPaths(e.target.value)}
+              placeholder={'/api/webhooks/\n/healthz'}
+              spellCheck={false}
+            />
+          )}
+        </Field>
+      )}
+
+      <div className="flex justify-end gap-2 pt-1">
+        <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" loading={saving}>
+          Save
+        </Button>
+      </div>
+    </form>
   )
 }

@@ -80,6 +80,113 @@ public sealed record WatchtowerOptions {
     /// <c>WATCHTOWER__CI__*</c> (e.g. <c>WATCHTOWER__CI__INSTANCENAME=nas</c>).
     /// </summary>
     public CiOptions Ci { get; init; } = new();
+
+    /// <summary>
+    /// Central authorization settings (docs/central-auth/design.md). Bound from
+    /// <c>WATCHTOWER__AUTH__*</c> (e.g. <c>WATCHTOWER__AUTH__ENABLED=true</c>,
+    /// <c>WATCHTOWER__AUTH__BOOTSTRAPPASSWORD=…</c>).
+    /// </summary>
+    public AuthOptions Auth { get; init; } = new();
+}
+
+/// <summary>
+/// When the login cookie carries the <c>Secure</c> attribute.
+/// </summary>
+public enum AuthCookieSecurePolicy {
+    /// <summary>
+    /// Decide per request from whether it arrived over TLS — after <c>X-Forwarded-Proto</c> has been
+    /// applied, so a request that reached a TLS-terminating proxy over HTTPS counts as secure. The right
+    /// answer for both shipped topologies (published plain-HTTP port, and behind the proxy).
+    /// </summary>
+    Auto,
+
+    /// <summary>
+    /// Always set <c>Secure</c>. Use when Watchtower is only ever reached over HTTPS and the proxy does
+    /// <em>not</em> send <c>X-Forwarded-Proto</c>, which would otherwise leave <see cref="Auto"/> issuing
+    /// cookies without the flag. A cookie set this way is never sent over plain HTTP, so the published
+    /// port stops working as a recovery path.
+    /// </summary>
+    Always,
+
+    /// <summary>
+    /// Never set <c>Secure</c>. Only for a deployment with no TLS anywhere — a lab or an isolated LAN.
+    /// The session cookie then travels in the clear and is trivially interceptable; do not use it on an
+    /// instance reachable from an untrusted network.
+    /// </summary>
+    Never,
+}
+
+/// <summary>
+/// Settings for the central authorization plane: local user accounts, the login session, and the
+/// per-route access policy the reverse proxy enforces (docs/central-auth/design.md).
+/// Disabled by default so upgrading an existing deployment cannot lock its operator out.
+/// </summary>
+public sealed record AuthOptions {
+    /// <summary>
+    /// When true, Watchtower manages users and enforces access policy. Turning it on bootstraps an
+    /// <c>admin</c> account (see <see cref="BootstrapPassword"/>). Set via
+    /// <c>WATCHTOWER__AUTH__ENABLED=true</c>.
+    /// </summary>
+    public bool Enabled { get; init; } = false;
+
+    /// <summary>
+    /// Public hostname of the central login page, e.g. <c>watchtower.example.com</c>. Protected apps
+    /// redirect unauthenticated visitors here, so it must be reachable through the proxy. Optional
+    /// while only Watchtower's own UI is protected.
+    /// </summary>
+    public string? Host { get; init; }
+
+    /// <summary>Idle lifetime of a login session in hours; each request slides it forward.</summary>
+    public int SessionLifetimeHours { get; init; } = 12;
+
+    /// <summary>Hard cap on a session's age in days, regardless of activity — after this a fresh login is required.</summary>
+    public int AbsoluteSessionLifetimeDays { get; init; } = 7;
+
+    /// <summary>
+    /// Whether the login cookie is marked <c>Secure</c>. The default (<see cref="AuthCookieSecurePolicy.Auto"/>)
+    /// follows the request scheme once <c>X-Forwarded-Proto</c> has been applied, which is correct for both
+    /// shipped topologies; see <see cref="AuthCookieSecurePolicy"/> for when to override it. Set via
+    /// <c>WATCHTOWER__AUTH__COOKIESECURE=Always</c>.
+    /// </summary>
+    public AuthCookieSecurePolicy CookieSecure { get; init; } = AuthCookieSecurePolicy.Auto;
+
+    /// <summary>
+    /// Directory holding the identity-token signing key and the data-protection keys. Must live on a
+    /// persistent volume: losing it signs everyone out on restart.
+    /// </summary>
+    public string KeyPath { get; init; } = "/data/auth-keys";
+
+    /// <summary>
+    /// How many <c>POST /api/auth/login</c> attempts one client IP may make per minute before the
+    /// endpoint answers <c>429</c> — a coarse backstop layered on top of the per-account Identity
+    /// lockout (docs/central-auth/design.md §9). Set via <c>WATCHTOWER__AUTH__LOGINRATELIMITPERMINUTE</c>.
+    /// A value below 1 is treated as 1 so a mistyped 0 cannot silently disable the backstop.
+    /// <para>
+    /// The partition is the <em>connection</em> remote IP, not <c>X-Forwarded-For</c> (which Watchtower
+    /// deliberately does not process, see the forwarded-headers note in <c>Program.cs</c>): behind the
+    /// single reverse proxy every request shares Caddy's address, so the limit is effectively
+    /// instance-global there; on the published port it is genuinely per-client. Raise it on a busy
+    /// multi-user instance reached through the proxy.
+    /// </para>
+    /// </summary>
+    public int LoginRateLimitPerMinute { get; init; } = 10;
+
+    /// <summary>
+    /// Password for the <c>admin</c> account created on first start. A value configured here is a
+    /// secret and is never written to the log. When it is left unset a random password is generated
+    /// instead, and <em>that</em> one is logged once — it has no other way of reaching the operator.
+    /// Ignored when <see cref="ResetPassword"/> is also set on a fresh database: recovery runs first
+    /// and creates the account, so <see cref="ResetPassword"/> wins.
+    /// </summary>
+    public string? BootstrapPassword { get; init; }
+
+    /// <summary>
+    /// Break-glass recovery: when set, every start guarantees an <c>admin</c> account whose password is
+    /// this value and which is not locked out — recreating the account if it was renamed or deleted.
+    /// Takes precedence over <see cref="BootstrapPassword"/>, including on a fresh database.
+    /// Remove it again once you are back in. Treated as a secret; never logged.
+    /// </summary>
+    public string? ResetPassword { get; init; }
 }
 
 /// <summary>

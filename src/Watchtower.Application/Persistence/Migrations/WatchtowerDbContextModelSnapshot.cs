@@ -53,6 +53,101 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("elarion_settings", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.AuthEvent", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Detail")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("detail");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("kind");
+
+                    b.Property<int?>("RouteId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("route_id");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_auth_events");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_auth_events_created_at");
+
+                    b.HasIndex("RouteId")
+                        .HasDatabaseName("ix_auth_events_route_id");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_auth_events_user_id");
+
+                    b.ToTable("auth_events", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AuthSession", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("kind");
+
+                    b.Property<int?>("RouteId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("route_id");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("token_hash");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_auth_sessions");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_auth_sessions_expires_at");
+
+                    b.HasIndex("RouteId")
+                        .HasDatabaseName("ix_auth_sessions_route_id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_auth_sessions_token_hash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_auth_sessions_user_id");
+
+                    b.ToTable("auth_sessions", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>
                 {
                     b.Property<int>("Id")
@@ -191,6 +286,58 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("deploy_events", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.LoginCode", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("code_hash");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("RedirectUri")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("redirect_uri");
+
+                    b.Property<int>("RouteId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("route_id");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_login_codes");
+
+                    b.HasIndex("CodeHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_login_codes_code_hash");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_login_codes_expires_at");
+
+                    b.HasIndex("RouteId")
+                        .HasDatabaseName("ix_login_codes_route_id");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_login_codes_user_id");
+
+                    b.ToTable("login_codes", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Registry", b =>
                 {
                     b.Property<int>("Id")
@@ -235,6 +382,15 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("id");
 
+                    b.Property<string>("AccessMode")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("access_mode");
+
+                    b.Property<string>("BypassPaths")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("bypass_paths");
+
                     b.Property<DateTimeOffset?>("CertNotAfter")
                         .HasColumnType("TEXT")
                         .HasColumnName("cert_not_after");
@@ -251,6 +407,11 @@ namespace Watchtower.Application.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("domain");
+
+                    b.Property<string>("IdentityHeaderMode")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("identity_header_mode");
 
                     b.Property<bool>("IsPrimary")
                         .HasColumnType("INTEGER")
@@ -294,6 +455,34 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_routes_stack_id");
 
                     b.ToTable("routes", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.RouteAccessGrant", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<int>("RouteId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("route_id");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_route_access_grants");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_route_access_grants_user_id");
+
+                    b.HasIndex("RouteId", "UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_route_access_grants_route_id_user_id");
+
+                    b.ToTable("route_access_grants", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
@@ -555,6 +744,112 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("stack_update_checks", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.User", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AccessFailedCount")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("access_failed_count");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("Disabled")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("disabled");
+
+                    b.Property<string>("Email")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("email");
+
+                    b.Property<bool>("IsAdmin")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("is_admin");
+
+                    b.Property<DateTimeOffset?>("LockoutEnd")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("lockout_end");
+
+                    b.Property<string>("NormalizedUserName")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("normalized_user_name");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("password_hash");
+
+                    b.Property<string>("SecurityStamp")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("security_stamp");
+
+                    b.Property<string>("UserName")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("user_name");
+
+                    b.HasKey("Id")
+                        .HasName("pk_users");
+
+                    b.HasIndex("NormalizedUserName")
+                        .IsUnique()
+                        .HasDatabaseName("ix_users_normalized_user_name");
+
+                    b.ToTable("users", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AuthEvent", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Route", "Route")
+                        .WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_auth_events_routes_route_id");
+
+                    b.HasOne("Watchtower.Application.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_auth_events_users_user_id");
+
+                    b.Navigation("Route");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AuthSession", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Route", "Route")
+                        .WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_auth_sessions_routes_route_id");
+
+                    b.HasOne("Watchtower.Application.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_auth_sessions_users_user_id");
+
+                    b.Navigation("Route");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
@@ -579,6 +874,27 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("Stack");
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.LoginCode", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Route", "Route")
+                        .WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_login_codes_routes_route_id");
+
+                    b.HasOne("Watchtower.Application.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_login_codes_users_user_id");
+
+                    b.Navigation("Route");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Registry", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
@@ -600,6 +916,27 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_routes_stacks_stack_id");
 
                     b.Navigation("Stack");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.RouteAccessGrant", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Route", "Route")
+                        .WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_route_access_grants_routes_route_id");
+
+                    b.HasOne("Watchtower.Application.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_route_access_grants_users_user_id");
+
+                    b.Navigation("Route");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>

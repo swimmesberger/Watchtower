@@ -1,10 +1,17 @@
 using Elarion.Abstractions.Features;
+using Elarion.Abstractions.Identity;
+using Elarion.Authorization;
+using Elarion.Identity;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
@@ -20,6 +27,10 @@ public static class WatchtowerServiceCollectionExtensions {
     public static IServiceCollection AddWatchtowerServices(this IServiceCollection services, IConfiguration config) {
         var section = config.GetSection("Watchtower");
         services.Configure<WatchtowerOptions>(section);
+
+        // Wall-clock seam. Session expiry is the one place where "now" is a correctness decision rather
+        // than a log line, so it is injected and the tests can move it.
+        services.TryAddSingleton(TimeProvider.System);
 
         var dbPath = section.GetValue<string>("DbPath") ?? "/data/watchtower.db";
         var dir = Path.GetDirectoryName(dbPath);
@@ -67,6 +78,80 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
 
         services.AddSingleton<StackUpdateService>();
+
+        // Central authorization (docs/central-auth/design.md) — ASP.NET Identity *core* only
+        // (UserManager + password hasher + lockout/security-stamp), stored through WatchtowerDbContext.
+        // Registered unconditionally: nothing runs until something asks for a UserManager, and the
+        // bootstrap below no-ops while Auth:Enabled is false.
+        //
+        // Data protection is REQUIRED here, not a convenience: the host builds with
+        // WebApplication.CreateSlimBuilder, which registers none of it. It encrypts the password-reset
+        // tokens today and the session cookies from the next work item on. The key ring is persisted to
+        // Auth:KeyPath — unconditionally, because the default location is per-user and the shipped
+        // container has no home directory, which would make the keys ephemeral and sign everyone out on
+        // every restart. Directory created up front, exactly as DbPath's is above.
+        var keyPath = section.GetValue<string>("Auth:KeyPath");
+        if (string.IsNullOrWhiteSpace(keyPath)) keyPath = new AuthOptions().KeyPath;
+        Directory.CreateDirectory(keyPath);
+        services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+        services.AddIdentityCore<User>(o => {
+            // Brute-force protection: 5 failed logins park the account for 15 minutes.
+            o.Lockout.AllowedForNewUsers = true;
+            o.Lockout.MaxFailedAccessAttempts = 5;
+            o.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+            // Length over composition rules — forced symbol classes push operators towards
+            // predictable substitutions without adding real entropy.
+            o.Password.RequiredLength = 10;
+            o.Password.RequiredUniqueChars = 1;
+            o.Password.RequireDigit = false;
+            o.Password.RequireLowercase = false;
+            o.Password.RequireUppercase = false;
+            o.Password.RequireNonAlphanumeric = false;
+            o.User.RequireUniqueEmail = false;
+        })
+        .AddUserStore<WatchtowerUserStore>()
+        // Only the data-protector provider: password resets (including the break-glass hook) go
+        // through a token so the validators run before the stored hash is touched. The phone/email/
+        // authenticator providers AddDefaultTokenProviders would bring have nothing to drive them.
+        .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider);
+
+        // Login sessions (design.md §4): revocable database rows behind the __wt_sso cookie. Scoped, like
+        // the context it writes through. Registered unconditionally — it is inert until something logs in.
+        services.AddScoped<AuthSessionService>();
+
+        // The ES256 signer behind X-Watchtower-Jwt and the JWKS endpoint (design.md §2.3). Singleton
+        // because the key pair is process-wide state: loading it per request would re-read the PEM on
+        // every proxied request, and generating it per request would produce a different `kid` each time.
+        // Registered unconditionally and lazily — the key file is not touched until the first assertion
+        // is minted or the JWKS is fetched, so a deployment with Auth:Enabled off never creates one.
+        services.AddSingleton<AuthTokenSigner>();
+
+        // Who the caller is, and therefore what [assembly: ElarionAuthorizationDefaults] lets through.
+        // Registered BEFORE AddElarionClaimsCurrentUser on purpose: that helper uses TryAdd for
+        // ICurrentUser, so registering first is how a host substitutes its own snapshot.
+        var authEnabled = section.GetValue<bool>("Auth:Enabled");
+        if (authEnabled) {
+            services.AddScoped<WatchtowerClaimsCurrentUser>();
+            services.AddScoped<ICurrentUser>(sp => sp.GetRequiredService<WatchtowerClaimsCurrentUser>());
+            // Claim types must match what WatchtowerSessionAuthenticationHandler mints; both sides read
+            // the WatchtowerClaims constants rather than repeating the strings.
+            services.AddElarionClaimsCurrentUser(o => {
+                o.UserIdClaimType = WatchtowerClaims.UserId;
+                o.EmailClaimType = WatchtowerClaims.Email;
+                o.RoleClaimType = WatchtowerClaims.Role;
+            });
+        } else {
+            // No authentication configured ⇒ the local operator is the administrator, exactly as before.
+            services.AddSingleton<ICurrentUser, ImplicitAdminCurrentUser>();
+        }
+
+        // The IAuthorizer the generated authorization decorator resolves. Required in BOTH modes: the
+        // decorator is attached at compile time by [assembly: ElarionAuthorizationDefaults], so a missing
+        // registration would fail every handler at resolution time rather than fail open.
+        services.AddElarionAuthorization();
+
+        // First-run admin + break-glass password reset. No-op unless Auth:Enabled.
+        services.AddHostedService<AuthBootstrapService>();
 
         // CI runners (docs/ci-runners/design.md) — the orchestrator reconciles ephemeral GitHub
         // Actions runner containers for enabled repos; singleton so ci.* handlers can read live

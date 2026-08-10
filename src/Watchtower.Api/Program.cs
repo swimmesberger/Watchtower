@@ -2,11 +2,15 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Elarion.Abstractions.Modules;
 using Elarion.AspNetCore;
+using Elarion.AspNetCore.Identity;
 using Elarion.JsonRpc;
 using Elarion.Session;
 using Elarion.Settings.Configuration;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
+using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
@@ -66,9 +70,14 @@ builder.Services.ConfigureHttpJsonOptions(o => {
 // CORS for development: when the SPA runs on the Vite dev server (a different origin — e.g. under the
 // Aspire AppHost, which injects the API URL as VITE_API_URL) it calls /rpc, /api/* and the SSE streams
 // cross-origin. In production the SPA is served same-origin from wwwroot, so no CORS is applied.
+// SetIsOriginAllowed rather than AllowAnyOrigin because the login cookie needs AllowCredentials, and the
+// CORS protocol forbids combining credentials with a wildcard origin (ASP.NET throws at request time).
+// The predicate is restricted to loopback: this policy approves CREDENTIALED cross-origin calls, so an
+// allow-anything predicate would let any page a developer happens to visit drive their local Watchtower
+// with their session cookie. The dev server always runs on localhost, so loopback loses nothing.
 const string DevCorsPolicy = "watchtower-dev-frontend";
 builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
-    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+    p.SetIsOriginAllowed(DevCorsOrigins.IsLoopback).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 // Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
 // git service layer, the deploy engine, and the background update checkers.
@@ -85,32 +94,90 @@ builder.AddElarionSettingsConfiguration();
 //                        (e.g. Metrics' "metrics-history") for the frontend's contribution gating.
 //   AddElarionJsonRpc  — the JSON-RPC transport + shared handler dispatcher.
 builder.Services.AddElarion(builder.Configuration);
-// The session bootstrap composes ICurrentUser; Watchtower is unauthenticated (reverse-proxy auth — see
-// README), so a fixed anonymous user stands in: isAuthenticated=false, no roles/grants.
-builder.Services.AddSingleton<Elarion.Abstractions.Identity.ICurrentUser, AnonymousCurrentUser>();
+// ICurrentUser (claims-backed when Auth:Enabled, an implicit local administrator otherwise) and the
+// IAuthorizer behind [assembly: ElarionAuthorizationDefaults] are registered by AddWatchtowerServices
+// above — both are mode decisions driven by Watchtower:Auth:Enabled, so they live next to the rest of the
+// auth wiring instead of being split across the host.
 builder.Services.AddElarionSession(builder.Configuration.GetClientCapabilityManifest());
 builder.Services.AddElarionJsonRpc((dispatcher, configuration) =>
     ElarionBootstrapper.RegisterHandlers(dispatcher, configuration).MapElarionSession());
+
+// Native login (docs/central-auth/design.md §2.5). The scheme reads the __wt_sso cookie and resolves it
+// against the auth_sessions table on every request, so revocation is immediate; ASP.NET's cookie handler
+// is deliberately unused because its self-contained tickets could not be revoked at all.
+var authEnabled = builder.Configuration.GetValue<bool>("Watchtower:Auth:Enabled");
+if (authEnabled) {
+    builder.Services
+        .AddAuthentication(WatchtowerSessionDefaults.AuthenticationScheme)
+        .AddScheme<AuthenticationSchemeOptions, WatchtowerSessionAuthenticationHandler>(
+            WatchtowerSessionDefaults.AuthenticationScheme, configureOptions: null);
+    builder.Services.AddAuthorization();
+    // Per-IP throttle on the login endpoint (design.md §9). Registered only in this mode because the
+    // route it protects is only mapped here; the policy is attached to that one route, not global.
+    builder.Services.AddWatchtowerLoginRateLimiter();
+}
+
+// Trust X-Forwarded-Proto so HttpContext.Request.IsHttps reflects the scheme the *browser* used, not the
+// plain HTTP hop from the TLS-terminating proxy to Kestrel. Without this the session cookie never gets the
+// Secure attribute in any shipped deployment, because Kestrel only ever sees http://.
+//
+// Spoofing analysis for the cleared KnownNetworks/KnownProxies (which otherwise reject forwarded headers
+// from unknown sources): Caddy is a sibling container on a Docker network whose subnet is assigned
+// dynamically at creation time, so there is no stable address to pin — the alternative to clearing the
+// lists is the header being ignored, which is the bug. The exposure is bounded because nothing on the
+// server keys a trust decision off the scheme: a direct client that spoofs X-Forwarded-Proto=https only
+// changes the attributes of the cookie *it* receives, and a Secure cookie it cannot replay over http is a
+// self-inflicted denial of service, not an escalation. Only the proto header is processed — X-Forwarded-For
+// and -Host are deliberately left alone so nothing downstream can be fooled about the client address or
+// the host name.
+builder.Services.Configure<ForwardedHeadersOptions>(o => {
+    o.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
+    // KnownIPNetworks, not the deprecated KnownNetworks (ASPDEPR005).
+    o.KnownIPNetworks.Clear();
+    o.KnownProxies.Clear();
+});
 
 var app = builder.Build();
 
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
 
+// First in the pipeline: everything after it — including the cookie issuance in the login endpoint —
+// must see the corrected scheme.
+app.UseForwardedHeaders();
+
 // Allow the cross-origin Vite dev server to call the API (development only).
 if (app.Environment.IsDevelopment())
     app.UseCors(DevCorsPolicy);
 
-// Serve the built React SPA from wwwroot/ (index.html is the SPA entry point).
+// Serve the built React SPA from wwwroot/ (index.html is the SPA entry point). Before authentication:
+// the login page is part of that bundle, so it has to be reachable without a session.
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+// Identity, then the ICurrentUser snapshot, then endpoint authorization — all before anything is mapped,
+// so every transport sees the same principal. UseElarionCurrentUser seeds the request scope for
+// [HttpEndpoint] handlers; JSON-RPC captures HttpContext.User into its own per-call scope itself.
+if (authEnabled) {
+    app.UseAuthentication();
+    app.UseElarionCurrentUser();
+    app.UseAuthorization();
+    // After routing has selected the endpoint (WebApplication inserts UseRouting at the front of the
+    // pipeline), so the login route's RequireRateLimiting metadata is in effect here.
+    app.UseRateLimiter();
+}
+
+// Login/logout/continue (only mapped when Auth:Enabled).
+app.MapWatchtowerAuthEndpoints(authEnabled);
+// Forward-auth: the verify endpoint Caddy consults for protected apps, the callback and per-app logout
+// served on each app's own domain, and the public JWKS. All anonymous — verify *is* the auth check.
+app.MapWatchtowerAccessEndpoints(authEnabled);
 // JSON-RPC endpoint (POST /rpc).
 app.MapElarionJsonRpc();
 // Auto-discovered [HttpEndpoint] handlers (feature-flag gated; none today).
 app.MapElarionEndpoints(app.Configuration);
 // Webhook, SSE streams, and health.
-app.MapWatchtowerHttpEndpoints();
+app.MapWatchtowerHttpEndpoints(authEnabled);
 
 // SPA fallback: any unmatched route returns index.html so the client router handles it.
 app.MapFallbackToFile("index.html");

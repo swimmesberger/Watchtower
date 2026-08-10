@@ -1,0 +1,47 @@
+using Elarion.Abstractions.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
+
+namespace Watchtower.Application.Modules.Proxy.Handlers;
+
+/// <summary>
+/// Reads a route's access policy (docs/central-auth/design.md §7): its <see cref="AccessMode"/>, the
+/// newline-separated bypass paths, and — for a <see cref="AccessMode.Restricted"/> route — the ids of the
+/// users granted through it. The read side of <see cref="SetAccess"/>; the two share a response shape so a
+/// form can round-trip what it saved.
+/// </summary>
+/// <remarks>
+/// Deciding who may reach an app is an administrative act, so this carries the same
+/// <c>[RequireRole("Admin")]</c> the Users module does — a non-administrator has no business enumerating a
+/// route's grant list. The granted ids are returned whatever the mode, not only for <c>Restricted</c>: a
+/// form that has just switched a route away from <c>Restricted</c> still wants to show the selection it
+/// would restore, and <see cref="SetAccess"/> is what actually clears the rows.
+/// </remarks>
+[Handler("proxy.getAccess")]
+[RequireRole(WatchtowerClaims.AdminRole)]
+public sealed class GetAccess(WatchtowerDbContext db)
+    : IHandler<GetAccess.Query, Result<GetAccess.Response>> {
+    public sealed record Query(int RouteId);
+    public sealed record Response(
+        AccessMode Mode,
+        IdentityHeaderMode IdentityHeaderMode,
+        string? BypassPaths,
+        IReadOnlyList<int> GrantedUserIds);
+
+    public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
+        var route = await db.Routes.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == query.RouteId, ct);
+        if (route is null)
+            return AppError.NotFound($"Route {query.RouteId} not found");
+
+        var grantedUserIds = await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.RouteId == route.Id)
+            .Select(g => g.UserId)
+            .OrderBy(id => id)
+            .ToListAsync(ct);
+
+        return new Response(route.AccessMode, route.IdentityHeaderMode, route.BypassPaths, grantedUserIds);
+    }
+}

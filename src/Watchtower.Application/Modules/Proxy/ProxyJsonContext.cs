@@ -23,4 +23,8 @@ namespace Watchtower.Application.Modules.Proxy;
 [JsonSerializable(typeof(CheckDns.Response), TypeInfoPropertyName = "CheckDnsResponse")]
 [JsonSerializable(typeof(GetProxyStatus.Query), TypeInfoPropertyName = "GetProxyStatusQuery")]
 [JsonSerializable(typeof(GetProxyStatus.Response), TypeInfoPropertyName = "GetProxyStatusResponse")]
+[JsonSerializable(typeof(GetAccess.Query), TypeInfoPropertyName = "GetAccessQuery")]
+[JsonSerializable(typeof(GetAccess.Response), TypeInfoPropertyName = "GetAccessResponse")]
+[JsonSerializable(typeof(SetAccess.Command), TypeInfoPropertyName = "SetAccessCommand")]
+[JsonSerializable(typeof(SetAccess.Response), TypeInfoPropertyName = "SetAccessResponse")]
 public sealed partial class ProxyJsonContext : JsonSerializerContext;

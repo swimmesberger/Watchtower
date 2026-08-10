@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Watchtower.Api" />
+    <!-- CaddyManager.ProjectSites: the route-table-to-site-list projection, testable without Docker. -->
+    <InternalsVisibleTo Include="Watchtower.Application.Tests" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,8 +25,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- JWT minting + JWKS for the identity assertion forwarded to protected apps (AuthTokenSigner). -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Brings the shared framework (Microsoft.Extensions.* hosting/logging/options/DI) used by the
-         background services and the ASP.NET-hosted handler pipeline. -->
+         background services and the ASP.NET-hosted handler pipeline. It also supplies ASP.NET
+         Identity *core* (Microsoft.Extensions.Identity.Core) behind WatchtowerUserStore — that
+         assembly is part of the shared framework, so it needs no PackageReference (NU1510). -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 

@@ -433,6 +433,33 @@ export interface UpdateRouteRequest {
   isPrimary: boolean
 }
 
+/**
+ * A route's access policy (docs/central-auth/design.md §3/§8). `Public` proxies every request as before;
+ * `Authenticated` lets any signed-in user through; `Restricted` allows only the granted users. Mirrors the
+ * backend `AccessMode` enum, serialized by name.
+ */
+export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
+
+/**
+ * Which plaintext identity headers reach a protected upstream (docs/central-auth/design.md §2.3). The
+ * signed `X-Watchtower-Jwt` assertion is always forwarded and is the source of truth; these opt a route
+ * into ecosystem-standard plaintext headers for apps that read a username header instead. `None` (the
+ * default) forwards the JWT only; `Remote` uses Authelia/Traefik `Remote-*`; `AuthRequest` uses
+ * oauth2-proxy `X-Auth-Request-*`. Mirrors the backend `IdentityHeaderMode` enum, serialized by name.
+ */
+export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest'
+
+/** The shape `proxy.getAccess` returns and `proxy.setAccess` both accepts and returns. */
+export interface RouteAccess {
+  mode: AccessMode
+  /** Which plaintext identity headers reach the upstream; `None` forwards the signed JWT only. */
+  identityHeaderMode: IdentityHeaderMode
+  /** Newline-separated request-path prefixes exempt from access control; null when none. */
+  bypassPaths: string | null
+  /** Ids of the users granted through the route; only meaningful for `Restricted`. */
+  grantedUserIds: number[]
+}
+
 export interface DnsCheckResult {
   resolves: boolean
   addresses: string[]
@@ -498,4 +525,34 @@ export interface AddTenantRequest {
   templateId: number
   slug: string
   envOverrides?: TemplateEnvVarInput[] | null
+}
+
+/**
+ * A Watchtower account, as the Users admin screen sees it. Mirrors the backend `UserDto`, which
+ * deliberately carries no password hash or security stamps.
+ */
+export interface User {
+  id: number
+  userName: string
+  email: string | null
+  /** Holds the Admin role: user management and system configuration. */
+  isAdmin: boolean
+  /** Suspended: the account exists but may neither sign in nor pass access verification. */
+  disabled: boolean
+  /** Temporarily locked by the brute-force counter. Derived server-side from the lockout deadline. */
+  lockedOut: boolean
+  createdAt: string
+}
+
+export interface CreateUserRequest {
+  userName: string
+  password: string
+  email?: string | null
+  isAdmin: boolean
+}
+
+export interface UpdateUserRequest {
+  userName: string
+  email?: string | null
+  isAdmin: boolean
 }

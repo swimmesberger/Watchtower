@@ -6,6 +6,7 @@
 // #71). UI-only modules (networks, volumes) own no routes and are discovered by glob only.
 import { createRouter } from '@tanstack/react-router'
 import { rootRoute } from './root-route'
+import { loginRoute } from './login-route'
 import type { AppModule } from './app-module'
 import credentials from '@/modules/credentials'
 import dashboard from '@/modules/dashboard'
@@ -16,6 +17,7 @@ import registries from '@/modules/registries'
 import settings from '@/modules/settings'
 import stacks from '@/modules/stacks'
 import templates from '@/modules/templates'
+import users from '@/modules/users'
 
 // Vite expands the glob at build time into static imports, so manifest discovery stays compile-time,
 // bundled, and deterministic (keys come back sorted). Used only for `.manifest` — routes come from the
@@ -36,6 +38,8 @@ export const appManifests = appModules.map((m) => m.manifest)
 // Each `satisfies AppModule` module keeps its concrete route tuple, so the tree is statically typed and
 // TanStack infers `Link`/`params`/`search` across the app.
 const routeTree = rootRoute.addChildren([
+  // Platform-owned and deliberately ungated: it is the page an unauthenticated visitor is sent to.
+  loginRoute,
   ...credentials.routes,
   ...dashboard.routes,
   ...infrastructure.routes,
@@ -45,6 +49,7 @@ const routeTree = rootRoute.addChildren([
   ...settings.routes,
   ...stacks.routes,
   ...templates.routes,
+  ...users.routes,
 ])
 
 // Context values are supplied at render time by `RouterProvider` in the entry (after the capability

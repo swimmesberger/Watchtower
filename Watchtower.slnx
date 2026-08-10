@@ -11,7 +11,9 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Watchtower.Application/Watchtower.Application.csproj" />
+    <Project Path="src/Watchtower.Application.Tests/Watchtower.Application.Tests.csproj" />
     <Project Path="src/Watchtower.Api/Watchtower.Api.csproj" />
+    <Project Path="src/Watchtower.Api.Tests/Watchtower.Api.Tests.csproj" />
     <Project Path="src/Watchtower.AppHost/Watchtower.AppHost.csproj" />
     <!-- The Vite + React SPA, wrapped as a NoTargets project for solution visibility. The Aspire AppHost
          runs it via AddViteApp; the Docker image builds it in a node stage. -->

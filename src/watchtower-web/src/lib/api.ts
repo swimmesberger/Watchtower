@@ -28,6 +28,7 @@ import type {
   ProxyStatus,
   Registry,
   Route,
+  RouteAccess,
   SelfUpdateStatus,
   Stack,
   StackTemplate,
@@ -42,6 +43,9 @@ import type {
   UpdateRouteRequest,
   UpdateSelfConfigRequest,
   UpdateStackRequest,
+  UpdateUserRequest,
+  User,
+  CreateUserRequest,
   VolumeInfo,
   VolumeSize,
 } from './types'
@@ -195,6 +199,16 @@ export const api = {
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
+    getAccess: async (routeId: number) =>
+      (await rpc('proxy.getAccess', { routeId })) as RouteAccess,
+    setAccess: async (routeId: number, data: RouteAccess) =>
+      (await rpc('proxy.setAccess', {
+        routeId,
+        mode: data.mode,
+        identityHeaderMode: data.identityHeaderMode,
+        bypassPaths: data.bypassPaths ?? null,
+        grantedUserIds: data.grantedUserIds,
+      })) as RouteAccess,
   },
 
   templates: {
@@ -249,6 +263,33 @@ export const api = {
         .containers as ContainerMetrics[],
     stacks: async (range?: MetricsRange | null) =>
       (await rpc('metrics.stacks', { range: range ?? null })) as StackMetricsResult,
+  },
+
+  users: {
+    list: async () => (await rpc('users.list', {})).users as User[],
+    create: async (data: CreateUserRequest) =>
+      (await rpc('users.create', {
+        userName: data.userName,
+        password: data.password,
+        email: data.email ?? null,
+        isAdmin: data.isAdmin,
+      })).user as User,
+    update: async (id: number, data: UpdateUserRequest) =>
+      (await rpc('users.update', {
+        id,
+        userName: data.userName,
+        email: data.email ?? null,
+        isAdmin: data.isAdmin,
+      })).user as User,
+    // Also signs the account out everywhere — see the backend handler.
+    resetPassword: async (id: number, newPassword: string) => {
+      await rpc('users.resetPassword', { id, newPassword })
+    },
+    setDisabled: async (id: number, disabled: boolean) =>
+      (await rpc('users.setDisabled', { id, disabled })).user as User,
+    delete: async (id: number) => {
+      await rpc('users.delete', { id })
+    },
   },
 
   system: {
