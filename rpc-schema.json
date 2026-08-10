@@ -1864,6 +1864,48 @@
         ]
       }
     },
+    "proxy.getAccess": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "routeId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "routeId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted"
+            ]
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantedUserIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "mode",
+          "bypassPaths",
+          "grantedUserIds"
+        ]
+      }
+    },
     "proxy.getRoute": {
       "params": {
         "type": "object",
@@ -2062,6 +2104,70 @@
         },
         "required": [
           "routes"
+        ]
+      }
+    },
+    "proxy.setAccess": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "routeId": {
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted"
+            ]
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantedUserIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "routeId",
+          "mode",
+          "bypassPaths",
+          "grantedUserIds"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted"
+            ]
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantedUserIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "mode",
+          "bypassPaths",
+          "grantedUserIds"
         ]
       }
     },

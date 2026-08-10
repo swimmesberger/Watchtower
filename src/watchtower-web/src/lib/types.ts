@@ -433,6 +433,22 @@ export interface UpdateRouteRequest {
   isPrimary: boolean
 }
 
+/**
+ * A route's access policy (docs/central-auth/design.md §3/§8). `Public` proxies every request as before;
+ * `Authenticated` lets any signed-in user through; `Restricted` allows only the granted users. Mirrors the
+ * backend `AccessMode` enum, serialized by name.
+ */
+export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
+
+/** The shape `proxy.getAccess` returns and `proxy.setAccess` both accepts and returns. */
+export interface RouteAccess {
+  mode: AccessMode
+  /** Newline-separated request-path prefixes exempt from access control; null when none. */
+  bypassPaths: string | null
+  /** Ids of the users granted through the route; only meaningful for `Restricted`. */
+  grantedUserIds: number[]
+}
+
 export interface DnsCheckResult {
   resolves: boolean
   addresses: string[]

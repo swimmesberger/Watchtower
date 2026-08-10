@@ -23,6 +23,9 @@ public static class AuthEventKinds {
     /// <summary>A signed-in visitor was refused an app they hold no grant for (and refused <c>redirect_uri</c> handovers).</summary>
     public const string AccessDenied = "access.denied";
 
+    /// <summary>An administrator changed a route's access policy — its mode, bypass paths or the set of granted users.</summary>
+    public const string RouteAccessChanged = "route.access.changed";
+
     /// <summary>An account was created by an administrator.</summary>
     public const string UserCreated = "user.created";
 

@@ -28,6 +28,7 @@ import type {
   ProxyStatus,
   Registry,
   Route,
+  RouteAccess,
   SelfUpdateStatus,
   Stack,
   StackTemplate,
@@ -198,6 +199,15 @@ export const api = {
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
+    getAccess: async (routeId: number) =>
+      (await rpc('proxy.getAccess', { routeId })) as RouteAccess,
+    setAccess: async (routeId: number, data: RouteAccess) =>
+      (await rpc('proxy.setAccess', {
+        routeId,
+        mode: data.mode,
+        bypassPaths: data.bypassPaths ?? null,
+        grantedUserIds: data.grantedUserIds,
+      })) as RouteAccess,
   },
 
   templates: {
