@@ -237,4 +237,5 @@ public static class AppApiEndpoints {
 [JsonSerializable(typeof(MgmtTenantDeletedDto))]
 [JsonSerializable(typeof(MgmtCreateTenantRequest))]
 [JsonSerializable(typeof(WatchtowerHttpEndpoints.WebhookDeployResult))]
+[JsonSerializable(typeof(WatchtowerAccessEndpoints.AppsResponse))]
 public sealed partial class WatchtowerHttpJsonContext : JsonSerializerContext;

@@ -204,9 +204,11 @@ public static class WatchtowerServiceCollectionExtensions {
             services.AddSingleton<IMetricsSource, InMemoryMetricsSource>();
         }
 
-        // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates the Metrics module's
-        // [ClientFeatures] names through this service — "metrics-history" reflects the backend chosen above.
-        services.AddSingleton<IFeatureFlagService, MetricsFeatureFlagService>();
+        // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates every module's
+        // [ClientFeatures] names through this one service — "metrics-history" reflects the backend chosen
+        // above, "apps-portal" reflects the caller's realm. Scoped because the second of those reads
+        // ICurrentUser; a singleton could only answer the deployment-scoped half.
+        services.AddScoped<IFeatureFlagService, WatchtowerFeatureFlagService>();
 
         // Background checkers — always registered. Each loops on a short poll and reads its
         // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the

@@ -16,15 +16,34 @@ namespace Watchtower.Api.Endpoints;
 /// <summary>
 /// The forward-auth surface (docs/central-auth/design.md §5, §7): the verify endpoint Caddy consults for
 /// every request to a protected app, the code-redemption callback and per-app sign-out served on each
-/// app's own domain, and the public JWKS.
+/// app's own domain, and the public JWKS. Alongside them sit the two endpoints any realm's user may call
+/// about themselves — UserInfo and the applications list.
 /// </summary>
 /// <remarks>
-/// All four are anonymous, and have to be: verify <em>is</em> the authentication check, the callback is
-/// how a visitor becomes authenticated on that domain in the first place, and the JWKS is public key
-/// material. None of them trusts <c>X-Forwarded-Proto</c> — scheme is not load-bearing anywhere here, and
-/// the one URL built from configuration (the login redirect) hard-codes <c>https</c>.
+/// The forward-auth four are anonymous, and have to be: verify <em>is</em> the authentication check, the
+/// callback is how a visitor becomes authenticated on that domain in the first place, and the JWKS is
+/// public key material. None of them trusts <c>X-Forwarded-Proto</c> — scheme is not load-bearing anywhere
+/// here, and the one URL built from configuration (the login redirect) hard-codes <c>https</c>.
+/// <para>
+/// UserInfo and <c>/api/access/apps</c> are anonymous in the ASP.NET sense for the same reason: they
+/// authenticate the caller themselves, from the credential they were presented. What makes them the
+/// <em>any-realm</em> surface is that neither is behind
+/// <see cref="WatchtowerSessionDefaults.SystemRealmPolicy"/> — the management surface stays operator-only,
+/// and these two answer a caller only about themselves (design.md §13).
+/// </para>
 /// </remarks>
 public static class WatchtowerAccessEndpoints {
+    /// <summary>One application a caller may enter: the domain they navigate to, plus a human label.</summary>
+    /// <param name="Domain">The public hostname — what the visitor sees in their own address bar.</param>
+    /// <param name="Name">
+    /// The stack's name (for a tenant, <c>{category}-{slug}</c>). A display label, deliberately not an id:
+    /// nothing here is a handle the caller could use against another surface.
+    /// </param>
+    public sealed record AppLinkDto(string Domain, string Name);
+
+    /// <summary>The applications list answered by <c>/api/access/apps</c>.</summary>
+    public sealed record AppsResponse(IReadOnlyList<AppLinkDto> Apps);
+
     /// <summary>Audit kind written when a signed-in visitor is refused an app they hold no grant for.</summary>
     private const string AccessDenied = "access.denied";
 
@@ -36,6 +55,9 @@ public static class WatchtowerAccessEndpoints {
 
     /// <summary>The same UserInfo handler on every protected app's own domain, for same-origin cookie callers.</summary>
     private const string UserInfoAppPath = "/.watchtower/userinfo";
+
+    /// <summary>The applications the calling account may enter, served on the auth host for the SPA portal.</summary>
+    private const string AppsApiPath = "/api/access/apps";
 
     /// <summary>
     /// Caps the length of the <c>redirect_uri</c> echoed into the login redirect. A caller controls
@@ -69,6 +91,7 @@ public static class WatchtowerAccessEndpoints {
             app.MapGet(RouteAccessPolicy.AppLogoutPath, () => Results.NotFound());
             app.MapGet(UserInfoApiPath, () => Results.NotFound());
             app.MapGet(UserInfoAppPath, () => Results.NotFound());
+            app.MapGet(AppsApiPath, () => Results.NotFound());
             return app;
         }
 
@@ -77,6 +100,7 @@ public static class WatchtowerAccessEndpoints {
         MapCallback(app);
         MapAppLogout(app);
         MapUserInfo(app);
+        MapApps(app);
         return app;
     }
 
@@ -483,6 +507,69 @@ public static class WatchtowerAccessEndpoints {
         if (!authorization.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
         var token = authorization[prefix.Length..].Trim();
         return token.Length == 0 ? null : token;
+    }
+
+    // ── Applications portal ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The applications the calling account may enter, for the SPA's "Your applications" landing page — the
+    /// thing a signed-in user of a non-operator realm gets instead of the management UI they are refused
+    /// (design.md §13).
+    /// </summary>
+    /// <remarks>
+    /// A plain endpoint on the any-realm surface rather than a JSON-RPC handler, and deliberately so: the
+    /// <c>/rpc</c> surface is the operator population's (<c>SystemRealmAuthorizer</c>), and the boundary
+    /// between "manage the instance" and "ask about yourself" is the point of the design. It works for an
+    /// operator too — the policy below answers for any realm, the system realm included.
+    /// </remarks>
+    private static void MapApps(WebApplication app) {
+        app.MapGet(AppsApiPath, AppsAsync);
+    }
+
+    /// <summary>
+    /// Answers with the routes <see cref="RouteAccessPolicy.AccessibleRouteIdsAsync"/> says the caller may
+    /// enter, or 401 when the <c>__wt_sso</c> cookie does not resolve to a live session.
+    /// </summary>
+    /// <remarks>
+    /// <b>No enumeration risk by construction.</b> Every entry names a route the caller is already
+    /// authorised to enter — a public one, one their realm admits them to, or one they hold a grant for —
+    /// so the answer tells them nothing they could not have learned by navigating. There is no second
+    /// reading of accessibility here: the policy that decides verify decides this, realm invariant included,
+    /// so a route of another population can never appear however its grants are written.
+    /// <para>
+    /// Validated with <see cref="AuthSessionService.ValidateAnyAsync"/> for the same reason UserInfo does:
+    /// this is a read, not a page visit, and listing your applications must not silently extend the life of
+    /// the session doing the listing. Being kind-agnostic costs nothing here — the token is read from the
+    /// host-scoped SSO cookie, and either kind resolves to the same account anyway.
+    /// </para>
+    /// </remarks>
+    private static async Task<IResult> AppsAsync(
+        HttpContext http,
+        WatchtowerDbContext db,
+        AuthSessionService sessions,
+        CancellationToken ct) {
+        // Not ct: validation may delete an expired row on the way past, and a client that hangs up must not
+        // turn that housekeeping write into a cancellation out of the auth check.
+        var session = await sessions.ValidateAnyAsync(
+            http.Request.Cookies[AuthSessionService.SsoCookieName], CancellationToken.None);
+        if (session is null) return Results.Unauthorized();
+
+        // The whole table, then the policy: the bulk form settles every route in one indexed grants query,
+        // and Watchtower's scale is tens of routes, so there is nothing to paginate.
+        var routes = await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
+        var accessible = await RouteAccessPolicy.AccessibleRouteIdsAsync(db, routes, session.UserId, ct);
+
+        var apps = routes
+            .Where(r => accessible.Contains(r.Id))
+            // Name first, domain to break ties — a deterministic order so the page does not reshuffle
+            // between loads. The stack is always present in practice; falling back to the domain keeps a
+            // route whose stack row went missing listed rather than crashing the page it belongs on.
+            .Select(r => new AppLinkDto(r.Domain, string.IsNullOrWhiteSpace(r.Stack?.Name) ? r.Domain : r.Stack.Name))
+            .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(a => a.Domain, StringComparer.Ordinal)
+            .ToList();
+
+        return Results.Ok(new AppsResponse(apps));
     }
 
     // ── Shared bits ───────────────────────────────────────────────────────────

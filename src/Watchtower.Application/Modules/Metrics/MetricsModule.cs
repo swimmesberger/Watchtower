@@ -11,9 +11,9 @@ namespace Watchtower.Application.Modules.Metrics;
 /// </summary>
 /// <remarks>
 /// Exposes the <c>metrics-history</c> client flag (ADR-0030): true when the active metrics backend can
-/// answer historical time ranges (the InfluxDB backend). Resolved by <c>MetricsFeatureFlagService</c> from
-/// <c>IMetricsSource.Capabilities</c> and surfaced to the frontend via the <c>elarion.session</c> snapshot,
-/// which gates the History view.
+/// answer historical time ranges (the InfluxDB backend). Resolved by <c>WatchtowerFeatureFlagService</c>
+/// from <c>IMetricsSource.Capabilities</c> and surfaced to the frontend via the <c>elarion.session</c>
+/// snapshot, which gates the History view.
 /// </remarks>
 [AppModule("Metrics")]
 [ClientFeatures("metrics-history")]

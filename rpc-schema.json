@@ -6142,7 +6142,9 @@
         "features": []
       },
       "Proxy": {
-        "features": []
+        "features": [
+          "apps-portal"
+        ]
       },
       "Realms": {
         "features": []
