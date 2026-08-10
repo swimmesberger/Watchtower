@@ -22,9 +22,9 @@ public static class WatchtowerHttpEndpoints {
     /// <remarks>
     /// Endpoints that stay open by design (design.md §11): <c>/health</c> is a liveness probe with no data,
     /// the deploy webhook authenticates callers with its own per-stack bearer token (a CI runner has no
-    /// browser session), <c>/api/proxy/ask</c> is Caddy's on-demand-TLS gate reachable only from the internal
-    /// control network, and the App API and management API carry their own per-stack token auth (see
-    /// AppApiEndpoints and MgmtApiEndpoints).
+    /// browser session), <c>/api/proxy/ask</c> is Caddy's on-demand-TLS gate — which is reachable through
+    /// the proxy and answers 404 there, see <see cref="MapProxyAsk"/> — and the App API and management API
+    /// carry their own per-stack token auth (see AppApiEndpoints and MgmtApiEndpoints).
     /// </remarks>
     public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app, bool authEnabled) {
         MapWebhook(app);
@@ -68,17 +68,56 @@ public static class WatchtowerHttpEndpoints {
     /// <summary>
     /// On-demand TLS gate for Caddy (custom domains). Caddy calls this before issuing a certificate for
     /// a requested host; we return 200 only for domains that exist in the route table, so a stray domain
-    /// pointed at this host can never trigger unbounded certificate issuance. Reachable only on the
-    /// internal control network.
+    /// pointed at this host can never trigger unbounded certificate issuance.
     /// </summary>
+    /// <remarks>
+    /// That answer <em>is</em> a route-existence oracle, so who gets to ask matters. This endpoint is not
+    /// reachable only on the internal control network, whatever an earlier version of this comment claimed:
+    /// the Watchtower self-routes (<see cref="Application.Services.CaddyManager"/>'s site projection — the
+    /// configured <c>Auth:Host</c> plus every realm's <c>AuthHost</c>) are force-unprotected sites that
+    /// proxy <em>all</em> paths to this app, so anyone who can reach any login page can reach this path too.
+    /// <para>
+    /// What separates the one legitimate caller from everyone else is the hop, not the network. Caddy's
+    /// on-demand-TLS module calls the <c>ask</c> URL from its TLS machinery, directly, and stamps no
+    /// <c>X-Forwarded-*</c> headers on it; anything relayed by a <c>reverse_proxy</c> site — which is every
+    /// other way to arrive here — carries <c>X-Forwarded-For</c> and <c>-Host</c>. So a request bearing any
+    /// forwarding marker gets a bare 404: the same answer a nonexistent path gives, and identical for known
+    /// and unknown domains, which is the property that keeps the route table from leaking. Spoofing a
+    /// marker on the published port only makes the answer <em>less</em> informative, so the gate fails
+    /// closed and there is no bypass in that direction.
+    /// </para>
+    /// <para>
+    /// <c>X-Forwarded-Proto</c> is checked for completeness rather than as a load-bearing signal:
+    /// <c>UseForwardedHeaders</c> runs first in the pipeline and consumes that one header (see Program.cs),
+    /// so it is usually gone by the time this runs. <c>-For</c> and <c>-Host</c> are deliberately left
+    /// untouched there and are what this actually keys on.
+    /// </para>
+    /// <para>
+    /// The other half of the contract is integration reality that no unit test can pin: Caddy's ask call
+    /// must keep arriving unmarked. If a future proxy configuration ever routed it through a site block,
+    /// on-demand TLS would stop issuing certificates for custom domains — a loud failure rather than a
+    /// silent one, which is the right direction, but this is where to look when it happens.
+    /// </para>
+    /// </remarks>
     private static void MapProxyAsk(WebApplication app) {
-        app.MapGet("/api/proxy/ask", async (string? domain, WatchtowerDbContext db, CancellationToken ct) => {
+        app.MapGet("/api/proxy/ask", async (
+            string? domain, HttpRequest request, WatchtowerDbContext db, CancellationToken ct) => {
+            if (ArrivedThroughTheProxy(request)) return Results.NotFound();
             if (string.IsNullOrWhiteSpace(domain)) return Results.BadRequest();
             var known = await db.Routes.AsNoTracking()
                 .AnyAsync(r => r.Domain == domain.Trim().ToLower(), ct);
             return known ? Results.Ok() : Results.StatusCode(StatusCodes.Status403Forbidden);
         });
     }
+
+    /// <summary>
+    /// Whether a Caddy <c>reverse_proxy</c> relayed this request rather than a component calling Watchtower
+    /// directly, judged by the forwarding headers Caddy stamps on everything it proxies.
+    /// </summary>
+    private static bool ArrivedThroughTheProxy(HttpRequest request) =>
+        request.Headers.ContainsKey("X-Forwarded-For") ||
+        request.Headers.ContainsKey("X-Forwarded-Host") ||
+        request.Headers.ContainsKey("X-Forwarded-Proto");
 
     /// <summary>
     /// Externally-facing deploy webhook. The stack must have <c>WebhookEnabled = true</c> (else 404, so

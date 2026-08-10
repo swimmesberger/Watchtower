@@ -90,8 +90,8 @@ public sealed class PipelineGatingTests {
         // /health is a liveness probe with no data behind it.
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health", ct)).StatusCode);
 
-        // Caddy's on-demand-TLS gate: consulted before any user exists in the request, and reachable only
-        // from the internal control network. 400 (not 401) — it is answering, just without a domain.
+        // Caddy's on-demand-TLS gate: consulted before any user exists in the request. 400 (not 401) — it
+        // is answering, just without a domain. Who may ask is a separate gate (see ProxyAskTests).
         Assert.Equal(
             HttpStatusCode.BadRequest, (await client.GetAsync("/api/proxy/ask", ct)).StatusCode);
 
