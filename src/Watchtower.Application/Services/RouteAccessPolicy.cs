@@ -179,9 +179,11 @@ public static class RouteAccessPolicy {
     private enum AccessDecision {
         /// <summary>Not accessible, and nothing to look up — the fail-closed answer for an unknown mode.</summary>
         Deny,
-        /// <summary>Accessible to any signed-in account.</summary>
-        Allow,
-        /// <summary>Accessible only with a <see cref="RouteAccessGrant"/> for this route.</summary>
+        /// <summary>Not access-controlled at all: no identity is consulted, so no realm is either.</summary>
+        Unprotected,
+        /// <summary>Accessible to any signed-in account <em>of the route's realm</em>.</summary>
+        Authenticated,
+        /// <summary>Accessible with a <see cref="RouteAccessGrant"/>, and only from the route's realm.</summary>
         RequiresGrant,
     }
 
@@ -189,12 +191,44 @@ public static class RouteAccessPolicy {
     /// The single reading of <see cref="AccessMode"/> that both authorisation entry points below share, so
     /// the per-route and the bulk answer cannot drift apart — a disagreement between them would be a hole.
     /// </summary>
+    /// <remarks>
+    /// <see cref="AccessMode.Public"/> is separated from <see cref="AccessMode.Authenticated"/> rather than
+    /// folded in with it (as it was before realms) precisely because the realm invariant applies to one and
+    /// not the other: a public route asks nobody who they are, so there is no population to compare.
+    /// </remarks>
     private static AccessDecision Classify(AccessMode mode) => mode switch {
-        AccessMode.Public or AccessMode.Authenticated => AccessDecision.Allow,
+        AccessMode.Public => AccessDecision.Unprotected,
+        AccessMode.Authenticated => AccessDecision.Authenticated,
         AccessMode.Restricted => AccessDecision.RequiresGrant,
         // A mode this build does not know about is not a licence to let the request through.
         _ => AccessDecision.Deny,
     };
+
+    /// <summary>
+    /// The realm invariant, written once (docs/central-auth/design.md §13): <b>a protected route is only
+    /// ever reachable by an account of its own realm</b>, whatever its grants say.
+    /// </summary>
+    /// <remarks>
+    /// This is the structural half of realm isolation, and the reason it lives here rather than in the
+    /// endpoints: both entry points below run it from the same expression, so "may this account enter this
+    /// route" cannot be answered one way per route and another way in bulk. A grant naming a foreign
+    /// account is not a special case — it simply does not admit anyone, so a stale grant left behind by a
+    /// realm change grants nothing rather than crossing the boundary.
+    /// <para>
+    /// Deliberately indistinguishable from "holds no grant" to the caller: both entry points return the
+    /// same <see langword="false"/>, and every surface above collapses that into one refusal, so a realm
+    /// mismatch cannot be told apart from an absent grant (design.md §5, the anti-enumeration property).
+    /// </para>
+    /// </remarks>
+    private static bool RealmAdmits(int? userRealmId, int? routeRealmId) =>
+        userRealmId is { } user && routeRealmId is { } route && user == route;
+
+    /// <summary>The realm an account belongs to, or <see langword="null"/> when there is no such account.</summary>
+    private static async Task<int?> UserRealmIdAsync(WatchtowerDbContext db, int userId, CancellationToken ct) =>
+        await db.Users.AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => (int?)u.RealmId)
+            .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// The one reading of "this grant lets that account in", shared by both authorisation entry points so
@@ -219,14 +253,23 @@ public static class RouteAccessPolicy {
         WatchtowerDbContext db, Route route, int userId, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(route);
-        return Classify(route.AccessMode) switch {
-            AccessDecision.Allow => true,
-            AccessDecision.RequiresGrant => await db.RouteAccessGrants.AsNoTracking()
-                .Where(g => g.RouteId == route.Id)
-                .Where(GrantAdmits(db, userId))
-                .AnyAsync(ct),
-            _ => false,
-        };
+
+        var decision = Classify(route.AccessMode);
+        if (decision == AccessDecision.Unprotected) return true;
+        if (decision == AccessDecision.Deny) return false;
+
+        // Protected: the realm invariant applies before any grant is consulted, so a foreign account is
+        // refused whether or not somebody wrote it a grant row.
+        if (!RealmAdmits(
+                await UserRealmIdAsync(db, userId, ct),
+                await RouteRealmIdAsync(db, route.Id, ct))) {
+            return false;
+        }
+
+        return decision == AccessDecision.Authenticated || await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.RouteId == route.Id)
+            .Where(GrantAdmits(db, userId))
+            .AnyAsync(ct);
     }
 
     /// <summary>
@@ -236,7 +279,9 @@ public static class RouteAccessPolicy {
     /// The bulk form of <see cref="IsAuthorizedAsync"/>, and deliberately not a loop over it: the entire
     /// restricted subset is settled by one indexed grants query, so answering for a template with fifty
     /// tenants costs a single round trip rather than fifty. The set shape is what makes that structural —
-    /// a caller holding the whole answer has nothing left to ask per route.
+    /// a caller holding the whole answer has nothing left to ask per route. The realm invariant is applied
+    /// in bulk for the same reason, and from the same <see cref="RealmAdmits"/> expression the per-route
+    /// answer uses.
     /// </remarks>
     /// <param name="db">Database context to read grants through.</param>
     /// <param name="routes">Candidate routes; duplicates and unknown modes are harmless.</param>
@@ -249,19 +294,34 @@ public static class RouteAccessPolicy {
         ArgumentNullException.ThrowIfNull(routes);
 
         var accessible = new HashSet<int>();
-        var restricted = new List<int>();
+        var guarded = new List<Route>();
         foreach (var route in routes) {
             switch (Classify(route.AccessMode)) {
-                case AccessDecision.Allow:
+                case AccessDecision.Unprotected:
                     accessible.Add(route.Id);
                     break;
+                case AccessDecision.Authenticated:
                 case AccessDecision.RequiresGrant:
-                    restricted.Add(route.Id);
+                    guarded.Add(route);
                     break;
                 default:
                     // Fail-closed: an unrecognised mode contributes nothing, not even a grant lookup.
                     break;
             }
+        }
+
+        if (guarded.Count == 0) return accessible;
+
+        // Two reads for the whole set, not two per route: the account's realm, and every candidate route's.
+        var userRealmId = await UserRealmIdAsync(db, userId, ct);
+        var routeRealmIds = await RouteRealmIdsAsync(db, [.. guarded.Select(r => r.Id).Distinct()], ct);
+
+        var restricted = new List<int>();
+        foreach (var route in guarded) {
+            if (!RealmAdmits(userRealmId, routeRealmIds.TryGetValue(route.Id, out var realmId) ? realmId : null))
+                continue;
+            if (Classify(route.AccessMode) == AccessDecision.Authenticated) accessible.Add(route.Id);
+            else restricted.Add(route.Id);
         }
 
         if (restricted.Count == 0) return accessible;

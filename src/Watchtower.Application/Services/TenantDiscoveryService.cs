@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 
 namespace Watchtower.Application.Services;
@@ -33,7 +34,9 @@ public sealed record AccessibleTenant(int StackId, string Slug, string Domain);
 /// </remarks>
 /// <param name="db">Scoped Watchtower database context.</param>
 /// <param name="signer">Verifies the forwarded identity assertion against the calling stack's domains.</param>
-public sealed class TenantDiscoveryService(WatchtowerDbContext db, AuthTokenSigner signer) {
+/// <param name="realms">Resolves the realm the calling stack belongs to, which pins the accepted issuer.</param>
+public sealed class TenantDiscoveryService(
+    WatchtowerDbContext db, AuthTokenSigner signer, RealmResolver realms) {
     /// <summary>
     /// The template <paramref name="stackId"/> is a tenant of, or <see langword="null"/> when it is not a
     /// tenant at all.
@@ -56,11 +59,13 @@ public sealed class TenantDiscoveryService(WatchtowerDbContext db, AuthTokenSign
     /// stack's own domains, or <see langword="null"/> when it proves nothing usable.
     /// </summary>
     /// <remarks>
-    /// Three checks, and the caller must not be able to tell which one refused it. The signature, algorithm,
-    /// issuer and expiry are the signer's; the <c>aud</c> must be a domain <paramref name="callerStackId"/>
-    /// is itself served on, which is what stops a stack asking about users it has never seen; and the account
-    /// is then reloaded, because the assertion is a five-minute-old statement while access is answered as of
-    /// now — an account disabled in between must resolve to nothing.
+    /// Four checks, and the caller must not be able to tell which one refused it. The signature, algorithm
+    /// and expiry are the signer's; the <c>iss</c> must be <em>the calling stack's own realm's</em>, which
+    /// is what keeps a second population's assertion from being read as one of this stack's visitors; the
+    /// <c>aud</c> must be a domain <paramref name="callerStackId"/> is itself served on, which is what stops
+    /// a stack asking about users it has never seen; and the account is then reloaded, because the assertion
+    /// is a five-minute-old statement while access is answered as of now — an account disabled, or moved out
+    /// of the realm, in between must resolve to nothing.
     /// </remarks>
     /// <param name="callerStackId">The authenticated stack, whose route domains are the accepted audiences.</param>
     /// <param name="assertion">Raw assertion from the request header; may be null or empty.</param>
@@ -73,15 +78,27 @@ public sealed class TenantDiscoveryService(WatchtowerDbContext db, AuthTokenSign
             .Select(r => r.Domain)
             .ToListAsync(ct);
 
-        // A stack Watchtower serves no domain for cannot have been forwarded an assertion in the first
-        // place, and the signer refuses an empty audience set rather than reading it as "any".
-        if (!signer.TryValidate(assertion, audiences, out var userId)) return null;
+        // The realm the caller serves: its category's, or the operator realm when it is a standalone stack.
+        // A stack that has vanished lands here too and is harmless — it has no routes either, and the signer
+        // refuses an empty audience set rather than reading it as "any".
+        var realmId = await db.Stacks.AsNoTracking()
+            .Where(s => s.Id == callerStackId)
+            .Select(s => (int?)s.Template!.RealmId)
+            .FirstOrDefaultAsync(ct) ?? Realm.SystemRealmId;
+
+        var realm = await realms.FindAsync(realmId, ct);
+        if (realm is null) return null;
+
+        // Exactly one issuer, because the context pins the realm: accepting "any realm's" here would let an
+        // assertion minted for another population answer a question about this one.
+        var issuers = new[] { signer.IssuerFor(RealmIdentity.From(realm)) };
+        if (!signer.TryValidate(assertion, issuers, audiences, out var userId)) return null;
 
         var account = await db.Users.AsNoTracking()
             .Where(u => u.Id == userId)
-            .Select(u => new { u.Id, u.Disabled })
+            .Select(u => new { u.Id, u.Disabled, u.RealmId })
             .FirstOrDefaultAsync(ct);
-        return account is null || account.Disabled ? null : account.Id;
+        return account is null || account.Disabled || account.RealmId != realmId ? null : account.Id;
     }
 
     /// <summary>

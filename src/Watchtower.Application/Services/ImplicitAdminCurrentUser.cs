@@ -11,9 +11,15 @@ namespace Watchtower.Application.Services;
 /// </summary>
 /// <remarks>
 /// This is deliberately <em>not</em> the retired anonymous stand-in: an unauthenticated user would now be
-/// denied by every handler. Claims are intentionally not carried — nothing in Watchtower declares
-/// <c>[RequirePermission]</c>, and the interface's fail-closed defaults are the right answer if something
-/// ever does, because "no authentication configured" must not silently satisfy a permission check.
+/// denied by every handler. Claims beyond the realm are intentionally not carried — nothing in Watchtower
+/// declares <c>[RequirePermission]</c>, and the interface's fail-closed defaults are the right answer if
+/// something ever does, because "no authentication configured" must not silently satisfy a permission
+/// check.
+/// <para>
+/// The one exception is the realm claim (design.md §13): the local operator <em>is</em> the operator
+/// population, so this reports the system realm and the management-surface gate passes exactly as it did
+/// before realms existed. Without it, turning authentication off would lock the whole <c>/rpc</c> surface.
+/// </para>
 /// </remarks>
 public sealed class ImplicitAdminCurrentUser : ICurrentUser {
     /// <summary>
@@ -38,4 +44,18 @@ public sealed class ImplicitAdminCurrentUser : ICurrentUser {
 
     /// <inheritdoc />
     public bool IsInRole(string role) => string.Equals(role, WatchtowerClaims.AdminRole, StringComparison.Ordinal);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Answers only the realm claim; every other type is still "no such claim", per the class remarks.
+    /// </remarks>
+    public bool HasClaim(string type, string value) =>
+        string.Equals(type, WatchtowerClaims.RealmSlug, StringComparison.Ordinal) &&
+        string.Equals(value, Entities.Realm.SystemRealmSlug, StringComparison.Ordinal);
+
+    /// <inheritdoc cref="HasClaim"/>
+    public IEnumerable<string> GetClaimValues(string type) =>
+        string.Equals(type, WatchtowerClaims.RealmSlug, StringComparison.Ordinal)
+            ? [Entities.Realm.SystemRealmSlug]
+            : [];
 }

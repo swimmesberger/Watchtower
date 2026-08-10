@@ -20,10 +20,53 @@ namespace Watchtower.Api.Tests;
 internal static class AccessTestEstate {
     private const string Password = "correct-horse-battery";
 
-    /// <summary>Adds a stack and a route for <paramref name="domain"/> and returns the route id.</summary>
+    /// <summary>Adds a realm and returns its id. A null <paramref name="authHost"/> models "DNS not ready".</summary>
+    public static async Task<int> AddRealmAsync(
+        this WatchtowerApiFactory factory, string slug, string? authHost = null) {
+        var realmId = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var realm = new Realm {
+                Name = slug, Slug = slug, AuthHost = authHost, CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Realms.Add(realm);
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            realmId = realm.Id;
+        });
+        return realmId;
+    }
+
+    /// <summary>Adds a category in <paramref name="realmId"/> — how a route ends up in a non-system realm.</summary>
+    public static async Task<int> AddTemplateAsync(
+        this WatchtowerApiFactory factory, string name, int realmId) {
+        var templateId = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var template = new StackTemplate {
+                RealmId = realmId,
+                Name = name,
+                RepositoryUrl = $"https://example.invalid/{name}.git",
+                ComposeFilePath = "docker-compose.yml",
+                Branch = "main",
+                DomainPattern = $"{{tenant}}.{name}.example.invalid",
+                TargetServiceName = "web",
+                TargetPort = 8080,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.StackTemplates.Add(template);
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            templateId = template.Id;
+        });
+        return templateId;
+    }
+
+    /// <summary>
+    /// Adds a stack and a route for <paramref name="domain"/> and returns the route id. With
+    /// <paramref name="templateId"/> the stack is a tenant of that category, so the route inherits its realm.
+    /// </summary>
     public static async Task<int> AddRouteAsync(
         this WatchtowerApiFactory factory, string domain, AccessMode mode, string? bypassPaths = null,
-        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None) {
+        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None, int? templateId = null) {
         var routeId = 0;
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
@@ -36,6 +79,8 @@ internal static class AccessTestEstate {
                 ComposeFilePath = "docker-compose.yml",
                 Branch = "main",
                 ComposeProjectName = name,
+                TemplateId = templateId,
+                TenantSlug = templateId is null ? null : name,
             };
             db.Stacks.Add(stack);
             await db.SaveChangesAsync(ct);
@@ -45,6 +90,7 @@ internal static class AccessTestEstate {
                 Domain = domain,
                 ServiceName = "web",
                 ContainerPort = 8080,
+                IsPrimary = true,
                 AccessMode = mode,
                 IdentityHeaderMode = identityHeaderMode,
                 BypassPaths = bypassPaths,
@@ -56,13 +102,20 @@ internal static class AccessTestEstate {
         return routeId;
     }
 
-    /// <summary>Creates an account through <c>UserManager</c> and returns its id.</summary>
+    /// <summary>
+    /// Creates an account through <c>UserManager</c> and returns its id. The realm context is pinned first,
+    /// exactly as the login endpoint does it, so Identity's duplicate check is answered about the realm the
+    /// account is going into.
+    /// </summary>
     public static async Task<int> AddUserAsync(
-        this WatchtowerApiFactory factory, string userName, string? email = null, bool disabled = false) {
+        this WatchtowerApiFactory factory, string userName, string? email = null, bool disabled = false,
+        int realmId = Realm.SystemRealmId, string? password = null) {
         var userId = 0;
         await factory.WithScopeAsync(async sp => {
+            sp.GetRequiredService<IRealmContext>().SetRealm(realmId);
             var users = sp.GetRequiredService<UserManager<User>>();
             var user = new User {
+                RealmId = realmId,
                 UserName = userName,
                 NormalizedUserName = userName.ToUpperInvariant(),
                 Email = email,
@@ -71,7 +124,7 @@ internal static class AccessTestEstate {
                 SecurityStamp = string.Empty,
                 ConcurrencyStamp = string.Empty,
             };
-            var created = await users.CreateAsync(user, Password);
+            var created = await users.CreateAsync(user, password ?? Password);
             Assert.True(created.Succeeded, string.Join("; ", created.Errors.Select(e => e.Description)));
             userId = user.Id;
         });
@@ -86,15 +139,21 @@ internal static class AccessTestEstate {
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         });
 
-    /// <summary>Creates a group holding <paramref name="memberIds"/> and returns its id.</summary>
-    public static async Task<int> AddGroupAsync(
-        this WatchtowerApiFactory factory, string name, params int[] memberIds) {
+    /// <summary>Creates a system-realm group holding <paramref name="memberIds"/> and returns its id.</summary>
+    public static Task<int> AddGroupAsync(
+        this WatchtowerApiFactory factory, string name, params int[] memberIds) =>
+        AddGroupInRealmAsync(factory, name, Realm.SystemRealmId, memberIds);
+
+    /// <summary>Creates a group in <paramref name="realmId"/> holding <paramref name="memberIds"/>.</summary>
+    public static async Task<int> AddGroupInRealmAsync(
+        this WatchtowerApiFactory factory, string name, int realmId, params int[] memberIds) {
         var groupId = 0;
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var ct = TestContext.Current.CancellationToken;
 
             var group = new Group {
+                RealmId = realmId,
                 Name = name,
                 NormalizedName = name.ToUpperInvariant(),
                 CreatedAt = DateTimeOffset.UtcNow,

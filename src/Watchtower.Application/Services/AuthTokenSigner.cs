@@ -11,6 +11,26 @@ using Watchtower.Application.Entities;
 namespace Watchtower.Application.Services;
 
 /// <summary>
+/// Everything <see cref="AuthTokenSigner"/> needs to know about a realm, as a value — which is what keeps
+/// the signer a pure singleton with no database of its own (docs/central-auth/design.md §13). Callers that
+/// have a <see cref="Realm"/> project it with <see cref="From"/>; the rest of the signer never learns that
+/// realms are rows.
+/// </summary>
+/// <param name="Slug">The realm's stable identifier, which becomes the <c>realm</c> claim.</param>
+/// <param name="AuthHost">Its login host, which becomes the <c>iss</c> claim for a non-system realm.</param>
+/// <param name="IsSystem">True for the operator realm, whose issuer is the instance-wide configured one.</param>
+public readonly record struct RealmIdentity(string Slug, string? AuthHost, bool IsSystem) {
+    /// <summary>The built-in operator realm — the realm every assertion belonged to before realms existed.</summary>
+    public static RealmIdentity System { get; } = new(Realm.SystemRealmSlug, null, IsSystem: true);
+
+    /// <summary>Projects a stored realm.</summary>
+    public static RealmIdentity From(Realm realm) {
+        ArgumentNullException.ThrowIfNull(realm);
+        return new RealmIdentity(realm.Slug, realm.AuthHost, realm.IsSystem);
+    }
+}
+
+/// <summary>
 /// Mints the short-lived ES256 identity assertion forwarded to a protected app as
 /// <c>X-Watchtower-Jwt</c>, and publishes the public half as a JWKS document
 /// (docs/central-auth/design.md §2.3, §4).
@@ -61,12 +81,37 @@ public sealed class AuthTokenSigner : IDisposable {
         _logger = logger;
     }
 
-    /// <summary>The <c>iss</c> claim: the configured auth host, or <see cref="DefaultIssuer"/>.</summary>
+    /// <summary>
+    /// The system realm's <c>iss</c>: the configured auth host, or <see cref="DefaultIssuer"/>. Unchanged
+    /// from before realms existed, deliberately — every assertion an operator's apps are already pinned to
+    /// carries this value, and a realm feature that reissued them under a new name would break consumers
+    /// that have nothing to do with realms.
+    /// </summary>
     public string Issuer {
         get {
             var host = _options.CurrentValue.Auth.Host;
             return string.IsNullOrWhiteSpace(host) ? DefaultIssuer : host.Trim();
         }
+    }
+
+    /// <summary>
+    /// The <c>iss</c> assertions minted for <paramref name="realm"/> carry: the instance-wide
+    /// <see cref="Issuer"/> for the system realm, and the realm's own login host for any other — the host
+    /// <em>is</em> the realm's identity to a consumer, the same way the configured one is Watchtower's.
+    /// </summary>
+    /// <remarks>
+    /// A realm with no login host yet cannot be reached at all (its protected routes fail closed at
+    /// challenge time), so this should never be asked about one. It is answered defensively anyway, with a
+    /// slug-derived value: minting an assertion with an empty <c>iss</c> would produce a token that
+    /// validates against whatever a consumer happens to expect, which is the one outcome worth ruling out
+    /// unconditionally.
+    /// </remarks>
+    public string IssuerFor(RealmIdentity realm) {
+        if (realm.IsSystem) return Issuer;
+        var host = realm.AuthHost?.Trim();
+        if (!string.IsNullOrEmpty(host)) return host;
+        var slug = realm.Slug?.Trim();
+        return string.IsNullOrEmpty(slug) ? DefaultIssuer : $"{DefaultIssuer}:{slug}";
     }
 
     /// <summary>RFC 7638 thumbprint of the signing key — the <c>kid</c> in both the JWT header and the JWKS.</summary>
@@ -80,8 +125,14 @@ public sealed class AuthTokenSigner : IDisposable {
 
     /// <summary>
     /// Mints an assertion for <paramref name="user"/> scoped to <paramref name="routeDomain"/>, which
-    /// becomes the <c>aud</c> claim.
+    /// becomes the <c>aud</c> claim, and to <paramref name="realm"/>, which decides <c>iss</c> and is
+    /// stated outright as the <c>realm</c> claim.
     /// </summary>
+    /// <param name="realm">
+    /// The population the assertion is about — the account's realm, which is also the route's (an account
+    /// only ever reaches a route of its own realm; see <see cref="RouteAccessPolicy"/>). A system-realm
+    /// assertion is claim-for-claim what this signer produced before realms existed, plus <c>realm</c>.
+    /// </param>
     /// <param name="groups">
     /// The account's group names, which become the <c>groups</c> claim. Unlike <c>email</c> the claim is
     /// <em>always</em> present — an empty array is the positive statement "this account is in no group",
@@ -89,13 +140,13 @@ public sealed class AuthTokenSigner : IDisposable {
     /// deployment does not do groups". Omitting the argument is therefore read as the empty set, which is
     /// the fail-closed direction: an app would grant too few roles, never too many.
     /// </param>
-    public string Mint(User user, string routeDomain, IReadOnlyList<string>? groups = null) {
+    public string Mint(User user, string routeDomain, RealmIdentity realm, IReadOnlyList<string>? groups = null) {
         ArgumentNullException.ThrowIfNull(user);
         ArgumentException.ThrowIfNullOrWhiteSpace(routeDomain);
 
         var material = Material;
         var now = _time.GetUtcNow();
-        var claims = new Dictionary<string, object>(4, StringComparer.Ordinal) {
+        var claims = new Dictionary<string, object>(5, StringComparer.Ordinal) {
             // Identity-forwarding claims: the stable key is `sub`; `preferred_username` is the display
             // name and may be renamed by an administrator, so apps must not key records off it.
             ["sub"] = user.Id.ToString(CultureInfo.InvariantCulture),
@@ -103,12 +154,16 @@ public sealed class AuthTokenSigner : IDisposable {
             // The trusted channel for group membership: signed, so unlike the plaintext group header it
             // does not depend on the proxy having stripped a forged copy first (design.md §2.3).
             ["groups"] = groups is null ? Array.Empty<string>() : groups.ToArray(),
+            // Always present, including on system-realm assertions: `sub` is only unique per instance and
+            // `preferred_username` only per realm, so an app that stores identities has to be able to say
+            // which population a name came from without inferring it from `iss`.
+            ["realm"] = realm.Slug ?? Realm.SystemRealmSlug,
         };
         if (!string.IsNullOrWhiteSpace(user.Email))
             claims["email"] = user.Email;
 
         var descriptor = new SecurityTokenDescriptor {
-            Issuer = Issuer,
+            Issuer = IssuerFor(realm),
             Audience = routeDomain,
             IssuedAt = now.UtcDateTime,
             Expires = (now + TokenLifetime).UtcDateTime,
@@ -127,53 +182,88 @@ public sealed class AuthTokenSigner : IDisposable {
 
     /// <summary>
     /// Verifies an assertion this signer minted and, on success, yields its <c>sub</c> (the
-    /// <see cref="User.Id"/>). The verification is deliberately strict — it is the gate on the UserInfo
-    /// endpoint (docs/central-auth/design.md §5.3): the signature must check out against our public key with
-    /// the algorithm pinned to ES256 (so <c>alg: none</c> and RSA/HMAC-confusion tokens are rejected outright),
-    /// <c>exp</c> is enforced against the host clock, and <c>iss</c> must be ours. The audience is <em>not</em>
-    /// constrained: a token's <c>aud</c> is whichever app it was minted for, and any of ours is acceptable at
-    /// UserInfo, where an app presents an assertion it itself received.
+    /// <see cref="User.Id"/>) and the <c>iss</c> it carried. The verification is deliberately strict — it is
+    /// the gate on the UserInfo endpoint (docs/central-auth/design.md §5.3): the signature must check out
+    /// against our public key with the algorithm pinned to ES256 (so <c>alg: none</c> and RSA/HMAC-confusion
+    /// tokens are rejected outright), <c>exp</c> is enforced against the host clock, and <c>iss</c> must be
+    /// one of <paramref name="validIssuers"/>. The audience is <em>not</em> constrained: a token's
+    /// <c>aud</c> is whichever app it was minted for, and any of ours is acceptable at UserInfo, where an
+    /// app presents an assertion it itself received.
     /// </summary>
+    /// <remarks>
+    /// Every realm is signed with the same key pair (per-realm keys are not a v1 feature), so the issuer is
+    /// the <em>only</em> thing that says which population an assertion is about — which is why it comes back
+    /// out. A caller that accepts several realms' issuers has to check the resolved account against the one
+    /// that was actually presented, or it would have accepted "some realm minted this" as "your realm did".
+    /// </remarks>
+    /// <param name="token">The assertion the caller presented.</param>
+    /// <param name="validIssuers">
+    /// Issuers to accept. Empty accepts nothing: "no realm to bind to" is not "any realm".
+    /// </param>
+    /// <param name="userId">The subject when the assertion is valid; otherwise zero.</param>
+    /// <param name="issuer">The accepted <c>iss</c> when the assertion is valid; otherwise empty.</param>
     /// <returns><see langword="true"/> and the subject id when valid; otherwise <see langword="false"/>.</returns>
-    public bool TryValidate(string? token, out int userId) =>
-        TryValidateCore(token, validAudiences: null, out userId);
+    public bool TryValidate(
+        string? token, IReadOnlyCollection<string> validIssuers, out int userId, out string issuer) =>
+        TryValidateCore(token, validIssuers, validAudiences: null, out userId, out issuer);
 
     /// <summary>
-    /// Verifies an assertion exactly as <see cref="TryValidate(string?, out int)"/> does and additionally
-    /// binds it to the caller: its <c>aud</c> must name one of <paramref name="validAudiences"/>, compared
-    /// case-insensitively because host names are.
+    /// Verifies an assertion exactly as
+    /// <see cref="TryValidate(string?, IReadOnlyCollection{string}, out int, out string)"/> does and
+    /// additionally binds it to the caller: its <c>aud</c> must name one of
+    /// <paramref name="validAudiences"/>, compared case-insensitively because host names are.
     /// </summary>
     /// <remarks>
     /// The overload the user-scoped discovery endpoints authenticate with, and the whole of their
     /// anti-enumeration property: a stack passes the domains <em>it</em> is served on, so it can only ask
     /// about a visitor who is actually standing in front of it. An assertion some other app was handed
-    /// carries that app's <c>aud</c> and is refused here, however cryptographically sound it is.
+    /// carries that app's <c>aud</c> and is refused here, however cryptographically sound it is. Those
+    /// callers know exactly which realm they belong to, so they pass that one issuer and nothing else.
     /// </remarks>
     /// <param name="token">The assertion the caller presented.</param>
+    /// <param name="validIssuers">Issuers to accept; empty accepts nothing.</param>
     /// <param name="validAudiences">
     /// Audiences to accept. An empty collection accepts nothing: "no domain to bind to" is not "any domain".
     /// </param>
     /// <param name="userId">The subject when the assertion is valid; otherwise zero.</param>
     /// <returns><see langword="true"/> and the subject id when valid; otherwise <see langword="false"/>.</returns>
-    public bool TryValidate(string? token, IReadOnlyCollection<string> validAudiences, out int userId) {
+    public bool TryValidate(
+        string? token,
+        IReadOnlyCollection<string> validIssuers,
+        IReadOnlyCollection<string> validAudiences,
+        out int userId) {
         ArgumentNullException.ThrowIfNull(validAudiences);
         userId = 0;
         if (validAudiences.Count == 0) return false;
         return TryValidateCore(
-            token, new HashSet<string>(validAudiences, StringComparer.OrdinalIgnoreCase), out userId);
+            token,
+            validIssuers,
+            new HashSet<string>(validAudiences, StringComparer.OrdinalIgnoreCase),
+            out userId,
+            out _);
     }
 
     /// <summary>
     /// The one verification both overloads run. <paramref name="validAudiences"/> null means the audience is
     /// not constrained (the UserInfo case); non-null means the <c>aud</c> must be one of them.
     /// </summary>
-    private bool TryValidateCore(string? token, IReadOnlySet<string>? validAudiences, out int userId) {
+    private bool TryValidateCore(
+        string? token,
+        IReadOnlyCollection<string> validIssuers,
+        IReadOnlySet<string>? validAudiences,
+        out int userId,
+        out string issuer) {
+        ArgumentNullException.ThrowIfNull(validIssuers);
         userId = 0;
+        issuer = string.Empty;
+        if (validIssuers.Count == 0) return false;
         if (string.IsNullOrWhiteSpace(token)) return false;
 
         var material = Material;
         var parameters = new TokenValidationParameters {
-            ValidIssuer = Issuer,
+            // Ordinal, unlike the audience: an issuer is a value this instance produced and stored, not a
+            // host name a caller typed, so the comparison has nothing to be lenient about.
+            ValidIssuers = validIssuers,
             ValidateIssuer = true,
             // The aud binds a token to one app. At UserInfo any of ours is fine, so it is left unconstrained;
             // the discovery endpoints pass the caller's own domains and the delegate below decides.
@@ -212,7 +302,12 @@ public sealed class AuthTokenSigner : IDisposable {
         if (!result.IsValid) return false;
 
         var jwt = (JsonWebToken)result.SecurityToken;
-        return int.TryParse(jwt.Subject, NumberStyles.Integer, CultureInfo.InvariantCulture, out userId);
+        if (!int.TryParse(jwt.Subject, NumberStyles.Integer, CultureInfo.InvariantCulture, out userId)) return false;
+
+        // Read off the validated token, not off the accepted set: what the caller has to key a realm check
+        // on is the value the assertion actually carried.
+        issuer = jwt.Issuer;
+        return true;
     }
 
     /// <summary>Loads (or generates and persists) the key pair on first use.</summary>

@@ -26,7 +26,8 @@ namespace Watchtower.Application.Services;
 /// still only ever authenticates within its own realm (<see cref="IRealmContext"/>), so resolving to the
 /// system realm does not let a realm account in anywhere, it only decides which login page they see.
 /// </remarks>
-public sealed class RealmResolver(WatchtowerDbContext db, IOptionsMonitor<WatchtowerOptions> options) {
+public sealed class RealmResolver(
+    WatchtowerDbContext db, IOptionsMonitor<WatchtowerOptions> options, AuthTokenSigner signer) {
     /// <summary>The built-in operator realm — the <see cref="Realm.IsSystem"/> row, seeded by the migration.</summary>
     /// <remarks>
     /// Read rather than assumed from <see cref="Realm.SystemRealmId"/>: the constant is what column defaults
@@ -108,7 +109,27 @@ public sealed class RealmResolver(WatchtowerDbContext db, IOptionsMonitor<Watcht
             .Select(r => r.AuthHost!.ToLower())
             .ToListAsync(ct);
 
-    /// <summary>All realms, ordered by slug — the projection the token-validation surfaces build their issuer set from.</summary>
+    /// <summary>All realms, ordered by slug.</summary>
     public async Task<IReadOnlyList<Realm>> ListAsync(CancellationToken ct) =>
         await db.Realms.AsNoTracking().OrderBy(r => r.Slug).ToListAsync(ct);
+
+    /// <summary>
+    /// Every realm's <c>iss</c>, mapped to the realm it identifies — what a surface that has no realm in
+    /// context (UserInfo) validates an assertion against, and then checks the resolved account's realm
+    /// against.
+    /// </summary>
+    /// <remarks>
+    /// One key pair signs every realm's assertions (per-realm keys are not a v1 feature), so the issuer is
+    /// the only thing in a token that says which population it is about. Two realms cannot share one: the
+    /// login host is unique among realms and the handlers refuse a realm host equal to the configured
+    /// operator one. <see cref="Dictionary{TKey,TValue}.TryAdd"/> rather than an indexer assignment so a
+    /// database that somehow held such a pair would still answer rather than throw on the auth path — the
+    /// realm check the caller then makes is what keeps that safe.
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<string, int>> IssuersAsync(CancellationToken ct) {
+        var realms = await ListAsync(ct);
+        var issuers = new Dictionary<string, int>(realms.Count, StringComparer.Ordinal);
+        foreach (var realm in realms) issuers.TryAdd(signer.IssuerFor(RealmIdentity.From(realm)), realm.Id);
+        return issuers;
+    }
 }

@@ -49,30 +49,22 @@ public sealed class WatchtowerSessionAuthenticationHandler(
         // result. The work is a single indexed point-read plus at most one small write; it does not need
         // to be interruptible.
         var session = await sessions.ValidateAsync(token, CancellationToken.None);
-        if (session?.User is null) return AuthenticateResult.NoResult();
+        if (session?.User?.Realm is null) return AuthenticateResult.NoResult();
 
-        var principal = new ClaimsPrincipal(CreateIdentity(session.User));
+        var principal = new ClaimsPrincipal(CreateIdentity(session.User, session.User.Realm));
         return AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name));
     }
 
     /// <summary>
-    /// Projects the account onto the claims <c>ICurrentUser</c> reads. The identity is constructed with the
-    /// same name/role claim types so <c>ClaimsPrincipal.IsInRole</c> and Elarion's snapshot agree.
+    /// Projects the account onto the claims <c>ICurrentUser</c> reads. The claim set itself comes from
+    /// <see cref="WatchtowerClaims.ForUser"/> — the one place the principal's shape is decided, including
+    /// the rule that the Admin role is only ever emitted for a system-realm account. The identity is
+    /// constructed with the same name/role claim types so <c>ClaimsPrincipal.IsInRole</c> and Elarion's
+    /// snapshot agree.
     /// </summary>
-    internal static ClaimsIdentity CreateIdentity(User user) {
-        var claims = new List<Claim>(4) {
-            new(WatchtowerClaims.UserId, user.Id.ToString(CultureInfo.InvariantCulture)),
-            new(WatchtowerClaims.Name, user.UserName),
-        };
-        if (!string.IsNullOrWhiteSpace(user.Email))
-            claims.Add(new Claim(WatchtowerClaims.Email, user.Email));
-        if (user.IsAdmin)
-            claims.Add(new Claim(WatchtowerClaims.Role, WatchtowerClaims.AdminRole));
-
-        return new ClaimsIdentity(
-            claims,
+    internal static ClaimsIdentity CreateIdentity(User user, Realm realm) =>
+        new(WatchtowerClaims.ForUser(user, realm),
             WatchtowerSessionDefaults.AuthenticationScheme,
             WatchtowerClaims.Name,
             WatchtowerClaims.Role);
-    }
 }

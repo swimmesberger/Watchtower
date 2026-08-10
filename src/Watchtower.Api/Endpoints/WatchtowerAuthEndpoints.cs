@@ -107,6 +107,8 @@ public static class WatchtowerAuthEndpoints {
             AuthSessionService sessions,
             IOptionsMonitor<WatchtowerOptions> options,
             WatchtowerDbContext db,
+            RealmResolver realms,
+            IRealmContext realmContext,
             TimeProvider time,
             CancellationToken ct) => {
 
@@ -126,6 +128,13 @@ public static class WatchtowerAuthEndpoints {
             var password = body?.Password;
             if (string.IsNullOrEmpty(userName) || string.IsNullOrEmpty(password))
                 return await RejectAsync(db, time, null, "missing credentials", http);
+
+            // Which population this login page belongs to, decided by the host it was served on — the
+            // host is the realm's cookie jar, so it is also its credential space (design.md §13). Pinned
+            // before anything touches UserManager, because that is what makes the name lookup below see
+            // this realm's accounts and only this realm's.
+            var realm = await realms.ResolveByHostAsync(http.Request.Host.Host, ct);
+            realmContext.SetRealm(realm.Id);
 
             var user = await users.FindByNameAsync(userName);
             if (user is null) {
