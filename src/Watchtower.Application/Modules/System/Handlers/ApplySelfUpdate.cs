@@ -3,8 +3,10 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.System.Handlers;
 
 /// <summary>
-/// Validates the compose configuration then starts the pull + coordinator-spawn in the background.
-/// Returns as soon as validation passes; the UI polls <c>system.getSelf</c> for apply progress.
+/// Verifies Watchtower is running as a container and that no apply is already in flight, then starts
+/// the image pull + coordinator-spawn in the background — the coordinator recreates the container
+/// through the Docker API, no compose file is involved.
+/// Returns as soon as those checks pass; the UI polls <c>system.getSelf</c> for apply progress.
 /// </summary>
 [Handler("system.applyUpdate")]
 public sealed class ApplySelfUpdate(SelfUpdateService selfUpdate)
