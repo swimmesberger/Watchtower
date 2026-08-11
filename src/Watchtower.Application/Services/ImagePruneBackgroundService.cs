@@ -54,8 +54,10 @@ public sealed class ImagePruneBackgroundService(
             if (result.DeletedCount == 0 && result.SpaceReclaimed == 0) {
                 logger.LogDebug("Dangling-image prune found nothing to remove");
             } else {
+                // Entry count, not image count: the daemon reports an untagged reference and a deleted
+                // layer as separate entries, so one image can account for two of them.
                 logger.LogInformation(
-                    "Dangling-image prune removed {Count} image(s), reclaiming {Bytes} bytes",
+                    "Dangling-image prune removed {Count} entrie(s), reclaiming {Bytes} bytes",
                     result.DeletedCount, result.SpaceReclaimed);
             }
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -63,7 +65,9 @@ public sealed class ImagePruneBackgroundService(
             // surfaces as a TaskCanceledException too, and a prune that ran into the client's
             // 100-second ceiling must reach the warning below rather than vanish.
         } catch (Exception ex) {
-            logger.LogWarning(ex, "Dangling-image prune failed; will retry in {Interval}", interval);
+            // "Gave up on" rather than "failed": a client-side timeout abandons the request, but the
+            // daemon carries the prune through regardless, so the disk may well have been reclaimed.
+            logger.LogWarning(ex, "Gave up on the dangling-image prune; will retry in {Interval}", interval);
         }
     }
 }
