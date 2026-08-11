@@ -18,7 +18,8 @@ public sealed class GetStack(WatchtowerDbContext db, StackUpdateRevalidator reva
         if (stack is null) return AppError.NotFound($"Stack {query.Id} not found");
         // A pending image update may already have been applied on the host by hand; revalidate that
         // in the background (no registry traffic, never awaited) so the next refetch is accurate.
-        if (stack.UpdateCheck is { HasUpdates: true, OutdatedImages.Length: > 0 })
+        // Rows with no recorded digests predate that column: only a full check can correct those.
+        if (stack.UpdateCheck is { HasUpdates: true, OutdatedImages.Length: > 0, OutdatedImageDigests.Count: > 0 })
             revalidator.Request(stack.Id);
         return new Response(StackMapping.ToDto(stack, stack.UpdateCheck));
     }

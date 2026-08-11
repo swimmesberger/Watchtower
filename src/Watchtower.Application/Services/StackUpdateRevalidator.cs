@@ -15,8 +15,13 @@ namespace Watchtower.Application.Services;
 /// stack — a dashboard polling every few seconds, or listing twenty stacks, must not re-inspect the
 /// same stack every time; the window is deliberately a constant rather than a setting, trading
 /// staleness nobody can perceive for load nobody has to tune. And the work itself is <em>serialized</em>
-/// onto a single chain, so a cold start listing twenty stacks with five images each queues a hundred
-/// Docker inspects instead of firing them at a small host all at once.
+/// onto a single chain, so those requests queue instead of hitting a small host all at once.
+/// <para>
+/// Serializing caps the concurrency, not the total: each pass still costs one container listing plus
+/// one inspect per outdated image of that stack, so twenty outdated stacks are twenty listings spread
+/// over the queue. That is affordable at the scale Watchtower runs at and bounded by the debounce
+/// window; a shared listing per drain would be the next lever if it ever stops being.
+/// </para>
 /// </remarks>
 public sealed class StackUpdateRevalidator(
     StackUpdateService stackUpdate,

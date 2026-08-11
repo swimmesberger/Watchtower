@@ -133,6 +133,10 @@ public class StackUpdateService(
             var local = await InspectLocalImageAsync(imageName, ct);
             if (local is null) continue;
             if (!local.RepoDigests.Contains(remoteDigest, StringComparer.Ordinal)) continue;
+            // Running containers only, which has a consequence worth naming: a stack the operator
+            // stopped can never clear this way, and if the background check is disabled too, its badge
+            // stays until someone presses Check. That is the honest reading — nothing is serving the
+            // new image — and it is no worse than before this path existed.
             if (!runningImageIds.Contains(local.Id)) {
                 logger.LogDebug(
                     "Image {Image} of stack {StackId} is pulled but no running container uses it yet",
@@ -297,6 +301,12 @@ public class StackUpdateService(
     /// snapshot would silently drop whatever that check just found. For the same reason an image is only
     /// removed while the stored row still names the digest this pass verified — a *newer* update
     /// published in the meantime is a different fact about the same image, and it stays.
+    /// <para>
+    /// That covers a check landing before this read, not one landing between this read and its save:
+    /// there is no concurrency token, so the last writer in that microseconds-wide window wins. The
+    /// worst case is one stale flag until the next full check, which is the same self-correction every
+    /// other path here relies on — not worth an optimistic-concurrency retry loop.
+    /// </para>
     /// </remarks>
     private StackUpdateResult? RemoveAppliedImages(int stackId, Dictionary<string, string> applied) {
         using var scope = scopeFactory.CreateScope();

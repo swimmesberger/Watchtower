@@ -432,7 +432,10 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
         // "<image> <digest>" pair per line — an image reference never contains whitespace.
         var digestComparer = new ValueComparer<Dictionary<string, string>>(
             (a, c) => SameDigests(a!, c!),
-            v => v.Aggregate(0, (h, kv) => HashCode.Combine(h, kv.Key.GetHashCode(), kv.Value.GetHashCode())),
+            // XORed, not folded in sequence: equality above ignores both order and key casing, so the
+            // hash has to as well, or two equal maps can hash apart. (Sum would overflow-check.)
+            v => v.Aggregate(0, (h, kv) => h ^ HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(kv.Key), kv.Value.GetHashCode())),
             v => new Dictionary<string, string>(v, StringComparer.OrdinalIgnoreCase));
         b.Property(x => x.OutdatedImageDigests)
             .HasConversion(v => FormatDigests(v), v => ParseDigests(v), digestComparer);

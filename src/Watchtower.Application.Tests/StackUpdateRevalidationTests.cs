@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -229,6 +230,54 @@ public sealed class StackUpdateRevalidationTests {
         Assert.Equal(NewDigest, Assert.Contains("app:latest", row.OutdatedImageDigests));
     }
 
+    // ── Docker JSON contract ──────────────────────────────────────────────────
+
+    [Fact]
+    public void ContainerListJson_BindsTheImageIdTheRunningCheckDependsOn() {
+        // Every other test here overrides the container-listing seam, so this is the only place the
+        // real wire format is exercised — and this binding fails closed: if "ImageID" stopped mapping
+        // onto ImageId (case-insensitive matching switched off, a [JsonPropertyName] added, Docker
+        // renaming the field), no container id would ever match a local image, the badge would never
+        // clear again, and every other test here would still pass.
+        const string json = """
+            [{
+              "Id": "8dfafdbc3a40",
+              "Names": ["/demo-app-1"],
+              "Image": "app:latest",
+              "ImageID": "sha256:bbbb",
+              "State": "running",
+              "Status": "Up 2 hours",
+              "Labels": { "com.docker.compose.project": "demo" }
+            }, {
+              "Id": "9cd87474be90",
+              "Names": ["/demo-worker-1"],
+              "Image": "worker:latest",
+              "State": "running",
+              "Status": "Up 2 hours",
+              "Labels": { "com.docker.compose.project": "demo" }
+            }, {
+              "Id": "3176a2479c92",
+              "Names": ["/demo-cache-1"],
+              "Image": "cache:7",
+              "ImageID": null,
+              "State": "running",
+              "Status": "Up 2 hours",
+              "Labels": { "com.docker.compose.project": "demo" }
+            }]
+            """;
+
+        var containers = JsonSerializer.Deserialize(json, DockerJsonContext.Default.ListDockerContainerInfo);
+
+        Assert.NotNull(containers);
+        Assert.Equal(3, containers.Count);
+        Assert.Equal("sha256:bbbb", containers[0].ImageId);
+        Assert.Equal("app:latest", containers[0].Image);
+        // Omitted or explicitly null, it must read as "unset" and never as a matchable id — which is
+        // why the consumer treats it as possibly-null despite the non-nullable declaration.
+        Assert.True(string.IsNullOrEmpty(containers[1].ImageId));
+        Assert.True(string.IsNullOrEmpty(containers[2].ImageId));
+    }
+
     // ── Scheduling ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -297,6 +346,9 @@ public sealed class StackUpdateRevalidationTests {
         using var host = AuthTestHost.Start();
         var pending = await SeedAsync(host, ["app:latest"], new() { ["app:latest"] = NewDigest });
         var upToDate = await SeedAsync(host, [], digests: [], hasUpdates: false, name: "quiet");
+        // Pre-migration row: outdated images but no digest to revalidate against. Announcing it would
+        // buy a database read every debounce window and learn nothing.
+        var legacy = await SeedAsync(host, ["old:1"], digests: [], name: "legacy");
         var service = CreateScheduledService(host);
         var revalidator = NewRevalidator(host, service);
 
@@ -304,12 +356,13 @@ public sealed class StackUpdateRevalidationTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var result = await new ListStacks(db, revalidator).HandleAsync(new ListStacks.Query(), Ct);
             Assert.True(result.IsSuccess);
-            Assert.Equal(2, result.Value.Stacks.Count);
+            Assert.Equal(3, result.Value.Stacks.Count);
         }
         await revalidator.Drained;
 
         Assert.Equal([pending], service.Calls);
         Assert.DoesNotContain(upToDate, service.Calls);
+        Assert.DoesNotContain(legacy, service.Calls);
     }
 
     [Fact]
