@@ -1,11 +1,12 @@
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Stacks.Handlers;
 
 /// <summary>Returns a single stack by id.</summary>
 [Handler("stacks.get")]
-public sealed class GetStack(WatchtowerDbContext db)
+public sealed class GetStack(WatchtowerDbContext db, StackUpdateRevalidator revalidator)
     : IHandler<GetStack.Query, Result<GetStack.Response>> {
     public sealed record Query(int Id);
     public sealed record Response(StackDto Stack);
@@ -14,8 +15,11 @@ public sealed class GetStack(WatchtowerDbContext db)
         var stack = await db.Stacks.AsNoTracking()
             .Include(s => s.UpdateCheck)
             .FirstOrDefaultAsync(s => s.Id == query.Id, ct);
-        return stack is null
-            ? AppError.NotFound($"Stack {query.Id} not found")
-            : new Response(StackMapping.ToDto(stack, stack.UpdateCheck));
+        if (stack is null) return AppError.NotFound($"Stack {query.Id} not found");
+        // A pending image update may already have been applied on the host by hand; revalidate that
+        // in the background (no registry traffic, never awaited) so the next refetch is accurate.
+        if (stack.UpdateCheck is { HasUpdates: true, OutdatedImages.Length: > 0 })
+            revalidator.Request(stack.Id);
+        return new Response(StackMapping.ToDto(stack, stack.UpdateCheck));
     }
 }
