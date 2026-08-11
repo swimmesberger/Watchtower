@@ -20,7 +20,11 @@ export interface TimeSeriesChartProps {
   className?: string
 }
 
-// viewBox geometry — the SVG scales to its container width; coordinates are fixed here.
+// viewBox geometry — coordinates below are fixed in viewBox units. The SVG has no
+// `preserveAspectRatio` override, so the default `xMidYMid meet` applies: on a container wider
+// than VBW the viewBox is letterboxed (centered with blank space on each side), it is NOT
+// stretched to fill the width. Screen→viewBox conversion must therefore go through the SVG's
+// CTM (see `onMove`), not a naive `clientX / rect.width` ratio.
 const VBW = 720
 const M = { top: 12, right: 14, bottom: 24, left: 46 }
 
@@ -43,6 +47,9 @@ function fmtTime(ms: number, spanMs: number): string {
  * Finds the index of the timestamp in a sorted (ascending), deduped array `ts` that is closest
  * to `t`. Used to snap the hover crosshair to the nearest sample by time rather than by array
  * index, since `ts` (a union of timestamps across series) is generally not evenly spaced.
+ *
+ * Returns -1 if `ts` is empty. Exported (with no consumer outside this file today) so it stays
+ * independently unit-testable if/when a test runner is added to this package.
  */
 export function nearestIndexByTime(ts: number[], t: number): number {
   if (ts.length === 0) return -1
@@ -59,9 +66,10 @@ export function nearestIndexByTime(ts: number[], t: number): number {
 }
 
 /**
- * A hand-rolled multi-series time-series line chart (no chart dependency). Fixed viewBox that scales to
- * the container width; y-grid + labels, a few x time ticks, one polyline per series, and a hover
- * crosshair with a tooltip listing each series' value at the nearest sample.
+ * A hand-rolled multi-series time-series line chart (no chart dependency). Fixed viewBox that
+ * fits (letterboxed, not stretched) within the container width; y-grid + labels, a few x time
+ * ticks, one polyline per series, and a hover crosshair with a tooltip listing each series'
+ * value at the nearest sample.
  */
 export function TimeSeriesChart({
   series,
@@ -120,9 +128,19 @@ export function TimeSeriesChart({
   function onMove(e: MouseEvent<SVGRectElement>) {
     const svg = e.currentTarget.ownerSVGElement
     if (!svg) return
+    // Degenerate layout (not yet laid out, hidden, or genuinely zero-sized): bail rather than
+    // fall through to a CTM some browsers report as identity even when there's no real mapping
+    // (observed in Chromium — getScreenCTM() does not reliably return null here).
     const rect = svg.getBoundingClientRect()
-    const xView = ((e.clientX - rect.left) / rect.width) * VBW
-    const frac = Math.max(0, Math.min(1, (xView - M.left) / (VBW - M.left - M.right)))
+    if (rect.width === 0 || rect.height === 0) return
+    // Convert client (screen) coordinates to viewBox coordinates via the SVG's CTM rather than a
+    // naive `clientX / rect.width` ratio — the viewBox is letterboxed (xMidYMid meet), not
+    // stretched, once the container is wider than VBW, so a width ratio would be off-center.
+    const ctm = svg.getScreenCTM()?.inverse()
+    if (!ctm) return
+    const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm)
+    if (!Number.isFinite(pt.x)) return
+    const frac = Math.max(0, Math.min(1, (pt.x - M.left) / (VBW - M.left - M.right)))
     const tTarget = tMin + frac * tSpan
     setHoverIdx(nearestIndexByTime(ts, tTarget))
   }
