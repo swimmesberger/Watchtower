@@ -40,6 +40,25 @@ function fmtTime(ms: number, spanMs: number): string {
 }
 
 /**
+ * Finds the index of the timestamp in a sorted (ascending), deduped array `ts` that is closest
+ * to `t`. Used to snap the hover crosshair to the nearest sample by time rather than by array
+ * index, since `ts` (a union of timestamps across series) is generally not evenly spaced.
+ */
+export function nearestIndexByTime(ts: number[], t: number): number {
+  if (ts.length === 0) return -1
+  let lo = 0
+  let hi = ts.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (ts[mid]! < t) lo = mid + 1
+    else hi = mid
+  }
+  // `lo` is the first index with ts[lo] >= t. The nearest is either `lo` or `lo - 1`.
+  if (lo > 0 && Math.abs(ts[lo - 1]! - t) <= Math.abs(ts[lo]! - t)) return lo - 1
+  return lo
+}
+
+/**
  * A hand-rolled multi-series time-series line chart (no chart dependency). Fixed viewBox that scales to
  * the container width; y-grid + labels, a few x time ticks, one polyline per series, and a hover
  * crosshair with a tooltip listing each series' value at the nearest sample.
@@ -95,7 +114,7 @@ export function TimeSeriesChart({
     )
   }
 
-  const { ts, tSpan, top, x, y, lookup, yTicks, xTicks } = model
+  const { ts, tMin, tSpan, top, x, y, lookup, yTicks, xTicks } = model
   const hoverT = hoverIdx != null ? ts[hoverIdx] : null
 
   function onMove(e: MouseEvent<SVGRectElement>) {
@@ -104,7 +123,8 @@ export function TimeSeriesChart({
     const rect = svg.getBoundingClientRect()
     const xView = ((e.clientX - rect.left) / rect.width) * VBW
     const frac = Math.max(0, Math.min(1, (xView - M.left) / (VBW - M.left - M.right)))
-    setHoverIdx(Math.round(frac * (ts.length - 1)))
+    const tTarget = tMin + frac * tSpan
+    setHoverIdx(nearestIndexByTime(ts, tTarget))
   }
 
   return (
