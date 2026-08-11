@@ -6,14 +6,17 @@ namespace Watchtower.Application.Services;
 /// <summary>
 /// Keeps the cached "update available" state honest when a stack is updated outside Watchtower.
 /// Read handlers (<c>stacks.list</c> / <c>stacks.get</c>) announce the stacks they served with a
-/// pending image update; this starts a local, registry-free revalidation
+/// pending image update; this runs a local, registry-free revalidation
 /// (<see cref="StackUpdateService.RevalidateStackAsync"/>) in the background and never makes the
 /// caller wait for it. The correction shows up on the UI's next refetch.
 /// </summary>
 /// <remarks>
-/// Debounced per stack: a dashboard that polls every few seconds, or lists twenty stacks at once,
-/// must not turn into twenty Docker inspects per poll. The window is deliberately a constant rather
-/// than a setting — it trades staleness nobody can perceive for load nobody has to tune.
+/// Two limits, because the read path can announce a lot at once. Requests are <em>debounced</em> per
+/// stack — a dashboard polling every few seconds, or listing twenty stacks, must not re-inspect the
+/// same stack every time; the window is deliberately a constant rather than a setting, trading
+/// staleness nobody can perceive for load nobody has to tune. And the work itself is <em>serialized</em>
+/// onto a single chain, so a cold start listing twenty stacks with five images each queues a hundred
+/// Docker inspects instead of firing them at a small host all at once.
 /// </remarks>
 public sealed class StackUpdateRevalidator(
     StackUpdateService stackUpdate,
@@ -24,33 +27,47 @@ public sealed class StackUpdateRevalidator(
     public static readonly TimeSpan DebounceWindow = TimeSpan.FromSeconds(30);
 
     private readonly ConcurrentDictionary<int, DateTimeOffset> _lastStarted = new();
-    private Task _pending = Task.CompletedTask;
+    private readonly ConcurrentDictionary<int, byte> _inFlight = new();
+    private readonly Lock _gate = new();
+    private Task _queue = Task.CompletedTask;
 
     /// <summary>
-    /// The revalidation started most recently. Exposed so callers that need the work to have landed —
-    /// tests, above all — can await what the read path deliberately forgets.
+    /// Completes once everything requested so far has run. The read path deliberately forgets this
+    /// work; tests are the callers that need it to have landed.
     /// </summary>
-    public Task Pending => Volatile.Read(ref _pending);
+    internal Task Drained {
+        get { lock (_gate) return _queue; }
+    }
 
     /// <summary>
-    /// Requests a background revalidation of the stack's cached update state.
-    /// Returns false when one ran within <see cref="DebounceWindow"/> and this request was dropped.
+    /// Queues a background revalidation of the stack's cached update state. Returns false when the
+    /// request was dropped: one ran within <see cref="DebounceWindow"/>, or one is still in flight.
     /// </summary>
     public bool Request(int stackId) {
         if (!TryClaim(stackId)) return false;
-        Volatile.Write(ref _pending, RevalidateAsync(stackId));
+        // One chain, one revalidation at a time — appending to it is the whole queue.
+        lock (_gate) _queue = _queue.ContinueWith(
+            _ => RevalidateAsync(stackId),
+            CancellationToken.None,
+            TaskContinuationOptions.RunContinuationsAsynchronously,
+            TaskScheduler.Default).Unwrap();
         return true;
     }
 
     /// <summary>
-    /// Reserves the stack's next revalidation slot, so concurrent readers cannot both start one.
-    /// The slot is taken before the work begins, which also caps a slow revalidation to one in flight.
+    /// Reserves the stack's next revalidation slot. The debounce window bounds how often a stack is
+    /// looked at; the in-flight marker — released in <see cref="RevalidateAsync"/>'s finally — is what
+    /// keeps a revalidation slower than that window from being queued a second time behind itself.
     /// </summary>
     private bool TryClaim(int stackId) {
+        if (!_inFlight.TryAdd(stackId, 0)) return false;
         var now = time.GetUtcNow();
         while (true) {
             if (_lastStarted.TryGetValue(stackId, out var previous)) {
-                if (now - previous < DebounceWindow) return false;
+                if (now - previous < DebounceWindow) {
+                    _inFlight.TryRemove(stackId, out _);
+                    return false;
+                }
                 if (_lastStarted.TryUpdate(stackId, now, previous)) return true;
             } else if (_lastStarted.TryAdd(stackId, now)) {
                 return true;
@@ -59,13 +76,13 @@ public sealed class StackUpdateRevalidator(
     }
 
     private async Task RevalidateAsync(int stackId) {
-        // Yield first so the requesting handler is never charged for the Docker round trips.
-        await Task.Yield();
         try {
             await stackUpdate.RevalidateStackAsync(stackId, CancellationToken.None);
         } catch (Exception ex) {
             // Best effort by design: the state stays as the last full check left it.
             logger.LogDebug(ex, "Local update revalidation failed for stack {StackId}", stackId);
+        } finally {
+            _inFlight.TryRemove(stackId, out _);
         }
     }
 }
