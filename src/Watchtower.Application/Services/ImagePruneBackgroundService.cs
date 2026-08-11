@@ -13,8 +13,9 @@ namespace Watchtower.Application.Services;
 /// cadence but does no work and touches nothing on the host.
 /// </summary>
 /// <remarks>
-/// Only dangling images are pruned (see <see cref="DockerEngineClient.PruneImagesAsync"/>): an image
-/// still carrying a tag is something a stack — or Watchtower's own self-update rollback — may need.
+/// Only dangling images are pruned (see <see cref="DockerEngineClient.PruneImagesAsync"/>): a tagged
+/// image no container happens to be running is still what the next <c>docker compose up</c> without a
+/// pull would reuse.
 /// </remarks>
 public sealed class ImagePruneBackgroundService(
     DockerEngineClient docker,
@@ -57,8 +58,10 @@ public sealed class ImagePruneBackgroundService(
                     "Dangling-image prune removed {Count} image(s), reclaiming {Bytes} bytes",
                     result.DeletedCount, result.SpaceReclaimed);
             }
-        } catch (OperationCanceledException) {
-            // Normal shutdown — don't log as an error.
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Normal shutdown — don't log as an error. Guarded on the token: an HttpClient timeout
+            // surfaces as a TaskCanceledException too, and a prune that ran into the client's
+            // 100-second ceiling must reach the warning below rather than vanish.
         } catch (Exception ex) {
             logger.LogWarning(ex, "Dangling-image prune failed; will retry in {Interval}", interval);
         }

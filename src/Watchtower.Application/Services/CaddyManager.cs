@@ -103,8 +103,9 @@ public class CaddyManager : IHostedService, IDisposable {
             await ConnectAllRoutedContainersAsync(ct);
             await ApplyAsync(ct);
             _logger.LogInformation("Reverse proxy reconciled.");
-        } catch (OperationCanceledException) {
-            // Shutting down.
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Shutting down. Guarded on the token: an HttpClient timeout surfaces as a
+            // TaskCanceledException too, and must reach the error log below.
         } catch (Exception ex) {
             _logger.LogError(ex, "Reverse-proxy reconcile failed; will be retried on the next route change or deploy.");
         }

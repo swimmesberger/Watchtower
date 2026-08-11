@@ -48,8 +48,9 @@ public sealed class StackUpdateBackgroundService(
             logger.LogInformation("Background stack update check starting");
             await stackUpdate.CheckAllStacksAsync(ct);
             logger.LogInformation("Background stack update check complete");
-        } catch (OperationCanceledException) {
-            // Normal shutdown — don't log as an error.
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Normal shutdown — don't log as an error. Guarded on the token: an HttpClient timeout
+            // surfaces as a TaskCanceledException too, and must reach the warning below.
         } catch (Exception ex) {
             logger.LogWarning(ex, "Background stack update check failed; will retry in {Interval}", interval);
         }
