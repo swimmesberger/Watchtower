@@ -608,12 +608,13 @@ public sealed class DockerEngineClient : IDisposable {
     /// </summary>
     /// <remarks>
     /// Deliberately never the <c>-a</c> ("all unused") variant: that also deletes tagged images no
-    /// container currently runs, which on this host includes the previous version of every stack —
-    /// the images a rollback or a `docker compose up` without a pull would otherwise reuse.
+    /// container currently runs — the images a <c>docker compose up</c> without a pull reuses.
     /// </remarks>
     public async Task<DockerPruneImagesResponse> PruneImagesAsync(CancellationToken ct = default) {
         var response = await _client.PostAsync(BuildImagePruneUrl(_apiBase), content: null, ct);
-        response.EnsureSuccessStatusCode();
+        // The prune runs unattended with no UI surface, so the daemon's message is the only
+        // diagnostic there will ever be — e.g. a socket mounted read-only answers 403 with a body.
+        await EnsureSuccessWithBodyAsync(response, ct);
         var json = await response.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerPruneImagesResponse, ct)
             ?? new DockerPruneImagesResponse();
@@ -627,7 +628,7 @@ public sealed class DockerEngineClient : IDisposable {
     /// the opposite value (<c>dangling=false</c>) is what <c>docker image prune -a</c> sends and the
     /// difference between the two is every tagged image on the host.
     /// </summary>
-    public static string BuildImagePruneUrl(string apiBase) {
+    internal static string BuildImagePruneUrl(string apiBase) {
         const string filters = """{"dangling":["true"]}""";
         return $"{apiBase}/images/prune?filters={Uri.EscapeDataString(filters)}";
     }

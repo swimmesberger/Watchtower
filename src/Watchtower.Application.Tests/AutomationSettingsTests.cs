@@ -86,9 +86,8 @@ public sealed class AutomationSettingsTests {
 
         // Filters travel as a URL-encoded JSON object in the `filters` query parameter.
         Assert.Equal("/v1.43/images/prune?filters=%7B%22dangling%22%3A%5B%22true%22%5D%7D", url);
+        // Decoded, the filter says dangling-only — never the "all unused" variant, whose only
+        // textual difference from this one is the word `false`.
         Assert.Equal("""{"dangling":["true"]}""", Uri.UnescapeDataString(url.Split("filters=")[1]));
-        // Never the "all unused" variant.
-        Assert.DoesNotContain("false", url);
-        Assert.DoesNotContain("all", url);
     }
 }
