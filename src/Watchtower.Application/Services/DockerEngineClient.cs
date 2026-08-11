@@ -602,6 +602,36 @@ public sealed class DockerEngineClient : IDisposable {
         return end < 0 ? null : header[start..end];
     }
 
+    /// <summary>
+    /// Removes dangling (untagged) images via <c>POST /images/prune</c> — the API equivalent of
+    /// <c>docker image prune -f</c>. Returns what the daemon deleted and how many bytes it reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately never the <c>-a</c> ("all unused") variant: that also deletes tagged images no
+    /// container currently runs, which on this host includes the previous version of every stack —
+    /// the images a rollback or a `docker compose up` without a pull would otherwise reuse.
+    /// </remarks>
+    public async Task<DockerPruneImagesResponse> PruneImagesAsync(CancellationToken ct = default) {
+        var response = await _client.PostAsync(BuildImagePruneUrl(_apiBase), content: null, ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerPruneImagesResponse, ct)
+            ?? new DockerPruneImagesResponse();
+    }
+
+    /// <summary>
+    /// Builds the prune URL: <c>POST /images/prune?filters={"dangling":["true"]}</c>. Docker takes
+    /// prune filters as a JSON object in the <c>filters</c> query parameter (same encoding as the
+    /// label filter in <see cref="ListContainersByLabelsAsync"/>), not as a request body.
+    /// <c>dangling=true</c> is sent explicitly rather than relying on the endpoint's default, because
+    /// the opposite value (<c>dangling=false</c>) is what <c>docker image prune -a</c> sends and the
+    /// difference between the two is every tagged image on the host.
+    /// </summary>
+    public static string BuildImagePruneUrl(string apiBase) {
+        const string filters = """{"dangling":["true"]}""";
+        return $"{apiBase}/images/prune?filters={Uri.EscapeDataString(filters)}";
+    }
+
     /// <summary>The image must already be present locally (i.e., pulled first).</summary>
     public async Task<DockerImageInfo> InspectImageAsync(string imageName, CancellationToken ct = default) {
         var response = await _client.GetAsync($"{_apiBase}/images/{Uri.EscapeDataString(imageName)}/json", ct);
@@ -671,6 +701,31 @@ public sealed record DockerWaitContainerResponse {
 }
 
 /// <summary>
+/// Response body from POST /images/prune: <c>{ "ImagesDeleted": [...], "SpaceReclaimed": 1234 }</c>.
+/// Docker returns <c>ImagesDeleted: null</c> (not an empty array) when nothing was dangling.
+/// </summary>
+public sealed record DockerPruneImagesResponse {
+    /// <summary>One entry per untagged/removed layer; null when the daemon deleted nothing.</summary>
+    public List<DockerDeletedImage>? ImagesDeleted { get; init; }
+
+    /// <summary>Bytes of disk the prune freed.</summary>
+    public long SpaceReclaimed { get; init; }
+
+    /// <summary>Number of entries in <see cref="ImagesDeleted"/>, treating null as zero.</summary>
+    public int DeletedCount => ImagesDeleted?.Count ?? 0;
+}
+
+/// <summary>
+/// A single entry of the prune response's <c>ImagesDeleted</c> array. Exactly one of the two
+/// properties is populated per entry: <c>Untagged</c> when a reference was removed, <c>Deleted</c>
+/// when the layer itself went away.
+/// </summary>
+public sealed record DockerDeletedImage {
+    public string? Untagged { get; init; }
+    public string? Deleted { get; init; }
+}
+
+/// <summary>
 /// STJ source-generation context for Docker Engine API types.
 /// Separate from the module JSON contexts because Docker uses PascalCase.
 /// </summary>
@@ -695,6 +750,8 @@ public sealed record DockerWaitContainerResponse {
 [JsonSerializable(typeof(DockerConnectNetworkBody))]
 [JsonSerializable(typeof(DockerDisconnectNetworkBody))]
 [JsonSerializable(typeof(DockerWaitContainerResponse))]
+[JsonSerializable(typeof(DockerPruneImagesResponse))]
+[JsonSerializable(typeof(DockerDeletedImage))]
 [JsonSerializable(typeof(DockerVolumeListResponse))]
 [JsonSerializable(typeof(DockerVolumeInfo))]
 [JsonSerializable(typeof(DockerSystemDfResponse))]

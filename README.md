@@ -141,6 +141,7 @@ Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variable
 | `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` — straight into the containers, no compose changes needed — for the [App API](docs/public-app-api.md). |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
+| `ImagePruneEnabled` | `WATCHTOWER__IMAGEPRUNEENABLED` | `false` | Periodically remove dangling (untagged) images — `docker image prune -f`, never `-a`. Interval via `WATCHTOWER__IMAGEPRUNEINTERVALMINUTES` (default `1440`). |
 | `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `sqlite` | Metrics source: `sqlite` (persisted history), `memory` (live only), or `influxdb` (read an external store). Runtime-switchable under Settings → Metrics — see [docs/metrics-history.md](docs/metrics-history.md). |
 | `Metrics:RetentionDays` | `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `sqlite` backend (1–365 days). |
 

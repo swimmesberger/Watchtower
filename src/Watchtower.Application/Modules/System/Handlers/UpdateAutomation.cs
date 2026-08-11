@@ -16,13 +16,17 @@ public sealed class UpdateAutomation(ISettingsManager settings)
         bool AutoCheckEnabled,
         int AutoCheckIntervalMinutes,
         bool StackCheckEnabled,
-        int StackCheckIntervalMinutes);
+        int StackCheckIntervalMinutes,
+        bool ImagePruneEnabled,
+        int ImagePruneIntervalMinutes);
 
     public sealed record Response(
         bool AutoCheckEnabled,
         int AutoCheckIntervalMinutes,
         bool StackCheckEnabled,
-        int StackCheckIntervalMinutes);
+        int StackCheckIntervalMinutes,
+        bool ImagePruneEnabled,
+        int ImagePruneIntervalMinutes);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         await settings.SetStringAsync("Watchtower:AutoCheckEnabled",
@@ -33,6 +37,10 @@ public sealed class UpdateAutomation(ISettingsManager settings)
             command.StackCheckEnabled ? "true" : "false", SettingsScope.Global, expectedVersion: null, ct);
         await settings.SetStringAsync("Watchtower:StackCheckIntervalMinutes",
             command.StackCheckIntervalMinutes.ToString(), SettingsScope.Global, expectedVersion: null, ct);
+        await settings.SetStringAsync("Watchtower:ImagePruneEnabled",
+            command.ImagePruneEnabled ? "true" : "false", SettingsScope.Global, expectedVersion: null, ct);
+        await settings.SetStringAsync("Watchtower:ImagePruneIntervalMinutes",
+            command.ImagePruneIntervalMinutes.ToString(), SettingsScope.Global, expectedVersion: null, ct);
 
         // Echo back exactly what was persisted. The config provider reloads asynchronously, so
         // IOptionsMonitor.CurrentValue may lag by a moment; returning the written values gives the
@@ -41,6 +49,8 @@ public sealed class UpdateAutomation(ISettingsManager settings)
             command.AutoCheckEnabled,
             command.AutoCheckIntervalMinutes,
             command.StackCheckEnabled,
-            command.StackCheckIntervalMinutes);
+            command.StackCheckIntervalMinutes,
+            command.ImagePruneEnabled,
+            command.ImagePruneIntervalMinutes);
     }
 }

@@ -63,6 +63,21 @@ public sealed record WatchtowerOptions {
     public int StackCheckIntervalMinutes { get; init; } = 15;
 
     /// <summary>
+    /// When true, a background service periodically removes dangling (untagged) images — the
+    /// equivalent of <c>docker image prune -f</c>, never <c>-a</c>, so tagged images a stack may
+    /// still be rolled back to are left alone.
+    /// Set via <c>WATCHTOWER__IMAGEPRUNEENABLED=true</c> or appsettings.json.
+    /// Defaults to false so nothing is deleted from the host unless opted in.
+    /// </summary>
+    public bool ImagePruneEnabled { get; init; } = false;
+
+    /// <summary>
+    /// How often the dangling-image prune runs, in minutes. Clamped to 1–1440.
+    /// Only relevant when <see cref="ImagePruneEnabled"/> is true.
+    /// </summary>
+    public int ImagePruneIntervalMinutes { get; init; } = 1440;
+
+    /// <summary>
     /// Metrics backend selection and its optional InfluxDB reader settings (ADR-0007).
     /// Bound from <c>WATCHTOWER__METRICS__*</c> (e.g. <c>WATCHTOWER__METRICS__BACKEND=influxdb</c>,
     /// <c>WATCHTOWER__METRICS__INFLUX__URL=…</c>).

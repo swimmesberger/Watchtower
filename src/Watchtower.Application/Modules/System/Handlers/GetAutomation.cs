@@ -4,9 +4,10 @@ using Watchtower.Application.Config;
 namespace Watchtower.Application.Modules.System.Handlers;
 
 /// <summary>
-/// Returns the effective automation toggles (background auto-check + stack-check enablement and
-/// intervals). Values come from <see cref="IOptionsMonitor{WatchtowerOptions}"/>, so they reflect
-/// any runtime overrides layered over the env/appsettings defaults by the settings provider.
+/// Returns the effective automation toggles (background auto-check, stack-check and dangling-image
+/// prune enablement and intervals). Values come from <see cref="IOptionsMonitor{WatchtowerOptions}"/>,
+/// so they reflect any runtime overrides layered over the env/appsettings defaults by the settings
+/// provider.
 /// </summary>
 [Handler("system.getAutomation")]
 public sealed class GetAutomation(IOptionsMonitor<WatchtowerOptions> options)
@@ -16,7 +17,9 @@ public sealed class GetAutomation(IOptionsMonitor<WatchtowerOptions> options)
         bool AutoCheckEnabled,
         int AutoCheckIntervalMinutes,
         bool StackCheckEnabled,
-        int StackCheckIntervalMinutes);
+        int StackCheckIntervalMinutes,
+        bool ImagePruneEnabled,
+        int ImagePruneIntervalMinutes);
 
     public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var o = options.CurrentValue;
@@ -24,7 +27,9 @@ public sealed class GetAutomation(IOptionsMonitor<WatchtowerOptions> options)
             o.AutoCheckEnabled,
             o.AutoCheckIntervalMinutes,
             o.StackCheckEnabled,
-            o.StackCheckIntervalMinutes);
+            o.StackCheckIntervalMinutes,
+            o.ImagePruneEnabled,
+            o.ImagePruneIntervalMinutes);
         return ValueTask.FromResult<Result<Response>>(response);
     }
 }

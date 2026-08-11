@@ -202,6 +202,15 @@ function AutomationCard() {
               onToggle={v => set('stackCheckEnabled', v)}
               onMinutes={v => set('stackCheckIntervalMinutes', v)}
             />
+            <div className="h-px bg-border" />
+            <ToggleRow
+              label="Prune dangling images"
+              hint="Periodically removes untagged (dangling) image layers left behind by pulls, reclaiming disk. Tagged images are never touched."
+              enabled={form.imagePruneEnabled}
+              minutes={form.imagePruneIntervalMinutes}
+              onToggle={v => set('imagePruneEnabled', v)}
+              onMinutes={v => set('imagePruneIntervalMinutes', v)}
+            />
             <div className="flex items-center gap-3">
               <Button
                 variant="primary"

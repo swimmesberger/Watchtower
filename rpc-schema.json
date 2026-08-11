@@ -4570,13 +4570,21 @@
           },
           "stackCheckIntervalMinutes": {
             "type": "integer"
+          },
+          "imagePruneEnabled": {
+            "type": "boolean"
+          },
+          "imagePruneIntervalMinutes": {
+            "type": "integer"
           }
         },
         "required": [
           "autoCheckEnabled",
           "autoCheckIntervalMinutes",
           "stackCheckEnabled",
-          "stackCheckIntervalMinutes"
+          "stackCheckIntervalMinutes",
+          "imagePruneEnabled",
+          "imagePruneIntervalMinutes"
         ]
       }
     },
@@ -4673,13 +4681,21 @@
           },
           "stackCheckIntervalMinutes": {
             "type": "integer"
+          },
+          "imagePruneEnabled": {
+            "type": "boolean"
+          },
+          "imagePruneIntervalMinutes": {
+            "type": "integer"
           }
         },
         "required": [
           "autoCheckEnabled",
           "autoCheckIntervalMinutes",
           "stackCheckEnabled",
-          "stackCheckIntervalMinutes"
+          "stackCheckIntervalMinutes",
+          "imagePruneEnabled",
+          "imagePruneIntervalMinutes"
         ]
       },
       "result": {
@@ -4696,13 +4712,21 @@
           },
           "stackCheckIntervalMinutes": {
             "type": "integer"
+          },
+          "imagePruneEnabled": {
+            "type": "boolean"
+          },
+          "imagePruneIntervalMinutes": {
+            "type": "integer"
           }
         },
         "required": [
           "autoCheckEnabled",
           "autoCheckIntervalMinutes",
           "stackCheckEnabled",
-          "stackCheckIntervalMinutes"
+          "stackCheckIntervalMinutes",
+          "imagePruneEnabled",
+          "imagePruneIntervalMinutes"
         ]
       }
     },

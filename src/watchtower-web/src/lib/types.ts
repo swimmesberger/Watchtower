@@ -418,6 +418,9 @@ export interface AutomationConfig {
   autoCheckIntervalMinutes: number
   stackCheckEnabled: boolean
   stackCheckIntervalMinutes: number
+  /** Periodic `docker image prune -f` equivalent — dangling (untagged) images only. */
+  imagePruneEnabled: boolean
+  imagePruneIntervalMinutes: number
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
