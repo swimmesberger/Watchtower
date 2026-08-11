@@ -96,6 +96,9 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
 
         services.AddSingleton<StackUpdateService>();
+        // Clears cached update flags for stacks an operator updated by hand, off the read path and
+        // without touching a registry. Singleton because the per-stack debounce is process state.
+        services.AddSingleton<StackUpdateRevalidator>();
 
         // Central authorization (docs/central-auth/design.md) — ASP.NET Identity *core* only
         // (UserManager + password hasher + lockout/security-stamp), stored through WatchtowerDbContext.

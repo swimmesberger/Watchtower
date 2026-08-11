@@ -620,6 +620,14 @@ public sealed record DockerContainerInfo {
     public required string Id { get; init; }
     public required string[] Names { get; init; }
     public required string Image { get; init; }
+    /// <summary>
+    /// The <c>sha256:…</c> id of the image the container is actually running (Docker's <c>ImageID</c>).
+    /// <see cref="Image"/> is only the reference it was started from, which keeps pointing at the tag
+    /// after a newer image is pulled under it — this is what tells "pulled" from "pulled and recreated"
+    /// apart. Despite the non-nullable type this can arrive null (the daemon sending an explicit null
+    /// overwrites the initializer below), so treat it as unset rather than dereferencing it.
+    /// </summary>
+    public string ImageId { get; init; } = string.Empty;
     public required string State { get; init; }
     public required string Status { get; init; }
     public required Dictionary<string, string> Labels { get; init; }
