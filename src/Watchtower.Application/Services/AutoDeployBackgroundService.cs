@@ -50,7 +50,7 @@ public sealed class AutoDeployBackgroundService(
             while (!stoppingToken.IsCancellationRequested) {
                 try {
                     await TickAsync(stoppingToken);
-                } catch (OperationCanceledException) {
+                } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) {
                     throw;
                 } catch (Exception ex) {
                     logger.LogWarning(ex, "Auto-deploy tick failed; retrying in {Interval}", TickInterval);
@@ -121,7 +121,7 @@ public sealed class AutoDeployBackgroundService(
             };
             logger.LogInformation("Auto-deploying stack {StackName} ({Reason})", stack.Name, reason);
             deployQueue.Enqueue(stack.Id, triggeredBy);
-        } catch (OperationCanceledException) {
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception ex) {
             logger.LogWarning(ex, "Auto-deploy evaluation failed for stack {StackName}", stack.Name);

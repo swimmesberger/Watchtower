@@ -428,9 +428,36 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
                 v => string.Join('\n', v),
                 v => v.Length == 0 ? Array.Empty<string>() : v.Split('\n', StringSplitOptions.RemoveEmptyEntries),
                 comparer);
+        // The remote digest behind each outdated image, same newline-separated text, one
+        // "<image> <digest>" pair per line — an image reference never contains whitespace.
+        var digestComparer = new ValueComparer<Dictionary<string, string>>(
+            (a, c) => SameDigests(a!, c!),
+            // XORed, not folded in sequence: equality above ignores both order and key casing, so the
+            // hash has to as well, or two equal maps can hash apart. (Sum would overflow-check.)
+            v => v.Aggregate(0, (h, kv) => h ^ HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(kv.Key), kv.Value.GetHashCode())),
+            v => new Dictionary<string, string>(v, StringComparer.OrdinalIgnoreCase));
+        b.Property(x => x.OutdatedImageDigests)
+            .HasConversion(v => FormatDigests(v), v => ParseDigests(v), digestComparer);
         b.HasOne(x => x.Stack)
             .WithOne(s => s.UpdateCheck)
             .HasForeignKey<StackUpdateCheck>(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static bool SameDigests(Dictionary<string, string> a, Dictionary<string, string> b) =>
+        a.Count == b.Count && a.All(kv => b.TryGetValue(kv.Key, out var digest) && digest == kv.Value);
+
+    internal static string FormatDigests(Dictionary<string, string> digests) =>
+        string.Join('\n', digests.Select(kv => $"{kv.Key} {kv.Value}"));
+
+    internal static Dictionary<string, string> ParseDigests(string value) {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in value.Split('\n', StringSplitOptions.RemoveEmptyEntries)) {
+            var separator = line.IndexOf(' ');
+            if (separator <= 0 || separator == line.Length - 1) continue;
+            map[line[..separator]] = line[(separator + 1)..];
+        }
+        return map;
     }
 }

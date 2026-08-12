@@ -10,11 +10,33 @@ namespace Watchtower.Application.Services;
 
 /// <summary>
 /// Communicates with the Docker Engine API over the Unix domain socket at /var/run/docker.sock.
-/// Uses a persistent HttpClient configured with a custom SocketsHttpHandler so no
+/// Uses persistent HttpClients configured with a custom SocketsHttpHandler so no
 /// real TCP connection is made — the socket path is passed as the "host" in requests.
 /// </summary>
+/// <remarks>
+/// Two clients share the one handler (and therefore one connection pool). Almost every call is
+/// UI-facing and keeps HttpClient's 100-second default timeout, so a wedged daemon socket fails
+/// fast instead of hanging a page. The few calls whose duration is a property of the host rather
+/// than of Watchtower — the container wait and the image prune — go through a second, untimed
+/// client: their responses are buffered, so the 100-second ceiling would abandon them mid-flight
+/// (a self-update watch, or a prune of months of accumulated layers) even though nothing is wrong.
+/// Streamed calls (<see cref="HttpCompletionOption.ResponseHeadersRead"/>) need no such treatment:
+/// the per-request timeout stops applying once the response headers arrive.
+/// </remarks>
 public sealed class DockerEngineClient : IDisposable {
+    /// <summary>
+    /// Client-side ceiling for <see cref="PruneImagesAsync"/>. The untimed client removes HttpClient's
+    /// bound, and the prune runs from a background loop that has nothing but this to stop it parking
+    /// forever on a daemon that never answers. Generous on purpose: a first prune on a host with a long
+    /// backlog of layers is legitimately slow, and exceeding this is reported as a failure.
+    /// </summary>
+    internal static readonly TimeSpan PruneTimeout = TimeSpan.FromMinutes(30);
+
     private readonly HttpClient _client;
+    private readonly HttpClient _longRunningClient;
+    /// <summary>Non-null only when this instance built the handler and therefore has to dispose it.</summary>
+    private readonly HttpMessageHandler? _ownedHandler;
+    private readonly TimeSpan _pruneTimeout;
     private readonly string _apiBase;
 
     /// <param name="options">
@@ -22,18 +44,59 @@ public sealed class DockerEngineClient : IDisposable {
     /// (e.g. <c>/v1.43</c>). This is the same version used by <see cref="ComposeCliService"/>
     /// via <c>DOCKER_API_VERSION</c>, ensuring both communicate with the daemon at the same level.
     /// </param>
-    public DockerEngineClient(IOptions<WatchtowerOptions> options) {
-        _apiBase = $"/v{options.Value.DockerApiVersion}";
-        var handler = new SocketsHttpHandler {
-            // Route all HTTP requests through the Docker Unix domain socket.
-            ConnectCallback = async (ctx, ct) => {
-                var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-                await socket.ConnectAsync(new UnixDomainSocketEndPoint("/var/run/docker.sock"), ct);
-                return new NetworkStream(socket, ownsSocket: true);
-            },
-        };
+    public DockerEngineClient(IOptions<WatchtowerOptions> options)
+        : this(options.Value.DockerApiVersion, CreateSocketHandler(), PruneTimeout) { }
+
+    /// <summary>
+    /// Builds both clients over <paramref name="ownedHandler"/> and takes responsibility for
+    /// disposing it. This is the shape the production constructor uses; a test reaches it directly
+    /// to cover the disposal path without needing a Docker socket.
+    /// </summary>
+    internal DockerEngineClient(string apiVersion, HttpMessageHandler ownedHandler, TimeSpan pruneTimeout) {
+        _apiBase = $"/v{apiVersion}";
+        _pruneTimeout = pruneTimeout;
+        _ownedHandler = ownedHandler;
+        (_client, _longRunningClient) = CreateClients(ownedHandler);
+    }
+
+    /// <summary>The Unix-socket handler: every request is routed to /var/run/docker.sock.</summary>
+    private static SocketsHttpHandler CreateSocketHandler() => new() {
+        ConnectCallback = async (ctx, ct) => {
+            var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint("/var/run/docker.sock"), ct);
+            return new NetworkStream(socket, ownsSocket: true);
+        },
+    };
+
+    /// <summary>
+    /// Test seam: takes the two clients ready-made so a test can tell apart which one a call was
+    /// routed through. The handler is the caller's to dispose in this shape.
+    /// </summary>
+    internal DockerEngineClient(
+        string apiVersion, HttpClient client, HttpClient longRunningClient, TimeSpan pruneTimeout) {
+        _apiBase = $"/v{apiVersion}";
+        _client = client;
+        _longRunningClient = longRunningClient;
+        _pruneTimeout = pruneTimeout;
+        _ownedHandler = null;
+    }
+
+    /// <summary>
+    /// Builds the default and long-running clients over a single shared <paramref name="handler"/>:
+    /// one connection pool, two timeout policies. Neither client is given ownership of the handler
+    /// (<c>disposeHandler: false</c>) — <see cref="Dispose"/> disposes it exactly once instead, which
+    /// is also what keeps the second client from tearing the pool out from under the first.
+    /// </summary>
+    internal static (HttpClient Default, HttpClient LongRunning) CreateClients(HttpMessageHandler handler) {
         // The hostname is ignored when using a Unix socket; "docker" is used for clarity in logs.
-        _client = new HttpClient(handler) { BaseAddress = new Uri("http://docker") };
+        var baseAddress = new Uri("http://docker");
+        // Deliberately left at HttpClient's 100-second default — see the class remarks.
+        var client = new HttpClient(handler, disposeHandler: false) { BaseAddress = baseAddress };
+        var longRunning = new HttpClient(handler, disposeHandler: false) {
+            BaseAddress = baseAddress,
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        return (client, longRunning);
     }
 
     /// <summary>
@@ -151,8 +214,15 @@ public sealed class DockerEngineClient : IDisposable {
     /// Uses Docker's <c>POST /containers/{id}/wait</c> endpoint, which is more
     /// efficient than polling <c>InspectContainerAsync</c>.
     /// </summary>
+    /// <remarks>
+    /// Goes through the untimed client: the daemon holds the response open for as long as the
+    /// container keeps running, which the 100-second default would cut short — a self-update watch
+    /// on a container that takes longer than that would fail for no reason other than the clock.
+    /// How long the wait may last is the caller's business, expressed through <paramref name="ct"/>,
+    /// which is the only bound on this call.
+    /// </remarks>
     public async Task<int> WaitContainerAsync(string containerId, CancellationToken ct = default) {
-        var response = await _client.PostAsync($"{_apiBase}/containers/{containerId}/wait?condition=not-running", content: null, ct);
+        var response = await _longRunningClient.PostAsync($"{_apiBase}/containers/{containerId}/wait?condition=not-running", content: null, ct);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         var result = await JsonSerializer.DeserializeAsync(stream, DockerJsonContext.Default.DockerWaitContainerResponse, ct)
@@ -375,7 +445,16 @@ public sealed class DockerEngineClient : IDisposable {
             ?? throw new InvalidOperationException($"Null stats response for container {containerId}");
     }
 
-    public void Dispose() => _client.Dispose();
+    /// <summary>
+    /// Disposes both clients, and the handler only when this instance built it. Both clients are
+    /// constructed with <c>disposeHandler: false</c>, so the handler has exactly one owner rather
+    /// than being torn down twice — or torn out from under the second client by the first.
+    /// </summary>
+    public void Dispose() {
+        _client.Dispose();
+        _longRunningClient.Dispose();
+        _ownedHandler?.Dispose();
+    }
 
     // ── Self-update helpers ──────────────────────────────────────────────────
 
@@ -602,6 +681,63 @@ public sealed class DockerEngineClient : IDisposable {
         return end < 0 ? null : header[start..end];
     }
 
+    /// <summary>
+    /// Removes dangling (untagged) images via <c>POST /images/prune</c> — the API equivalent of
+    /// <c>docker image prune -f</c>. Returns what the daemon deleted and how many bytes it reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately never the <c>-a</c> ("all unused") variant: that also deletes tagged images no
+    /// container currently runs — the images a <c>docker compose up</c> without a pull reuses.
+    /// </para>
+    /// <para>
+    /// Goes through the untimed client, because the daemon withholds the response headers until the
+    /// prune has finished and a backlog of layers can take longer than the 100-second default. That
+    /// leaves cancellation as the only bound, so the caller's token is linked with
+    /// <see cref="PruneTimeout"/> — this runs from a background loop, which must not park forever on
+    /// a daemon that never answers.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="TimeoutException">
+    /// The prune outlasted <see cref="PruneTimeout"/>. Deliberately not an
+    /// <see cref="OperationCanceledException"/>: callers treat that as "we are shutting down" and
+    /// stay quiet about it, and hitting the ceiling is the opposite of routine.
+    /// </exception>
+    public async Task<DockerPruneImagesResponse> PruneImagesAsync(CancellationToken ct = default) {
+        // The cap gets its own source rather than a CancelAfter on the linked one, so "the cap fired"
+        // is a fact to read off `cap` instead of something inferred from the caller's token: a
+        // shutdown arriving right behind an expired cap must not turn the timeout back into a
+        // cancellation the caller then swallows as routine.
+        using var cap = new CancellationTokenSource(_pruneTimeout);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, cap.Token);
+        try {
+            var response = await _longRunningClient.PostAsync(BuildImagePruneUrl(_apiBase), content: null, bounded.Token);
+            // The prune runs unattended with no UI surface, so the daemon's message is the only
+            // diagnostic there will ever be — e.g. a socket mounted read-only answers 403 with a body.
+            await EnsureSuccessWithBodyAsync(response, bounded.Token);
+            var json = await response.Content.ReadAsStreamAsync(bounded.Token);
+            return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerPruneImagesResponse, bounded.Token)
+                ?? new DockerPruneImagesResponse();
+        } catch (OperationCanceledException) when (cap.IsCancellationRequested) {
+            throw new TimeoutException(
+                $"The dangling-image prune exceeded the client-side cap of {_pruneTimeout}. " +
+                "The daemon may still be carrying it through.");
+        }
+    }
+
+    /// <summary>
+    /// Builds the prune URL: <c>POST /images/prune?filters={"dangling":["true"]}</c>. Docker takes
+    /// prune filters as a JSON object in the <c>filters</c> query parameter (same encoding as the
+    /// label filter in <see cref="ListContainersByLabelsAsync"/>), not as a request body.
+    /// <c>dangling=true</c> is sent explicitly rather than relying on the endpoint's default, because
+    /// the opposite value (<c>dangling=false</c>) is what <c>docker image prune -a</c> sends and the
+    /// difference between the two is every tagged image on the host.
+    /// </summary>
+    internal static string BuildImagePruneUrl(string apiBase) {
+        const string filters = """{"dangling":["true"]}""";
+        return $"{apiBase}/images/prune?filters={Uri.EscapeDataString(filters)}";
+    }
+
     /// <summary>The image must already be present locally (i.e., pulled first).</summary>
     public async Task<DockerImageInfo> InspectImageAsync(string imageName, CancellationToken ct = default) {
         var response = await _client.GetAsync($"{_apiBase}/images/{Uri.EscapeDataString(imageName)}/json", ct);
@@ -620,6 +756,14 @@ public sealed record DockerContainerInfo {
     public required string Id { get; init; }
     public required string[] Names { get; init; }
     public required string Image { get; init; }
+    /// <summary>
+    /// The <c>sha256:…</c> id of the image the container is actually running (Docker's <c>ImageID</c>).
+    /// <see cref="Image"/> is only the reference it was started from, which keeps pointing at the tag
+    /// after a newer image is pulled under it — this is what tells "pulled" from "pulled and recreated"
+    /// apart. Despite the non-nullable type this can arrive null (the daemon sending an explicit null
+    /// overwrites the initializer below), so treat it as unset rather than dereferencing it.
+    /// </summary>
+    public string ImageId { get; init; } = string.Empty;
     public required string State { get; init; }
     public required string Status { get; init; }
     public required Dictionary<string, string> Labels { get; init; }
@@ -671,6 +815,31 @@ public sealed record DockerWaitContainerResponse {
 }
 
 /// <summary>
+/// Response body from POST /images/prune: <c>{ "ImagesDeleted": [...], "SpaceReclaimed": 1234 }</c>.
+/// Docker returns <c>ImagesDeleted: null</c> (not an empty array) when nothing was dangling.
+/// </summary>
+public sealed record DockerPruneImagesResponse {
+    /// <summary>One entry per untagged/removed layer; null when the daemon deleted nothing.</summary>
+    public List<DockerDeletedImage>? ImagesDeleted { get; init; }
+
+    /// <summary>Bytes of disk the prune freed.</summary>
+    public long SpaceReclaimed { get; init; }
+
+    /// <summary>Number of entries in <see cref="ImagesDeleted"/>, treating null as zero.</summary>
+    public int DeletedCount => ImagesDeleted?.Count ?? 0;
+}
+
+/// <summary>
+/// A single entry of the prune response's <c>ImagesDeleted</c> array. Exactly one of the two
+/// properties is populated per entry: <c>Untagged</c> when a reference was removed, <c>Deleted</c>
+/// when the layer itself went away.
+/// </summary>
+public sealed record DockerDeletedImage {
+    public string? Untagged { get; init; }
+    public string? Deleted { get; init; }
+}
+
+/// <summary>
 /// STJ source-generation context for Docker Engine API types.
 /// Separate from the module JSON contexts because Docker uses PascalCase.
 /// </summary>
@@ -695,6 +864,8 @@ public sealed record DockerWaitContainerResponse {
 [JsonSerializable(typeof(DockerConnectNetworkBody))]
 [JsonSerializable(typeof(DockerDisconnectNetworkBody))]
 [JsonSerializable(typeof(DockerWaitContainerResponse))]
+[JsonSerializable(typeof(DockerPruneImagesResponse))]
+[JsonSerializable(typeof(DockerDeletedImage))]
 [JsonSerializable(typeof(DockerVolumeListResponse))]
 [JsonSerializable(typeof(DockerVolumeInfo))]
 [JsonSerializable(typeof(DockerSystemDfResponse))]

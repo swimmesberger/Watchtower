@@ -9,6 +9,15 @@ public sealed class StackUpdateCheck {
     /// <summary>Image names (with tag) that have a newer version available. Persisted as newline-separated text.</summary>
     public string[] OutdatedImages { get; set; } = [];
     /// <summary>
+    /// The remote manifest digest (<c>sha256:…</c>) that made each entry of <see cref="OutdatedImages"/>
+    /// outdated, keyed by image reference. Recorded so the cached state can later be revalidated against
+    /// the images actually present on the host — an operator who pulls and recreates a stack by hand ends
+    /// up with that digest locally, which clears the entry without contacting the registry again.
+    /// Persisted as newline-separated <c>"&lt;image&gt; &lt;digest&gt;"</c> lines (neither part contains whitespace).
+    /// Empty on rows written before this was recorded; those can only be corrected by a full check.
+    /// </summary>
+    public Dictionary<string, string> OutdatedImageDigests { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
     /// Remote branch head SHA when it differs from the last deployed commit (a new commit is available).
     /// Null when the branch is up to date, was never deployed, or could not be checked.
     /// </summary>

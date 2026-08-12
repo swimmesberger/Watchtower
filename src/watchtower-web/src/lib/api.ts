@@ -387,6 +387,8 @@ export const api = {
         autoCheckIntervalMinutes: data.autoCheckIntervalMinutes,
         stackCheckEnabled: data.stackCheckEnabled,
         stackCheckIntervalMinutes: data.stackCheckIntervalMinutes,
+        imagePruneEnabled: data.imagePruneEnabled,
+        imagePruneIntervalMinutes: data.imagePruneIntervalMinutes,
       })) as AutomationConfig,
   },
 }
