@@ -48,7 +48,12 @@ public sealed class ImagePruneBackgroundService(
 
     private static TimeSpan Min(TimeSpan a, TimeSpan b) => a < b ? a : b;
 
-    private async Task RunPruneAsync(TimeSpan interval, CancellationToken ct) {
+    /// <summary>
+    /// One prune attempt, reporting the outcome. Internal rather than private so the two failure
+    /// branches — a capped prune must be logged, a shutdown must not — can be tested without waiting
+    /// out the loop's initial delay.
+    /// </summary>
+    internal async Task RunPruneAsync(TimeSpan interval, CancellationToken ct) {
         try {
             var result = await docker.PruneImagesAsync(ct);
             if (result.DeletedCount == 0 && result.SpaceReclaimed == 0) {
@@ -61,9 +66,11 @@ public sealed class ImagePruneBackgroundService(
                     result.DeletedCount, result.SpaceReclaimed);
             }
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-            // Normal shutdown — don't log as an error. Guarded on the token: an HttpClient timeout
-            // surfaces as a TaskCanceledException too, and a prune that ran into the client's
-            // 100-second ceiling must reach the warning below rather than vanish.
+            // Normal shutdown — don't log as an error. Guarded on the token because a cancellation
+            // for any other reason must reach the warning below rather than vanish. The prune's own
+            // ceiling is raised as a TimeoutException, which this filter cannot match: the client
+            // decides that from its own cap source, so a shutdown arriving just behind an expired
+            // cap is still reported here rather than swallowed.
         } catch (Exception ex) {
             // "Gave up on" rather than "failed": a client-side timeout abandons the request, but the
             // daemon carries the prune through regardless, so the disk may well have been reclaimed.
