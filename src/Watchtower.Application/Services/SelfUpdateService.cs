@@ -46,9 +46,22 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     /// </summary>
     internal static readonly TimeSpan StartupReconcileTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// Ceiling on the live watch that follows spawning a coordinator. Longer than the startup one
+    /// because this coordinator is doing the work — it sleeps ~3 s and then stops, renames, recreates
+    /// and starts this container — where the startup reconcile only picks up someone else's
+    /// leftovers. Bounded all the same, because this watch holds <c>_applyTask</c>, which is the
+    /// apply mutex: a coordinator that never exits (its own stop call hanging on a sick daemon, say)
+    /// would otherwise have every retry rejected with "already in progress" until the process
+    /// restarts. Ten minutes is far past any healthy recreate; the happy path never reaches it,
+    /// since the coordinator kills this process first.
+    /// </summary>
+    internal static readonly TimeSpan ApplyWatchTimeout = TimeSpan.FromMinutes(10);
+
     private readonly CancellationTokenSource _cts = new();
     private readonly object _applyLock = new();
     private readonly TimeSpan _startupReconcileTimeout;
+    private readonly TimeSpan _applyWatchTimeout;
     private Task? _applyTask;
 
     public SelfUpdateService(
@@ -56,20 +69,22 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         DockerEngineClient docker,
         IOptions<WatchtowerOptions> options,
         ILogger<SelfUpdateService> logger)
-        : this(scopeFactory, docker, options, logger, StartupReconcileTimeout) { }
+        : this(scopeFactory, docker, options, logger, StartupReconcileTimeout, ApplyWatchTimeout) { }
 
-    /// <summary>Test seam: the startup ceiling is injectable so a test need not wait out the real one.</summary>
+    /// <summary>Test seam: the two ceilings are injectable so a test need not wait out the real ones.</summary>
     internal SelfUpdateService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         IOptions<WatchtowerOptions> options,
         ILogger<SelfUpdateService> logger,
-        TimeSpan startupReconcileTimeout) {
+        TimeSpan startupReconcileTimeout,
+        TimeSpan applyWatchTimeout) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _options = options.Value;
         _logger = logger;
         _startupReconcileTimeout = startupReconcileTimeout;
+        _applyWatchTimeout = applyWatchTimeout;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken) {
@@ -83,20 +98,10 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             return;
         }
 
-        // Bounded on purpose — see StartupReconcileTimeout. _cts is linked in as well so a stop
-        // request releases the reconcile too; neither of those tokens is guaranteed to fire, which
-        // is exactly why the ceiling is here.
-        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
-        bounded.CancelAfter(_startupReconcileTimeout);
-
-        await ReconcileCoordinatorAsync(runtime.CoordinatorId, bounded.Token);
-
-        // ReconcileCoordinatorAsync swallows the cancellation (leaving the stage and CoordinatorId
-        // for a later reconcile), so say out loud that startup walked away from a live coordinator.
-        if (bounded.IsCancellationRequested && !cancellationToken.IsCancellationRequested && !_cts.IsCancellationRequested)
-            _logger.LogWarning(
-                "Coordinator {Id} had not exited after {Timeout}; continuing startup and leaving the apply stage to be reconciled later",
-                runtime.CoordinatorId[..Math.Min(12, runtime.CoordinatorId.Length)], _startupReconcileTimeout);
+        // _cts is linked in so a stop request releases the reconcile too; neither token is
+        // guaranteed to fire, which is why the wait inside carries a ceiling of its own.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        await ReconcileCoordinatorAsync(runtime.CoordinatorId, _startupReconcileTimeout, linked.Token);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken) {
@@ -118,13 +123,20 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     /// after spawning one — during a successful update the live call is cancelled when the
     /// coordinator recreates this container, and the next process instance finishes the job here.
     /// </summary>
-    private async Task ReconcileCoordinatorAsync(string coordinatorId, CancellationToken ct) {
+    /// <param name="waitTimeout">
+    /// Ceiling on the wait for the container to exit, and on that step alone. The bookkeeping that
+    /// follows keeps running on <paramref name="ct"/>: a ceiling that could fire between clearing
+    /// the stage and clearing the CoordinatorId would leave a runtime record no one ever revisits —
+    /// <see cref="StartAsync"/> only reconciles a stage of "pulling"/"restarting" — with the
+    /// coordinator container leaked as a stopped container for good.
+    /// </param>
+    internal async Task ReconcileCoordinatorAsync(string coordinatorId, TimeSpan waitTimeout, CancellationToken ct) {
         try {
             var details = await _docker.InspectContainerAsync(coordinatorId, ct);
 
             if (details.State?.Status == "running") {
                 _logger.LogInformation("Coordinator {Id} is still running; waiting for it to exit", coordinatorId[..12]);
-                await _docker.WaitContainerAsync(coordinatorId, ct);
+                if (!await TryWaitForExitAsync(coordinatorId, waitTimeout, ct)) return;
                 details = await _docker.InspectContainerAsync(coordinatorId, ct);
             }
 
@@ -149,6 +161,28 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             _logger.LogDebug(ex, "Could not inspect coordinator container {Id}; assuming update completed", coordinatorId[..12]);
             await SetStageAsync(SelfUpdateApplyStage.Idle, ct: CancellationToken.None);
             await UpdateRuntimeAsync(r => r with { CoordinatorId = null }, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Waits for the coordinator to exit under a ceiling of its own, since the wait itself is
+    /// unbounded (the daemon holds the response until the container stops, on the untimed client).
+    /// Returns false when the ceiling won — the caller then leaves the apply stage and CoordinatorId
+    /// untouched for a later reconcile, exactly as a cancellation would.
+    /// </summary>
+    private async Task<bool> TryWaitForExitAsync(string coordinatorId, TimeSpan waitTimeout, CancellationToken ct) {
+        // The ceiling gets its own source so "the ceiling won" is read off it directly rather than
+        // inferred from ct, which a shutdown landing in the same instant would falsify.
+        using var ceiling = new CancellationTokenSource(waitTimeout);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, ceiling.Token);
+        try {
+            await _docker.WaitContainerAsync(coordinatorId, bounded.Token);
+            return true;
+        } catch (OperationCanceledException) when (ceiling.IsCancellationRequested) {
+            _logger.LogWarning(
+                "Coordinator {Id} had not exited after {Timeout}; leaving the apply stage to be reconciled later",
+                coordinatorId[..12], waitTimeout);
+            return false;
         }
     }
 
@@ -319,8 +353,9 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             // instead of sticking at "restarting" until the next restart. During a successful
             // update this wait is cancelled when the coordinator recreates this container;
             // ReconcileCoordinatorAsync swallows the cancellation and the next process instance
-            // reconciles at startup.
-            await ReconcileCoordinatorAsync(coordinatorId, ct);
+            // reconciles at startup. Ceiling-bounded because this task is the apply mutex — see
+            // ApplyWatchTimeout.
+            await ReconcileCoordinatorAsync(coordinatorId, _applyWatchTimeout, ct);
         } catch (OperationCanceledException) {
             _logger.LogWarning("Self-update pull/spawn was cancelled (host shutting down)");
             await SetStageAsync(SelfUpdateApplyStage.Error, "Update cancelled — host was shutting down.", CancellationToken.None);

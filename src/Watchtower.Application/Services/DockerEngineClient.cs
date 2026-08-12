@@ -446,9 +446,9 @@ public sealed class DockerEngineClient : IDisposable {
     }
 
     /// <summary>
-    /// Disposes both clients and then the shared handler. Both clients were constructed with
-    /// <c>disposeHandler: false</c>, so the handler has exactly one owner: this instance when it
-    /// built the handler itself, and the caller when the clients were supplied from outside.
+    /// Disposes both clients, and the handler only when this instance built it. Both clients are
+    /// constructed with <c>disposeHandler: false</c>, so the handler has exactly one owner rather
+    /// than being torn down twice — or torn out from under the second client by the first.
     /// </summary>
     public void Dispose() {
         _client.Dispose();
