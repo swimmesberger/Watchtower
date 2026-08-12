@@ -1,5 +1,3 @@
-using System.Net;
-using System.Text;
 using Watchtower.Application.Services;
 using Xunit;
 
@@ -45,8 +43,25 @@ public sealed class DockerEngineClientTimeoutTests {
     }
 
     [Fact]
-    public async Task Dispose_DisposesBothClients_AndLeavesABorrowedHandlerAlone() {
-        var handler = new RecordingHandler();
+    public async Task Dispose_DisposesTheHandlerItOwns() {
+        // The production constructor builds the handler, so this instance has to dispose it — the
+        // half of the invariant that leaks a handler and its socket pool if it regresses.
+        using var handler = new RecordingHandler();
+        var client = new DockerEngineClient(ApiVersion, handler, TimeSpan.FromMinutes(30));
+        // Reach the clients through the class so the disposal below is observable on them too.
+        await client.ListContainersAsync(Ct);
+
+        client.Dispose();
+
+        Assert.True(handler.Disposed);
+        // Both clients went down with it: a request now fails as disposed rather than reaching
+        // a handler that is no longer there.
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => client.ListContainersAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Dispose_LeavesABorrowedHandlerAlone() {
+        using var handler = new RecordingHandler();
         var (defaultClient, longRunningClient) = DockerEngineClient.CreateClients(handler);
         var client = new DockerEngineClient(ApiVersion, defaultClient, longRunningClient, TimeSpan.FromMinutes(30));
 
@@ -54,17 +69,16 @@ public sealed class DockerEngineClientTimeoutTests {
 
         await Assert.ThrowsAsync<ObjectDisposedException>(() => defaultClient.GetAsync("http://docker/_ping", Ct));
         await Assert.ThrowsAsync<ObjectDisposedException>(() => longRunningClient.GetAsync("http://docker/_ping", Ct));
-        // This instance did not build the handler, so it does not dispose it; the production
-        // constructor is the one that owns and disposes the handler it created.
+        // Clients supplied from outside bring their own handler ownership; this instance built
+        // nothing and so disposes nothing.
         Assert.False(handler.Disposed);
-        handler.Dispose();
     }
 
     // ── Routing ───────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task ThePruneGoesThroughTheUntimedClient() {
-        using var estate = TestClients.Create(pruneTimeout: TimeSpan.FromSeconds(30));
+        using var estate = DockerClientEstate.Create(pruneTimeout: TimeSpan.FromSeconds(30));
 
         await estate.Client.PruneImagesAsync(Ct);
 
@@ -75,7 +89,7 @@ public sealed class DockerEngineClientTimeoutTests {
 
     [Fact]
     public async Task TheContainerWaitGoesThroughTheUntimedClient() {
-        using var estate = TestClients.Create(pruneTimeout: TimeSpan.FromSeconds(30));
+        using var estate = DockerClientEstate.Create(pruneTimeout: TimeSpan.FromSeconds(30));
 
         await estate.Client.WaitContainerAsync("abc123", Ct);
 
@@ -86,7 +100,7 @@ public sealed class DockerEngineClientTimeoutTests {
 
     [Fact]
     public async Task AUiFacingCallStillGoesThroughTheDefaultClient() {
-        using var estate = TestClients.Create(pruneTimeout: TimeSpan.FromSeconds(30));
+        using var estate = DockerClientEstate.Create(pruneTimeout: TimeSpan.FromSeconds(30));
 
         await estate.Client.ListContainersAsync(Ct);
 
@@ -98,22 +112,36 @@ public sealed class DockerEngineClientTimeoutTests {
     // ── The prune's own ceiling ───────────────────────────────────────────────
 
     [Fact]
-    public async Task APruneThatOutlastsTheCapFailsAsATimeout_NotAsCancellation() {
+    public async Task APruneThatOutlastsTheCapFailsAsATimeout() {
         // A short injected cap standing in for the real 30 minutes; this daemon never answers.
-        using var estate = TestClients.Create(pruneTimeout: TimeSpan.FromMilliseconds(50), hang: true);
+        using var estate = DockerClientEstate.Create(
+            pruneTimeout: TimeSpan.FromMilliseconds(50), hangLongRunning: true);
 
         var ex = await Assert.ThrowsAsync<TimeoutException>(() => estate.Client.PruneImagesAsync(Ct));
 
-        // ImagePruneBackgroundService.RunPruneAsync swallows OperationCanceledException as "we are
-        // shutting down". A TimeoutException cannot match that filter, so a capped prune gets logged
-        // rather than disappearing.
-        Assert.False(typeof(OperationCanceledException).IsAssignableFrom(ex.GetType()));
         Assert.Contains("cap", ex.Message);
     }
 
     [Fact]
+    public async Task APruneCappedWhileTheCallerIsAlsoShuttingDownStillFailsAsATimeout() {
+        // The cap fires first and the shutdown lands in the window before the catch filter runs —
+        // the race that inferring "the cap must have fired" from the caller's token would lose.
+        // Whether it was the cap is read off the cap's own source, so this stays a TimeoutException
+        // instead of an OperationCanceledException the background loop swallows as routine.
+        using var shutdown = new CancellationTokenSource();
+        using var estate = DockerClientEstate.Create(
+            pruneTimeout: TimeSpan.FromMilliseconds(50),
+            hangLongRunning: true,
+            onLongRunningCancelled: () => shutdown.Cancel());
+
+        await Assert.ThrowsAsync<TimeoutException>(() => estate.Client.PruneImagesAsync(shutdown.Token));
+        Assert.True(shutdown.IsCancellationRequested);
+    }
+
+    [Fact]
     public async Task ACancelledPruneStaysACancellation() {
-        using var estate = TestClients.Create(pruneTimeout: TimeSpan.FromMinutes(30), hang: true);
+        using var estate = DockerClientEstate.Create(
+            pruneTimeout: TimeSpan.FromMinutes(30), hangLongRunning: true);
         using var shutdown = new CancellationTokenSource();
 
         var prune = estate.Client.PruneImagesAsync(shutdown.Token);
@@ -122,82 +150,5 @@ public sealed class DockerEngineClientTimeoutTests {
         // The caller's token, not the cap — the shutdown path in the background service has to keep
         // recognizing this one and stay quiet about it.
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => prune);
-    }
-
-    // ── Doubles ───────────────────────────────────────────────────────────────
-
-    /// <summary>Records the paths it is asked for and answers each with a parseable Docker body.</summary>
-    private sealed class RecordingHandler(bool hang = false) : HttpMessageHandler {
-        public List<string> Requests { get; } = [];
-        public bool Disposed { get; private set; }
-
-        protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request, CancellationToken cancellationToken) {
-            var path = request.RequestUri!.AbsolutePath;
-            Requests.Add(request.RequestUri!.PathAndQuery);
-            // Stands in for a daemon that accepted the request and then went quiet — the shape the
-            // client-side cap exists for.
-            if (hang) await Task.Delay(Timeout.Infinite, cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.OK) {
-                Content = new StringContent(BodyFor(path), Encoding.UTF8, "application/json"),
-            };
-        }
-
-        // The wait response has a `required` StatusCode, so an empty object would not deserialize.
-        private static string BodyFor(string path) =>
-            path.EndsWith("/containers/json") ? "[]"
-            : path.EndsWith("/wait") ? """{"StatusCode":0}"""
-            : "{}";
-
-        protected override void Dispose(bool disposing) {
-            Disposed = true;
-            base.Dispose(disposing);
-        }
-    }
-
-    /// <summary>A client wired to two separate handlers, so which one a call took is observable.</summary>
-    private sealed class ClientEstate : IDisposable {
-        private readonly HttpClient _defaultClient;
-        private readonly HttpClient _longRunningClient;
-
-        public ClientEstate(
-            DockerEngineClient client,
-            RecordingHandler defaultHandler,
-            RecordingHandler longRunningHandler,
-            HttpClient defaultClient,
-            HttpClient longRunningClient) {
-            Client = client;
-            Default = defaultHandler;
-            LongRunning = longRunningHandler;
-            _defaultClient = defaultClient;
-            _longRunningClient = longRunningClient;
-        }
-
-        public DockerEngineClient Client { get; }
-        public RecordingHandler Default { get; }
-        public RecordingHandler LongRunning { get; }
-
-        public void Dispose() {
-            Client.Dispose();
-            _defaultClient.Dispose();
-            _longRunningClient.Dispose();
-            Default.Dispose();
-            LongRunning.Dispose();
-        }
-    }
-
-    private static class TestClients {
-        public static ClientEstate Create(TimeSpan pruneTimeout, bool hang = false) {
-            var defaultHandler = new RecordingHandler();
-            var longRunningHandler = new RecordingHandler(hang);
-            var baseAddress = new Uri("http://docker");
-            var defaultClient = new HttpClient(defaultHandler, disposeHandler: false) { BaseAddress = baseAddress };
-            var longRunningClient = new HttpClient(longRunningHandler, disposeHandler: false) {
-                BaseAddress = baseAddress,
-                Timeout = Timeout.InfiniteTimeSpan,
-            };
-            var client = new DockerEngineClient(ApiVersion, defaultClient, longRunningClient, pruneTimeout);
-            return new ClientEstate(client, defaultHandler, longRunningHandler, defaultClient, longRunningClient);
-        }
     }
 }

@@ -44,20 +44,29 @@ public sealed class DockerEngineClient : IDisposable {
     /// (e.g. <c>/v1.43</c>). This is the same version used by <see cref="ComposeCliService"/>
     /// via <c>DOCKER_API_VERSION</c>, ensuring both communicate with the daemon at the same level.
     /// </param>
-    public DockerEngineClient(IOptions<WatchtowerOptions> options) {
-        _apiBase = $"/v{options.Value.DockerApiVersion}";
-        _pruneTimeout = PruneTimeout;
-        var handler = new SocketsHttpHandler {
-            // Route all HTTP requests through the Docker Unix domain socket.
-            ConnectCallback = async (ctx, ct) => {
-                var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-                await socket.ConnectAsync(new UnixDomainSocketEndPoint("/var/run/docker.sock"), ct);
-                return new NetworkStream(socket, ownsSocket: true);
-            },
-        };
-        _ownedHandler = handler;
-        (_client, _longRunningClient) = CreateClients(handler);
+    public DockerEngineClient(IOptions<WatchtowerOptions> options)
+        : this(options.Value.DockerApiVersion, CreateSocketHandler(), PruneTimeout) { }
+
+    /// <summary>
+    /// Builds both clients over <paramref name="ownedHandler"/> and takes responsibility for
+    /// disposing it. This is the shape the production constructor uses; a test reaches it directly
+    /// to cover the disposal path without needing a Docker socket.
+    /// </summary>
+    internal DockerEngineClient(string apiVersion, HttpMessageHandler ownedHandler, TimeSpan pruneTimeout) {
+        _apiBase = $"/v{apiVersion}";
+        _pruneTimeout = pruneTimeout;
+        _ownedHandler = ownedHandler;
+        (_client, _longRunningClient) = CreateClients(ownedHandler);
     }
+
+    /// <summary>The Unix-socket handler: every request is routed to /var/run/docker.sock.</summary>
+    private static SocketsHttpHandler CreateSocketHandler() => new() {
+        ConnectCallback = async (ctx, ct) => {
+            var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint("/var/run/docker.sock"), ct);
+            return new NetworkStream(socket, ownsSocket: true);
+        },
+    };
 
     /// <summary>
     /// Test seam: takes the two clients ready-made so a test can tell apart which one a call was
@@ -695,21 +704,23 @@ public sealed class DockerEngineClient : IDisposable {
     /// stay quiet about it, and hitting the ceiling is the opposite of routine.
     /// </exception>
     public async Task<DockerPruneImagesResponse> PruneImagesAsync(CancellationToken ct = default) {
-        using var capped = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        capped.CancelAfter(_pruneTimeout);
+        // The cap gets its own source rather than a CancelAfter on the linked one, so "the cap fired"
+        // is a fact to read off `cap` instead of something inferred from the caller's token: a
+        // shutdown arriving right behind an expired cap must not turn the timeout back into a
+        // cancellation the caller then swallows as routine.
+        using var cap = new CancellationTokenSource(_pruneTimeout);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, cap.Token);
         try {
-            var response = await _longRunningClient.PostAsync(BuildImagePruneUrl(_apiBase), content: null, capped.Token);
+            var response = await _longRunningClient.PostAsync(BuildImagePruneUrl(_apiBase), content: null, bounded.Token);
             // The prune runs unattended with no UI surface, so the daemon's message is the only
             // diagnostic there will ever be — e.g. a socket mounted read-only answers 403 with a body.
-            await EnsureSuccessWithBodyAsync(response, capped.Token);
-            var json = await response.Content.ReadAsStreamAsync(capped.Token);
-            return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerPruneImagesResponse, capped.Token)
+            await EnsureSuccessWithBodyAsync(response, bounded.Token);
+            var json = await response.Content.ReadAsStreamAsync(bounded.Token);
+            return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerPruneImagesResponse, bounded.Token)
                 ?? new DockerPruneImagesResponse();
-        } catch (OperationCanceledException) when (!ct.IsCancellationRequested) {
-            // Only the cap can have fired: the caller's token is still live. A genuine shutdown
-            // cancellation falls straight through this filter and stays an OperationCanceledException.
+        } catch (OperationCanceledException) when (cap.IsCancellationRequested) {
             throw new TimeoutException(
-                $"The dangling-image prune exceeded the {_pruneTimeout.TotalMinutes:0}-minute client-side cap. " +
+                $"The dangling-image prune exceeded the client-side cap of {_pruneTimeout}. " +
                 "The daemon may still be carrying it through.");
         }
     }

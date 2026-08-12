@@ -34,31 +34,69 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private readonly WatchtowerOptions _options;
     private readonly ILogger<SelfUpdateService> _logger;
 
+    /// <summary>
+    /// Ceiling on the startup reconcile. Startup has no other bound: the host is started with
+    /// <c>CancellationToken.None</c> and <c>HostOptions.StartupTimeout</c> is left infinite, so the
+    /// token handed to <see cref="StartAsync"/> never fires, and the coordinator wait it may run is
+    /// on the untimed Docker client. Without this, a coordinator that is "running" but never exits
+    /// (paused, wedged, host thrashing) would hold <c>IHost.StartAsync</c> open forever — the app
+    /// never reaches Started, and SIGTERM cannot help because the shutdown signal does not reach
+    /// the startup path. Giving up instead leaves the stage for a later reconcile, which is what
+    /// happened before the wait moved off the 100-second default.
+    /// </summary>
+    internal static readonly TimeSpan StartupReconcileTimeout = TimeSpan.FromSeconds(60);
+
     private readonly CancellationTokenSource _cts = new();
     private readonly object _applyLock = new();
+    private readonly TimeSpan _startupReconcileTimeout;
     private Task? _applyTask;
 
     public SelfUpdateService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         IOptions<WatchtowerOptions> options,
-        ILogger<SelfUpdateService> logger) {
+        ILogger<SelfUpdateService> logger)
+        : this(scopeFactory, docker, options, logger, StartupReconcileTimeout) { }
+
+    /// <summary>Test seam: the startup ceiling is injectable so a test need not wait out the real one.</summary>
+    internal SelfUpdateService(
+        IServiceScopeFactory scopeFactory,
+        DockerEngineClient docker,
+        IOptions<WatchtowerOptions> options,
+        ILogger<SelfUpdateService> logger,
+        TimeSpan startupReconcileTimeout) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _options = options.Value;
         _logger = logger;
+        _startupReconcileTimeout = startupReconcileTimeout;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken) {
         // Reconcile any coordinator left behind by an apply that the previous process instance
         // never saw finish (the container was recreated mid-apply).
         var runtime = await LoadRuntimeAsync(cancellationToken);
-        if (runtime.ApplyStage is "pulling" or "restarting") {
-            if (runtime.CoordinatorId is null)
-                await SetStageAsync(SelfUpdateApplyStage.Idle, ct: cancellationToken);
-            else
-                await ReconcileCoordinatorAsync(runtime.CoordinatorId, cancellationToken);
+        if (runtime.ApplyStage is not ("pulling" or "restarting")) return;
+
+        if (runtime.CoordinatorId is null) {
+            await SetStageAsync(SelfUpdateApplyStage.Idle, ct: cancellationToken);
+            return;
         }
+
+        // Bounded on purpose — see StartupReconcileTimeout. _cts is linked in as well so a stop
+        // request releases the reconcile too; neither of those tokens is guaranteed to fire, which
+        // is exactly why the ceiling is here.
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        bounded.CancelAfter(_startupReconcileTimeout);
+
+        await ReconcileCoordinatorAsync(runtime.CoordinatorId, bounded.Token);
+
+        // ReconcileCoordinatorAsync swallows the cancellation (leaving the stage and CoordinatorId
+        // for a later reconcile), so say out loud that startup walked away from a live coordinator.
+        if (bounded.IsCancellationRequested && !cancellationToken.IsCancellationRequested && !_cts.IsCancellationRequested)
+            _logger.LogWarning(
+                "Coordinator {Id} had not exited after {Timeout}; continuing startup and leaving the apply stage to be reconciled later",
+                runtime.CoordinatorId[..Math.Min(12, runtime.CoordinatorId.Length)], _startupReconcileTimeout);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken) {
