@@ -61,9 +61,10 @@ public sealed class ImagePruneBackgroundService(
                     result.DeletedCount, result.SpaceReclaimed);
             }
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-            // Normal shutdown — don't log as an error. Guarded on the token: an HttpClient timeout
-            // surfaces as a TaskCanceledException too, and a prune that ran into the client's
-            // 100-second ceiling must reach the warning below rather than vanish.
+            // Normal shutdown — don't log as an error. Guarded on the token because a cancellation
+            // for any other reason must reach the warning below rather than vanish; the prune's own
+            // ceiling is deliberately raised as a TimeoutException, which this filter cannot swallow
+            // even during a shutdown that happens to race it.
         } catch (Exception ex) {
             // "Gave up on" rather than "failed": a client-side timeout abandons the request, but the
             // daemon carries the prune through regardless, so the disk may well have been reclaimed.
