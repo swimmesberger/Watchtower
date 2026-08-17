@@ -33,6 +33,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // than a log line, so it is injected and the tests can move it.
         services.TryAddSingleton(TimeProvider.System);
 
+        // Which settings are pinned by WATCHTOWER__* env vars (env wins over the settings store — see the
+        // configuration layering in Program.cs). TryAdd so tests can substitute a fake environment.
+        services.TryAddSingleton<EnvironmentSettingPins>();
+
         var dbPath = section.GetValue<string>("DbPath") ?? "/data/watchtower.db";
         var dir = Path.GetDirectoryName(dbPath);
         if (!string.IsNullOrEmpty(dir))
@@ -151,6 +155,9 @@ public static class WatchtowerServiceCollectionExtensions {
         // Registered BEFORE AddElarionClaimsCurrentUser on purpose: that helper uses TryAdd for
         // ICurrentUser, so registering first is how a host substitutes its own snapshot.
         var authEnabled = section.GetValue<bool>("Auth:Enabled");
+        // Snapshot the mode the process is actually starting in: Auth:Enabled decides pipeline shape and
+        // is not runtime-switchable, so the auth settings handlers report "restart required" against this.
+        services.AddSingleton(new AuthStartupState(authEnabled));
         if (authEnabled) {
             services.AddScoped<WatchtowerClaimsCurrentUser>();
             services.AddScoped<ICurrentUser>(sp => sp.GetRequiredService<WatchtowerClaimsCurrentUser>());

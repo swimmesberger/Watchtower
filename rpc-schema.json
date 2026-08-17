@@ -1458,13 +1458,20 @@
                   "composeProjectTag",
                   "diskMountpoint"
                 ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "backend",
               "retentionDays",
               "historyAvailable",
-              "influx"
+              "influx",
+              "pinnedPaths"
             ]
           }
         },
@@ -1847,13 +1854,20 @@
                   "composeProjectTag",
                   "diskMountpoint"
                 ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "backend",
               "retentionDays",
               "historyAvailable",
-              "influx"
+              "influx",
+              "pinnedPaths"
             ]
           }
         },
@@ -2361,6 +2375,40 @@
         ]
       }
     },
+    "proxy.getConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "adminEmail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caddyImage": {
+            "type": "string"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "adminEmail",
+          "caddyImage",
+          "pinnedPaths"
+        ]
+      }
+    },
     "proxy.getRoute": {
       "params": {
         "type": "object",
@@ -2657,6 +2705,59 @@
           "bypassPaths",
           "grantedUserIds",
           "grantedGroupIds"
+        ]
+      }
+    },
+    "proxy.updateConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "adminEmail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caddyImage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "adminEmail",
+          "caddyImage"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "adminEmail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caddyImage": {
+            "type": "string"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "adminEmail",
+          "caddyImage",
+          "pinnedPaths"
         ]
       }
     },
@@ -4552,6 +4653,52 @@
         ]
       }
     },
+    "system.getAuthConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionLifetimeHours": {
+            "type": "integer"
+          },
+          "absoluteSessionLifetimeDays": {
+            "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "active",
+          "restartRequired",
+          "host",
+          "sessionLifetimeHours",
+          "absoluteSessionLifetimeDays",
+          "pinnedPaths"
+        ]
+      }
+    },
     "system.getAutomation": {
       "params": {
         "type": "object"
@@ -4576,6 +4723,12 @@
           },
           "imagePruneIntervalMinutes": {
             "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -4584,7 +4737,8 @@
           "stackCheckEnabled",
           "stackCheckIntervalMinutes",
           "imagePruneEnabled",
-          "imagePruneIntervalMinutes"
+          "imagePruneIntervalMinutes",
+          "pinnedPaths"
         ]
       }
     },
@@ -4666,6 +4820,75 @@
         ]
       }
     },
+    "system.updateAuthConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionLifetimeHours": {
+            "type": "integer"
+          },
+          "absoluteSessionLifetimeDays": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "host",
+          "sessionLifetimeHours",
+          "absoluteSessionLifetimeDays"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionLifetimeHours": {
+            "type": "integer"
+          },
+          "absoluteSessionLifetimeDays": {
+            "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "active",
+          "restartRequired",
+          "host",
+          "sessionLifetimeHours",
+          "absoluteSessionLifetimeDays",
+          "pinnedPaths"
+        ]
+      }
+    },
     "system.updateAutomation": {
       "params": {
         "type": "object",
@@ -4718,6 +4941,12 @@
           },
           "imagePruneIntervalMinutes": {
             "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -4726,7 +4955,8 @@
           "stackCheckEnabled",
           "stackCheckIntervalMinutes",
           "imagePruneEnabled",
-          "imagePruneIntervalMinutes"
+          "imagePruneIntervalMinutes",
+          "pinnedPaths"
         ]
       }
     },

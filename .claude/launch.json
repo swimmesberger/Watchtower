@@ -6,6 +6,20 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "src/watchtower-web"],
       "port": 5173
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": [
+        "run",
+        "--project",
+        "src/Watchtower.Api",
+        "--no-build",
+        "--",
+        "--Watchtower:DbPath=C:/Users/Simon/AppData/Local/Temp/claude/wt-dev-data/watchtower.db",
+        "--Watchtower:Auth:KeyPath=C:/Users/Simon/AppData/Local/Temp/claude/wt-dev-data/auth-keys"
+      ],
+      "port": 5080
     }
   ]
 }

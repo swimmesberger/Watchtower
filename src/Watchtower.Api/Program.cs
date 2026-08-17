@@ -80,14 +80,20 @@ const string DevCorsPolicy = "watchtower-dev-frontend";
 builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
     p.SetIsOriginAllowed(DevCorsOrigins.IsLoopback).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
+// Layer the Elarion settings store into IConfiguration BELOW the environment variables: stored
+// settings live-reload into IOptionsMonitor<WatchtowerOptions> (no restart), but a WATCHTOWER__* env
+// var pins its setting — env is the infrastructure-as-code layer and always wins, and the Settings UI
+// disables pinned fields instead of losing to them. The boot snapshot makes the stored values visible
+// to the pre-DI reads below (Auth:Enabled, Auth:KeyPath), which run before the live provider loads.
+// Ordered before AddWatchtowerServices so those same reads inside it see the stored values too.
+builder.AddElarionSettingsConfiguration();
+var settingsDbPath = builder.Configuration.GetValue<string>("Watchtower:DbPath") ?? "/data/watchtower.db";
+RuntimeSettingsLayering.MakeEnvironmentWin(
+    builder.Configuration, RuntimeSettingsLayering.LoadStoredGlobalSettings(settingsDbPath));
+
 // Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
 // git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
-
-// Layer the Elarion settings store into IConfiguration ABOVE env/appsettings (added last → wins).
-// Global-scope settings under "Watchtower:*" (e.g. the automation toggles) live-reload here, so
-// IOptionsMonitor<WatchtowerOptions> re-binds when they change — no restart required.
-builder.AddElarionSettingsConfiguration();
 
 // Elarion framework composition:
 //   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.

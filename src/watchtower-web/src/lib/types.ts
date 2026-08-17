@@ -379,6 +379,8 @@ export interface MetricsConfig {
   retentionDays: number
   historyAvailable: boolean
   influx: MetricsInfluxConfig
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
 }
 
 /** `metrics.updateConfig` request. Null influx fields keep the stored values (token included). */
@@ -421,6 +423,52 @@ export interface AutomationConfig {
   /** Periodic `docker image prune -f` equivalent — dangling (untagged) images only. */
   imagePruneEnabled: boolean
   imagePruneIntervalMinutes: number
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** The values `system.updateAutomation` accepts (the response echoes them plus `pinnedPaths`). */
+export type UpdateAutomationRequest = Omit<AutomationConfig, 'pinnedPaths'>
+
+/** `system.getAuthConfig` / `system.updateAuthConfig` payload. */
+export interface AuthConfig {
+  /** The configured value — what the next start runs with. */
+  enabled: boolean
+  /** Whether the auth pipeline is enforcing in this process right now. */
+  active: boolean
+  /** True when `enabled` ≠ `active`: `Auth:Enabled` shapes the pipeline pre-DI, so it needs a restart. */
+  restartRequired: boolean
+  /** Central login hostname (bare host, no scheme). */
+  host: string | null
+  sessionLifetimeHours: number
+  absoluteSessionLifetimeDays: number
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** `system.updateAuthConfig` request. */
+export interface UpdateAuthConfigRequest {
+  enabled: boolean
+  host: string | null
+  sessionLifetimeHours: number
+  absoluteSessionLifetimeDays: number
+}
+
+/** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
+export interface ProxyConfig {
+  enabled: boolean
+  /** ACME account email for certificate expiry notices. */
+  adminEmail: string | null
+  caddyImage: string
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** `proxy.updateConfig` request. */
+export interface UpdateProxyConfigRequest {
+  enabled: boolean
+  adminEmail: string | null
+  caddyImage: string
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────

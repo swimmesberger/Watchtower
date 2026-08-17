@@ -28,12 +28,15 @@ public static partial class MetricsModule {
 /// <summary>
 /// The effective metrics-backend configuration surfaced to the Settings page. The InfluxDB token never
 /// leaves the server — <see cref="MetricsInfluxConfig.HasToken"/> stands in for it.
+/// <see cref="PinnedPaths"/> lists the configuration paths pinned by <c>WATCHTOWER__*</c> env vars
+/// (env wins over the settings store); the UI disables those fields.
 /// </summary>
 public sealed record MetricsConfig(
     string Backend,
     int RetentionDays,
     bool HistoryAvailable,
-    MetricsInfluxConfig Influx);
+    MetricsInfluxConfig Influx,
+    string[] PinnedPaths);
 
 /// <summary>InfluxDB connection values for the config surface (token reduced to a flag).</summary>
 public sealed record MetricsInfluxConfig(

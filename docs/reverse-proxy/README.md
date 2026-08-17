@@ -11,7 +11,9 @@ The feature is **opt-in**. When it is off, none of the behavior below happens.
 
 ## Enabling it
 
-Set two environment variables and make sure host ports 80 and 443 are free:
+Make sure host ports 80 and 443 are free, then either flip **Settings → Reverse proxy** in the UI
+(applies immediately, no restart — disabling stops and removes the managed Caddy container while
+keeping networks and issued certificates), or pin it via environment variables:
 
 ```yaml
 environment:
@@ -19,6 +21,9 @@ environment:
   WATCHTOWER__PROXY__ADMINEMAIL: you@example.com   # recommended, for Let's Encrypt notices
   # WATCHTOWER__PROXY__CADDYIMAGE: "caddy:2"        # optional override, defaults to caddy:2
 ```
+
+Env vars win over the UI ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)): a setting
+supplied this way shows as pinned (read-only) on the Settings page until the variable is removed.
 
 That's the whole setup. **You do not add Caddy to any compose file.** Watchtower already has the
 Docker socket and the host docker GID (which it needs anyway), and that is all it requires.
