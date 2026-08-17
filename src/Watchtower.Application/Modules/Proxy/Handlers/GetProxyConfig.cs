@@ -34,6 +34,8 @@ public sealed class GetProxyConfig(IOptionsMonitor<WatchtowerOptions> options, E
         WatchtowerSettingPaths.ProxyCloudflareCloudflaredContainerName,
         WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmails,
         WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains,
+        WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds,
+        WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds,
     ];
 
     public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
@@ -64,7 +66,9 @@ public sealed record ProxyConfigDto(
             CloudflaredImage: proxy.Cloudflare.CloudflaredImage,
             CloudflaredContainerName: proxy.Cloudflare.CloudflaredContainerName,
             AccessAllowedEmails: proxy.Cloudflare.AccessAllowedEmails,
-            AccessAllowedEmailDomains: proxy.Cloudflare.AccessAllowedEmailDomains),
+            AccessAllowedEmailDomains: proxy.Cloudflare.AccessAllowedEmailDomains,
+            AccessGroupIds: proxy.Cloudflare.AccessGroupIds,
+            AccessReusablePolicyIds: proxy.Cloudflare.AccessReusablePolicyIds),
         PinnedPaths: pins.Pinned(GetProxyConfig.ProxyPaths));
 }
 
@@ -78,4 +82,6 @@ public sealed record ProxyCloudflareConfigDto(
     string CloudflaredImage,
     string? CloudflaredContainerName,
     string AccessAllowedEmails,
-    string AccessAllowedEmailDomains);
+    string AccessAllowedEmailDomains,
+    string AccessGroupIds,
+    string AccessReusablePolicyIds);

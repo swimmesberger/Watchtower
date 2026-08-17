@@ -80,6 +80,52 @@ public sealed class CloudflareAccessProjectionTests {
     }
 
     [Fact]
+    public void AuthenticatedRoutes_CanAdmitAnAccessGroup_TheEntraWorkflow() {
+        // The "main user group" workflow: the allow-list lives in a Cloudflare Access group (e.g.
+        // Entra ID users); Watchtower references it instead of maintaining a parallel email list.
+        var cf = new CloudflareProxyOptions { AccessGroupIds = "grp-1, grp-2" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "app.example.com", AccessMode.Authenticated)],
+            new Dictionary<int, string[]>(),
+            cf);
+
+        var app = Assert.Single(projection.Apps);
+        Assert.Equal(["grp-1", "grp-2"], app.GroupIds);
+        Assert.Empty(app.Emails);
+        Assert.True(app.HasInlineRules);
+    }
+
+    [Fact]
+    public void ReusablePolicyAlone_IsAValidAllowSource_WithNoInlinePolicy() {
+        // A dashboard-maintained default policy attached by id: the app is created, but no
+        // Watchtower-generated app-scoped policy is needed (HasInlineRules drives that).
+        var cf = new CloudflareProxyOptions { AccessReusablePolicyIds = "pol-1" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "app.example.com", AccessMode.Authenticated)],
+            new Dictionary<int, string[]>(),
+            cf);
+
+        var app = Assert.Single(projection.Apps);
+        Assert.Equal(["pol-1"], app.ReusablePolicyIds);
+        Assert.False(app.HasInlineRules);
+        Assert.Empty(projection.Warnings);
+    }
+
+    [Fact]
+    public void RestrictedRoutes_AreNotWidenedByGroupsOrReusablePolicies() {
+        var cf = new CloudflareProxyOptions { AccessGroupIds = "grp-1", AccessReusablePolicyIds = "pol-1" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(7, "secret.example.com", AccessMode.Restricted)],
+            new Dictionary<int, string[]> { [7] = ["alice@example.com"] },
+            cf);
+
+        var app = Assert.Single(projection.Apps);
+        Assert.Equal(["alice@example.com"], app.Emails);
+        Assert.Empty(app.GroupIds);
+        Assert.Empty(app.ReusablePolicyIds);
+    }
+
+    [Fact]
     public void AppsAreOrderedByDomain_ForAStableReconcile() {
         var cf = new CloudflareProxyOptions { AccessAllowedEmailDomains = "example.com" };
         var projection = CloudflareTunnelProvider.ProjectAccessApps(

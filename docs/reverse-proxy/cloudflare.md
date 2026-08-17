@@ -38,8 +38,10 @@ On startup, on every route change/deploy, and on every settings change:
 - the cloudflared container (managed mode) and its ingress-network memberships;
 - one **Zero Trust Access application** (`self_hosted`, named `watchtower: {domain}`) per protected
   route, with a single Watchtower-owned allow policy:
-  - **Authenticated** routes admit the instance-wide *Access allowed emails / email domains*
-    configured on the Settings page;
+  - **Authenticated** routes admit the instance-wide allow sources configured on the Settings page:
+    *allowed emails*, *email domains*, **Access group ids** (the natural fit when your allow-list
+    already lives in an Access group — e.g. your Entra ID users), and/or **reusable Access policy
+    ids** (your dashboard-maintained default policy, attached on the app rather than recreated);
   - **Restricted** routes admit exactly the emails behind the route's grants — granted users plus
     members of granted groups (accounts without an email address cannot be matched by Cloudflare and
     are effectively excluded);
@@ -61,6 +63,9 @@ a toggle's job, and re-enabling reuses both.
   routes — protection is Cloudflare Access, projected from `Route.AccessMode` as described above.
   Apps behind a protected route see Cloudflare's `Cf-Access-Jwt-Assertion`, not the
   `X-Watchtower-*` identity headers, and the identity is whoever passed the Access policy (your
-  Cloudflare One login methods), not a Watchtower session.
+  Cloudflare One login methods), not a Watchtower session. For apps written against Cloudflare's
+  headers, integrated auth offers the matching **Cloudflare identity-forwarding mode** on the route
+  (see the central-auth docs), so the same stack code runs behind either — a JWT-verifying app only
+  re-points its JWKS/issuer configuration.
 - **TLS mode:** upstream connections from cloudflared to your services are plain HTTP on the private
   ingress network, like Caddy's; the route's `TlsEnabled` flag is not consulted by this provider.

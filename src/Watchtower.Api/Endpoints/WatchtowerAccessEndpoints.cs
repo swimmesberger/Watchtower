@@ -289,7 +289,12 @@ public static class WatchtowerAccessEndpoints {
         IReadOnlyList<string> groups) {
         // Source of truth, forwarded for every protected route regardless of mode. It carries the groups
         // even on a None route: the signed assertion is where a group-aware app should read them from.
-        http.Response.Headers[RouteAccessPolicy.JwtHeaderName] = signer.Mint(user, route.Domain, realm, groups);
+        var assertion = signer.Mint(user, route.Domain, realm, groups);
+        http.Response.Headers[RouteAccessPolicy.JwtHeaderName] = assertion;
+        // Cloudflare mode: the same assertion also travels under Cloudflare's header name, so an app
+        // written against Cf-Access-Jwt-Assertion only re-points its JWKS/issuer config at Watchtower.
+        if (route.IdentityHeaderMode == IdentityHeaderMode.Cloudflare)
+            http.Response.Headers[IdentityForwarding.CfAccessJwtAssertion] = assertion;
 
         // Plaintext convenience headers: only for a route that asked for them, and only values safe to put
         // in a header (the email and group entries are already omitted by the helper when there is nothing

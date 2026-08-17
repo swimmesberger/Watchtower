@@ -2340,7 +2340,8 @@
             "enum": [
               "None",
               "Remote",
-              "AuthRequest"
+              "AuthRequest",
+              "Cloudflare"
             ]
           },
           "bypassPaths": {
@@ -2438,6 +2439,12 @@
                   },
                   "accessAllowedEmailDomains": {
                     "type": "string"
+                  },
+                  "accessGroupIds": {
+                    "type": "string"
+                  },
+                  "accessReusablePolicyIds": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -2449,7 +2456,9 @@
                   "cloudflaredImage",
                   "cloudflaredContainerName",
                   "accessAllowedEmails",
-                  "accessAllowedEmailDomains"
+                  "accessAllowedEmailDomains",
+                  "accessGroupIds",
+                  "accessReusablePolicyIds"
                 ]
               },
               "pinnedPaths": {
@@ -2710,6 +2719,7 @@
               "None",
               "Remote",
               "AuthRequest",
+              "Cloudflare",
               null
             ],
             "default": null
@@ -2746,7 +2756,8 @@
             "enum": [
               "None",
               "Remote",
-              "AuthRequest"
+              "AuthRequest",
+              "Cloudflare"
             ]
           },
           "bypassPaths": {
@@ -2858,6 +2869,20 @@
               "null"
             ],
             "default": null
+          },
+          "cloudflareAccessGroupIds": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessReusablePolicyIds": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -2926,6 +2951,12 @@
                   },
                   "accessAllowedEmailDomains": {
                     "type": "string"
+                  },
+                  "accessGroupIds": {
+                    "type": "string"
+                  },
+                  "accessReusablePolicyIds": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -2937,7 +2968,9 @@
                   "cloudflaredImage",
                   "cloudflaredContainerName",
                   "accessAllowedEmails",
-                  "accessAllowedEmailDomains"
+                  "accessAllowedEmailDomains",
+                  "accessGroupIds",
+                  "accessReusablePolicyIds"
                 ]
               },
               "pinnedPaths": {

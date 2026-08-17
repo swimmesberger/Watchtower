@@ -328,6 +328,22 @@ public sealed record CloudflareProxyOptions {
     /// </summary>
     public string AccessAllowedEmailDomains { get; init; } = "";
 
+    /// <summary>
+    /// Comma-separated Zero Trust <b>Access group</b> ids (UUIDs) admitted by every Authenticated
+    /// route's Access application. The natural fit when the allow-list already lives in a Cloudflare
+    /// Access group (e.g. your Entra ID users) — Watchtower references the group instead of
+    /// maintaining a parallel email list.
+    /// </summary>
+    public string AccessGroupIds { get; init; } = "";
+
+    /// <summary>
+    /// Comma-separated <b>reusable Access policy</b> ids attached to every Authenticated route's
+    /// Access application, for accounts whose default allow policy already exists in the dashboard.
+    /// Attached alongside (not instead of) any Watchtower-generated app policy from the email/domain/
+    /// group settings above.
+    /// </summary>
+    public string AccessReusablePolicyIds { get; init; } = "";
+
     /// <summary>Parses a comma/semicolon/whitespace-separated list into trimmed, distinct entries.</summary>
     public static string[] SplitList(string? value) =>
         string.IsNullOrWhiteSpace(value)

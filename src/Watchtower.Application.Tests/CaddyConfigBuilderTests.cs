@@ -94,6 +94,8 @@ public sealed class CaddyConfigBuilderTests {
             		request_header -X-Forwarded-Email
             		request_header -X-Forwarded-Groups
             		request_header -X-Forwarded-Preferred-Username
+            		request_header -Cf-Access-Authenticated-User-Email
+            		request_header -Cf-Access-Jwt-Assertion
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
             			copy_headers X-Watchtower-Jwt
@@ -128,6 +130,8 @@ public sealed class CaddyConfigBuilderTests {
             		request_header -X-Forwarded-Email
             		request_header -X-Forwarded-Groups
             		request_header -X-Forwarded-Preferred-Username
+            		request_header -Cf-Access-Authenticated-User-Email
+            		request_header -Cf-Access-Jwt-Assertion
             		forward_auth watchtower:8080 {
             			uri /api/access/verify
             			copy_headers X-Watchtower-Jwt Remote-User Remote-Name Remote-Email Remote-Groups

@@ -473,6 +473,10 @@ export interface ProxyCloudflareConfig {
   accessAllowedEmails: string
   /** Comma-separated email domains admitted alongside `accessAllowedEmails`. */
   accessAllowedEmailDomains: string
+  /** Comma-separated Zero Trust Access group ids admitted by Authenticated routes. */
+  accessGroupIds: string
+  /** Comma-separated reusable Access policy ids attached to Authenticated routes' apps. */
+  accessReusablePolicyIds: string
 }
 
 /** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
@@ -502,6 +506,8 @@ export interface UpdateProxyConfigRequest {
   cloudflaredContainerName?: string | null
   cloudflareAccessAllowedEmails?: string | null
   cloudflareAccessAllowedEmailDomains?: string | null
+  cloudflareAccessGroupIds?: string | null
+  cloudflareAccessReusablePolicyIds?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
@@ -558,7 +564,7 @@ export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
  * default) forwards the JWT only; `Remote` uses Authelia/Traefik `Remote-*`; `AuthRequest` uses
  * oauth2-proxy `X-Auth-Request-*`. Mirrors the backend `IdentityHeaderMode` enum, serialized by name.
  */
-export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest'
+export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest' | 'Cloudflare'
 
 /** The shape `proxy.setAccess` both accepts and returns — the policy itself, with nothing derived. */
 export interface RouteAccess {

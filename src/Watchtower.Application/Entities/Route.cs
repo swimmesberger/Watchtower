@@ -47,6 +47,15 @@ public enum IdentityHeaderMode {
     Remote,
     /// <summary>oauth2-proxy <c>X-Auth-Request-User</c>/<c>-Preferred-Username</c>/<c>-Email</c> names.</summary>
     AuthRequest,
+    /// <summary>
+    /// Cloudflare Access <c>Cf-Access-Authenticated-User-Email</c> plus the Watchtower assertion
+    /// duplicated under <c>Cf-Access-Jwt-Assertion</c>. For apps written against Cloudflare's header
+    /// contract, so the same stack runs unchanged behind Cloudflare Access or behind integrated auth —
+    /// an app that verifies the assertion cryptographically re-points its JWKS/issuer configuration at
+    /// Watchtower (<c>/api/auth/jwks</c>) instead of <c>{team}.cloudflareaccess.com</c>; the header
+    /// names stay identical.
+    /// </summary>
+    Cloudflare,
 }
 
 /// <summary>

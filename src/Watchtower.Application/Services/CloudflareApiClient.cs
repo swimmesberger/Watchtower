@@ -142,6 +142,13 @@ public sealed class CloudflareApiClient : IDisposable {
             CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
     }
 
+    /// <summary>Deletes an app-scoped policy (used when the Watchtower-generated rule set becomes empty).</summary>
+    public async Task DeleteAccessPolicyAsync(
+        string accountId, string appId, string policyId, string token, CancellationToken ct = default) {
+        await SendAsync(HttpMethod.Delete, $"accounts/{accountId}/access/apps/{appId}/policies/{policyId}", token,
+            body: null, CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+    }
+
     /// <summary>
     /// Cheap credential probe for the settings surface: verifies the token can read the account's
     /// tunnels. Returns null on success, else a human-readable reason.
@@ -261,6 +268,12 @@ public sealed record CloudflareAccessAppRequest {
     [JsonPropertyName("type")] public required string Type { get; init; }
     [JsonPropertyName("session_duration")] public required string SessionDuration { get; init; }
     [JsonPropertyName("app_launcher_visible")] public required bool AppLauncherVisible { get; init; }
+
+    /// <summary>
+    /// Reusable Access policy ids to attach to the app. Null omits the field entirely so an update
+    /// leaves existing attachments untouched; a non-empty array replaces them.
+    /// </summary>
+    [JsonPropertyName("policies")] public string[]? Policies { get; init; }
 }
 
 public sealed record CloudflareAccessPolicy {
@@ -283,9 +296,11 @@ public sealed record CloudflareAccessPolicyRequest {
 public sealed record CloudflareAccessRule {
     [JsonPropertyName("email")] public CloudflareEmailRule? Email { get; init; }
     [JsonPropertyName("email_domain")] public CloudflareEmailDomainRule? EmailDomain { get; init; }
+    [JsonPropertyName("group")] public CloudflareGroupRule? Group { get; init; }
 
     public static CloudflareAccessRule ForEmail(string email) => new() { Email = new CloudflareEmailRule { Email = email } };
     public static CloudflareAccessRule ForEmailDomain(string domain) => new() { EmailDomain = new CloudflareEmailDomainRule { Domain = domain } };
+    public static CloudflareAccessRule ForGroup(string groupId) => new() { Group = new CloudflareGroupRule { Id = groupId } };
 }
 
 public sealed record CloudflareEmailRule {
@@ -294,6 +309,11 @@ public sealed record CloudflareEmailRule {
 
 public sealed record CloudflareEmailDomainRule {
     [JsonPropertyName("domain")] public required string Domain { get; init; }
+}
+
+/// <summary>References a Zero Trust Access group by id — the "main user group" workflow.</summary>
+public sealed record CloudflareGroupRule {
+    [JsonPropertyName("id")] public required string Id { get; init; }
 }
 
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

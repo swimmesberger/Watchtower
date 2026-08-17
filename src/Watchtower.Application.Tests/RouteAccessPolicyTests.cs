@@ -127,6 +127,7 @@ public sealed class RouteAccessPolicyTests {
     [InlineData(IdentityHeaderMode.None)]
     [InlineData(IdentityHeaderMode.Remote)]
     [InlineData(IdentityHeaderMode.AuthRequest)]
+    [InlineData(IdentityHeaderMode.Cloudflare)]
     public void EveryCopiedHeader_IsAlsoStripped(IdentityHeaderMode mode) {
         // The generated Caddy config strips the full ecosystem authz namespace and copies a per-mode subset.
         // A name copied but not stripped would be client-spoofable, which is the failure mode §2.3 exists to
@@ -142,6 +143,24 @@ public sealed class RouteAccessPolicyTests {
         // when no plaintext header is (mode None).
         foreach (var mode in Enum.GetValues<IdentityHeaderMode>())
             Assert.Contains(RouteAccessPolicy.JwtHeaderName, IdentityForwarding.CopyHeaderNames(mode));
+    }
+
+    [Fact]
+    public void CloudflareMode_ForwardsTheCfVocabulary() {
+        // The portability contract: an app written against Cloudflare Access headers keeps working
+        // behind integrated auth — the email under Cloudflare's name, and the assertion duplicated
+        // under Cf-Access-Jwt-Assertion (set by the verify endpoint alongside X-Watchtower-Jwt).
+        var copied = IdentityForwarding.CopyHeaderNames(IdentityHeaderMode.Cloudflare);
+        Assert.Contains(IdentityForwarding.CfAccessEmail, copied);
+        Assert.Contains(IdentityForwarding.CfAccessJwtAssertion, copied);
+
+        var headers = IdentityForwarding.PlaintextHeaders(
+            IdentityHeaderMode.Cloudflare, "alice", "alice@example.com", ["admins"]).ToList();
+        var header = Assert.Single(headers);
+        Assert.Equal((IdentityForwarding.CfAccessEmail, "alice@example.com"), header);
+
+        // No email ⇒ no plaintext header at all; the JWT (both names) still carries the identity.
+        Assert.Empty(IdentityForwarding.PlaintextHeaders(IdentityHeaderMode.Cloudflare, "alice", null, []));
     }
 
     [Fact]

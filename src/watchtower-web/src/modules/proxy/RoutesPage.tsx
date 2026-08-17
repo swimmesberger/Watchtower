@@ -78,6 +78,7 @@ const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
   { value: 'None', label: 'JWT only (default)' },
   { value: 'Remote', label: 'Remote-* headers (Authelia/Traefik)' },
   { value: 'AuthRequest', label: 'X-Auth-Request-* headers (oauth2-proxy)' },
+  { value: 'Cloudflare', label: 'Cf-Access-* headers (Cloudflare Access)' },
 ]
 
 const emptyForm = {

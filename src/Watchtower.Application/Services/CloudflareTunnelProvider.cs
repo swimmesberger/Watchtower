@@ -313,17 +313,28 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     private const string AccessPolicyName = "watchtower";
 
     /// <summary>One desired Access application: the hostname and who its allow policy admits.</summary>
-    internal sealed record AccessAppSpec(string Domain, string Name, string[] Emails, string[] EmailDomains);
+    internal sealed record AccessAppSpec(
+        string Domain,
+        string Name,
+        string[] Emails,
+        string[] EmailDomains,
+        string[] GroupIds,
+        string[] ReusablePolicyIds) {
+        /// <summary>Whether a Watchtower-generated app-scoped policy is needed (any inline rule at all).</summary>
+        public bool HasInlineRules => Emails.Length > 0 || EmailDomains.Length > 0 || GroupIds.Length > 0;
+    }
 
     /// <summary>The desired Access apps plus the warnings for routes that could not be projected.</summary>
     internal sealed record AccessProjection(List<AccessAppSpec> Apps, List<string> Warnings);
 
     /// <summary>
     /// Projects the protected routes onto Access applications — pure, for tests.
-    /// <see cref="AccessMode.Authenticated"/> admits the instance-wide configured emails/email-domains;
+    /// <see cref="AccessMode.Authenticated"/> admits the instance-wide configured allow sources: emails,
+    /// email domains, Access group ids (the "main user group" workflow — e.g. an existing group of Entra
+    /// ID users), and/or reusable policy ids attached to the app.
     /// <see cref="AccessMode.Restricted"/> admits exactly the emails behind the route's grants (granted
     /// users plus granted groups' members — accounts without an email cannot be matched by Cloudflare
-    /// and are effectively excluded). A protected route with an empty allow-list is skipped with a
+    /// and are effectively excluded). A protected route with no allow source at all is skipped with a
     /// warning rather than published as a deny-all app: a silent total lockout right when the operator
     /// flips a switch is the worse failure, and the skip keeps any pre-existing app untouched.
     /// </summary>
@@ -336,18 +347,25 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         foreach (var route in routes.Where(r => r.AccessMode != AccessMode.Public).OrderBy(r => r.Domain, StringComparer.Ordinal)) {
             string[] emails;
             string[] emailDomains;
+            string[] groupIds;
+            string[] reusablePolicyIds;
             if (route.AccessMode == AccessMode.Authenticated) {
                 emails = CloudflareProxyOptions.SplitList(cf.AccessAllowedEmails);
                 emailDomains = CloudflareProxyOptions.SplitList(cf.AccessAllowedEmailDomains);
+                groupIds = CloudflareProxyOptions.SplitList(cf.AccessGroupIds);
+                reusablePolicyIds = CloudflareProxyOptions.SplitList(cf.AccessReusablePolicyIds);
             } else {
+                // Restricted means "only these subjects" — the instance-wide sources must not widen it.
                 emails = grantedEmailsByRouteId.TryGetValue(route.Id, out var granted) ? granted : [];
                 emailDomains = [];
+                groupIds = [];
+                reusablePolicyIds = [];
             }
-            if (emails.Length == 0 && emailDomains.Length == 0) {
+            if (emails.Length == 0 && emailDomains.Length == 0 && groupIds.Length == 0 && reusablePolicyIds.Length == 0) {
                 warnings.Add(
                     $"Route {route.Domain} is {route.AccessMode} but nobody could pass its Access policy — " +
                     (route.AccessMode == AccessMode.Authenticated
-                        ? "configure the allowed emails/email domains in the proxy settings. "
+                        ? "configure allowed emails, email domains, an Access group id or a reusable policy id in the proxy settings. "
                         : "grant users (or groups with members) that have an email address. ") +
                     "The Access application was not created/updated.");
                 continue;
@@ -356,7 +374,9 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 route.Domain,
                 AccessAppNamePrefix + route.Domain,
                 emails.OrderBy(e => e, StringComparer.OrdinalIgnoreCase).ToArray(),
-                emailDomains.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToArray()));
+                emailDomains.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToArray(),
+                groupIds.OrderBy(g => g, StringComparer.OrdinalIgnoreCase).ToArray(),
+                reusablePolicyIds.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray()));
         }
         return new AccessProjection(apps, warnings);
     }
@@ -424,26 +444,40 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     Type = "self_hosted",
                     SessionDuration = "24h",
                     AppLauncherVisible = false,
+                    // Reusable policies (the dashboard-maintained "default policy" workflow) attach on
+                    // the app itself; null leaves any existing attachments alone when none are configured.
+                    Policies = spec.ReusablePolicyIds.Length > 0 ? spec.ReusablePolicyIds : null,
                 };
                 var app = existing.FirstOrDefault(a => string.Equals(a.Domain, spec.Domain, StringComparison.OrdinalIgnoreCase));
                 app = app is null
                     ? await _api.CreateAccessAppAsync(cf.AccountId!, request, cf.ApiToken!, ct)
                     : await _api.UpdateAccessAppAsync(cf.AccountId!, app.Id, request, cf.ApiToken!, ct);
 
-                var include = spec.Emails.Select(CloudflareAccessRule.ForEmail)
-                    .Concat(spec.EmailDomains.Select(CloudflareAccessRule.ForEmailDomain))
-                    .ToArray();
-                var policyRequest = new CloudflareAccessPolicyRequest {
-                    Name = AccessPolicyName, Decision = "allow", Include = include, Precedence = 1,
-                };
+                // The Watchtower-generated app-scoped policy carries the inline rules (emails, email
+                // domains, Access groups). When only reusable policies are configured it is removed
+                // rather than left stale — an orphaned allow-list would keep admitting old members.
                 var policies = await _api.ListAccessPoliciesAsync(cf.AccountId!, app.Id, cf.ApiToken!, ct);
                 var mine = policies.FirstOrDefault(p => string.Equals(p.Name, AccessPolicyName, StringComparison.Ordinal));
-                if (mine is null)
-                    await _api.CreateAccessPolicyAsync(cf.AccountId!, app.Id, policyRequest, cf.ApiToken!, ct);
-                else
-                    await _api.UpdateAccessPolicyAsync(cf.AccountId!, app.Id, mine.Id, policyRequest, cf.ApiToken!, ct);
-                _logger.LogInformation("Access application reconciled for {Domain} ({Rules} rule(s)).",
-                    spec.Domain, include.Length);
+                var ruleCount = 0;
+                if (spec.HasInlineRules) {
+                    var include = spec.Emails.Select(CloudflareAccessRule.ForEmail)
+                        .Concat(spec.EmailDomains.Select(CloudflareAccessRule.ForEmailDomain))
+                        .Concat(spec.GroupIds.Select(CloudflareAccessRule.ForGroup))
+                        .ToArray();
+                    ruleCount = include.Length;
+                    var policyRequest = new CloudflareAccessPolicyRequest {
+                        Name = AccessPolicyName, Decision = "allow", Include = include, Precedence = 1,
+                    };
+                    if (mine is null)
+                        await _api.CreateAccessPolicyAsync(cf.AccountId!, app.Id, policyRequest, cf.ApiToken!, ct);
+                    else
+                        await _api.UpdateAccessPolicyAsync(cf.AccountId!, app.Id, mine.Id, policyRequest, cf.ApiToken!, ct);
+                } else if (mine is not null) {
+                    await _api.DeleteAccessPolicyAsync(cf.AccountId!, app.Id, mine.Id, cf.ApiToken!, ct);
+                }
+                _logger.LogInformation(
+                    "Access application reconciled for {Domain} ({Rules} inline rule(s), {Reusable} reusable policy(ies)).",
+                    spec.Domain, ruleCount, spec.ReusablePolicyIds.Length);
             } catch (Exception ex) {
                 _logger.LogWarning(ex, "Failed to reconcile the Access application for {Domain}.", spec.Domain);
             }

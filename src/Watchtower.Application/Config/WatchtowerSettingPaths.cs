@@ -48,4 +48,6 @@ public static class WatchtowerSettingPaths {
     public const string ProxyCloudflareCloudflaredContainerName = "Watchtower:Proxy:Cloudflare:CloudflaredContainerName";
     public const string ProxyCloudflareAccessAllowedEmails = "Watchtower:Proxy:Cloudflare:AccessAllowedEmails";
     public const string ProxyCloudflareAccessAllowedEmailDomains = "Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains";
+    public const string ProxyCloudflareAccessGroupIds = "Watchtower:Proxy:Cloudflare:AccessGroupIds";
+    public const string ProxyCloudflareAccessReusablePolicyIds = "Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds";
 }

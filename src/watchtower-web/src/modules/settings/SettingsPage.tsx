@@ -661,6 +661,8 @@ interface ProxyDraft {
   cfContainerName: string
   cfAccessEmails: string
   cfAccessEmailDomains: string
+  cfAccessGroupIds: string
+  cfAccessReusablePolicyIds: string
 }
 
 function toProxyDraft(config: ProxyConfig): ProxyDraft {
@@ -678,6 +680,8 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     cfContainerName: config.cloudflare.cloudflaredContainerName ?? '',
     cfAccessEmails: config.cloudflare.accessAllowedEmails,
     cfAccessEmailDomains: config.cloudflare.accessAllowedEmailDomains,
+    cfAccessGroupIds: config.cloudflare.accessGroupIds,
+    cfAccessReusablePolicyIds: config.cloudflare.accessReusablePolicyIds,
   }
 }
 
@@ -709,6 +713,8 @@ function ProxyCard() {
         cloudflaredContainerName: next.cfContainerName.trim() || null,
         cloudflareAccessAllowedEmails: next.cfAccessEmails.trim(),
         cloudflareAccessAllowedEmailDomains: next.cfAccessEmailDomains.trim(),
+        cloudflareAccessGroupIds: next.cfAccessGroupIds.trim(),
+        cloudflareAccessReusablePolicyIds: next.cfAccessReusablePolicyIds.trim(),
       }),
     onSuccess: next => {
       qc.setQueryData(['proxy', 'config'], next)
@@ -983,6 +989,49 @@ function ProxyCard() {
                         />
                         {pinnedPath('Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains') && (
                           <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Access: group ids"
+                    hint="Comma-separated Zero Trust Access group ids (UUIDs). The natural fit when your allow-list already lives in an Access group — e.g. your Entra ID users."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                          value={form.cfAccessGroupIds}
+                          onChange={e => set('cfAccessGroupIds', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessGroupIds')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessGroupIds') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessGroupIds" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Access: reusable policy ids"
+                    hint="Comma-separated ids of existing reusable Access policies (e.g. your dashboard-maintained default policy), attached to every Authenticated route's app."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="policy id"
+                          value={form.cfAccessReusablePolicyIds}
+                          onChange={e => set('cfAccessReusablePolicyIds', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds" />
                         )}
                       </>
                     )}

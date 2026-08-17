@@ -34,7 +34,9 @@ public sealed class UpdateProxyConfig(
         string? CloudflaredImage = null,
         string? CloudflaredContainerName = null,
         string? CloudflareAccessAllowedEmails = null,
-        string? CloudflareAccessAllowedEmailDomains = null);
+        string? CloudflareAccessAllowedEmailDomains = null,
+        string? CloudflareAccessGroupIds = null,
+        string? CloudflareAccessReusablePolicyIds = null);
 
     public sealed record Response(ProxyConfigDto Config);
 
@@ -95,6 +97,8 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyCloudflareCloudflaredContainerName, Changed(command.CloudflaredContainerName, cf.CloudflaredContainerName));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmails, Changed(command.CloudflareAccessAllowedEmails, cf.AccessAllowedEmails));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains, Changed(command.CloudflareAccessAllowedEmailDomains, cf.AccessAllowedEmailDomains));
+        Check(WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds, Changed(command.CloudflareAccessGroupIds, cf.AccessGroupIds));
+        Check(WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds, Changed(command.CloudflareAccessReusablePolicyIds, cf.AccessReusablePolicyIds));
         if (violations.Count > 0)
             return EnvironmentSettingPins.PinnedError(violations);
 
@@ -120,6 +124,10 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmails, command.CloudflareAccessAllowedEmails.Trim(), ct);
         if (command.CloudflareAccessAllowedEmailDomains is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains, command.CloudflareAccessAllowedEmailDomains.Trim(), ct);
+        if (command.CloudflareAccessGroupIds is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds, command.CloudflareAccessGroupIds.Trim(), ct);
+        if (command.CloudflareAccessReusablePolicyIds is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds, command.CloudflareAccessReusablePolicyIds.Trim(), ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.
@@ -138,6 +146,8 @@ public sealed class UpdateProxyConfig(
                 CloudflaredContainerName = string.IsNullOrWhiteSpace(containerName) ? null : containerName,
                 AccessAllowedEmails = Coalesce(command.CloudflareAccessAllowedEmails, cf.AccessAllowedEmails) ?? "",
                 AccessAllowedEmailDomains = Coalesce(command.CloudflareAccessAllowedEmailDomains, cf.AccessAllowedEmailDomains) ?? "",
+                AccessGroupIds = Coalesce(command.CloudflareAccessGroupIds, cf.AccessGroupIds) ?? "",
+                AccessReusablePolicyIds = Coalesce(command.CloudflareAccessReusablePolicyIds, cf.AccessReusablePolicyIds) ?? "",
             },
         };
         return new Response(ProxyConfigDto.From(echoed, pins));

@@ -249,6 +249,7 @@ additionally forward plaintext identity headers. Choose the mode in **Routes →
 | **None** (default) | JWT only — no plaintext identity header. |
 | **Remote** | Authelia/Traefik names: `Remote-User`, `Remote-Name`, `Remote-Email`, `Remote-Groups` (email and groups only when the account has them). |
 | **AuthRequest** | oauth2-proxy names: `X-Auth-Request-User`, `X-Auth-Request-Preferred-Username`, `X-Auth-Request-Email`, `X-Auth-Request-Groups` (email and groups only when set). |
+| **Cloudflare** | Cloudflare Access names: `Cf-Access-Authenticated-User-Email` (when the account has an email), plus the Watchtower-signed assertion duplicated under `Cf-Access-Jwt-Assertion`. For apps written against Cloudflare's header contract, so the same stack runs unchanged behind Cloudflare Access (tunnel provider) or behind integrated auth — an app that cryptographically verifies the assertion re-points its JWKS/issuer configuration (env or appsettings) from `{team}.cloudflareaccess.com/cdn-cgi/access/certs` to Watchtower's `/api/auth/jwks`; the header names stay identical. |
 
 The group header carries the account's group names sorted and comma-joined (`admins,platform`), which
 is what group-aware apps such as Grafana and Nextcloud expect. It is **omitted entirely** rather than
