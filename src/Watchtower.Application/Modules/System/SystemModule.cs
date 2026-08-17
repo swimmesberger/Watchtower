@@ -38,4 +38,8 @@ public sealed record DockerConfigStatus(bool Exists, string Path, string Source)
 [JsonSerializable(typeof(GetAutomation.Response), TypeInfoPropertyName = "GetAutomationResponse")]
 [JsonSerializable(typeof(UpdateAutomation.Command), TypeInfoPropertyName = "UpdateAutomationCommand")]
 [JsonSerializable(typeof(UpdateAutomation.Response), TypeInfoPropertyName = "UpdateAutomationResponse")]
+[JsonSerializable(typeof(GetAuthConfig.Query), TypeInfoPropertyName = "GetAuthConfigQuery")]
+[JsonSerializable(typeof(GetAuthConfig.Response), TypeInfoPropertyName = "GetAuthConfigResponse")]
+[JsonSerializable(typeof(UpdateAuthConfig.Command), TypeInfoPropertyName = "UpdateAuthConfigCommand")]
+[JsonSerializable(typeof(UpdateAuthConfig.Response), TypeInfoPropertyName = "UpdateAuthConfigResponse")]
 public sealed partial class SystemJsonContext : JsonSerializerContext;

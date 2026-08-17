@@ -77,13 +77,19 @@ them at all.
 | --- | --- | --- |
 | `WATCHTOWER_STACK_ID` | Watchtower's numeric stack id | every service, always |
 | `WATCHTOWER_URL` | Watchtower's public base URL | every service, when `Watchtower:PublicBaseUrl` is configured |
+| `WATCHTOWER_AUTH_JWKS_URL` | The JWKS URL of the edge signing identity assertions: Cloudflare Access's `https://{team}.cloudflareaccess.com/cdn-cgi/access/certs` when the cloudflare proxy provider is active (requires `Proxy:Cloudflare:TeamDomain`), else Watchtower's own `{PublicBaseUrl}/api/auth/jwks` when integrated auth is enabled | every service, when an edge is issuing assertions |
 | `WATCHTOWER_APP_TOKEN` | The stack's App API bearer token | the services chosen by the rules [below](#which-services-receive-the-token) |
 
 Set the base URL with `WATCHTOWER__PUBLICBASEURL=https://watchtower.example.com` (or the
 `Watchtower:PublicBaseUrl` config key). Without it the variable is simply not injected and the
 application must know where Watchtower lives by other means.
 
-All three are *also* written into the temporary `.env` Watchtower passes to
+`WATCHTOWER_AUTH_JWKS_URL` is what makes switching between Cloudflare Access and integrated auth
+zero-config for an app that cryptographically verifies its identity assertion
+(`Cf-Access-Jwt-Assertion` / `X-Watchtower-Jwt`): read the JWKS location from the environment instead
+of hard-coding an issuer, and the next deploy after an edge switch injects the right URL.
+
+All of these are *also* written into the temporary `.env` Watchtower passes to
 `docker compose --env-file`, **after** the operator's own stack variables, so they stay available for
 [interpolation](#interpolation-still-works-if-you-want-to-place-them-yourself). Reserved names always
 win: an operator variable using one of these keys is skipped.

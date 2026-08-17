@@ -51,6 +51,6 @@ public sealed class SetStackAppApi(
             : await appApi.EnsureTokenAsync(command.StackId, ct);
 
         return new Response(
-            enabled, token, AppApiTokens.InjectedVariableNames(options.Value.PublicBaseUrl));
+            enabled, token, AppApiTokens.InjectedVariableNames(options.Value));
     }
 }

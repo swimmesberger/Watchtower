@@ -76,6 +76,20 @@ public static class IdentityForwarding {
     /// <summary>oauth2-proxy upstream access token. Never forwarded, but stripped so a client cannot fake one.</summary>
     public const string AuthRequestAccessToken = "X-Auth-Request-Access-Token";
 
+    // ── Cf-Access-* (Cloudflare Access) ────────────────────────────────────────
+
+    /// <summary>Cloudflare Access verified email, forwarded only when the account has one.</summary>
+    public const string CfAccessEmail = "Cf-Access-Authenticated-User-Email";
+
+    /// <summary>
+    /// Cloudflare Access assertion header. In <see cref="IdentityHeaderMode.Cloudflare"/> mode the verify
+    /// endpoint duplicates the <em>Watchtower</em>-signed assertion under this name (set alongside the
+    /// plaintext email, not by <see cref="PlaintextHeaders"/> — it needs the minted token), so an app
+    /// written against Cloudflare's header contract keeps working with only its JWKS/issuer configuration
+    /// re-pointed at Watchtower.
+    /// </summary>
+    public const string CfAccessJwtAssertion = "Cf-Access-Jwt-Assertion";
+
     // ── X-Forwarded-* identity family (oauth2-proxy --pass-user-headers) ───────
     // The IDENTITY members only. The transport headers X-Forwarded-For/-Proto/-Host are intentionally absent.
 
@@ -120,6 +134,8 @@ public static class IdentityForwarding {
         AuthRequestUser, AuthRequestPreferredUsername, AuthRequestEmail, AuthRequestGroups, AuthRequestAccessToken,
         // oauth2-proxy --pass-user-headers (identity members only; not the transport X-Forwarded headers).
         ForwardedUser, ForwardedEmail, ForwardedGroups, ForwardedPreferredUsername,
+        // Cloudflare Access.
+        CfAccessEmail, CfAccessJwtAssertion,
     ];
 
     /// <summary>
@@ -130,6 +146,7 @@ public static class IdentityForwarding {
     public static IReadOnlyList<string> CopyHeaderNames(IdentityHeaderMode mode) => mode switch {
         IdentityHeaderMode.Remote => [RouteAccessPolicy.JwtHeaderName, .. RemoteNames],
         IdentityHeaderMode.AuthRequest => [RouteAccessPolicy.JwtHeaderName, .. AuthRequestNames],
+        IdentityHeaderMode.Cloudflare => [RouteAccessPolicy.JwtHeaderName, CfAccessJwtAssertion, CfAccessEmail],
         // None (and any unknown value, fail-closed): the JWT is the only thing forwarded.
         _ => [RouteAccessPolicy.JwtHeaderName],
     };
@@ -162,6 +179,11 @@ public static class IdentityForwarding {
                 yield return (AuthRequestPreferredUsername, userName);
                 if (!string.IsNullOrWhiteSpace(email)) yield return (AuthRequestEmail, email);
                 if (groupList is not null) yield return (AuthRequestGroups, groupList);
+                break;
+            case IdentityHeaderMode.Cloudflare:
+                // Cloudflare's vocabulary carries the email only; the assertion header is set by the
+                // verify endpoint (it needs the minted token) and groups travel in the JWT's claim.
+                if (!string.IsNullOrWhiteSpace(email)) yield return (CfAccessEmail, email);
                 break;
         }
     }

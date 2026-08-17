@@ -1,16 +1,23 @@
 using Elarion.Settings;
+using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.System.Handlers;
 
 /// <summary>
 /// Persists the automation toggles as Global-scope settings under the <c>Watchtower:*</c> keys, so
-/// they layer over the env/appsettings defaults via the settings-backed configuration provider and
+/// they layer over the appsettings defaults via the settings-backed configuration provider and
 /// re-bind into <see cref="WatchtowerOptions"/> at runtime (no restart). The background checkers and
 /// <c>system.getAutomation</c> then observe the new effective values through <c>IOptionsMonitor</c>.
+/// A toggle pinned by its <c>WATCHTOWER__*</c> env var (which wins over the store) is rejected when the
+/// request tries to change it, and never written — a stored row that can't take effect is a lie.
 /// </summary>
 [Handler("system.updateAutomation")]
-public sealed class UpdateAutomation(ISettingsManager settings)
+public sealed class UpdateAutomation(
+    ISettingsManager settings,
+    IOptionsMonitor<WatchtowerOptions> options,
+    EnvironmentSettingPins pins)
     : IHandler<UpdateAutomation.Command, Result<UpdateAutomation.Response>> {
     public sealed record Command(
         bool AutoCheckEnabled,
@@ -26,31 +33,55 @@ public sealed class UpdateAutomation(ISettingsManager settings)
         bool StackCheckEnabled,
         int StackCheckIntervalMinutes,
         bool ImagePruneEnabled,
-        int ImagePruneIntervalMinutes);
+        int ImagePruneIntervalMinutes,
+        string[] PinnedPaths);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        await settings.SetStringAsync("Watchtower:AutoCheckEnabled",
-            command.AutoCheckEnabled ? "true" : "false", SettingsScope.Global, expectedVersion: null, ct);
-        await settings.SetStringAsync("Watchtower:AutoCheckIntervalMinutes",
-            command.AutoCheckIntervalMinutes.ToString(), SettingsScope.Global, expectedVersion: null, ct);
-        await settings.SetStringAsync("Watchtower:StackCheckEnabled",
-            command.StackCheckEnabled ? "true" : "false", SettingsScope.Global, expectedVersion: null, ct);
-        await settings.SetStringAsync("Watchtower:StackCheckIntervalMinutes",
-            command.StackCheckIntervalMinutes.ToString(), SettingsScope.Global, expectedVersion: null, ct);
-        await settings.SetStringAsync("Watchtower:ImagePruneEnabled",
-            command.ImagePruneEnabled ? "true" : "false", SettingsScope.Global, expectedVersion: null, ct);
-        await settings.SetStringAsync("Watchtower:ImagePruneIntervalMinutes",
-            command.ImagePruneIntervalMinutes.ToString(), SettingsScope.Global, expectedVersion: null, ct);
+        var effective = options.CurrentValue;
+        var writes = new List<(string Path, string Value, bool Changed)> {
+            (WatchtowerSettingPaths.AutoCheckEnabled,
+                Bool(command.AutoCheckEnabled), command.AutoCheckEnabled != effective.AutoCheckEnabled),
+            (WatchtowerSettingPaths.AutoCheckIntervalMinutes,
+                command.AutoCheckIntervalMinutes.ToString(), command.AutoCheckIntervalMinutes != effective.AutoCheckIntervalMinutes),
+            (WatchtowerSettingPaths.StackCheckEnabled,
+                Bool(command.StackCheckEnabled), command.StackCheckEnabled != effective.StackCheckEnabled),
+            (WatchtowerSettingPaths.StackCheckIntervalMinutes,
+                command.StackCheckIntervalMinutes.ToString(), command.StackCheckIntervalMinutes != effective.StackCheckIntervalMinutes),
+            (WatchtowerSettingPaths.ImagePruneEnabled,
+                Bool(command.ImagePruneEnabled), command.ImagePruneEnabled != effective.ImagePruneEnabled),
+            (WatchtowerSettingPaths.ImagePruneIntervalMinutes,
+                command.ImagePruneIntervalMinutes.ToString(), command.ImagePruneIntervalMinutes != effective.ImagePruneIntervalMinutes),
+        };
 
-        // Echo back exactly what was persisted. The config provider reloads asynchronously, so
-        // IOptionsMonitor.CurrentValue may lag by a moment; returning the written values gives the
-        // caller an immediately-consistent view.
+        var violations = writes.Where(w => w.Changed && pins.IsPinned(w.Path)).Select(w => w.Path).ToList();
+        if (violations.Count > 0)
+            return EnvironmentSettingPins.PinnedError(violations);
+
+        foreach (var (path, value, _) in writes.Where(w => !pins.IsPinned(w.Path)))
+            await settings.SetStringAsync(path, value, SettingsScope.Global, expectedVersion: null, ct);
+
+        // Echo back exactly what was persisted (pinned values are unchanged by construction). The config
+        // provider reloads asynchronously, so IOptionsMonitor.CurrentValue may lag by a moment; returning
+        // the written values gives the caller an immediately-consistent view.
         return new Response(
             command.AutoCheckEnabled,
             command.AutoCheckIntervalMinutes,
             command.StackCheckEnabled,
             command.StackCheckIntervalMinutes,
             command.ImagePruneEnabled,
-            command.ImagePruneIntervalMinutes);
+            command.ImagePruneIntervalMinutes,
+            pins.Pinned(AutomationPaths));
+
+        static string Bool(bool value) => value ? "true" : "false";
     }
+
+    /// <summary>Every path this handler manages, in UI order — shared with <see cref="GetAutomation"/>.</summary>
+    internal static readonly string[] AutomationPaths = [
+        WatchtowerSettingPaths.AutoCheckEnabled,
+        WatchtowerSettingPaths.AutoCheckIntervalMinutes,
+        WatchtowerSettingPaths.StackCheckEnabled,
+        WatchtowerSettingPaths.StackCheckIntervalMinutes,
+        WatchtowerSettingPaths.ImagePruneEnabled,
+        WatchtowerSettingPaths.ImagePruneIntervalMinutes,
+    ];
 }

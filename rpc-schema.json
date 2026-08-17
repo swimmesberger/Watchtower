@@ -1458,13 +1458,20 @@
                   "composeProjectTag",
                   "diskMountpoint"
                 ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "backend",
               "retentionDays",
               "historyAvailable",
-              "influx"
+              "influx",
+              "pinnedPaths"
             ]
           }
         },
@@ -1847,13 +1854,20 @@
                   "composeProjectTag",
                   "diskMountpoint"
                 ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "backend",
               "retentionDays",
               "historyAvailable",
-              "influx"
+              "influx",
+              "pinnedPaths"
             ]
           }
         },
@@ -2326,7 +2340,8 @@
             "enum": [
               "None",
               "Remote",
-              "AuthRequest"
+              "AuthRequest",
+              "Cloudflare"
             ]
           },
           "bypassPaths": {
@@ -2358,6 +2373,120 @@
           "grantedUserIds",
           "grantedGroupIds",
           "realmId"
+        ]
+      }
+    },
+    "proxy.getConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "adminEmail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "caddyImage": {
+                "type": "string"
+              },
+              "cloudflare": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "zoneId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasApiToken": {
+                    "type": "boolean"
+                  },
+                  "tunnelName": {
+                    "type": "string"
+                  },
+                  "teamDomain": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "managed": {
+                    "type": "boolean"
+                  },
+                  "cloudflaredImage": {
+                    "type": "string"
+                  },
+                  "cloudflaredContainerName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "accessAllowedEmails": {
+                    "type": "string"
+                  },
+                  "accessAllowedEmailDomains": {
+                    "type": "string"
+                  },
+                  "accessGroupIds": {
+                    "type": "string"
+                  },
+                  "accessReusablePolicyIds": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "zoneId",
+                  "hasApiToken",
+                  "tunnelName",
+                  "teamDomain",
+                  "managed",
+                  "cloudflaredImage",
+                  "cloudflaredContainerName",
+                  "accessAllowedEmails",
+                  "accessAllowedEmailDomains",
+                  "accessGroupIds",
+                  "accessReusablePolicyIds"
+                ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "provider",
+              "adminEmail",
+              "caddyImage",
+              "cloudflare",
+              "pinnedPaths"
+            ]
+          }
+        },
+        "required": [
+          "config"
         ]
       }
     },
@@ -2467,12 +2596,16 @@
           },
           "routeCount": {
             "type": "integer"
+          },
+          "provider": {
+            "type": "string"
           }
         },
         "required": [
           "enabled",
           "caddyRunning",
-          "routeCount"
+          "routeCount",
+          "provider"
         ]
       }
     },
@@ -2593,6 +2726,7 @@
               "None",
               "Remote",
               "AuthRequest",
+              "Cloudflare",
               null
             ],
             "default": null
@@ -2629,7 +2763,8 @@
             "enum": [
               "None",
               "Remote",
-              "AuthRequest"
+              "AuthRequest",
+              "Cloudflare"
             ]
           },
           "bypassPaths": {
@@ -2657,6 +2792,227 @@
           "bypassPaths",
           "grantedUserIds",
           "grantedGroupIds"
+        ]
+      }
+    },
+    "proxy.updateConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "adminEmail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caddyImage": {
+            "type": "string"
+          },
+          "cloudflareAccountId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareZoneId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareApiToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareTunnelName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareTeamDomain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareManaged": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflaredImage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflaredContainerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessAllowedEmails": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessAllowedEmailDomains": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessGroupIds": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessReusablePolicyIds": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "enabled",
+          "provider",
+          "adminEmail",
+          "caddyImage"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "adminEmail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "caddyImage": {
+                "type": "string"
+              },
+              "cloudflare": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "zoneId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasApiToken": {
+                    "type": "boolean"
+                  },
+                  "tunnelName": {
+                    "type": "string"
+                  },
+                  "teamDomain": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "managed": {
+                    "type": "boolean"
+                  },
+                  "cloudflaredImage": {
+                    "type": "string"
+                  },
+                  "cloudflaredContainerName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "accessAllowedEmails": {
+                    "type": "string"
+                  },
+                  "accessAllowedEmailDomains": {
+                    "type": "string"
+                  },
+                  "accessGroupIds": {
+                    "type": "string"
+                  },
+                  "accessReusablePolicyIds": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "zoneId",
+                  "hasApiToken",
+                  "tunnelName",
+                  "teamDomain",
+                  "managed",
+                  "cloudflaredImage",
+                  "cloudflaredContainerName",
+                  "accessAllowedEmails",
+                  "accessAllowedEmailDomains",
+                  "accessGroupIds",
+                  "accessReusablePolicyIds"
+                ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "provider",
+              "adminEmail",
+              "caddyImage",
+              "cloudflare",
+              "pinnedPaths"
+            ]
+          }
+        },
+        "required": [
+          "config"
         ]
       }
     },
@@ -4552,6 +4908,52 @@
         ]
       }
     },
+    "system.getAuthConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionLifetimeHours": {
+            "type": "integer"
+          },
+          "absoluteSessionLifetimeDays": {
+            "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "active",
+          "restartRequired",
+          "host",
+          "sessionLifetimeHours",
+          "absoluteSessionLifetimeDays",
+          "pinnedPaths"
+        ]
+      }
+    },
     "system.getAutomation": {
       "params": {
         "type": "object"
@@ -4576,6 +4978,12 @@
           },
           "imagePruneIntervalMinutes": {
             "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -4584,7 +4992,8 @@
           "stackCheckEnabled",
           "stackCheckIntervalMinutes",
           "imagePruneEnabled",
-          "imagePruneIntervalMinutes"
+          "imagePruneIntervalMinutes",
+          "pinnedPaths"
         ]
       }
     },
@@ -4666,6 +5075,75 @@
         ]
       }
     },
+    "system.updateAuthConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionLifetimeHours": {
+            "type": "integer"
+          },
+          "absoluteSessionLifetimeDays": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "host",
+          "sessionLifetimeHours",
+          "absoluteSessionLifetimeDays"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessionLifetimeHours": {
+            "type": "integer"
+          },
+          "absoluteSessionLifetimeDays": {
+            "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "active",
+          "restartRequired",
+          "host",
+          "sessionLifetimeHours",
+          "absoluteSessionLifetimeDays",
+          "pinnedPaths"
+        ]
+      }
+    },
     "system.updateAutomation": {
       "params": {
         "type": "object",
@@ -4718,6 +5196,12 @@
           },
           "imagePruneIntervalMinutes": {
             "type": "integer"
+          },
+          "pinnedPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -4726,7 +5210,8 @@
           "stackCheckEnabled",
           "stackCheckIntervalMinutes",
           "imagePruneEnabled",
-          "imagePruneIntervalMinutes"
+          "imagePruneIntervalMinutes",
+          "pinnedPaths"
         ]
       }
     },

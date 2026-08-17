@@ -24,58 +24,69 @@ namespace Watchtower.Application.Services;
 /// </list>
 /// It is a singleton (injected into handlers and the deploy queue) and an <see cref="IHostedService"/>
 /// so the whole topology is reconciled on startup. All DB access opens short-lived scopes since this is
-/// a singleton. No-op unless <c>Proxy:Enabled</c> is set.
+/// a singleton. No-op while <c>Proxy:Enabled</c> is off — and that toggle is runtime-switchable via the
+/// settings store: an options change triggers a reconcile (enable), a container teardown (disable), or a
+/// config refresh (e.g. AdminEmail), with no restart.
 /// </summary>
-public class CaddyManager : IHostedService, IDisposable {
+public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
     public const string ControlNetwork = "watchtower-control";
-    // Each stack gets its own ingress network shared only with Caddy, so tenants are isolated at L2
-    // (a compromised tenant cannot reach another tenant's containers).
-    private const string IngressNetworkPrefix = "watchtower-ingress-";
     private const string CaddyContainerName = "watchtower-caddy";
     private const string CaddyAlias = "watchtower-caddy";
     private const string SelfAlias = "watchtower";
     /// <summary>Port Watchtower listens on inside its container; where Caddy reaches it on the control network.</summary>
     private const int SelfPort = 8080;
     private const int AdminPort = 2019;
-    private const string ManagedLabelKey = "com.watchtower.managed";
-    private const string ComposeProjectLabel = "com.docker.compose.project";
-    private const string ComposeServiceLabel = "com.docker.compose.service";
+    private const string ManagedLabelKey = ProxyIngressNetworks.ManagedLabelKey;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
-    private readonly ProxyOptions _proxy;
+    private readonly ProxyIngressNetworks _networks;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<CaddyManager> _logger;
     private readonly HttpClient _admin;
     private readonly CancellationTokenSource _cts = new();
+    private readonly IDisposable? _optionsSubscription;
+    // Serializes the topology operations (startup reconcile, runtime enable/disable, refresh) so a
+    // toggle flipped twice in quick succession can't interleave a teardown with a reconcile.
+    private readonly SemaphoreSlim _transitionLock = new(1, 1);
+    private readonly object _appliedGate = new();
+    // The proxy settings the manager last acted on; OnChange diffs against this to decide a transition.
+    private ProxyOptions _applied;
     private Task? _reconcileTask;
 
     public CaddyManager(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
+        ProxyIngressNetworks networks,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<CaddyManager> logger) {
         _scopeFactory = scopeFactory;
         _docker = docker;
-        // Proxy settings are snapshotted: they decide the container's ports and volumes, so changing one
-        // needs a restart anyway. Auth settings are read live (see LoadSitesAsync) because turning access
-        // control on for a route must take effect on the next reconcile, not the next restart.
-        _proxy = options.CurrentValue.Proxy;
+        _networks = networks;
         _options = options;
         _logger = logger;
+        // Proxy and Auth settings are both read live: the settings store re-binds them at runtime, and
+        // the OnChange subscription below turns a Proxy:Enabled flip into a reconcile or teardown, an
+        // email change into a config refresh — no restart. (A CaddyImage change only applies when the
+        // container is next recreated: a healthy running container is reused as-is.)
+        _applied = options.CurrentValue.Proxy;
+        _optionsSubscription = options.OnChange(o => OnProxyOptionsChanged(o.Proxy));
         // Reached over the control network by the caddy container's DNS alias.
         _admin = new HttpClient { BaseAddress = new Uri($"http://{CaddyAlias}:{AdminPort}") };
     }
 
-    public bool Enabled => _proxy.Enabled;
+    /// <summary>Active only while the proxy is enabled AND Caddy is the selected provider (ADR-0015).</summary>
+    public bool Enabled => IsCaddyActive(_options.CurrentValue.Proxy);
+
+    private static bool IsCaddyActive(ProxyOptions o) => o.Enabled && o.ResolveProvider() == ProxyProviderKind.Caddy;
 
     public Task StartAsync(CancellationToken cancellationToken) {
-        if (!_proxy.Enabled) {
-            _logger.LogInformation("Reverse proxy disabled (Proxy:Enabled=false); skipping Caddy setup.");
+        if (!Enabled) {
+            _logger.LogInformation("Caddy proxy inactive (disabled or another provider selected); skipping setup. It can be enabled at runtime from Settings.");
             return Task.CompletedTask;
         }
         // Reconcile off the startup path so a slow image pull never blocks host startup.
-        _reconcileTask = Task.Run(() => ReconcileAsync(_cts.Token), CancellationToken.None);
+        _reconcileTask = Task.Run(() => RunExclusiveAsync(ReconcileAsync, _cts.Token), CancellationToken.None);
         return Task.CompletedTask;
     }
 
@@ -86,8 +97,79 @@ public class CaddyManager : IHostedService, IDisposable {
     }
 
     public void Dispose() {
+        _optionsSubscription?.Dispose();
         _cts.Dispose();
         _admin.Dispose();
+        _transitionLock.Dispose();
+    }
+
+    // ── Runtime enable/disable (settings-driven) ──────────────────────────────
+
+    /// <summary>
+    /// Caddy's view of an options change (<see cref="ProxyTransitions"/>): active means enabled AND
+    /// Caddy selected, so switching the provider to cloudflare is a <see cref="ProxyTransition.Stop"/>
+    /// here while <see cref="CloudflareTunnelProvider"/> computes a Start from the same change.
+    /// </summary>
+    internal static ProxyTransition DecideTransition(ProxyOptions was, ProxyOptions now) =>
+        ProxyTransitions.Decide(IsCaddyActive(was), IsCaddyActive(now), was != now);
+
+    /// <summary>
+    /// Reacts to a runtime change of the proxy settings (the settings store re-binding the options).
+    /// The options monitor may fire multiple times per logical change and for unrelated Watchtower
+    /// options; diffing against the last-applied record filters that noise.
+    /// </summary>
+    private void OnProxyOptionsChanged(ProxyOptions next) {
+        ProxyTransition transition;
+        lock (_appliedGate) {
+            transition = DecideTransition(_applied, next);
+            _applied = next;
+        }
+        if (transition == ProxyTransition.None) return;
+        _logger.LogInformation("Proxy settings changed at runtime ({Transition}).", transition);
+        Func<CancellationToken, Task> operation = transition switch {
+            ProxyTransition.Start => ReconcileAsync,
+            ProxyTransition.Stop => TeardownAsync,
+            _ => ApplyAsync,
+        };
+        _reconcileTask = Task.Run(() => RunExclusiveAsync(operation, _cts.Token), CancellationToken.None);
+    }
+
+    private async Task RunExclusiveAsync(Func<CancellationToken, Task> operation, CancellationToken ct) {
+        try {
+            await _transitionLock.WaitAsync(ct);
+        } catch (OperationCanceledException) {
+            return; // Shutting down.
+        }
+        try {
+            await operation(ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Shutting down mid-operation.
+        } catch (Exception ex) {
+            _logger.LogError(ex, "Proxy transition failed; it will be retried on the next settings change, route change or deploy.");
+        } finally {
+            _transitionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Runtime disable: stops and removes the managed Caddy container. The control/ingress networks and
+    /// the <c>caddy_data</c> volume (issued certificates) are deliberately kept, so re-enabling later is
+    /// cheap and does not re-hit the ACME CA's rate limits.
+    /// </summary>
+    private async Task TeardownAsync(CancellationToken ct) {
+        try {
+            await _docker.StopContainerAsync(CaddyContainerName, ct);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "Stopping the Caddy container failed (it may not exist).");
+        }
+        try {
+            await _docker.RemoveContainerAsync(CaddyContainerName, ct);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "Removing the Caddy container failed (it may not exist).");
+        }
+        _logger.LogInformation(
+            "Reverse proxy disabled at runtime: the managed Caddy container was stopped and removed. " +
+            "Networks and the caddy_data volume (certificates) are kept for re-enabling.");
     }
 
     /// <summary>
@@ -97,10 +179,10 @@ public class CaddyManager : IHostedService, IDisposable {
     /// </summary>
     private async Task ReconcileAsync(CancellationToken ct) {
         try {
-            await EnsureNetworkAsync(ControlNetwork, ct);
+            await _networks.EnsureNetworkAsync(ControlNetwork, "network", ct);
             await JoinSelfToControlAsync(ct);
             await EnsureCaddyContainerAsync(ct);
-            await ConnectAllRoutedContainersAsync(ct);
+            await _networks.ConnectAllRoutedContainersAsync(CaddyContainerName, ct);
             await ApplyAsync(ct);
             _logger.LogInformation("Reverse proxy reconciled.");
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -124,7 +206,7 @@ public class CaddyManager : IHostedService, IDisposable {
     /// part of teardown worth pinning.
     /// </remarks>
     public virtual async Task ApplyAsync(CancellationToken ct = default) {
-        if (!_proxy.Enabled) return;
+        if (!Enabled) return;
         try {
             var sites = await LoadSitesAsync(ct);
             // Caddy reaches Watchtower over the control network by the "watchtower" alias; the app listens
@@ -132,7 +214,7 @@ public class CaddyManager : IHostedService, IDisposable {
             // the same address carries the forward-auth and callback traffic for protected sites.
             var askUrl = $"http://{SelfAlias}:{SelfPort}/api/proxy/ask";
             var caddyfile = CaddyConfigBuilder.Build(
-                sites, new CaddyGlobals(_proxy.AdminEmail, AdminPort, askUrl, $"{SelfAlias}:{SelfPort}"));
+                sites, new CaddyGlobals(_options.CurrentValue.Proxy.AdminEmail, AdminPort, askUrl, $"{SelfAlias}:{SelfPort}"));
             await PushConfigAsync(caddyfile, ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to apply Caddy config; will be retried on the next change.");
@@ -144,29 +226,17 @@ public class CaddyManager : IHostedService, IDisposable {
     /// Best-effort: never throws.
     /// </summary>
     public async Task ConnectStackAsync(int stackId, CancellationToken ct = default) {
-        if (!_proxy.Enabled) return;
+        if (!Enabled) return;
         try {
-            List<(string Project, string Service)> targets;
-            await using (var scope = _scopeFactory.CreateAsyncScope()) {
-                var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-                targets = await db.Routes.AsNoTracking()
-                    .Where(r => r.StackId == stackId)
-                    .Include(r => r.Stack)
-                    .Select(r => new { r.Stack!.ComposeProjectName, r.ServiceName })
-                    .Distinct()
-                    .Select(x => new ValueTuple<string, string>(x.ComposeProjectName, x.ServiceName))
-                    .ToListAsync(ct);
-            }
-            foreach (var (project, service) in targets)
-                await ConnectServiceAsync(stackId, project, service, ct);
+            await _networks.ConnectStackServicesAsync(stackId, CaddyContainerName, ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to connect stack {StackId} services to its ingress network.", stackId);
         }
     }
 
     /// <summary>True when the managed Caddy container reports a running state.</summary>
-    public async Task<bool> IsCaddyRunningAsync(CancellationToken ct = default) {
-        if (!_proxy.Enabled) return false;
+    public async Task<bool> IsRunningAsync(CancellationToken ct = default) {
+        if (!Enabled) return false;
         try {
             var details = await _docker.InspectContainerAsync(CaddyContainerName, ct);
             return details.State?.Status == "running";
@@ -176,13 +246,6 @@ public class CaddyManager : IHostedService, IDisposable {
     }
 
     // ── Reconcile steps ───────────────────────────────────────────────────────
-
-    private async Task EnsureNetworkAsync(string name, CancellationToken ct) {
-        var networks = await _docker.ListNetworksAsync(ct);
-        if (networks.Any(n => n.Name == name)) return;
-        _logger.LogInformation("Creating proxy network {Network}", name);
-        await _docker.CreateNetworkAsync(name, new Dictionary<string, string> { [ManagedLabelKey] = "network" }, ct);
-    }
 
     private async Task JoinSelfToControlAsync(CancellationToken ct) {
         var hostname = Environment.GetEnvironmentVariable("HOSTNAME");
@@ -207,11 +270,12 @@ public class CaddyManager : IHostedService, IDisposable {
             _logger.LogDebug(ex, "No existing Caddy container found; creating a new one.");
         }
 
-        _logger.LogInformation("Pulling {Image}", _proxy.CaddyImage);
-        await _docker.PullImageAsync(_proxy.CaddyImage, ct: ct);
+        var image = _options.CurrentValue.Proxy.CaddyImage;
+        _logger.LogInformation("Pulling {Image}", image);
+        await _docker.PullImageAsync(image, ct: ct);
 
         var body = new DockerCreateContainerBody {
-            Image = _proxy.CaddyImage,
+            Image = image,
             // Start with a blank config; CADDY_ADMIN puts the admin API on the control network so we can
             // push the real config via /load. Overriding Cmd to just "run" avoids loading the image's
             // default Caddyfile (which would bind admin to localhost only).
@@ -242,57 +306,6 @@ public class CaddyManager : IHostedService, IDisposable {
         // control network only.
         await _docker.StartContainerAsync(id, ct);
         _logger.LogInformation("Started managed Caddy container {ShortId}", id.Length >= 12 ? id[..12] : id);
-    }
-
-    private async Task ConnectAllRoutedContainersAsync(CancellationToken ct) {
-        List<(int StackId, string Project, string Service)> targets;
-        await using (var scope = _scopeFactory.CreateAsyncScope()) {
-            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            targets = await db.Routes.AsNoTracking()
-                .Include(r => r.Stack)
-                .Select(r => new { r.StackId, r.Stack!.ComposeProjectName, r.ServiceName })
-                .Distinct()
-                .Select(x => new ValueTuple<int, string, string>(x.StackId, x.ComposeProjectName, x.ServiceName))
-                .ToListAsync(ct);
-        }
-        foreach (var (stackId, project, service) in targets)
-            await ConnectServiceAsync(stackId, project, service, ct);
-    }
-
-    /// <summary>
-    /// Ensures the stack's ingress network exists and Caddy is on it, then connects every container of a
-    /// compose service to it under a stable alias.
-    /// </summary>
-    private async Task ConnectServiceAsync(int stackId, string project, string service, CancellationToken ct) {
-        var network = await EnsureStackNetworkAsync(stackId, ct);
-        var alias = EdgeAlias(project, service);
-        var containers = await _docker.ListContainersByLabelsAsync(
-            [$"{ComposeProjectLabel}={project}", $"{ComposeServiceLabel}={service}"], ct);
-        if (containers.Count == 0) {
-            _logger.LogDebug("No container found for {Project}/{Service}; nothing to connect yet.", project, service);
-            return;
-        }
-        foreach (var c in containers) {
-            try {
-                await _docker.ConnectContainerAsync(network, c.Id, [alias], ct);
-            } catch (Exception ex) {
-                var shortId = c.Id.Length >= 12 ? c.Id[..12] : c.Id;
-                _logger.LogWarning(ex, "Failed to connect {Container} ({Alias}) to {Network}", shortId, alias, network);
-            }
-        }
-    }
-
-    /// <summary>Creates the stack's ingress network if missing and joins Caddy to it; returns its name.</summary>
-    private async Task<string> EnsureStackNetworkAsync(int stackId, CancellationToken ct) {
-        var network = IngressNetworkPrefix + stackId;
-        var networks = await _docker.ListNetworksAsync(ct);
-        if (networks.All(n => n.Name != network)) {
-            _logger.LogInformation("Creating ingress network {Network}", network);
-            await _docker.CreateNetworkAsync(network, new Dictionary<string, string> { [ManagedLabelKey] = "ingress" }, ct);
-        }
-        // Idempotent: a 403 (already connected) is treated as success by ConnectContainerAsync.
-        await _docker.ConnectContainerAsync(network, CaddyContainerName, aliases: null, ct);
-        return network;
     }
 
     // ── Config rendering + push ────────────────────────────────────────────────
@@ -404,5 +417,5 @@ public class CaddyManager : IHostedService, IDisposable {
     }
 
     /// <summary>Stable, collision-free DNS alias for a service on the edge network (unique per stack).</summary>
-    private static string EdgeAlias(string project, string service) => $"{project}-{service}";
+    private static string EdgeAlias(string project, string service) => ProxyIngressNetworks.EdgeAlias(project, service);
 }

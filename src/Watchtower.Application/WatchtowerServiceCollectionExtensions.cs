@@ -33,6 +33,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // than a log line, so it is injected and the tests can move it.
         services.TryAddSingleton(TimeProvider.System);
 
+        // Which settings are pinned by WATCHTOWER__* env vars (env wins over the settings store — see the
+        // configuration layering in Program.cs). TryAdd so tests can substitute a fake environment.
+        services.TryAddSingleton<EnvironmentSettingPins>();
+
         var dbPath = section.GetValue<string>("DbPath") ?? "/data/watchtower.db";
         var dir = Path.GetDirectoryName(dbPath);
         if (!string.IsNullOrEmpty(dir))
@@ -90,10 +94,19 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy (Caddy) — singleton for handler/deploy triggers; hosted so the proxy topology
-        // (networks + container + routes) is reconciled on startup. No-op unless Proxy:Enabled.
+        // Reverse proxy (ADR-0015) — two providers behind one runtime router, mirroring the metrics
+        // backend (ADR-0007): Caddy (host ports 80/443, automatic TLS) and Cloudflare Tunnel
+        // (cloudflared + the Cloudflare API). Both are registered unconditionally and hosted so the
+        // active one reconciles on startup (each self-gates on Proxy:Enabled + Proxy:Provider);
+        // consumers inject IProxyProvider and the router resolves the selected backend per call, which
+        // is what makes the provider switchable from the Settings page without a restart.
+        services.AddSingleton<ProxyIngressNetworks>();
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
+        services.AddSingleton<CloudflareApiClient>();
+        services.AddSingleton<CloudflareTunnelProvider>();
+        services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
+        services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and
@@ -151,6 +164,9 @@ public static class WatchtowerServiceCollectionExtensions {
         // Registered BEFORE AddElarionClaimsCurrentUser on purpose: that helper uses TryAdd for
         // ICurrentUser, so registering first is how a host substitutes its own snapshot.
         var authEnabled = section.GetValue<bool>("Auth:Enabled");
+        // Snapshot the mode the process is actually starting in: Auth:Enabled decides pipeline shape and
+        // is not runtime-switchable, so the auth settings handlers report "restart required" against this.
+        services.AddSingleton(new AuthStartupState(authEnabled));
         if (authEnabled) {
             services.AddScoped<WatchtowerClaimsCurrentUser>();
             services.AddScoped<ICurrentUser>(sp => sp.GetRequiredService<WatchtowerClaimsCurrentUser>());

@@ -6,7 +6,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 
 /// <summary>Deletes a route and reloads the proxy so it stops serving the domain.</summary>
 [Handler("proxy.deleteRoute")]
-public sealed class DeleteRoute(WatchtowerDbContext db, CaddyManager caddy)
+public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy)
     : IHandler<DeleteRoute.Command, Result<DeleteRoute.Response>> {
     public sealed record Command(int Id);
     public sealed record Response(int Id);
@@ -16,7 +16,7 @@ public sealed class DeleteRoute(WatchtowerDbContext db, CaddyManager caddy)
         if (deleted == 0)
             return AppError.NotFound($"Route {command.Id} not found");
 
-        await caddy.ApplyAsync(ct);
+        await proxy.ApplyAsync(ct);
         return new Response(command.Id);
     }
 }

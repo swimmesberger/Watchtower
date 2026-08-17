@@ -10,7 +10,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// network, and reloads the proxy. The proxy work is a no-op when the reverse proxy is disabled.
 /// </summary>
 [Handler("proxy.createRoute")]
-public sealed class CreateRoute(WatchtowerDbContext db, CaddyManager caddy)
+public sealed class CreateRoute(WatchtowerDbContext db, IProxyProvider proxy)
     : IHandler<CreateRoute.Command, Result<CreateRoute.Response>> {
     public sealed record Command(
         int StackId,
@@ -51,8 +51,8 @@ public sealed class CreateRoute(WatchtowerDbContext db, CaddyManager caddy)
         db.Routes.Add(route);
         await db.SaveChangesAsync(ct);
 
-        await caddy.ConnectStackAsync(command.StackId, ct);
-        await caddy.ApplyAsync(ct);
+        await proxy.ConnectStackAsync(command.StackId, ct);
+        await proxy.ApplyAsync(ct);
 
         // Re-read with the stack nav for the DTO.
         var saved = await db.Routes.AsNoTracking().Include(r => r.Stack).FirstAsync(r => r.Id == route.Id, ct);

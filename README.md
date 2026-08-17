@@ -132,7 +132,13 @@ Build/pull the image and run it with the Docker socket mounted — see
 
 ### Configuration
 
-Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variables:
+Bind via the `Watchtower` config section or `WATCHTOWER__*` environment variables. Most settings are
+also editable at runtime under **Settings** in the UI (persisted in the database, applied without a
+restart — `Auth:Enabled` excepted, which applies on the next start). **Environment variables always
+win** over runtime-edited settings ([ADR-0014](docs/decisions/0014-env-wins-runtime-settings.md)):
+a setting supplied via env var shows as pinned (read-only) in the UI, and removing the variable makes
+it editable again. In particular, `WATCHTOWER__AUTH__ENABLED=false` + restart always disables
+authentication, whatever was configured in the UI.
 
 | Key | Env | Default | Purpose |
 | --- | --- | --- | --- |

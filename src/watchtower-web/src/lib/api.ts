@@ -5,6 +5,7 @@
 import { rpc } from './rpc-client'
 import type {
   ActiveDeployment,
+  AuthConfig,
   AutomationConfig,
   Container,
   ContainerEnvVar,
@@ -28,6 +29,7 @@ import type {
   NetworkInfo,
   NetworkPortsResult,
   PruneOrphansResult,
+  ProxyConfig,
   ProxyStatus,
   Realm,
   Registry,
@@ -44,8 +46,11 @@ import type {
   StackEnvVar,
   StackEnvVarInput,
   StackMetricsResult,
+  UpdateAuthConfigRequest,
+  UpdateAutomationRequest,
   UpdateCredentialRequest,
   UpdateMetricsConfigRequest,
+  UpdateProxyConfigRequest,
   UpdateRealmRequest,
   UpdateRegistryRequest,
   UpdateRouteRequest,
@@ -207,6 +212,26 @@ export const api = {
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
+    getConfig: async () => (await rpc('proxy.getConfig', {})).config as ProxyConfig,
+    updateConfig: async (data: UpdateProxyConfigRequest) =>
+      (await rpc('proxy.updateConfig', {
+        enabled: data.enabled,
+        provider: data.provider,
+        adminEmail: data.adminEmail ?? null,
+        caddyImage: data.caddyImage,
+        cloudflareAccountId: data.cloudflareAccountId ?? null,
+        cloudflareZoneId: data.cloudflareZoneId ?? null,
+        cloudflareApiToken: data.cloudflareApiToken ?? null,
+        cloudflareTunnelName: data.cloudflareTunnelName ?? null,
+        cloudflareTeamDomain: data.cloudflareTeamDomain ?? null,
+        cloudflareManaged: data.cloudflareManaged ?? null,
+        cloudflaredImage: data.cloudflaredImage ?? null,
+        cloudflaredContainerName: data.cloudflaredContainerName ?? null,
+        cloudflareAccessAllowedEmails: data.cloudflareAccessAllowedEmails ?? null,
+        cloudflareAccessAllowedEmailDomains: data.cloudflareAccessAllowedEmailDomains ?? null,
+        cloudflareAccessGroupIds: data.cloudflareAccessGroupIds ?? null,
+        cloudflareAccessReusablePolicyIds: data.cloudflareAccessReusablePolicyIds ?? null,
+      })).config as ProxyConfig,
     getAccess: async (routeId: number) =>
       (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,
     setAccess: async (routeId: number, data: RouteAccess) =>
@@ -381,7 +406,7 @@ export const api = {
     },
     dockerConfig: async () => (await rpc('system.dockerConfig', {})).config as DockerConfigStatus,
     getAutomation: async () => (await rpc('system.getAutomation', {})) as AutomationConfig,
-    updateAutomation: async (data: AutomationConfig) =>
+    updateAutomation: async (data: UpdateAutomationRequest) =>
       (await rpc('system.updateAutomation', {
         autoCheckEnabled: data.autoCheckEnabled,
         autoCheckIntervalMinutes: data.autoCheckIntervalMinutes,
@@ -390,5 +415,13 @@ export const api = {
         imagePruneEnabled: data.imagePruneEnabled,
         imagePruneIntervalMinutes: data.imagePruneIntervalMinutes,
       })) as AutomationConfig,
+    getAuthConfig: async () => (await rpc('system.getAuthConfig', {})) as AuthConfig,
+    updateAuthConfig: async (data: UpdateAuthConfigRequest) =>
+      (await rpc('system.updateAuthConfig', {
+        enabled: data.enabled,
+        host: data.host ?? null,
+        sessionLifetimeHours: data.sessionLifetimeHours,
+        absoluteSessionLifetimeDays: data.absoluteSessionLifetimeDays,
+      })) as AuthConfig,
   },
 }

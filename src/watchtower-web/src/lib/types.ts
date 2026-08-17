@@ -379,6 +379,8 @@ export interface MetricsConfig {
   retentionDays: number
   historyAvailable: boolean
   influx: MetricsInfluxConfig
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
 }
 
 /** `metrics.updateConfig` request. Null influx fields keep the stored values (token included). */
@@ -421,6 +423,94 @@ export interface AutomationConfig {
   /** Periodic `docker image prune -f` equivalent — dangling (untagged) images only. */
   imagePruneEnabled: boolean
   imagePruneIntervalMinutes: number
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** The values `system.updateAutomation` accepts (the response echoes them plus `pinnedPaths`). */
+export type UpdateAutomationRequest = Omit<AutomationConfig, 'pinnedPaths'>
+
+/** `system.getAuthConfig` / `system.updateAuthConfig` payload. */
+export interface AuthConfig {
+  /** The configured value — what the next start runs with. */
+  enabled: boolean
+  /** Whether the auth pipeline is enforcing in this process right now. */
+  active: boolean
+  /** True when `enabled` ≠ `active`: `Auth:Enabled` shapes the pipeline pre-DI, so it needs a restart. */
+  restartRequired: boolean
+  /** Central login hostname (bare host, no scheme). */
+  host: string | null
+  sessionLifetimeHours: number
+  absoluteSessionLifetimeDays: number
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** `system.updateAuthConfig` request. */
+export interface UpdateAuthConfigRequest {
+  enabled: boolean
+  host: string | null
+  sessionLifetimeHours: number
+  absoluteSessionLifetimeDays: number
+}
+
+/** The two reverse-proxy backends (ADR-0015). */
+export type ProxyProvider = 'caddy' | 'cloudflare'
+
+/** Cloudflare Tunnel connection values (the API token never leaves the server). */
+export interface ProxyCloudflareConfig {
+  accountId: string | null
+  zoneId: string | null
+  /** True when a token is stored — the UI sends a new one only to replace it. */
+  hasApiToken: boolean
+  tunnelName: string
+  /** Zero Trust team (bare name or full host) — derives the Access JWKS URL injected into deploys. */
+  teamDomain: string | null
+  /** True: Watchtower runs cloudflared as a managed container. False: the operator runs it. */
+  managed: boolean
+  cloudflaredImage: string
+  /** Unmanaged mode: operator-run cloudflared container to connect to the ingress networks. */
+  cloudflaredContainerName: string | null
+  /** Comma-separated emails admitted by every Authenticated route's Access application. */
+  accessAllowedEmails: string
+  /** Comma-separated email domains admitted alongside `accessAllowedEmails`. */
+  accessAllowedEmailDomains: string
+  /** Comma-separated Zero Trust Access group ids admitted by Authenticated routes. */
+  accessGroupIds: string
+  /** Comma-separated reusable Access policy ids attached to Authenticated routes' apps. */
+  accessReusablePolicyIds: string
+}
+
+/** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
+export interface ProxyConfig {
+  enabled: boolean
+  provider: ProxyProvider
+  /** ACME account email for certificate expiry notices (Caddy only). */
+  adminEmail: string | null
+  caddyImage: string
+  cloudflare: ProxyCloudflareConfig
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** `proxy.updateConfig` request. Null cloudflare fields keep the stored values (token included). */
+export interface UpdateProxyConfigRequest {
+  enabled: boolean
+  provider: ProxyProvider
+  adminEmail: string | null
+  caddyImage: string
+  cloudflareAccountId?: string | null
+  cloudflareZoneId?: string | null
+  cloudflareApiToken?: string | null
+  cloudflareTunnelName?: string | null
+  cloudflareTeamDomain?: string | null
+  cloudflareManaged?: boolean | null
+  cloudflaredImage?: string | null
+  cloudflaredContainerName?: string | null
+  cloudflareAccessAllowedEmails?: string | null
+  cloudflareAccessAllowedEmailDomains?: string | null
+  cloudflareAccessGroupIds?: string | null
+  cloudflareAccessReusablePolicyIds?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
@@ -477,7 +567,7 @@ export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
  * default) forwards the JWT only; `Remote` uses Authelia/Traefik `Remote-*`; `AuthRequest` uses
  * oauth2-proxy `X-Auth-Request-*`. Mirrors the backend `IdentityHeaderMode` enum, serialized by name.
  */
-export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest'
+export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest' | 'Cloudflare'
 
 /** The shape `proxy.setAccess` both accepts and returns — the policy itself, with nothing derived. */
 export interface RouteAccess {
@@ -512,8 +602,10 @@ export interface DnsCheckResult {
 
 export interface ProxyStatus {
   enabled: boolean
+  /** Whether the active provider's data plane is running (name kept for wire compatibility). */
   caddyRunning: boolean
   routeCount: number
+  provider: ProxyProvider
 }
 
 // ── Multi-tenancy (stack templates) ─────────────────────────────────────────

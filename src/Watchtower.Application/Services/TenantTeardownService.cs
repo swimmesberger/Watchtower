@@ -63,12 +63,12 @@ public sealed record TenantTeardownResult(
 /// </remarks>
 /// <param name="db">Scoped Watchtower database context.</param>
 /// <param name="compose">Docker Compose CLI wrapper used to bring the project down.</param>
-/// <param name="caddy">Reverse-proxy reconciler, reloaded once the route rows are gone.</param>
+/// <param name="proxy">Reverse-proxy reconciler (the active provider), reloaded once the route rows are gone.</param>
 /// <param name="logger">Logger; compose output is logged here rather than returned to the caller.</param>
 public sealed class TenantTeardownService(
     WatchtowerDbContext db,
     ComposeCliService compose,
-    CaddyManager caddy,
+    IProxyProvider proxy,
     ILogger<TenantTeardownService> logger) {
     /// <summary>
     /// Tears down the tenant identified by <paramref name="templateId"/> and <paramref name="slug"/>.
@@ -112,8 +112,8 @@ public sealed class TenantTeardownService(
         // Past the destructive point: the containers are gone, so the row has to go with them whatever
         // the caller does with its request.
         await db.Stacks.Where(s => s.Id == tenant.Id).ExecuteDeleteAsync(CancellationToken.None);
-        // The route rows cascaded away with the stack; reload so Caddy stops serving the dead domain.
-        await caddy.ApplyAsync(CancellationToken.None);
+        // The route rows cascaded away with the stack; reload so the proxy stops serving the dead domain.
+        await proxy.ApplyAsync(CancellationToken.None);
 
         return new TenantTeardownResult(TenantTeardownStatus.Removed, normalized);
     }

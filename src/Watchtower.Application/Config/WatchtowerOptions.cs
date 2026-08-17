@@ -227,26 +227,139 @@ public sealed record CiOptions {
 }
 
 /// <summary>
-/// Settings for the built-in Caddy reverse proxy. Watchtower manages the Caddy container itself over
-/// the Docker socket: it publishes host ports 80/443, terminates TLS with automatic certificates, and
-/// forwards each configured <c>Route</c> to a service inside a stack over a private edge network.
-/// Disabled by default so nothing binds 80/443 or spawns a container unless the operator opts in.
+/// Settings for the reverse-proxy plane. Two providers exist (ADR-0015): the built-in <b>Caddy</b>
+/// proxy (Watchtower manages a Caddy container publishing host ports 80/443 with automatic TLS) and a
+/// <b>Cloudflare Tunnel</b> (routes are projected into a cloudflared tunnel's ingress rules + DNS via
+/// the Cloudflare API — no host ports, no ACME). Both project the same <c>Route</c> table.
+/// Disabled by default so nothing binds ports or spawns containers unless the operator opts in.
 /// </summary>
 public sealed record ProxyOptions {
     /// <summary>
-    /// When true, Watchtower ensures a managed Caddy container is running and reconciles routes into it.
-    /// Requires host ports 80 and 443 to be free. Set via <c>WATCHTOWER__PROXY__ENABLED=true</c>.
+    /// When true, the selected <see cref="Provider"/> reconciles routes. Set via
+    /// <c>WATCHTOWER__PROXY__ENABLED=true</c> or Settings → Reverse proxy (runtime-switchable).
     /// </summary>
     public bool Enabled { get; init; } = false;
 
     /// <summary>
+    /// Which proxy backend serves the routes: <c>caddy</c> (default) or <c>cloudflare</c>.
+    /// Unknown values resolve to <c>caddy</c>. Runtime-switchable — switching tears the old
+    /// provider's data plane down and reconciles the new one.
+    /// </summary>
+    public string Provider { get; init; } = "caddy";
+
+    /// <summary>
     /// Email registered with the ACME CA (Let's Encrypt/ZeroSSL) for expiry notices. Optional but
-    /// recommended. When empty, Caddy issues certificates without an account email.
+    /// recommended. When empty, Caddy issues certificates without an account email. Caddy only.
     /// </summary>
     public string? AdminEmail { get; init; }
 
-    /// <summary>Caddy image to run. Defaults to the official <c>caddy:2</c>.</summary>
+    /// <summary>Caddy image to run. Defaults to the official <c>caddy:2</c>. Caddy only.</summary>
     public string CaddyImage { get; init; } = "caddy:2";
+
+    /// <summary>Cloudflare Tunnel settings. Only used when <see cref="Provider"/> is <c>cloudflare</c>.</summary>
+    public CloudflareProxyOptions Cloudflare { get; init; } = new();
+
+    /// <summary>The provider <see cref="Provider"/> resolves to (case-insensitive; unknown ⇒ <c>caddy</c>).</summary>
+    public ProxyProviderKind ResolveProvider() =>
+        string.Equals(Provider, "cloudflare", StringComparison.OrdinalIgnoreCase)
+            ? ProxyProviderKind.Cloudflare
+            : ProxyProviderKind.Caddy;
+}
+
+/// <summary>The two reverse-proxy backends (ADR-0015).</summary>
+public enum ProxyProviderKind {
+    Caddy,
+    Cloudflare,
+}
+
+/// <summary>
+/// Cloudflare Tunnel provider settings (<c>WATCHTOWER__PROXY__CLOUDFLARE__*</c>). Watchtower projects
+/// the route table into the tunnel's ingress rules (public hostname → service) and upserts a proxied
+/// CNAME per route domain; TLS terminates at Cloudflare's edge.
+/// </summary>
+public sealed record CloudflareProxyOptions {
+    /// <summary>Cloudflare account id owning the tunnel.</summary>
+    public string? AccountId { get; init; }
+
+    /// <summary>Zone id of the domain the route hostnames live under (single-zone by design for now).</summary>
+    public string? ZoneId { get; init; }
+
+    /// <summary>
+    /// API token with <c>Cloudflare Tunnel:Edit</c> and <c>DNS:Edit</c> (Zero Trust Access scopes come
+    /// with phase 3). Treated as a secret — never logged, never echoed to the UI.
+    /// </summary>
+    public string? ApiToken { get; init; }
+
+    /// <summary>Name of the remotely-managed tunnel Watchtower configures. Found (or created, when
+    /// <see cref="Managed"/>) by name on every reconcile, so no local state is kept.</summary>
+    public string TunnelName { get; init; } = "watchtower";
+
+    /// <summary>
+    /// Your Zero Trust team — the bare name (<c>myteam</c>) or the full host
+    /// (<c>myteam.cloudflareaccess.com</c>). Used to derive the Access JWKS URL injected into deploys
+    /// as <c>WATCHTOWER_AUTH_JWKS_URL</c> so apps verify <c>Cf-Access-Jwt-Assertion</c> without
+    /// hard-coding the issuer. Optional; without it the variable is simply not injected.
+    /// </summary>
+    public string? TeamDomain { get; init; }
+
+    /// <summary>
+    /// When true (default), Watchtower runs <c>cloudflared</c> itself as a managed container — created,
+    /// supervised and torn down over the Docker socket, exactly like the Caddy container. When false,
+    /// the operator runs cloudflared (anywhere), and Watchtower only manages the tunnel's remote
+    /// configuration and DNS; see <see cref="CloudflaredContainerName"/> for the network hookup.
+    /// </summary>
+    public bool Managed { get; init; } = true;
+
+    /// <summary>cloudflared image for the managed container.</summary>
+    public string CloudflaredImage { get; init; } = "cloudflare/cloudflared:latest";
+
+    /// <summary>
+    /// Unmanaged mode only: the name of the operator-run cloudflared container on this Docker host.
+    /// When set, Watchtower connects it to the per-stack ingress networks so the generated
+    /// <c>http://{project}-{service}:{port}</c> ingress URLs resolve — but never creates, updates or
+    /// removes it. Leave empty if cloudflared runs elsewhere and you route to services yourself.
+    /// </summary>
+    public string? CloudflaredContainerName { get; init; }
+
+    /// <summary>
+    /// Comma-separated emails allowed through the Zero Trust Access application of every
+    /// <see cref="Entities.AccessMode.Authenticated"/> route (phase 3 of ADR-0015). Restricted routes
+    /// derive their allow-list from the route's grants instead. Requires the API token to also carry
+    /// <c>Access: Apps and Policies:Edit</c>.
+    /// </summary>
+    public string AccessAllowedEmails { get; init; } = "";
+
+    /// <summary>
+    /// Comma-separated email domains (e.g. <c>example.com</c>) allowed through the Access application
+    /// of every <see cref="Entities.AccessMode.Authenticated"/> route, alongside
+    /// <see cref="AccessAllowedEmails"/>.
+    /// </summary>
+    public string AccessAllowedEmailDomains { get; init; } = "";
+
+    /// <summary>
+    /// Comma-separated Zero Trust <b>Access group</b> ids (UUIDs) admitted by every Authenticated
+    /// route's Access application. The natural fit when the allow-list already lives in a Cloudflare
+    /// Access group (e.g. your Entra ID users) — Watchtower references the group instead of
+    /// maintaining a parallel email list.
+    /// </summary>
+    public string AccessGroupIds { get; init; } = "";
+
+    /// <summary>
+    /// Comma-separated <b>reusable Access policy</b> ids attached to every Authenticated route's
+    /// Access application, for accounts whose default allow policy already exists in the dashboard.
+    /// Attached alongside (not instead of) any Watchtower-generated app policy from the email/domain/
+    /// group settings above.
+    /// </summary>
+    public string AccessReusablePolicyIds { get; init; } = "";
+
+    /// <summary>Parses a comma/semicolon/whitespace-separated list into trimmed, distinct entries.</summary>
+    public static string[] SplitList(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value
+                .Split([',', ';', ' ', '\n', '\r', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 }
 
 /// <summary>

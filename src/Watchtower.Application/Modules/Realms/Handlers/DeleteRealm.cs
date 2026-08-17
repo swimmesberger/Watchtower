@@ -24,7 +24,7 @@ namespace Watchtower.Application.Modules.Realms.Handlers;
 [Handler("realms.delete")]
 [RequireRole(WatchtowerClaims.AdminRole)]
 public sealed class DeleteRealm(
-    WatchtowerDbContext db, CaddyManager caddy, ICurrentUser currentUser, TimeProvider time)
+    WatchtowerDbContext db, IProxyProvider proxy, ICurrentUser currentUser, TimeProvider time)
     : IHandler<DeleteRealm.Command, Result<DeleteRealm.Response>> {
 
     public sealed record Command(int Id);
@@ -53,7 +53,7 @@ public sealed class DeleteRealm(
 
         // Its login host is no longer a site block Watchtower should be serving. Best-effort, like the
         // route CRUD handlers.
-        await caddy.ApplyAsync(ct);
+        await proxy.ApplyAsync(ct);
 
         // Past the commit point, and delete-then-audit like the Users and Groups handlers: a delete that
         // fails must not leave a trail claiming it happened.

@@ -114,9 +114,10 @@ public sealed class StubComposeCliService()
 public sealed class RecordingCaddyManager(
     IServiceScopeFactory scopeFactory,
     DockerEngineClient docker,
+    ProxyIngressNetworks networks,
     IOptionsMonitor<WatchtowerOptions> options,
     ILogger<CaddyManager> logger)
-    : CaddyManager(scopeFactory, docker, options, logger) {
+    : CaddyManager(scopeFactory, docker, networks, options, logger) {
     private int _applyCount;
 
     /// <summary>How many times a proxy reload was requested.</summary>

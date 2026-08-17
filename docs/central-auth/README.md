@@ -34,7 +34,17 @@ Not yet (Phase 2): OIDC/SSO upstream, MFA/TOTP, template policy inheritance, and
 
 ## Enabling it
 
-Set the environment variables (or the matching `Watchtower:Auth:*` config keys):
+The recommended path is **Settings → Authentication** in the UI: create an enabled admin account on
+the Users page first (the page is fully functional while auth is off), flip the toggle, and restart —
+`Auth:Enabled` shapes the request pipeline at startup, so it is the one setting that needs a restart
+(the UI says so). The handler refuses to enable while no enabled admin exists, so the restart cannot
+land on a login page nobody can pass. The login host and session lifetimes are editable there too and
+apply live.
+
+Alternatively pin the settings via environment variables — env vars win over UI-edited settings
+([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)), which also means
+`WATCHTOWER__AUTH__ENABLED=false` + restart always disables authentication, whatever the UI stored —
+the escape hatch if you ever lock yourself out:
 
 ```yaml
 environment:
@@ -239,6 +249,7 @@ additionally forward plaintext identity headers. Choose the mode in **Routes →
 | **None** (default) | JWT only — no plaintext identity header. |
 | **Remote** | Authelia/Traefik names: `Remote-User`, `Remote-Name`, `Remote-Email`, `Remote-Groups` (email and groups only when the account has them). |
 | **AuthRequest** | oauth2-proxy names: `X-Auth-Request-User`, `X-Auth-Request-Preferred-Username`, `X-Auth-Request-Email`, `X-Auth-Request-Groups` (email and groups only when set). |
+| **Cloudflare** | Cloudflare Access names: `Cf-Access-Authenticated-User-Email` (when the account has an email), plus the Watchtower-signed assertion duplicated under `Cf-Access-Jwt-Assertion`. For apps written against Cloudflare's header contract, so the same stack runs unchanged behind Cloudflare Access (tunnel provider) or behind integrated auth — an app that cryptographically verifies the assertion re-points its JWKS/issuer configuration (env or appsettings) from `{team}.cloudflareaccess.com/cdn-cgi/access/certs` to Watchtower's `/api/auth/jwks`; the header names stay identical. |
 
 The group header carries the account's group names sorted and comma-joined (`admins,platform`), which
 is what group-aware apps such as Grafana and Nextcloud expect. It is **omitted entirely** rather than

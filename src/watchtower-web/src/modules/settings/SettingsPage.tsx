@@ -3,15 +3,19 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
+  Lock,
   RefreshCw,
   RotateCcw,
   Timer,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
+  AuthConfig,
   AutomationConfig,
   MetricsBackend,
   MetricsConfig,
+  ProxyConfig,
+  ProxyProvider,
   SelfUpdateStatus,
   UpdateSelfConfigRequest,
 } from '@/lib/types'
@@ -35,6 +39,26 @@ import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 
 const NO_CREDENTIAL = 'none' // Radix Select has no empty-string value.
+
+// ── Env-pinned settings ───────────────────────────────────────────────────────
+// Environment variables win over runtime settings (infrastructure-as-code pins). The backend reports
+// which config paths are pinned; those fields render disabled with the variable named, instead of
+// accepting an edit that would silently never take effect.
+
+const envVarName = (path: string) => path.replace(/:/g, '__').toUpperCase()
+
+/** Small lock note naming the env var that pins a field. Render next to the disabled control. */
+function PinnedNote({ path }: { path: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[11px] text-text-3"
+      title="Set via environment variable — remove it from the deployment (and restart) to edit here."
+    >
+      <Lock className="size-3 shrink-0" aria-hidden />
+      <span className="font-mono">{envVarName(path)}</span>
+    </span>
+  )
+}
 
 export function SettingsPage() {
   const qc = useQueryClient()
@@ -120,6 +144,10 @@ export function SettingsPage() {
       <AutomationCard />
 
       <MetricsCard />
+
+      <ProxyCard />
+
+      <AuthCard />
     </div>
   )
 }
@@ -153,6 +181,8 @@ function AutomationCard() {
     if (!form) return
     setDraft({ ...form, [key]: value })
   }
+
+  const pinnedPath = (path: string) => (data?.pinnedPaths.includes(path) ? path : null)
 
   return (
     <section className="flex flex-col gap-3">
@@ -192,6 +222,8 @@ function AutomationCard() {
               minutes={form.autoCheckIntervalMinutes}
               onToggle={v => set('autoCheckEnabled', v)}
               onMinutes={v => set('autoCheckIntervalMinutes', v)}
+              pinnedToggle={pinnedPath('Watchtower:AutoCheckEnabled')}
+              pinnedMinutes={pinnedPath('Watchtower:AutoCheckIntervalMinutes')}
             />
             <div className="h-px bg-border" />
             <ToggleRow
@@ -201,6 +233,8 @@ function AutomationCard() {
               minutes={form.stackCheckIntervalMinutes}
               onToggle={v => set('stackCheckEnabled', v)}
               onMinutes={v => set('stackCheckIntervalMinutes', v)}
+              pinnedToggle={pinnedPath('Watchtower:StackCheckEnabled')}
+              pinnedMinutes={pinnedPath('Watchtower:StackCheckIntervalMinutes')}
             />
             <div className="h-px bg-border" />
             <ToggleRow
@@ -210,6 +244,8 @@ function AutomationCard() {
               minutes={form.imagePruneIntervalMinutes}
               onToggle={v => set('imagePruneEnabled', v)}
               onMinutes={v => set('imagePruneIntervalMinutes', v)}
+              pinnedToggle={pinnedPath('Watchtower:ImagePruneEnabled')}
+              pinnedMinutes={pinnedPath('Watchtower:ImagePruneIntervalMinutes')}
             />
             <div className="flex items-center gap-3">
               <Button
@@ -237,6 +273,8 @@ function ToggleRow({
   minutes,
   onToggle,
   onMinutes,
+  pinnedToggle = null,
+  pinnedMinutes = null,
 }: {
   label: string
   hint: string
@@ -244,6 +282,10 @@ function ToggleRow({
   minutes: number
   onToggle: (v: boolean) => void
   onMinutes: (v: number) => void
+  /** Config path when the toggle is env-pinned (renders it disabled with the variable named). */
+  pinnedToggle?: string | null
+  /** Config path when the interval is env-pinned. */
+  pinnedMinutes?: string | null
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -251,8 +293,18 @@ function ToggleRow({
         <span className="min-w-0">
           <span className="block text-[13px] font-medium text-text">{label}</span>
           <span className="mt-0.5 block text-[13px] text-text-2">{hint}</span>
+          {pinnedToggle && (
+            <span className="mt-1 block">
+              <PinnedNote path={pinnedToggle} />
+            </span>
+          )}
         </span>
-        <Switch checked={enabled} onCheckedChange={onToggle} aria-label={label} />
+        <Switch
+          checked={enabled}
+          onCheckedChange={onToggle}
+          disabled={pinnedToggle != null}
+          aria-label={label}
+        />
       </label>
       {enabled && (
         <div className="flex items-center gap-2 pl-0.5">
@@ -264,9 +316,11 @@ function ToggleRow({
             value={minutes}
             onChange={e => onMinutes(Math.max(1, Math.min(1440, Number(e.target.value) || 1)))}
             className="w-20 tnum"
+            disabled={pinnedMinutes != null}
             aria-label={`${label} interval in minutes`}
           />
           <span className="text-[13px] text-text-2">minutes</span>
+          {pinnedMinutes && <PinnedNote path={pinnedMinutes} />}
         </div>
       )}
     </div>
@@ -351,6 +405,9 @@ function MetricsCard() {
     setDraft({ ...form, [key]: value })
   }
 
+  const isPinned = (path: string) => data?.pinnedPaths.includes(path) ?? false
+  const pinnedPath = (path: string) => (isPinned(path) ? path : null)
+
   return (
     <section className="flex flex-col gap-3">
       <div>
@@ -385,18 +442,27 @@ function MetricsCard() {
           <CardContent className="flex flex-col gap-5 p-5">
             <Field label="Backend" hint="Persisted keeps history in Watchtower's own database with zero dependencies.">
               {({ id }) => (
-                <Select value={form.backend} onValueChange={v => set('backend', v as MetricsBackend)}>
-                  <SelectTrigger id={id}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(BACKEND_LABELS) as MetricsBackend[]).map(b => (
-                      <SelectItem key={b} value={b}>
-                        {BACKEND_LABELS[b]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <>
+                  <Select
+                    value={form.backend}
+                    onValueChange={v => set('backend', v as MetricsBackend)}
+                    disabled={isPinned('Watchtower:Metrics:Backend')}
+                  >
+                    <SelectTrigger id={id}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(BACKEND_LABELS) as MetricsBackend[]).map(b => (
+                        <SelectItem key={b} value={b}>
+                          {BACKEND_LABELS[b]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {pinnedPath('Watchtower:Metrics:Backend') && (
+                    <PinnedNote path="Watchtower:Metrics:Backend" />
+                  )}
+                </>
               )}
             </Field>
 
@@ -412,9 +478,13 @@ function MetricsCard() {
                     set('retentionDays', Math.max(1, Math.min(365, Number(e.target.value) || 1)))
                   }
                   className="w-20 tnum"
+                  disabled={isPinned('Watchtower:Metrics:RetentionDays')}
                   aria-label="History retention in days"
                 />
                 <span className="text-[13px] text-text-2">days</span>
+                {pinnedPath('Watchtower:Metrics:RetentionDays') && (
+                  <PinnedNote path="Watchtower:Metrics:RetentionDays" />
+                )}
               </div>
             )}
 
@@ -433,53 +503,79 @@ function MetricsCard() {
                 </p>
                 <Field label="URL" hint="InfluxDB v2 base URL, e.g. http://influxdb:8086.">
                   {({ id }) => (
-                    <Input
-                      id={id}
-                      mono
-                      placeholder="http://influxdb:8086"
-                      value={form.influxUrl}
-                      onChange={e => set('influxUrl', e.target.value)}
-                    />
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="http://influxdb:8086"
+                        value={form.influxUrl}
+                        onChange={e => set('influxUrl', e.target.value)}
+                        disabled={isPinned('Watchtower:Metrics:Influx:Url')}
+                      />
+                      {pinnedPath('Watchtower:Metrics:Influx:Url') && (
+                        <PinnedNote path="Watchtower:Metrics:Influx:Url" />
+                      )}
+                    </>
                   )}
                 </Field>
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field label="Organization">
                     {({ id }) => (
-                      <Input
-                        id={id}
-                        mono
-                        value={form.influxOrg}
-                        onChange={e => set('influxOrg', e.target.value)}
-                      />
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.influxOrg}
+                          onChange={e => set('influxOrg', e.target.value)}
+                          disabled={isPinned('Watchtower:Metrics:Influx:Org')}
+                        />
+                        {pinnedPath('Watchtower:Metrics:Influx:Org') && (
+                          <PinnedNote path="Watchtower:Metrics:Influx:Org" />
+                        )}
+                      </>
                     )}
                   </Field>
                   <Field label="Bucket">
                     {({ id }) => (
-                      <Input
-                        id={id}
-                        mono
-                        value={form.influxBucket}
-                        onChange={e => set('influxBucket', e.target.value)}
-                      />
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.influxBucket}
+                          onChange={e => set('influxBucket', e.target.value)}
+                          disabled={isPinned('Watchtower:Metrics:Influx:Bucket')}
+                        />
+                        {pinnedPath('Watchtower:Metrics:Influx:Bucket') && (
+                          <PinnedNote path="Watchtower:Metrics:Influx:Bucket" />
+                        )}
+                      </>
                     )}
                   </Field>
                 </div>
                 <Field
                   label="API token"
                   hint={
-                    data?.influx.hasToken
-                      ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
-                      : 'Token with read access to the bucket.'
+                    isPinned('Watchtower:Metrics:Influx:Token')
+                      ? 'The token is set via the environment and cannot be changed here.'
+                      : data?.influx.hasToken
+                        ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
+                        : 'Token with read access to the bucket.'
                   }
                 >
                   {() => (
-                    <SecretField
-                      value={form.influxToken}
-                      copyable={false}
-                      placeholder={data?.influx.hasToken ? '••••••••  (unchanged)' : 'Paste a read token'}
-                      onChange={v => set('influxToken', v)}
-                      aria-label="InfluxDB API token"
-                    />
+                    <>
+                      <SecretField
+                        value={form.influxToken}
+                        copyable={false}
+                        placeholder={data?.influx.hasToken ? '••••••••  (unchanged)' : 'Paste a read token'}
+                        onChange={v => set('influxToken', v)}
+                        readOnly={isPinned('Watchtower:Metrics:Influx:Token')}
+                        aria-label="InfluxDB API token"
+                      />
+                      {pinnedPath('Watchtower:Metrics:Influx:Token') && (
+                        <PinnedNote path="Watchtower:Metrics:Influx:Token" />
+                      )}
+                    </>
                   )}
                 </Field>
                 <div className="grid gap-4 md:grid-cols-2">
@@ -488,24 +584,36 @@ function MetricsCard() {
                     hint="Tag carrying the compose project (per-stack rollup). Leave empty unless the collector emits it."
                   >
                     {({ id }) => (
-                      <Input
-                        id={id}
-                        mono
-                        placeholder="compose_project"
-                        value={form.influxComposeProjectTag}
-                        onChange={e => set('influxComposeProjectTag', e.target.value)}
-                      />
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="compose_project"
+                          value={form.influxComposeProjectTag}
+                          onChange={e => set('influxComposeProjectTag', e.target.value)}
+                          disabled={isPinned('Watchtower:Metrics:Influx:ComposeProjectTag')}
+                        />
+                        {pinnedPath('Watchtower:Metrics:Influx:ComposeProjectTag') && (
+                          <PinnedNote path="Watchtower:Metrics:Influx:ComposeProjectTag" />
+                        )}
+                      </>
                     )}
                   </Field>
                   <Field label="Disk mount point" hint="Mount point reported for the host-disk cell.">
                     {({ id }) => (
-                      <Input
-                        id={id}
-                        mono
-                        placeholder="/"
-                        value={form.influxDiskMountpoint}
-                        onChange={e => set('influxDiskMountpoint', e.target.value)}
-                      />
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="/"
+                          value={form.influxDiskMountpoint}
+                          onChange={e => set('influxDiskMountpoint', e.target.value)}
+                          disabled={isPinned('Watchtower:Metrics:Influx:DiskMountpoint')}
+                        />
+                        {pinnedPath('Watchtower:Metrics:Influx:DiskMountpoint') && (
+                          <PinnedNote path="Watchtower:Metrics:Influx:DiskMountpoint" />
+                        )}
+                      </>
                     )}
                   </Field>
                 </div>
@@ -521,6 +629,717 @@ function MetricsCard() {
                 onClick={() => draft && save.mutate(draft)}
               >
                 Save metrics
+              </Button>
+              {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  )
+}
+
+// ── Reverse proxy card (runtime-switchable, no restart) ───────────────────────
+
+const PROVIDER_LABELS: Record<ProxyProvider, string> = {
+  caddy: 'Caddy (built-in, ports 80/443)',
+  cloudflare: 'Cloudflare Tunnel (no open ports)',
+}
+
+interface ProxyDraft {
+  enabled: boolean
+  provider: ProxyProvider
+  adminEmail: string
+  caddyImage: string
+  cfAccountId: string
+  cfZoneId: string
+  /** Only sent when non-empty — an empty field keeps the stored token. */
+  cfApiToken: string
+  cfTunnelName: string
+  cfTeamDomain: string
+  cfManaged: boolean
+  cfCloudflaredImage: string
+  cfContainerName: string
+  cfAccessEmails: string
+  cfAccessEmailDomains: string
+  cfAccessGroupIds: string
+  cfAccessReusablePolicyIds: string
+}
+
+function toProxyDraft(config: ProxyConfig): ProxyDraft {
+  return {
+    enabled: config.enabled,
+    provider: config.provider,
+    adminEmail: config.adminEmail ?? '',
+    caddyImage: config.caddyImage,
+    cfAccountId: config.cloudflare.accountId ?? '',
+    cfZoneId: config.cloudflare.zoneId ?? '',
+    cfApiToken: '',
+    cfTunnelName: config.cloudflare.tunnelName,
+    cfTeamDomain: config.cloudflare.teamDomain ?? '',
+    cfManaged: config.cloudflare.managed,
+    cfCloudflaredImage: config.cloudflare.cloudflaredImage,
+    cfContainerName: config.cloudflare.cloudflaredContainerName ?? '',
+    cfAccessEmails: config.cloudflare.accessAllowedEmails,
+    cfAccessEmailDomains: config.cloudflare.accessAllowedEmailDomains,
+    cfAccessGroupIds: config.cloudflare.accessGroupIds,
+    cfAccessReusablePolicyIds: config.cloudflare.accessReusablePolicyIds,
+  }
+}
+
+function ProxyCard() {
+  const qc = useQueryClient()
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['proxy', 'config'],
+    queryFn: api.proxy.getConfig,
+    staleTime: 60_000,
+  })
+
+  const [draft, setDraft] = useState<ProxyDraft | null>(null)
+  const form = draft ?? (data ? toProxyDraft(data) : null)
+  const dirty = draft != null && data != null && JSON.stringify(draft) !== JSON.stringify(toProxyDraft(data))
+
+  const save = useMutation({
+    mutationFn: (next: ProxyDraft) =>
+      api.proxy.updateConfig({
+        enabled: next.enabled,
+        provider: next.provider,
+        adminEmail: next.adminEmail.trim() || null,
+        caddyImage: next.caddyImage.trim(),
+        cloudflareAccountId: next.cfAccountId.trim() || null,
+        cloudflareZoneId: next.cfZoneId.trim() || null,
+        cloudflareApiToken: next.cfApiToken.trim() || null,
+        cloudflareTunnelName: next.cfTunnelName.trim() || null,
+        cloudflareTeamDomain: next.cfTeamDomain.trim(),
+        cloudflareManaged: next.cfManaged,
+        cloudflaredImage: next.cfCloudflaredImage.trim() || null,
+        cloudflaredContainerName: next.cfContainerName.trim() || null,
+        cloudflareAccessAllowedEmails: next.cfAccessEmails.trim(),
+        cloudflareAccessAllowedEmailDomains: next.cfAccessEmailDomains.trim(),
+        cloudflareAccessGroupIds: next.cfAccessGroupIds.trim(),
+        cloudflareAccessReusablePolicyIds: next.cfAccessReusablePolicyIds.trim(),
+      }),
+    onSuccess: next => {
+      qc.setQueryData(['proxy', 'config'], next)
+      qc.invalidateQueries({ queryKey: ['proxy'] })
+      setDraft(null)
+      toast.success('Proxy settings saved — changes apply immediately.')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Failed to save.'),
+  })
+
+  function set<K extends keyof ProxyDraft>(key: K, value: ProxyDraft[K]) {
+    if (!form) return
+    setDraft({ ...form, [key]: value })
+  }
+
+  const isPinned = (path: string) => data?.pinnedPaths.includes(path) ?? false
+  const pinnedPath = (path: string) => (isPinned(path) ? path : null)
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-text">Reverse proxy</h2>
+        <p className="mt-0.5 text-[13px] text-text-2">
+          How your routes reach the internet: the built-in Caddy proxy or a Cloudflare Tunnel. Changes
+          apply immediately — no restart needed.
+        </p>
+      </div>
+
+      {isLoading || !form ? (
+        <Card>
+          <CardContent className="flex flex-col gap-4 p-5">
+            <Skeleton variant="line" className="w-2/3" />
+            <Skeleton variant="line" className="w-1/2" />
+          </CardContent>
+        </Card>
+      ) : isError ? (
+        <Banner
+          tone="danger"
+          title="Couldn't load proxy settings"
+          action={
+            <Button size="sm" variant="secondary" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          The reverse-proxy configuration is unavailable.
+        </Banner>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col gap-5 p-5">
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-text">Enable reverse proxy</span>
+                <span className="mt-0.5 block text-[13px] text-text-2">
+                  Serves the configured routes through the selected provider. Disabling tears the
+                  provider's data plane down — certificates, the tunnel and DNS records are kept for
+                  re-enabling.
+                </span>
+                {pinnedPath('Watchtower:Proxy:Enabled') && (
+                  <span className="mt-1 block">
+                    <PinnedNote path="Watchtower:Proxy:Enabled" />
+                  </span>
+                )}
+              </span>
+              <Switch
+                checked={form.enabled}
+                onCheckedChange={v => set('enabled', v)}
+                disabled={isPinned('Watchtower:Proxy:Enabled')}
+                aria-label="Enable reverse proxy"
+              />
+            </label>
+
+            <Field
+              label="Provider"
+              hint="Caddy publishes ports 80/443 with automatic TLS. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
+            >
+              {({ id }) => (
+                <>
+                  <Select
+                    value={form.provider}
+                    onValueChange={v => set('provider', v as ProxyProvider)}
+                    disabled={isPinned('Watchtower:Proxy:Provider')}
+                  >
+                    <SelectTrigger id={id}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(PROVIDER_LABELS) as ProxyProvider[]).map(p => (
+                        <SelectItem key={p} value={p}>
+                          {PROVIDER_LABELS[p]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {pinnedPath('Watchtower:Proxy:Provider') && (
+                    <PinnedNote path="Watchtower:Proxy:Provider" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            {form.provider === 'caddy' && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field
+                  label="ACME email"
+                  hint="Registered with the certificate authority for expiry notices. Optional but recommended."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="ops@example.com"
+                        value={form.adminEmail}
+                        onChange={e => set('adminEmail', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:AdminEmail')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:AdminEmail') && (
+                        <PinnedNote path="Watchtower:Proxy:AdminEmail" />
+                      )}
+                    </>
+                  )}
+                </Field>
+                <Field
+                  label="Caddy image"
+                  hint="Applies when the proxy container is next recreated (e.g. after disabling and re-enabling)."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="caddy:2"
+                        value={form.caddyImage}
+                        onChange={e => set('caddyImage', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:CaddyImage')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:CaddyImage') && (
+                        <PinnedNote path="Watchtower:Proxy:CaddyImage" />
+                      )}
+                    </>
+                  )}
+                </Field>
+              </div>
+            )}
+
+            {form.provider === 'cloudflare' && (
+              <div className="flex flex-col gap-4">
+                <p className="text-[13px] text-text-2">
+                  Watchtower configures a remotely-managed tunnel: it pushes one public hostname per
+                  route and creates the matching proxied DNS records in your zone. The API token needs
+                  the <span className="font-mono">Cloudflare Tunnel:Edit</span> and{' '}
+                  <span className="font-mono">DNS:Edit</span> permissions.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Account ID" hint="Zero Trust → your account; shown on the dashboard overview.">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.cfAccountId}
+                          onChange={e => set('cfAccountId', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccountId')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccountId') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccountId" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field label="Zone ID" hint="The zone your route domains live under.">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.cfZoneId}
+                          onChange={e => set('cfZoneId', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:ZoneId')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:ZoneId') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:ZoneId" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+                <Field
+                  label="API token"
+                  hint={
+                    isPinned('Watchtower:Proxy:Cloudflare:ApiToken')
+                      ? 'The token is set via the environment and cannot be changed here.'
+                      : data?.cloudflare.hasApiToken
+                        ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
+                        : 'Token with Cloudflare Tunnel:Edit and DNS:Edit. Validated against the API on save.'
+                  }
+                >
+                  {() => (
+                    <>
+                      <SecretField
+                        value={form.cfApiToken}
+                        copyable={false}
+                        placeholder={
+                          data?.cloudflare.hasApiToken ? '••••••••  (unchanged)' : 'Paste an API token'
+                        }
+                        onChange={v => set('cfApiToken', v)}
+                        readOnly={isPinned('Watchtower:Proxy:Cloudflare:ApiToken')}
+                        aria-label="Cloudflare API token"
+                      />
+                      {pinnedPath('Watchtower:Proxy:Cloudflare:ApiToken') && (
+                        <PinnedNote path="Watchtower:Proxy:Cloudflare:ApiToken" />
+                      )}
+                    </>
+                  )}
+                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Tunnel name"
+                    hint="Found (or created, in managed mode) by name — match your existing tunnel when you run cloudflared yourself."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="watchtower"
+                          value={form.cfTunnelName}
+                          onChange={e => set('cfTunnelName', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:TunnelName')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:TunnelName') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:TunnelName" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Zero Trust team"
+                    hint="Team name or {team}.cloudflareaccess.com. Deploys then inject WATCHTOWER_AUTH_JWKS_URL so apps verify Cf-Access-Jwt-Assertion without hard-coding the issuer."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="myteam"
+                          value={form.cfTeamDomain}
+                          onChange={e => set('cfTeamDomain', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:TeamDomain')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:TeamDomain') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:TeamDomain" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Access: allowed emails"
+                    hint="Comma-separated. Admitted by the Zero Trust Access app of every route with access mode 'Authenticated'. Restricted routes use their own grants (emails of granted users/groups) instead."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="you@example.com, other@example.com"
+                          value={form.cfAccessEmails}
+                          onChange={e => set('cfAccessEmails', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessAllowedEmails')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessAllowedEmails') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessAllowedEmails" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Access: allowed email domains"
+                    hint="Comma-separated, e.g. example.com — anyone with a matching email may pass. Requires the token to also carry Access: Apps and Policies:Edit."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="example.com"
+                          value={form.cfAccessEmailDomains}
+                          onChange={e => set('cfAccessEmailDomains', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Access: group ids"
+                    hint="Comma-separated Zero Trust Access group ids (UUIDs). The natural fit when your allow-list already lives in an Access group — e.g. your Entra ID users."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                          value={form.cfAccessGroupIds}
+                          onChange={e => set('cfAccessGroupIds', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessGroupIds')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessGroupIds') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessGroupIds" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Access: reusable policy ids"
+                    hint="Comma-separated ids of existing reusable Access policies (e.g. your dashboard-maintained default policy), attached to every Authenticated route's app."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="policy id"
+                          value={form.cfAccessReusablePolicyIds}
+                          onChange={e => set('cfAccessReusablePolicyIds', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <label className="flex items-start justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-text">
+                      Let Watchtower run cloudflared
+                    </span>
+                    <span className="mt-0.5 block text-[13px] text-text-2">
+                      Watchtower creates and supervises a cloudflared container over the Docker socket —
+                      the simplest setup. Turn off if you already run cloudflared yourself; Watchtower
+                      then only manages the tunnel's remote configuration and DNS.
+                    </span>
+                    {pinnedPath('Watchtower:Proxy:Cloudflare:Managed') && (
+                      <span className="mt-1 block">
+                        <PinnedNote path="Watchtower:Proxy:Cloudflare:Managed" />
+                      </span>
+                    )}
+                  </span>
+                  <Switch
+                    checked={form.cfManaged}
+                    onCheckedChange={v => set('cfManaged', v)}
+                    disabled={isPinned('Watchtower:Proxy:Cloudflare:Managed')}
+                    aria-label="Let Watchtower run cloudflared"
+                  />
+                </label>
+
+                {form.cfManaged ? (
+                  <Field label="cloudflared image">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="cloudflare/cloudflared:latest"
+                          value={form.cfCloudflaredImage}
+                          onChange={e => set('cfCloudflaredImage', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:CloudflaredImage')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:CloudflaredImage') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:CloudflaredImage" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                ) : (
+                  <Field
+                    label="Your cloudflared container"
+                    hint="Optional: the name of your cloudflared container on this Docker host. Watchtower connects it to the per-stack ingress networks so the generated service URLs resolve — it never creates or removes it. Leave empty if cloudflared runs elsewhere."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="cloudflared"
+                          value={form.cfContainerName}
+                          onChange={e => set('cfContainerName', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:CloudflaredContainerName')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:CloudflaredContainerName') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:CloudflaredContainerName" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!dirty || save.isPending}
+                loading={save.isPending}
+                onClick={() => draft && save.mutate(draft)}
+              >
+                Save proxy
+              </Button>
+              {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  )
+}
+
+// ── Auth card (restart-required toggle) ───────────────────────────────────────
+
+interface AuthDraft {
+  enabled: boolean
+  host: string
+  sessionLifetimeHours: number
+  absoluteSessionLifetimeDays: number
+}
+
+function toAuthDraft(config: AuthConfig): AuthDraft {
+  return {
+    enabled: config.enabled,
+    host: config.host ?? '',
+    sessionLifetimeHours: config.sessionLifetimeHours,
+    absoluteSessionLifetimeDays: config.absoluteSessionLifetimeDays,
+  }
+}
+
+function AuthCard() {
+  const qc = useQueryClient()
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['system', 'authConfig'],
+    queryFn: api.system.getAuthConfig,
+    staleTime: 60_000,
+  })
+
+  const [draft, setDraft] = useState<AuthDraft | null>(null)
+  const form = draft ?? (data ? toAuthDraft(data) : null)
+  const dirty = draft != null && data != null && JSON.stringify(draft) !== JSON.stringify(toAuthDraft(data))
+
+  const save = useMutation({
+    mutationFn: (next: AuthDraft) =>
+      api.system.updateAuthConfig({
+        enabled: next.enabled,
+        host: next.host.trim() || null,
+        sessionLifetimeHours: next.sessionLifetimeHours,
+        absoluteSessionLifetimeDays: next.absoluteSessionLifetimeDays,
+      }),
+    onSuccess: next => {
+      qc.setQueryData(['system', 'authConfig'], next)
+      setDraft(null)
+      toast.success(
+        next.restartRequired
+          ? 'Saved. Restart Watchtower to apply the authentication change.'
+          : 'Authentication settings saved.',
+      )
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Failed to save.'),
+  })
+
+  function set<K extends keyof AuthDraft>(key: K, value: AuthDraft[K]) {
+    if (!form) return
+    setDraft({ ...form, [key]: value })
+  }
+
+  const isPinned = (path: string) => data?.pinnedPaths.includes(path) ?? false
+  const pinnedPath = (path: string) => (isPinned(path) ? path : null)
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-text">Authentication</h2>
+        <p className="mt-0.5 text-[13px] text-text-2">
+          Watchtower's login and access control. Enabling or disabling takes effect after a restart;
+          the other values apply live.
+        </p>
+      </div>
+
+      {isLoading || !form ? (
+        <Card>
+          <CardContent className="flex flex-col gap-4 p-5">
+            <Skeleton variant="line" className="w-2/3" />
+            <Skeleton variant="line" className="w-1/2" />
+          </CardContent>
+        </Card>
+      ) : isError ? (
+        <Banner
+          tone="danger"
+          title="Couldn't load authentication settings"
+          action={
+            <Button size="sm" variant="secondary" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          The authentication configuration is unavailable.
+        </Banner>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col gap-5 p-5">
+            {data?.restartRequired && (
+              <Banner tone="warn" title="Restart required">
+                Authentication is {data.active ? 'active' : 'inactive'} in the running process, but is
+                configured {data.enabled ? 'on' : 'off'}. Restart Watchtower to apply the change. (The
+                env var WATCHTOWER__AUTH__ENABLED always wins if you need an escape hatch.)
+              </Banner>
+            )}
+
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-text">Enable authentication</span>
+                <span className="mt-0.5 block text-[13px] text-text-2">
+                  Watchtower manages users and enforces access policy. Requires an enabled admin account
+                  (Users page) so you can log back in after the restart.
+                </span>
+                {pinnedPath('Watchtower:Auth:Enabled') && (
+                  <span className="mt-1 block">
+                    <PinnedNote path="Watchtower:Auth:Enabled" />
+                  </span>
+                )}
+              </span>
+              <Switch
+                checked={form.enabled}
+                onCheckedChange={v => set('enabled', v)}
+                disabled={isPinned('Watchtower:Auth:Enabled')}
+                aria-label="Enable authentication"
+              />
+            </label>
+
+            <Field
+              label="Login host"
+              hint="Public hostname of the central login page (bare host, no scheme). Optional while only Watchtower's own UI is protected."
+            >
+              {({ id }) => (
+                <>
+                  <Input
+                    id={id}
+                    mono
+                    placeholder="watchtower.example.com"
+                    value={form.host}
+                    onChange={e => set('host', e.target.value)}
+                    disabled={isPinned('Watchtower:Auth:Host')}
+                  />
+                  {pinnedPath('Watchtower:Auth:Host') && <PinnedNote path="Watchtower:Auth:Host" />}
+                </>
+              )}
+            </Field>
+
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] text-text-2">Session idle timeout</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={form.sessionLifetimeHours}
+                  onChange={e =>
+                    set('sessionLifetimeHours', Math.max(1, Math.min(720, Number(e.target.value) || 1)))
+                  }
+                  className="w-20 tnum"
+                  disabled={isPinned('Watchtower:Auth:SessionLifetimeHours')}
+                  aria-label="Session idle lifetime in hours"
+                />
+                <span className="text-[13px] text-text-2">hours</span>
+                {pinnedPath('Watchtower:Auth:SessionLifetimeHours') && (
+                  <PinnedNote path="Watchtower:Auth:SessionLifetimeHours" />
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] text-text-2">Absolute limit</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={form.absoluteSessionLifetimeDays}
+                  onChange={e =>
+                    set(
+                      'absoluteSessionLifetimeDays',
+                      Math.max(1, Math.min(365, Number(e.target.value) || 1)),
+                    )
+                  }
+                  className="w-20 tnum"
+                  disabled={isPinned('Watchtower:Auth:AbsoluteSessionLifetimeDays')}
+                  aria-label="Absolute session lifetime in days"
+                />
+                <span className="text-[13px] text-text-2">days</span>
+                {pinnedPath('Watchtower:Auth:AbsoluteSessionLifetimeDays') && (
+                  <PinnedNote path="Watchtower:Auth:AbsoluteSessionLifetimeDays" />
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!dirty || save.isPending}
+                loading={save.isPending}
+                onClick={() => draft && save.mutate(draft)}
+              >
+                Save authentication
               </Button>
               {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
             </div>
