@@ -30,6 +30,7 @@ public sealed class UpdateProxyConfig(
         string? CloudflareZoneId = null,
         string? CloudflareApiToken = null,
         string? CloudflareTunnelName = null,
+        string? CloudflareTeamDomain = null,
         bool? CloudflareManaged = null,
         string? CloudflaredImage = null,
         string? CloudflaredContainerName = null,
@@ -92,6 +93,7 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyCloudflareZoneId, Changed(command.CloudflareZoneId, cf.ZoneId));
         Check(WatchtowerSettingPaths.ProxyCloudflareApiToken, command.CloudflareApiToken is not null);
         Check(WatchtowerSettingPaths.ProxyCloudflareTunnelName, Changed(command.CloudflareTunnelName, cf.TunnelName));
+        Check(WatchtowerSettingPaths.ProxyCloudflareTeamDomain, Changed(command.CloudflareTeamDomain, cf.TeamDomain));
         Check(WatchtowerSettingPaths.ProxyCloudflareManaged, managed != cf.Managed);
         Check(WatchtowerSettingPaths.ProxyCloudflareCloudflaredImage, Changed(command.CloudflaredImage, cf.CloudflaredImage));
         Check(WatchtowerSettingPaths.ProxyCloudflareCloudflaredContainerName, Changed(command.CloudflaredContainerName, cf.CloudflaredContainerName));
@@ -114,6 +116,8 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareApiToken, command.CloudflareApiToken.Trim(), ct);
         if (command.CloudflareTunnelName is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareTunnelName, command.CloudflareTunnelName.Trim(), ct);
+        if (command.CloudflareTeamDomain is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareTeamDomain, command.CloudflareTeamDomain.Trim(), ct);
         if (command.CloudflareManaged is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareManaged, managed ? "true" : "false", ct);
         if (command.CloudflaredImage is not null)
@@ -141,6 +145,7 @@ public sealed class UpdateProxyConfig(
                 ZoneId = zoneId,
                 ApiToken = apiToken,
                 TunnelName = tunnelName,
+                TeamDomain = Coalesce(command.CloudflareTeamDomain, cf.TeamDomain),
                 Managed = managed,
                 CloudflaredImage = cloudflaredImage,
                 CloudflaredContainerName = string.IsNullOrWhiteSpace(containerName) ? null : containerName,

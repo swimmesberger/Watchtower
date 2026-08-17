@@ -656,6 +656,7 @@ interface ProxyDraft {
   /** Only sent when non-empty — an empty field keeps the stored token. */
   cfApiToken: string
   cfTunnelName: string
+  cfTeamDomain: string
   cfManaged: boolean
   cfCloudflaredImage: string
   cfContainerName: string
@@ -675,6 +676,7 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
     cfTunnelName: config.cloudflare.tunnelName,
+    cfTeamDomain: config.cloudflare.teamDomain ?? '',
     cfManaged: config.cloudflare.managed,
     cfCloudflaredImage: config.cloudflare.cloudflaredImage,
     cfContainerName: config.cloudflare.cloudflaredContainerName ?? '',
@@ -708,6 +710,7 @@ function ProxyCard() {
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
         cloudflareTunnelName: next.cfTunnelName.trim() || null,
+        cloudflareTeamDomain: next.cfTeamDomain.trim(),
         cloudflareManaged: next.cfManaged,
         cloudflaredImage: next.cfCloudflaredImage.trim() || null,
         cloudflaredContainerName: next.cfContainerName.trim() || null,
@@ -931,26 +934,48 @@ function ProxyCard() {
                     </>
                   )}
                 </Field>
-                <Field
-                  label="Tunnel name"
-                  hint="Found (or created, in managed mode) by name — match your existing tunnel when you run cloudflared yourself."
-                >
-                  {({ id }) => (
-                    <>
-                      <Input
-                        id={id}
-                        mono
-                        placeholder="watchtower"
-                        value={form.cfTunnelName}
-                        onChange={e => set('cfTunnelName', e.target.value)}
-                        disabled={isPinned('Watchtower:Proxy:Cloudflare:TunnelName')}
-                      />
-                      {pinnedPath('Watchtower:Proxy:Cloudflare:TunnelName') && (
-                        <PinnedNote path="Watchtower:Proxy:Cloudflare:TunnelName" />
-                      )}
-                    </>
-                  )}
-                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Tunnel name"
+                    hint="Found (or created, in managed mode) by name — match your existing tunnel when you run cloudflared yourself."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="watchtower"
+                          value={form.cfTunnelName}
+                          onChange={e => set('cfTunnelName', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:TunnelName')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:TunnelName') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:TunnelName" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Zero Trust team"
+                    hint="Team name or {team}.cloudflareaccess.com. Deploys then inject WATCHTOWER_AUTH_JWKS_URL so apps verify Cf-Access-Jwt-Assertion without hard-coding the issuer."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="myteam"
+                          value={form.cfTeamDomain}
+                          onChange={e => set('cfTeamDomain', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:TeamDomain')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:TeamDomain') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:TeamDomain" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field

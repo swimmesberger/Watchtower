@@ -223,6 +223,7 @@ export const api = {
         cloudflareZoneId: data.cloudflareZoneId ?? null,
         cloudflareApiToken: data.cloudflareApiToken ?? null,
         cloudflareTunnelName: data.cloudflareTunnelName ?? null,
+        cloudflareTeamDomain: data.cloudflareTeamDomain ?? null,
         cloudflareManaged: data.cloudflareManaged ?? null,
         cloudflaredImage: data.cloudflaredImage ?? null,
         cloudflaredContainerName: data.cloudflaredContainerName ?? null,

@@ -42,12 +42,19 @@ public sealed record ServiceEnvInjection(string ServiceName, IReadOnlyList<Injec
 /// For a tenant stack, its template's target service — the default recipient of the token. Null for a
 /// standalone stack.
 /// </param>
+/// <param name="AuthJwksUrl">
+/// The JWKS URL for the active edge's identity assertions (<c>AppApiTokens.ResolveJwksUrl</c>), or
+/// null when no edge is issuing any — in which case <c>WATCHTOWER_AUTH_JWKS_URL</c> is injected
+/// nowhere. Identifies rather than authenticates, so like <c>WATCHTOWER_URL</c> it goes to every
+/// service.
+/// </param>
 public sealed record EnvInjectionRequest(
     IReadOnlyList<EnvInjectionService> Services,
     int StackId,
     string AppApiToken,
     string? PublicBaseUrl = null,
-    string? TargetServiceName = null) {
+    string? TargetServiceName = null,
+    string? AuthJwksUrl = null) {
     /// <summary>Redacted for the same reason as <see cref="InjectedEnvVar.ToString"/>: it carries the token.</summary>
     public override string ToString() =>
         $"{nameof(EnvInjectionRequest)} {{ StackId = {StackId}, Services = {Services.Count} }}";
@@ -139,15 +146,18 @@ public sealed record EnvInjectionPlan(
 
         var stackId = request.StackId.ToString(CultureInfo.InvariantCulture);
         var baseUrl = string.IsNullOrWhiteSpace(request.PublicBaseUrl) ? null : request.PublicBaseUrl.Trim();
+        var jwksUrl = string.IsNullOrWhiteSpace(request.AuthJwksUrl) ? null : request.AuthJwksUrl.Trim();
 
         var planned = new List<ServiceEnvInjection>(services.Count);
         foreach (var service in services) {
-            var variables = new List<InjectedEnvVar>(3);
+            var variables = new List<InjectedEnvVar>(4);
             if (tokenRecipients.Contains(service.Name))
                 variables.Add(new InjectedEnvVar(AppApiTokens.TokenVariable, request.AppApiToken));
             variables.Add(new InjectedEnvVar(AppApiTokens.StackIdVariable, stackId));
             if (baseUrl is not null)
                 variables.Add(new InjectedEnvVar(AppApiTokens.BaseUrlVariable, baseUrl));
+            if (jwksUrl is not null)
+                variables.Add(new InjectedEnvVar(AppApiTokens.JwksUrlVariable, jwksUrl));
             planned.Add(new ServiceEnvInjection(
                 service.Name, [.. variables.OrderBy(v => v.Key, StringComparer.Ordinal)]));
         }

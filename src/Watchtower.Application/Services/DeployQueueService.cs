@@ -286,8 +286,12 @@ public class DeployQueueService : IHostedService, IDisposable {
             var envVars = GetEnvVars(stackId);
             var appApiToken = await EnsureAppApiTokenAsync(stackId, ct);
             // Read once: the .env and the override below must agree, and IOptionsMonitor is live.
-            var publicBaseUrl = _options.CurrentValue.PublicBaseUrl;
-            var reservedVars = BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl);
+            var optionsSnapshot = _options.CurrentValue;
+            var publicBaseUrl = optionsSnapshot.PublicBaseUrl;
+            // Which JWKS the active edge signs identity assertions with (Cloudflare Access or
+            // Watchtower's own) — injected so apps verify without hard-coding an issuer.
+            var authJwksUrl = AppApiTokens.ResolveJwksUrl(optionsSnapshot);
+            var reservedVars = BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl, authJwksUrl);
             var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
             foreach (var droppedKey in repoEnv.DroppedKeys)
                 WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
@@ -329,7 +333,8 @@ public class DeployQueueService : IHostedService, IDisposable {
                 stackId,
                 appApiToken,
                 publicBaseUrl,
-                GetTemplateTargetService(stack.TemplateId)));
+                GetTemplateTargetService(stack.TemplateId),
+                authJwksUrl));
             foreach (var warning in plan.Warnings)
                 WriteHeader($"[Watchtower] {warning}");
 
@@ -484,13 +489,15 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// the compose override of one deploy cannot disagree about it.
     /// </param>
     private static List<(string Key, string Value)> BuildReservedEnvVars(
-        int stackId, string appApiToken, string? publicBaseUrl) {
+        int stackId, string appApiToken, string? publicBaseUrl, string? authJwksUrl) {
         var vars = new List<(string Key, string Value)> {
             (AppApiTokens.TokenVariable, appApiToken),
             (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
         };
         if (!string.IsNullOrWhiteSpace(publicBaseUrl))
             vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
+        if (!string.IsNullOrWhiteSpace(authJwksUrl))
+            vars.Add((AppApiTokens.JwksUrlVariable, authJwksUrl.Trim()));
         return vars;
     }
 

@@ -2422,6 +2422,12 @@
                   "tunnelName": {
                     "type": "string"
                   },
+                  "teamDomain": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "managed": {
                     "type": "boolean"
                   },
@@ -2452,6 +2458,7 @@
                   "zoneId",
                   "hasApiToken",
                   "tunnelName",
+                  "teamDomain",
                   "managed",
                   "cloudflaredImage",
                   "cloudflaredContainerName",
@@ -2835,6 +2842,13 @@
             ],
             "default": null
           },
+          "cloudflareTeamDomain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
           "cloudflareManaged": {
             "type": [
               "boolean",
@@ -2934,6 +2948,12 @@
                   "tunnelName": {
                     "type": "string"
                   },
+                  "teamDomain": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "managed": {
                     "type": "boolean"
                   },
@@ -2964,6 +2984,7 @@
                   "zoneId",
                   "hasApiToken",
                   "tunnelName",
+                  "teamDomain",
                   "managed",
                   "cloudflaredImage",
                   "cloudflaredContainerName",

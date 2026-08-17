@@ -464,6 +464,8 @@ export interface ProxyCloudflareConfig {
   /** True when a token is stored — the UI sends a new one only to replace it. */
   hasApiToken: boolean
   tunnelName: string
+  /** Zero Trust team (bare name or full host) — derives the Access JWKS URL injected into deploys. */
+  teamDomain: string | null
   /** True: Watchtower runs cloudflared as a managed container. False: the operator runs it. */
   managed: boolean
   cloudflaredImage: string
@@ -501,6 +503,7 @@ export interface UpdateProxyConfigRequest {
   cloudflareZoneId?: string | null
   cloudflareApiToken?: string | null
   cloudflareTunnelName?: string | null
+  cloudflareTeamDomain?: string | null
   cloudflareManaged?: boolean | null
   cloudflaredImage?: string | null
   cloudflaredContainerName?: string | null

@@ -65,7 +65,10 @@ a toggle's job, and re-enabling reuses both.
   `X-Watchtower-*` identity headers, and the identity is whoever passed the Access policy (your
   Cloudflare One login methods), not a Watchtower session. For apps written against Cloudflare's
   headers, integrated auth offers the matching **Cloudflare identity-forwarding mode** on the route
-  (see the central-auth docs), so the same stack code runs behind either — a JWT-verifying app only
-  re-points its JWKS/issuer configuration.
+  (see the central-auth docs), so the same stack code runs behind either — and with the
+  **Zero Trust team** configured, deploys inject `WATCHTOWER_AUTH_JWKS_URL` (the team's
+  `/cdn-cgi/access/certs` here, Watchtower's `/api/auth/jwks` under integrated auth), so a
+  JWT-verifying app reads its JWKS location from the environment and the edge switch needs no app
+  configuration at all — see docs/public-app-api.md.
 - **TLS mode:** upstream connections from cloudflared to your services are plain HTTP on the private
   ingress network, like Caddy's; the route's `TlsEnabled` flag is not consulted by this provider.

@@ -295,6 +295,14 @@ public sealed record CloudflareProxyOptions {
     public string TunnelName { get; init; } = "watchtower";
 
     /// <summary>
+    /// Your Zero Trust team — the bare name (<c>myteam</c>) or the full host
+    /// (<c>myteam.cloudflareaccess.com</c>). Used to derive the Access JWKS URL injected into deploys
+    /// as <c>WATCHTOWER_AUTH_JWKS_URL</c> so apps verify <c>Cf-Access-Jwt-Assertion</c> without
+    /// hard-coding the issuer. Optional; without it the variable is simply not injected.
+    /// </summary>
+    public string? TeamDomain { get; init; }
+
+    /// <summary>
     /// When true (default), Watchtower runs <c>cloudflared</c> itself as a managed container — created,
     /// supervised and torn down over the Docker socket, exactly like the Caddy container. When false,
     /// the operator runs cloudflared (anywhere), and Watchtower only manages the tunnel's remote
