@@ -2432,6 +2432,12 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "accessAllowedEmails": {
+                    "type": "string"
+                  },
+                  "accessAllowedEmailDomains": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -2441,7 +2447,9 @@
                   "tunnelName",
                   "managed",
                   "cloudflaredImage",
-                  "cloudflaredContainerName"
+                  "cloudflaredContainerName",
+                  "accessAllowedEmails",
+                  "accessAllowedEmailDomains"
                 ]
               },
               "pinnedPaths": {
@@ -2836,6 +2844,20 @@
               "null"
             ],
             "default": null
+          },
+          "cloudflareAccessAllowedEmails": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessAllowedEmailDomains": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -2898,6 +2920,12 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "accessAllowedEmails": {
+                    "type": "string"
+                  },
+                  "accessAllowedEmailDomains": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -2907,7 +2935,9 @@
                   "tunnelName",
                   "managed",
                   "cloudflaredImage",
-                  "cloudflaredContainerName"
+                  "cloudflaredContainerName",
+                  "accessAllowedEmails",
+                  "accessAllowedEmailDomains"
                 ]
               },
               "pinnedPaths": {

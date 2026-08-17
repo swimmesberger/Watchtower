@@ -46,4 +46,6 @@ public static class WatchtowerSettingPaths {
     public const string ProxyCloudflareManaged = "Watchtower:Proxy:Cloudflare:Managed";
     public const string ProxyCloudflareCloudflaredImage = "Watchtower:Proxy:Cloudflare:CloudflaredImage";
     public const string ProxyCloudflareCloudflaredContainerName = "Watchtower:Proxy:Cloudflare:CloudflaredContainerName";
+    public const string ProxyCloudflareAccessAllowedEmails = "Watchtower:Proxy:Cloudflare:AccessAllowedEmails";
+    public const string ProxyCloudflareAccessAllowedEmailDomains = "Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains";
 }

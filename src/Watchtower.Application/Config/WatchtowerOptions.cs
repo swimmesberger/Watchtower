@@ -312,6 +312,30 @@ public sealed record CloudflareProxyOptions {
     /// removes it. Leave empty if cloudflared runs elsewhere and you route to services yourself.
     /// </summary>
     public string? CloudflaredContainerName { get; init; }
+
+    /// <summary>
+    /// Comma-separated emails allowed through the Zero Trust Access application of every
+    /// <see cref="Entities.AccessMode.Authenticated"/> route (phase 3 of ADR-0015). Restricted routes
+    /// derive their allow-list from the route's grants instead. Requires the API token to also carry
+    /// <c>Access: Apps and Policies:Edit</c>.
+    /// </summary>
+    public string AccessAllowedEmails { get; init; } = "";
+
+    /// <summary>
+    /// Comma-separated email domains (e.g. <c>example.com</c>) allowed through the Access application
+    /// of every <see cref="Entities.AccessMode.Authenticated"/> route, alongside
+    /// <see cref="AccessAllowedEmails"/>.
+    /// </summary>
+    public string AccessAllowedEmailDomains { get; init; } = "";
+
+    /// <summary>Parses a comma/semicolon/whitespace-separated list into trimmed, distinct entries.</summary>
+    public static string[] SplitList(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value
+                .Split([',', ';', ' ', '\n', '\r', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 }
 
 /// <summary>

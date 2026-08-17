@@ -87,6 +87,61 @@ public sealed class CloudflareApiClient : IDisposable {
         }
     }
 
+    // ── Zero Trust Access (phase 3 of ADR-0015) ──────────────────────────────
+
+    /// <summary>The account's Access applications (first 100 — plenty for a single-node deployment).</summary>
+    public async Task<IReadOnlyList<CloudflareAccessApp>> ListAccessAppsAsync(
+        string accountId, string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, $"accounts/{accountId}/access/apps?per_page=100", token, body: null,
+            CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareAccessApp, ct);
+    }
+
+    /// <summary>Creates a <c>self_hosted</c> Access application for one hostname.</summary>
+    public async Task<CloudflareAccessApp> CreateAccessAppAsync(
+        string accountId, CloudflareAccessAppRequest app, string token, CancellationToken ct = default) {
+        var body = JsonSerializer.Serialize(app, CloudflareJsonContext.Default.CloudflareAccessAppRequest);
+        return await SendAsync(HttpMethod.Post, $"accounts/{accountId}/access/apps", token, body,
+            CloudflareJsonContext.Default.CloudflareEnvelopeCloudflareAccessApp, ct);
+    }
+
+    /// <summary>Updates an Access application in place (same id, refreshed name/domain/session).</summary>
+    public async Task<CloudflareAccessApp> UpdateAccessAppAsync(
+        string accountId, string appId, CloudflareAccessAppRequest app, string token, CancellationToken ct = default) {
+        var body = JsonSerializer.Serialize(app, CloudflareJsonContext.Default.CloudflareAccessAppRequest);
+        return await SendAsync(HttpMethod.Put, $"accounts/{accountId}/access/apps/{appId}", token, body,
+            CloudflareJsonContext.Default.CloudflareEnvelopeCloudflareAccessApp, ct);
+    }
+
+    /// <summary>Deletes an Access application (used only on apps carrying the Watchtower name prefix).</summary>
+    public async Task DeleteAccessAppAsync(string accountId, string appId, string token, CancellationToken ct = default) {
+        await SendAsync(HttpMethod.Delete, $"accounts/{accountId}/access/apps/{appId}", token, body: null,
+            CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+    }
+
+    /// <summary>The app-scoped policies of one Access application.</summary>
+    public async Task<IReadOnlyList<CloudflareAccessPolicy>> ListAccessPoliciesAsync(
+        string accountId, string appId, string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, $"accounts/{accountId}/access/apps/{appId}/policies?per_page=100",
+            token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareAccessPolicy, ct);
+    }
+
+    /// <summary>Creates an app-scoped allow policy.</summary>
+    public async Task CreateAccessPolicyAsync(
+        string accountId, string appId, CloudflareAccessPolicyRequest policy, string token, CancellationToken ct = default) {
+        var body = JsonSerializer.Serialize(policy, CloudflareJsonContext.Default.CloudflareAccessPolicyRequest);
+        await SendAsync(HttpMethod.Post, $"accounts/{accountId}/access/apps/{appId}/policies", token, body,
+            CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+    }
+
+    /// <summary>Replaces an app-scoped policy's rules.</summary>
+    public async Task UpdateAccessPolicyAsync(
+        string accountId, string appId, string policyId, CloudflareAccessPolicyRequest policy, string token,
+        CancellationToken ct = default) {
+        var body = JsonSerializer.Serialize(policy, CloudflareJsonContext.Default.CloudflareAccessPolicyRequest);
+        await SendAsync(HttpMethod.Put, $"accounts/{accountId}/access/apps/{appId}/policies/{policyId}", token, body,
+            CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+    }
+
     /// <summary>
     /// Cheap credential probe for the settings surface: verifies the token can read the account's
     /// tunnels. Returns null on success, else a human-readable reason.
@@ -192,13 +247,67 @@ public sealed record CloudflareDnsRecordRequest {
     [JsonPropertyName("ttl")] public required int Ttl { get; init; }
 }
 
+/// <summary>A Zero Trust Access application (only the fields the reconcile reads).</summary>
+public sealed record CloudflareAccessApp {
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("domain")] public string Domain { get; init; } = "";
+    [JsonPropertyName("type")] public string Type { get; init; } = "";
+}
+
+public sealed record CloudflareAccessAppRequest {
+    [JsonPropertyName("name")] public required string Name { get; init; }
+    [JsonPropertyName("domain")] public required string Domain { get; init; }
+    [JsonPropertyName("type")] public required string Type { get; init; }
+    [JsonPropertyName("session_duration")] public required string SessionDuration { get; init; }
+    [JsonPropertyName("app_launcher_visible")] public required bool AppLauncherVisible { get; init; }
+}
+
+public sealed record CloudflareAccessPolicy {
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("decision")] public string Decision { get; init; } = "";
+}
+
+public sealed record CloudflareAccessPolicyRequest {
+    [JsonPropertyName("name")] public required string Name { get; init; }
+    [JsonPropertyName("decision")] public required string Decision { get; init; }
+    [JsonPropertyName("include")] public required CloudflareAccessRule[] Include { get; init; }
+    [JsonPropertyName("precedence")] public required int Precedence { get; init; }
+}
+
+/// <summary>
+/// One Access include rule. Exactly one member is set; the others stay null and are omitted from the
+/// JSON — Cloudflare's rule objects are single-key discriminated unions.
+/// </summary>
+public sealed record CloudflareAccessRule {
+    [JsonPropertyName("email")] public CloudflareEmailRule? Email { get; init; }
+    [JsonPropertyName("email_domain")] public CloudflareEmailDomainRule? EmailDomain { get; init; }
+
+    public static CloudflareAccessRule ForEmail(string email) => new() { Email = new CloudflareEmailRule { Email = email } };
+    public static CloudflareAccessRule ForEmailDomain(string domain) => new() { EmailDomain = new CloudflareEmailDomainRule { Domain = domain } };
+}
+
+public sealed record CloudflareEmailRule {
+    [JsonPropertyName("email")] public required string Email { get; init; }
+}
+
+public sealed record CloudflareEmailDomainRule {
+    [JsonPropertyName("domain")] public required string Domain { get; init; }
+}
+
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(CloudflareEnvelope<CloudflareTunnel>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareTunnel>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<string>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareDnsRecord>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<JsonElement>))]
+[JsonSerializable(typeof(CloudflareEnvelope<CloudflareAccessApp>))]
+[JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareAccessApp>>))]
+[JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareAccessPolicy>>))]
 [JsonSerializable(typeof(CloudflareCreateTunnelRequest))]
 [JsonSerializable(typeof(CloudflarePutConfigurationRequest))]
 [JsonSerializable(typeof(CloudflareDnsRecordRequest))]
+[JsonSerializable(typeof(CloudflareAccessAppRequest))]
+[JsonSerializable(typeof(CloudflareAccessPolicyRequest))]
 internal sealed partial class CloudflareJsonContext : JsonSerializerContext;

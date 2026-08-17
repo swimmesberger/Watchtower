@@ -469,6 +469,10 @@ export interface ProxyCloudflareConfig {
   cloudflaredImage: string
   /** Unmanaged mode: operator-run cloudflared container to connect to the ingress networks. */
   cloudflaredContainerName: string | null
+  /** Comma-separated emails admitted by every Authenticated route's Access application. */
+  accessAllowedEmails: string
+  /** Comma-separated email domains admitted alongside `accessAllowedEmails`. */
+  accessAllowedEmailDomains: string
 }
 
 /** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
@@ -496,6 +500,8 @@ export interface UpdateProxyConfigRequest {
   cloudflareManaged?: boolean | null
   cloudflaredImage?: string | null
   cloudflaredContainerName?: string | null
+  cloudflareAccessAllowedEmails?: string | null
+  cloudflareAccessAllowedEmailDomains?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────

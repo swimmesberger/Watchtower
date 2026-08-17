@@ -150,6 +150,9 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     _logger.LogWarning(ex, "Failed to upsert the CNAME for {Domain}.", domain);
                 }
             }
+
+            // Phase 3: protected routes get a Zero Trust Access application in front of their hostname.
+            await ReconcileAccessAppsAsync(cf, routes, ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to apply the Cloudflare tunnel configuration; will be retried on the next change.");
         }
@@ -302,6 +305,167 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
+    }
+
+    // ── Zero Trust Access applications (phase 3) ─────────────────────────────
+
+    private const string AccessAppNamePrefix = "watchtower: ";
+    private const string AccessPolicyName = "watchtower";
+
+    /// <summary>One desired Access application: the hostname and who its allow policy admits.</summary>
+    internal sealed record AccessAppSpec(string Domain, string Name, string[] Emails, string[] EmailDomains);
+
+    /// <summary>The desired Access apps plus the warnings for routes that could not be projected.</summary>
+    internal sealed record AccessProjection(List<AccessAppSpec> Apps, List<string> Warnings);
+
+    /// <summary>
+    /// Projects the protected routes onto Access applications — pure, for tests.
+    /// <see cref="AccessMode.Authenticated"/> admits the instance-wide configured emails/email-domains;
+    /// <see cref="AccessMode.Restricted"/> admits exactly the emails behind the route's grants (granted
+    /// users plus granted groups' members — accounts without an email cannot be matched by Cloudflare
+    /// and are effectively excluded). A protected route with an empty allow-list is skipped with a
+    /// warning rather than published as a deny-all app: a silent total lockout right when the operator
+    /// flips a switch is the worse failure, and the skip keeps any pre-existing app untouched.
+    /// </summary>
+    internal static AccessProjection ProjectAccessApps(
+        IReadOnlyList<Route> routes,
+        IReadOnlyDictionary<int, string[]> grantedEmailsByRouteId,
+        CloudflareProxyOptions cf) {
+        var apps = new List<AccessAppSpec>();
+        var warnings = new List<string>();
+        foreach (var route in routes.Where(r => r.AccessMode != AccessMode.Public).OrderBy(r => r.Domain, StringComparer.Ordinal)) {
+            string[] emails;
+            string[] emailDomains;
+            if (route.AccessMode == AccessMode.Authenticated) {
+                emails = CloudflareProxyOptions.SplitList(cf.AccessAllowedEmails);
+                emailDomains = CloudflareProxyOptions.SplitList(cf.AccessAllowedEmailDomains);
+            } else {
+                emails = grantedEmailsByRouteId.TryGetValue(route.Id, out var granted) ? granted : [];
+                emailDomains = [];
+            }
+            if (emails.Length == 0 && emailDomains.Length == 0) {
+                warnings.Add(
+                    $"Route {route.Domain} is {route.AccessMode} but nobody could pass its Access policy — " +
+                    (route.AccessMode == AccessMode.Authenticated
+                        ? "configure the allowed emails/email domains in the proxy settings. "
+                        : "grant users (or groups with members) that have an email address. ") +
+                    "The Access application was not created/updated.");
+                continue;
+            }
+            apps.Add(new AccessAppSpec(
+                route.Domain,
+                AccessAppNamePrefix + route.Domain,
+                emails.OrderBy(e => e, StringComparer.OrdinalIgnoreCase).ToArray(),
+                emailDomains.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToArray()));
+        }
+        return new AccessProjection(apps, warnings);
+    }
+
+    /// <summary>
+    /// Emails admitted by each restricted route's grants: directly granted users plus every member of
+    /// each granted group — enabled accounts with an email only.
+    /// </summary>
+    private async Task<Dictionary<int, string[]>> LoadGrantedEmailsAsync(
+        IReadOnlyList<int> routeIds, CancellationToken ct) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var direct = await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.UserId != null && routeIds.Contains(g.RouteId))
+            .Select(g => new { g.RouteId, g.User!.Email, g.User.Disabled })
+            .ToListAsync(ct);
+        var viaGroups = await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.GroupId != null && routeIds.Contains(g.RouteId))
+            .SelectMany(g => db.GroupMembers
+                .Where(m => m.GroupId == g.GroupId)
+                .Select(m => new { g.RouteId, m.User!.Email, m.User.Disabled }))
+            .ToListAsync(ct);
+        return direct.Concat(viaGroups)
+            .Where(x => !x.Disabled && !string.IsNullOrWhiteSpace(x.Email))
+            .GroupBy(x => x.RouteId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.Email!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    /// <summary>
+    /// Makes the account's Access applications match the protected routes: create/update one
+    /// <c>self_hosted</c> app per protected hostname with a single Watchtower-owned allow policy, and
+    /// delete Watchtower-created apps whose hostname is no longer protected. Only apps carrying the
+    /// <see cref="AccessAppNamePrefix"/> are ever deleted — dashboard-made apps are never touched.
+    /// Best-effort per app; a token without <c>Access: Apps and Policies:Edit</c> logs one warning.
+    /// </summary>
+    private async Task ReconcileAccessAppsAsync(
+        CloudflareProxyOptions cf, IReadOnlyList<Route> routes, CancellationToken ct) {
+        var restrictedIds = routes.Where(r => r.AccessMode == AccessMode.Restricted).Select(r => r.Id).ToList();
+        var granted = restrictedIds.Count > 0
+            ? await LoadGrantedEmailsAsync(restrictedIds, ct)
+            : new Dictionary<int, string[]>();
+        var projection = ProjectAccessApps(routes, granted, cf);
+        foreach (var warning in projection.Warnings)
+            _logger.LogWarning("{Warning}", warning);
+
+        // Listed even when nothing is protected: a route flipped back to Public still needs its
+        // Watchtower-created app removed below.
+        IReadOnlyList<CloudflareAccessApp> existing;
+        try {
+            existing = await _api.ListAccessAppsAsync(cf.AccountId!, cf.ApiToken!, ct);
+        } catch (Exception ex) {
+            _logger.LogWarning(ex,
+                "Could not list Access applications — protected routes are not gated at the edge. " +
+                "The API token may lack the 'Access: Apps and Policies: Edit' permission.");
+            return;
+        }
+
+        foreach (var spec in projection.Apps) {
+            try {
+                var request = new CloudflareAccessAppRequest {
+                    Name = spec.Name,
+                    Domain = spec.Domain,
+                    Type = "self_hosted",
+                    SessionDuration = "24h",
+                    AppLauncherVisible = false,
+                };
+                var app = existing.FirstOrDefault(a => string.Equals(a.Domain, spec.Domain, StringComparison.OrdinalIgnoreCase));
+                app = app is null
+                    ? await _api.CreateAccessAppAsync(cf.AccountId!, request, cf.ApiToken!, ct)
+                    : await _api.UpdateAccessAppAsync(cf.AccountId!, app.Id, request, cf.ApiToken!, ct);
+
+                var include = spec.Emails.Select(CloudflareAccessRule.ForEmail)
+                    .Concat(spec.EmailDomains.Select(CloudflareAccessRule.ForEmailDomain))
+                    .ToArray();
+                var policyRequest = new CloudflareAccessPolicyRequest {
+                    Name = AccessPolicyName, Decision = "allow", Include = include, Precedence = 1,
+                };
+                var policies = await _api.ListAccessPoliciesAsync(cf.AccountId!, app.Id, cf.ApiToken!, ct);
+                var mine = policies.FirstOrDefault(p => string.Equals(p.Name, AccessPolicyName, StringComparison.Ordinal));
+                if (mine is null)
+                    await _api.CreateAccessPolicyAsync(cf.AccountId!, app.Id, policyRequest, cf.ApiToken!, ct);
+                else
+                    await _api.UpdateAccessPolicyAsync(cf.AccountId!, app.Id, mine.Id, policyRequest, cf.ApiToken!, ct);
+                _logger.LogInformation("Access application reconciled for {Domain} ({Rules} rule(s)).",
+                    spec.Domain, include.Length);
+            } catch (Exception ex) {
+                _logger.LogWarning(ex, "Failed to reconcile the Access application for {Domain}.", spec.Domain);
+            }
+        }
+
+        // Deletion set: Watchtower-created apps whose hostname is no longer protected AT ALL. A protected
+        // route that was merely skipped (empty allow-list) keeps its existing app untouched — deleting it
+        // would silently un-gate a route the operator marked protected.
+        var protectedDomains = routes
+            .Where(r => r.AccessMode != AccessMode.Public)
+            .Select(r => r.Domain)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var stale in existing.Where(a =>
+                     a.Name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
+                     && !protectedDomains.Contains(a.Domain))) {
+            try {
+                await _api.DeleteAccessAppAsync(cf.AccountId!, stale.Id, cf.ApiToken!, ct);
+                _logger.LogInformation("Removed the Access application for {Domain} (route no longer protected).", stale.Domain);
+            } catch (Exception ex) {
+                _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", stale.Domain);
+            }
+        }
     }
 
     /// <summary>

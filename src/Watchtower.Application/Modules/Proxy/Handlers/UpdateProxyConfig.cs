@@ -32,7 +32,9 @@ public sealed class UpdateProxyConfig(
         string? CloudflareTunnelName = null,
         bool? CloudflareManaged = null,
         string? CloudflaredImage = null,
-        string? CloudflaredContainerName = null);
+        string? CloudflaredContainerName = null,
+        string? CloudflareAccessAllowedEmails = null,
+        string? CloudflareAccessAllowedEmailDomains = null);
 
     public sealed record Response(ProxyConfigDto Config);
 
@@ -91,6 +93,8 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyCloudflareManaged, managed != cf.Managed);
         Check(WatchtowerSettingPaths.ProxyCloudflareCloudflaredImage, Changed(command.CloudflaredImage, cf.CloudflaredImage));
         Check(WatchtowerSettingPaths.ProxyCloudflareCloudflaredContainerName, Changed(command.CloudflaredContainerName, cf.CloudflaredContainerName));
+        Check(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmails, Changed(command.CloudflareAccessAllowedEmails, cf.AccessAllowedEmails));
+        Check(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains, Changed(command.CloudflareAccessAllowedEmailDomains, cf.AccessAllowedEmailDomains));
         if (violations.Count > 0)
             return EnvironmentSettingPins.PinnedError(violations);
 
@@ -112,6 +116,10 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareCloudflaredImage, command.CloudflaredImage.Trim(), ct);
         if (command.CloudflaredContainerName is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareCloudflaredContainerName, command.CloudflaredContainerName.Trim(), ct);
+        if (command.CloudflareAccessAllowedEmails is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmails, command.CloudflareAccessAllowedEmails.Trim(), ct);
+        if (command.CloudflareAccessAllowedEmailDomains is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains, command.CloudflareAccessAllowedEmailDomains.Trim(), ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.
@@ -128,6 +136,8 @@ public sealed class UpdateProxyConfig(
                 Managed = managed,
                 CloudflaredImage = cloudflaredImage,
                 CloudflaredContainerName = string.IsNullOrWhiteSpace(containerName) ? null : containerName,
+                AccessAllowedEmails = Coalesce(command.CloudflareAccessAllowedEmails, cf.AccessAllowedEmails) ?? "",
+                AccessAllowedEmailDomains = Coalesce(command.CloudflareAccessAllowedEmailDomains, cf.AccessAllowedEmailDomains) ?? "",
             },
         };
         return new Response(ProxyConfigDto.From(echoed, pins));

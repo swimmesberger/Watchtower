@@ -10,8 +10,9 @@ same things you would otherwise click together under
 
 ## Setup
 
-1. Create an API token with **Cloudflare Tunnel: Edit** and **DNS: Edit** (scoped to the account and
-   the zone your domains live under).
+1. Create an API token with **Cloudflare Tunnel: Edit**, **DNS: Edit**, and — for Access-protected
+   routes — **Access: Apps and Policies: Edit** (scoped to the account and the zone your domains
+   live under).
 2. In **Settings → Reverse proxy**, select the **Cloudflare Tunnel** provider and fill in the account
    id, zone id, API token (validated on save), and a tunnel name (default `watchtower`).
 3. Choose who runs `cloudflared`:
@@ -34,7 +35,19 @@ On startup, on every route change/deploy, and on every settings change:
   (plain HTTP inside the private per-stack ingress network; the public leg is TLS at the edge),
   terminated by the mandatory `http_status:404` catch-all;
 - one **proxied CNAME** per route domain → `{tunnelId}.cfargotunnel.com`;
-- the cloudflared container (managed mode) and its ingress-network memberships.
+- the cloudflared container (managed mode) and its ingress-network memberships;
+- one **Zero Trust Access application** (`self_hosted`, named `watchtower: {domain}`) per protected
+  route, with a single Watchtower-owned allow policy:
+  - **Authenticated** routes admit the instance-wide *Access allowed emails / email domains*
+    configured on the Settings page;
+  - **Restricted** routes admit exactly the emails behind the route's grants — granted users plus
+    members of granted groups (accounts without an email address cannot be matched by Cloudflare and
+    are effectively excluded);
+  - a protected route whose allow-list comes out **empty is skipped with a warning** rather than
+    published as a deny-all app, and any existing app is left untouched — a silent total lockout is
+    the worse failure;
+  - a route flipped back to **Public** gets its Watchtower-created app deleted. Only apps carrying
+    the `watchtower: ` name prefix are ever deleted; dashboard-made apps are never touched.
 
 Disabling the proxy — or switching back to Caddy — stops and removes only the managed cloudflared
 container. **The tunnel and the DNS records are kept**: deleting public DNS you may still want is not
@@ -45,7 +58,9 @@ a toggle's job, and re-enabling reuses both.
 - **Single zone:** all route domains must live under the configured zone id. A domain outside it
   fails its DNS upsert (logged, best-effort) while the rest proceed.
 - **Access control:** Watchtower's forward-auth (central-auth) does not run in front of tunneled
-  routes; protection belongs to Cloudflare Access. Projecting `Route.AccessMode` into Access
-  applications is the next phase — until then, configure Access applications in the dashboard.
+  routes — protection is Cloudflare Access, projected from `Route.AccessMode` as described above.
+  Apps behind a protected route see Cloudflare's `Cf-Access-Jwt-Assertion`, not the
+  `X-Watchtower-*` identity headers, and the identity is whoever passed the Access policy (your
+  Cloudflare One login methods), not a Watchtower session.
 - **TLS mode:** upstream connections from cloudflared to your services are plain HTTP on the private
   ingress network, like Caddy's; the route's `TlsEnabled` flag is not consulted by this provider.

@@ -226,6 +226,8 @@ export const api = {
         cloudflareManaged: data.cloudflareManaged ?? null,
         cloudflaredImage: data.cloudflaredImage ?? null,
         cloudflaredContainerName: data.cloudflaredContainerName ?? null,
+        cloudflareAccessAllowedEmails: data.cloudflareAccessAllowedEmails ?? null,
+        cloudflareAccessAllowedEmailDomains: data.cloudflareAccessAllowedEmailDomains ?? null,
       })).config as ProxyConfig,
     getAccess: async (routeId: number) =>
       (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,

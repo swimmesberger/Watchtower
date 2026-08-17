@@ -659,6 +659,8 @@ interface ProxyDraft {
   cfManaged: boolean
   cfCloudflaredImage: string
   cfContainerName: string
+  cfAccessEmails: string
+  cfAccessEmailDomains: string
 }
 
 function toProxyDraft(config: ProxyConfig): ProxyDraft {
@@ -674,6 +676,8 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     cfManaged: config.cloudflare.managed,
     cfCloudflaredImage: config.cloudflare.cloudflaredImage,
     cfContainerName: config.cloudflare.cloudflaredContainerName ?? '',
+    cfAccessEmails: config.cloudflare.accessAllowedEmails,
+    cfAccessEmailDomains: config.cloudflare.accessAllowedEmailDomains,
   }
 }
 
@@ -703,6 +707,8 @@ function ProxyCard() {
         cloudflareManaged: next.cfManaged,
         cloudflaredImage: next.cfCloudflaredImage.trim() || null,
         cloudflaredContainerName: next.cfContainerName.trim() || null,
+        cloudflareAccessAllowedEmails: next.cfAccessEmails.trim(),
+        cloudflareAccessAllowedEmailDomains: next.cfAccessEmailDomains.trim(),
       }),
     onSuccess: next => {
       qc.setQueryData(['proxy', 'config'], next)
@@ -939,6 +945,49 @@ function ProxyCard() {
                     </>
                   )}
                 </Field>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Access: allowed emails"
+                    hint="Comma-separated. Admitted by the Zero Trust Access app of every route with access mode 'Authenticated'. Restricted routes use their own grants (emails of granted users/groups) instead."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="you@example.com, other@example.com"
+                          value={form.cfAccessEmails}
+                          onChange={e => set('cfAccessEmails', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessAllowedEmails')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessAllowedEmails') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessAllowedEmails" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Access: allowed email domains"
+                    hint="Comma-separated, e.g. example.com — anyone with a matching email may pass. Requires the token to also carry Access: Apps and Policies:Edit."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="example.com"
+                          value={form.cfAccessEmailDomains}
+                          onChange={e => set('cfAccessEmailDomains', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
 
                 <label className="flex items-start justify-between gap-4">
                   <span className="min-w-0">
