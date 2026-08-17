@@ -454,21 +454,48 @@ export interface UpdateAuthConfigRequest {
   absoluteSessionLifetimeDays: number
 }
 
+/** The two reverse-proxy backends (ADR-0015). */
+export type ProxyProvider = 'caddy' | 'cloudflare'
+
+/** Cloudflare Tunnel connection values (the API token never leaves the server). */
+export interface ProxyCloudflareConfig {
+  accountId: string | null
+  zoneId: string | null
+  /** True when a token is stored — the UI sends a new one only to replace it. */
+  hasApiToken: boolean
+  tunnelName: string
+  /** True: Watchtower runs cloudflared as a managed container. False: the operator runs it. */
+  managed: boolean
+  cloudflaredImage: string
+  /** Unmanaged mode: operator-run cloudflared container to connect to the ingress networks. */
+  cloudflaredContainerName: string | null
+}
+
 /** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
 export interface ProxyConfig {
   enabled: boolean
-  /** ACME account email for certificate expiry notices. */
+  provider: ProxyProvider
+  /** ACME account email for certificate expiry notices (Caddy only). */
   adminEmail: string | null
   caddyImage: string
+  cloudflare: ProxyCloudflareConfig
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
 
-/** `proxy.updateConfig` request. */
+/** `proxy.updateConfig` request. Null cloudflare fields keep the stored values (token included). */
 export interface UpdateProxyConfigRequest {
   enabled: boolean
+  provider: ProxyProvider
   adminEmail: string | null
   caddyImage: string
+  cloudflareAccountId?: string | null
+  cloudflareZoneId?: string | null
+  cloudflareApiToken?: string | null
+  cloudflareTunnelName?: string | null
+  cloudflareManaged?: boolean | null
+  cloudflaredImage?: string | null
+  cloudflaredContainerName?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
@@ -560,8 +587,10 @@ export interface DnsCheckResult {
 
 export interface ProxyStatus {
   enabled: boolean
+  /** Whether the active provider's data plane is running (name kept for wire compatibility). */
   caddyRunning: boolean
   routeCount: number
+  provider: ProxyProvider
 }
 
 // ── Multi-tenancy (stack templates) ─────────────────────────────────────────

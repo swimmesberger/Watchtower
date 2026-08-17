@@ -27,7 +27,7 @@ namespace Watchtower.Application.Modules.Realms.Handlers;
 [RequireRole(WatchtowerClaims.AdminRole)]
 public sealed class CreateRealm(
     WatchtowerDbContext db,
-    CaddyManager caddy,
+    IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
     ICurrentUser currentUser,
     TimeProvider time)
@@ -76,7 +76,7 @@ public sealed class CreateRealm(
         // reload it, best-effort like the route CRUD handlers. Without this the new login page is not
         // served until some unrelated reconcile happens, and a protected route already on that domain
         // stays gated: the D8 lockout the self-route invariant exists to prevent.
-        await caddy.ApplyAsync(ct);
+        await proxy.ApplyAsync(ct);
 
         // Past the commit point: the realm exists, so the trail is written uncancellably.
         await RealmMapping.RecordAsync(

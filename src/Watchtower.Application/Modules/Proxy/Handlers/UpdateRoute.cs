@@ -6,7 +6,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 
 /// <summary>Updates a route's domain/target/TLS settings, then reconciles the proxy.</summary>
 [Handler("proxy.updateRoute")]
-public sealed class UpdateRoute(WatchtowerDbContext db, CaddyManager caddy)
+public sealed class UpdateRoute(WatchtowerDbContext db, IProxyProvider proxy)
     : IHandler<UpdateRoute.Command, Result<UpdateRoute.Response>> {
     public sealed record Command(
         int Id,
@@ -40,8 +40,8 @@ public sealed class UpdateRoute(WatchtowerDbContext db, CaddyManager caddy)
         route.IsPrimary = command.IsPrimary;
         await db.SaveChangesAsync(ct);
 
-        await caddy.ConnectStackAsync(route.StackId, ct);
-        await caddy.ApplyAsync(ct);
+        await proxy.ConnectStackAsync(route.StackId, ct);
+        await proxy.ApplyAsync(ct);
 
         var saved = await db.Routes.AsNoTracking().Include(r => r.Stack).FirstAsync(r => r.Id == route.Id, ct);
         return new Response(RouteMapping.ToDto(saved));

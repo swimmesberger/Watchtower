@@ -28,7 +28,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 [RequireRole(WatchtowerClaims.AdminRole)]
 public sealed class SetAccess(
     WatchtowerDbContext db,
-    CaddyManager caddy,
+    IProxyProvider proxy,
     ICurrentUser currentUser,
     TimeProvider time)
     : IHandler<SetAccess.Command, Result<SetAccess.Response>> {
@@ -163,7 +163,7 @@ public sealed class SetAccess(
 
         // Protected-ness may have flipped, so the generated Caddyfile changes — reload it. Best-effort like
         // the route CRUD handlers: a proxy hiccup must not fail a policy change that already committed.
-        await caddy.ApplyAsync(ct);
+        await proxy.ApplyAsync(ct);
 
         // Past the commit point: record the change uncancellably (CancellationToken.None inside).
         await RecordAsync(route, command.Mode);

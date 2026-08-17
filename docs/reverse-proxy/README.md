@@ -6,6 +6,10 @@ HTTPS.
 
 The feature is **opt-in**. When it is off, none of the behavior below happens.
 
+This document covers the **Caddy** provider — the default. The same route table can instead be served
+through a **Cloudflare Tunnel** (no open ports, TLS at Cloudflare's edge): see
+[cloudflare.md](cloudflare.md) and [ADR-0015](../decisions/0015-proxy-provider-abstraction.md).
+
 - Design & rationale: [implementation-plan.md](implementation-plan.md)
 - Framework notes: [elarion-framework-notes.md](elarion-framework-notes.md)
 

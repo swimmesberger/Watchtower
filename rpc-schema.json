@@ -2382,30 +2382,87 @@
       "result": {
         "type": "object",
         "properties": {
-          "enabled": {
-            "type": "boolean"
-          },
-          "adminEmail": {
-            "type": [
-              "string",
-              "null"
+          "config": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "adminEmail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "caddyImage": {
+                "type": "string"
+              },
+              "cloudflare": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "zoneId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasApiToken": {
+                    "type": "boolean"
+                  },
+                  "tunnelName": {
+                    "type": "string"
+                  },
+                  "managed": {
+                    "type": "boolean"
+                  },
+                  "cloudflaredImage": {
+                    "type": "string"
+                  },
+                  "cloudflaredContainerName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "zoneId",
+                  "hasApiToken",
+                  "tunnelName",
+                  "managed",
+                  "cloudflaredImage",
+                  "cloudflaredContainerName"
+                ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "provider",
+              "adminEmail",
+              "caddyImage",
+              "cloudflare",
+              "pinnedPaths"
             ]
-          },
-          "caddyImage": {
-            "type": "string"
-          },
-          "pinnedPaths": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
           }
         },
         "required": [
-          "enabled",
-          "adminEmail",
-          "caddyImage",
-          "pinnedPaths"
+          "config"
         ]
       }
     },
@@ -2515,12 +2572,16 @@
           },
           "routeCount": {
             "type": "integer"
+          },
+          "provider": {
+            "type": "string"
           }
         },
         "required": [
           "enabled",
           "caddyRunning",
-          "routeCount"
+          "routeCount",
+          "provider"
         ]
       }
     },
@@ -2715,6 +2776,9 @@
           "enabled": {
             "type": "boolean"
           },
+          "provider": {
+            "type": "string"
+          },
           "adminEmail": {
             "type": [
               "string",
@@ -2723,10 +2787,60 @@
           },
           "caddyImage": {
             "type": "string"
+          },
+          "cloudflareAccountId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareZoneId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareApiToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareTunnelName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareManaged": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflaredImage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflaredContainerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
           "enabled",
+          "provider",
           "adminEmail",
           "caddyImage"
         ]
@@ -2734,30 +2848,87 @@
       "result": {
         "type": "object",
         "properties": {
-          "enabled": {
-            "type": "boolean"
-          },
-          "adminEmail": {
-            "type": [
-              "string",
-              "null"
+          "config": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "adminEmail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "caddyImage": {
+                "type": "string"
+              },
+              "cloudflare": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "zoneId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasApiToken": {
+                    "type": "boolean"
+                  },
+                  "tunnelName": {
+                    "type": "string"
+                  },
+                  "managed": {
+                    "type": "boolean"
+                  },
+                  "cloudflaredImage": {
+                    "type": "string"
+                  },
+                  "cloudflaredContainerName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "accountId",
+                  "zoneId",
+                  "hasApiToken",
+                  "tunnelName",
+                  "managed",
+                  "cloudflaredImage",
+                  "cloudflaredContainerName"
+                ]
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "provider",
+              "adminEmail",
+              "caddyImage",
+              "cloudflare",
+              "pinnedPaths"
             ]
-          },
-          "caddyImage": {
-            "type": "string"
-          },
-          "pinnedPaths": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
           }
         },
         "required": [
-          "enabled",
-          "adminEmail",
-          "caddyImage",
-          "pinnedPaths"
+          "config"
         ]
       }
     },

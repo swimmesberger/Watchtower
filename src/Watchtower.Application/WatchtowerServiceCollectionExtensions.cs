@@ -94,10 +94,19 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy (Caddy) — singleton for handler/deploy triggers; hosted so the proxy topology
-        // (networks + container + routes) is reconciled on startup. No-op unless Proxy:Enabled.
+        // Reverse proxy (ADR-0015) — two providers behind one runtime router, mirroring the metrics
+        // backend (ADR-0007): Caddy (host ports 80/443, automatic TLS) and Cloudflare Tunnel
+        // (cloudflared + the Cloudflare API). Both are registered unconditionally and hosted so the
+        // active one reconciles on startup (each self-gates on Proxy:Enabled + Proxy:Provider);
+        // consumers inject IProxyProvider and the router resolves the selected backend per call, which
+        // is what makes the provider switchable from the Settings page without a restart.
+        services.AddSingleton<ProxyIngressNetworks>();
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
+        services.AddSingleton<CloudflareApiClient>();
+        services.AddSingleton<CloudflareTunnelProvider>();
+        services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
+        services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and

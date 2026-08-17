@@ -29,7 +29,7 @@ namespace Watchtower.Application.Modules.Realms.Handlers;
 [RequireRole(WatchtowerClaims.AdminRole)]
 public sealed class UpdateRealm(
     WatchtowerDbContext db,
-    CaddyManager caddy,
+    IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
     ICurrentUser currentUser,
     TimeProvider time)
@@ -92,7 +92,7 @@ public sealed class UpdateRealm(
         // Which hosts Caddy serves a login page on has changed — the old one stops being a self-route and
         // the new one starts. Best-effort like the route CRUD handlers; leaving it to the next reconcile
         // would mean the realm's visitors are redirected to a host nothing is answering on.
-        await caddy.ApplyAsync(ct);
+        await proxy.ApplyAsync(ct);
 
         // Past the commit point. The detail names only what actually changed — a host-only save must not
         // claim a rename — and the previous host is included because it is where the sessions that just

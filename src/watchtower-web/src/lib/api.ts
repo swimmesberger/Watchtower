@@ -212,13 +212,21 @@ export const api = {
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
-    getConfig: async () => (await rpc('proxy.getConfig', {})) as ProxyConfig,
+    getConfig: async () => (await rpc('proxy.getConfig', {})).config as ProxyConfig,
     updateConfig: async (data: UpdateProxyConfigRequest) =>
       (await rpc('proxy.updateConfig', {
         enabled: data.enabled,
+        provider: data.provider,
         adminEmail: data.adminEmail ?? null,
         caddyImage: data.caddyImage,
-      })) as ProxyConfig,
+        cloudflareAccountId: data.cloudflareAccountId ?? null,
+        cloudflareZoneId: data.cloudflareZoneId ?? null,
+        cloudflareApiToken: data.cloudflareApiToken ?? null,
+        cloudflareTunnelName: data.cloudflareTunnelName ?? null,
+        cloudflareManaged: data.cloudflareManaged ?? null,
+        cloudflaredImage: data.cloudflaredImage ?? null,
+        cloudflaredContainerName: data.cloudflaredContainerName ?? null,
+      })).config as ProxyConfig,
     getAccess: async (routeId: number) =>
       (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,
     setAccess: async (routeId: number, data: RouteAccess) =>

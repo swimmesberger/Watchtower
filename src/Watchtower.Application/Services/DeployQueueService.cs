@@ -35,7 +35,7 @@ public class DeployQueueService : IHostedService, IDisposable {
     private readonly ComposeCliService _compose;
     private readonly DockerEngineClient _docker;
     private readonly DeployOutputBroadcaster _broadcaster;
-    private readonly CaddyManager _caddy;
+    private readonly IProxyProvider _proxy;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<DeployQueueService> _logger;
 
@@ -56,7 +56,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         ComposeCliService compose,
         DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
-        CaddyManager caddy,
+        IProxyProvider proxy,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<DeployQueueService> logger) {
         _scopeFactory = scopeFactory;
@@ -64,7 +64,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         _compose = compose;
         _docker = docker;
         _broadcaster = broadcaster;
-        _caddy = caddy;
+        _proxy = proxy;
         _options = options;
         _logger = logger;
     }
@@ -381,8 +381,8 @@ public class DeployQueueService : IHostedService, IDisposable {
                 // rejoin the edge network and Caddy must reload. No-op when the proxy is disabled;
                 // best-effort so a proxy hiccup never fails an otherwise successful deploy.
                 try {
-                    await _caddy.ConnectStackAsync(stackId, ct);
-                    await _caddy.ApplyAsync(ct);
+                    await _proxy.ConnectStackAsync(stackId, ct);
+                    await _proxy.ApplyAsync(ct);
                 } catch (Exception ex) {
                     _logger.LogWarning(ex, "Reverse-proxy reconcile after deploy of stack {StackId} failed", stackId);
                 }

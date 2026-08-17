@@ -8,6 +8,12 @@
       "port": 5173
     },
     {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "src/watchtower-web", "--", "--port", "5199", "--strictPort"],
+      "port": 5199
+    },
+    {
       "name": "api",
       "runtimeExecutable": "dotnet",
       "runtimeArgs": [

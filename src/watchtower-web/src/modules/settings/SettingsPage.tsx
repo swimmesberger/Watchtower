@@ -15,6 +15,7 @@ import type {
   MetricsBackend,
   MetricsConfig,
   ProxyConfig,
+  ProxyProvider,
   SelfUpdateStatus,
   UpdateSelfConfigRequest,
 } from '@/lib/types'
@@ -640,17 +641,39 @@ function MetricsCard() {
 
 // ── Reverse proxy card (runtime-switchable, no restart) ───────────────────────
 
+const PROVIDER_LABELS: Record<ProxyProvider, string> = {
+  caddy: 'Caddy (built-in, ports 80/443)',
+  cloudflare: 'Cloudflare Tunnel (no open ports)',
+}
+
 interface ProxyDraft {
   enabled: boolean
+  provider: ProxyProvider
   adminEmail: string
   caddyImage: string
+  cfAccountId: string
+  cfZoneId: string
+  /** Only sent when non-empty — an empty field keeps the stored token. */
+  cfApiToken: string
+  cfTunnelName: string
+  cfManaged: boolean
+  cfCloudflaredImage: string
+  cfContainerName: string
 }
 
 function toProxyDraft(config: ProxyConfig): ProxyDraft {
   return {
     enabled: config.enabled,
+    provider: config.provider,
     adminEmail: config.adminEmail ?? '',
     caddyImage: config.caddyImage,
+    cfAccountId: config.cloudflare.accountId ?? '',
+    cfZoneId: config.cloudflare.zoneId ?? '',
+    cfApiToken: '',
+    cfTunnelName: config.cloudflare.tunnelName,
+    cfManaged: config.cloudflare.managed,
+    cfCloudflaredImage: config.cloudflare.cloudflaredImage,
+    cfContainerName: config.cloudflare.cloudflaredContainerName ?? '',
   }
 }
 
@@ -670,8 +693,16 @@ function ProxyCard() {
     mutationFn: (next: ProxyDraft) =>
       api.proxy.updateConfig({
         enabled: next.enabled,
+        provider: next.provider,
         adminEmail: next.adminEmail.trim() || null,
         caddyImage: next.caddyImage.trim(),
+        cloudflareAccountId: next.cfAccountId.trim() || null,
+        cloudflareZoneId: next.cfZoneId.trim() || null,
+        cloudflareApiToken: next.cfApiToken.trim() || null,
+        cloudflareTunnelName: next.cfTunnelName.trim() || null,
+        cloudflareManaged: next.cfManaged,
+        cloudflaredImage: next.cfCloudflaredImage.trim() || null,
+        cloudflaredContainerName: next.cfContainerName.trim() || null,
       }),
     onSuccess: next => {
       qc.setQueryData(['proxy', 'config'], next)
@@ -695,7 +726,8 @@ function ProxyCard() {
       <div>
         <h2 className="text-sm font-semibold text-text">Reverse proxy</h2>
         <p className="mt-0.5 text-[13px] text-text-2">
-          The managed Caddy proxy serving your routes. Changes apply immediately — no restart needed.
+          How your routes reach the internet: the built-in Caddy proxy or a Cloudflare Tunnel. Changes
+          apply immediately — no restart needed.
         </p>
       </div>
 
@@ -725,9 +757,9 @@ function ProxyCard() {
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">Enable reverse proxy</span>
                 <span className="mt-0.5 block text-[13px] text-text-2">
-                  Runs a managed Caddy container publishing host ports 80/443 and serving the configured
-                  routes with automatic TLS. Disabling stops and removes the container — issued
-                  certificates are kept for re-enabling.
+                  Serves the configured routes through the selected provider. Disabling tears the
+                  provider's data plane down — certificates, the tunnel and DNS records are kept for
+                  re-enabling.
                 </span>
                 {pinnedPath('Watchtower:Proxy:Enabled') && (
                   <span className="mt-1 block">
@@ -743,48 +775,237 @@ function ProxyCard() {
               />
             </label>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field
-                label="ACME email"
-                hint="Registered with the certificate authority for expiry notices. Optional but recommended."
-              >
-                {({ id }) => (
-                  <>
-                    <Input
-                      id={id}
-                      mono
-                      placeholder="ops@example.com"
-                      value={form.adminEmail}
-                      onChange={e => set('adminEmail', e.target.value)}
-                      disabled={isPinned('Watchtower:Proxy:AdminEmail')}
-                    />
-                    {pinnedPath('Watchtower:Proxy:AdminEmail') && (
-                      <PinnedNote path="Watchtower:Proxy:AdminEmail" />
+            <Field
+              label="Provider"
+              hint="Caddy publishes ports 80/443 with automatic TLS. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
+            >
+              {({ id }) => (
+                <>
+                  <Select
+                    value={form.provider}
+                    onValueChange={v => set('provider', v as ProxyProvider)}
+                    disabled={isPinned('Watchtower:Proxy:Provider')}
+                  >
+                    <SelectTrigger id={id}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(PROVIDER_LABELS) as ProxyProvider[]).map(p => (
+                        <SelectItem key={p} value={p}>
+                          {PROVIDER_LABELS[p]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {pinnedPath('Watchtower:Proxy:Provider') && (
+                    <PinnedNote path="Watchtower:Proxy:Provider" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            {form.provider === 'caddy' && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field
+                  label="ACME email"
+                  hint="Registered with the certificate authority for expiry notices. Optional but recommended."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="ops@example.com"
+                        value={form.adminEmail}
+                        onChange={e => set('adminEmail', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:AdminEmail')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:AdminEmail') && (
+                        <PinnedNote path="Watchtower:Proxy:AdminEmail" />
+                      )}
+                    </>
+                  )}
+                </Field>
+                <Field
+                  label="Caddy image"
+                  hint="Applies when the proxy container is next recreated (e.g. after disabling and re-enabling)."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="caddy:2"
+                        value={form.caddyImage}
+                        onChange={e => set('caddyImage', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:CaddyImage')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:CaddyImage') && (
+                        <PinnedNote path="Watchtower:Proxy:CaddyImage" />
+                      )}
+                    </>
+                  )}
+                </Field>
+              </div>
+            )}
+
+            {form.provider === 'cloudflare' && (
+              <div className="flex flex-col gap-4">
+                <p className="text-[13px] text-text-2">
+                  Watchtower configures a remotely-managed tunnel: it pushes one public hostname per
+                  route and creates the matching proxied DNS records in your zone. The API token needs
+                  the <span className="font-mono">Cloudflare Tunnel:Edit</span> and{' '}
+                  <span className="font-mono">DNS:Edit</span> permissions.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Account ID" hint="Zero Trust → your account; shown on the dashboard overview.">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.cfAccountId}
+                          onChange={e => set('cfAccountId', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccountId')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccountId') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccountId" />
+                        )}
+                      </>
                     )}
-                  </>
-                )}
-              </Field>
-              <Field
-                label="Caddy image"
-                hint="Applies when the proxy container is next recreated (e.g. after disabling and re-enabling)."
-              >
-                {({ id }) => (
-                  <>
-                    <Input
-                      id={id}
-                      mono
-                      placeholder="caddy:2"
-                      value={form.caddyImage}
-                      onChange={e => set('caddyImage', e.target.value)}
-                      disabled={isPinned('Watchtower:Proxy:CaddyImage')}
-                    />
-                    {pinnedPath('Watchtower:Proxy:CaddyImage') && (
-                      <PinnedNote path="Watchtower:Proxy:CaddyImage" />
+                  </Field>
+                  <Field label="Zone ID" hint="The zone your route domains live under.">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.cfZoneId}
+                          onChange={e => set('cfZoneId', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:ZoneId')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:ZoneId') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:ZoneId" />
+                        )}
+                      </>
                     )}
-                  </>
+                  </Field>
+                </div>
+                <Field
+                  label="API token"
+                  hint={
+                    isPinned('Watchtower:Proxy:Cloudflare:ApiToken')
+                      ? 'The token is set via the environment and cannot be changed here.'
+                      : data?.cloudflare.hasApiToken
+                        ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
+                        : 'Token with Cloudflare Tunnel:Edit and DNS:Edit. Validated against the API on save.'
+                  }
+                >
+                  {() => (
+                    <>
+                      <SecretField
+                        value={form.cfApiToken}
+                        copyable={false}
+                        placeholder={
+                          data?.cloudflare.hasApiToken ? '••••••••  (unchanged)' : 'Paste an API token'
+                        }
+                        onChange={v => set('cfApiToken', v)}
+                        readOnly={isPinned('Watchtower:Proxy:Cloudflare:ApiToken')}
+                        aria-label="Cloudflare API token"
+                      />
+                      {pinnedPath('Watchtower:Proxy:Cloudflare:ApiToken') && (
+                        <PinnedNote path="Watchtower:Proxy:Cloudflare:ApiToken" />
+                      )}
+                    </>
+                  )}
+                </Field>
+                <Field
+                  label="Tunnel name"
+                  hint="Found (or created, in managed mode) by name — match your existing tunnel when you run cloudflared yourself."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="watchtower"
+                        value={form.cfTunnelName}
+                        onChange={e => set('cfTunnelName', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:Cloudflare:TunnelName')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:Cloudflare:TunnelName') && (
+                        <PinnedNote path="Watchtower:Proxy:Cloudflare:TunnelName" />
+                      )}
+                    </>
+                  )}
+                </Field>
+
+                <label className="flex items-start justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-text">
+                      Let Watchtower run cloudflared
+                    </span>
+                    <span className="mt-0.5 block text-[13px] text-text-2">
+                      Watchtower creates and supervises a cloudflared container over the Docker socket —
+                      the simplest setup. Turn off if you already run cloudflared yourself; Watchtower
+                      then only manages the tunnel's remote configuration and DNS.
+                    </span>
+                    {pinnedPath('Watchtower:Proxy:Cloudflare:Managed') && (
+                      <span className="mt-1 block">
+                        <PinnedNote path="Watchtower:Proxy:Cloudflare:Managed" />
+                      </span>
+                    )}
+                  </span>
+                  <Switch
+                    checked={form.cfManaged}
+                    onCheckedChange={v => set('cfManaged', v)}
+                    disabled={isPinned('Watchtower:Proxy:Cloudflare:Managed')}
+                    aria-label="Let Watchtower run cloudflared"
+                  />
+                </label>
+
+                {form.cfManaged ? (
+                  <Field label="cloudflared image">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="cloudflare/cloudflared:latest"
+                          value={form.cfCloudflaredImage}
+                          onChange={e => set('cfCloudflaredImage', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:CloudflaredImage')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:CloudflaredImage') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:CloudflaredImage" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                ) : (
+                  <Field
+                    label="Your cloudflared container"
+                    hint="Optional: the name of your cloudflared container on this Docker host. Watchtower connects it to the per-stack ingress networks so the generated service URLs resolve — it never creates or removes it. Leave empty if cloudflared runs elsewhere."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="cloudflared"
+                          value={form.cfContainerName}
+                          onChange={e => set('cfContainerName', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:CloudflaredContainerName')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:CloudflaredContainerName') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:CloudflaredContainerName" />
+                        )}
+                      </>
+                    )}
+                  </Field>
                 )}
-              </Field>
-            </div>
+              </div>
+            )}
 
             <div className="flex items-center gap-3">
               <Button
