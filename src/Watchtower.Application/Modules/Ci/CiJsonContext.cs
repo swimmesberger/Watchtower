@@ -10,6 +10,9 @@ namespace Watchtower.Application.Modules.Ci;
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(CiRepoDto))]
 [JsonSerializable(typeof(CiRunnerStatusDto))]
+[JsonSerializable(typeof(CiToolchainDto))]
+[JsonSerializable(typeof(CiToolchainProfileDto))]
+[JsonSerializable(typeof(CiStackCiDto))]
 [JsonSerializable(typeof(CiAvailableRepoDto))]
 [JsonSerializable(typeof(ListRepos.Query), TypeInfoPropertyName = "ListReposQuery")]
 [JsonSerializable(typeof(ListRepos.Response), TypeInfoPropertyName = "ListReposResponse")]
@@ -23,4 +26,8 @@ namespace Watchtower.Application.Modules.Ci;
 [JsonSerializable(typeof(GetRunnerStatus.Response), TypeInfoPropertyName = "GetRunnerStatusResponse")]
 [JsonSerializable(typeof(ListAvailableRepos.Query), TypeInfoPropertyName = "ListAvailableReposQuery")]
 [JsonSerializable(typeof(ListAvailableRepos.Response), TypeInfoPropertyName = "ListAvailableReposResponse")]
+[JsonSerializable(typeof(GetStackCi.Query), TypeInfoPropertyName = "GetStackCiQuery")]
+[JsonSerializable(typeof(GetStackCi.Response), TypeInfoPropertyName = "GetStackCiResponse")]
+[JsonSerializable(typeof(EnableForStack.Command), TypeInfoPropertyName = "EnableForStackCommand")]
+[JsonSerializable(typeof(EnableForStack.Response), TypeInfoPropertyName = "EnableForStackResponse")]
 public sealed partial class CiJsonContext : JsonSerializerContext;
