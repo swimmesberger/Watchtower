@@ -1,0 +1,62 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Watchtower.Application.Persistence;
+
+namespace Watchtower.Application.Services;
+
+/// <summary>
+/// Refreshes a <see cref="Entities.CiRepo"/>'s toolchain profile from a stack deploy's working
+/// tree (docs/ci-runners/design.md). Deploys clone the repository anyway, so detection piggybacks
+/// on that clone at zero extra cost. Strictly best-effort: any failure is logged and swallowed —
+/// toolchain detection must never fail a deploy.
+/// </summary>
+public sealed class CiToolchainRecorder(
+    IServiceScopeFactory scopeFactory,
+    CiRunnerOrchestrator orchestrator,
+    ILogger<CiToolchainRecorder> logger) {
+
+    /// <summary>
+    /// Detects the toolchain profile of <paramref name="cloneDir"/> and persists it on the CI repo
+    /// matching <paramref name="repositoryUrl"/>, when one is configured. No-op for non-GitHub
+    /// remotes and for repositories without CI enabled. Returns a short human-readable summary for
+    /// the deploy log, or null when nothing was recorded.
+    /// </summary>
+    public async Task<string?> TryRecordAsync(string repositoryUrl, string cloneDir, CancellationToken ct) {
+        try {
+            if (GitHubRepoUrl.TryParse(repositoryUrl) is not var (owner, name))
+                return null;
+
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var repo = await db.CiRepos.FirstOrDefaultAsync(
+                r => r.Owner.ToLower() == owner.ToLower() && r.Name.ToLower() == name.ToLower(), ct);
+            if (repo is null)
+                return null;
+
+            var profile = CiToolchainDetector.Detect(cloneDir);
+            var json = profile.ToJson();
+            var changed = repo.ToolchainProfileJson != json;
+            repo.ToolchainProfileJson = json;
+            repo.ToolchainDetectedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+
+            if (changed) {
+                // The orchestrator compares profile hash vs. warmed hash and re-warms on drift.
+                orchestrator.RequestReconcile();
+            }
+
+            var summary = profile.IsEmpty
+                ? "no known toolchains"
+                : string.Join(", ", profile.Toolchains.Select(t => $"{t.Kind} {t.Version}")
+                    .Concat(profile.HasDockerfile ? ["Dockerfile"] : Array.Empty<string>()));
+            return $"CI toolchain profile for {repo.FullName}: {summary}"
+                   + (changed ? " (changed — toolcache warm-up scheduled)" : "");
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogWarning(ex, "CI toolchain detection failed for {Url}; deploy continues", repositoryUrl);
+            return null;
+        }
+    }
+}
