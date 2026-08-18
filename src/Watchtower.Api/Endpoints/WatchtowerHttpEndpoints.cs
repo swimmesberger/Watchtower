@@ -1,5 +1,8 @@
+using System.IO.Compression;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Watchtower.Api.Authentication;
+using Watchtower.Application.Config;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
@@ -14,10 +17,11 @@ public static class WatchtowerHttpEndpoints {
     public sealed record WebhookDeployResult(int DeployEventId, string Status);
 
     /// <summary>
-    /// Maps the non-RPC surfaces: the deploy webhook, the two SSE streams, the proxy TLS gate, the public
-    /// App API, and <c>/health</c>. With <paramref name="authEnabled"/> the two SSE streams — which carry
-    /// deploy output and container logs, i.e. exactly the data the JSON-RPC handlers now protect — require a
-    /// login session too; <c>EventSource</c> sends cookies on same-origin requests, so the UI is unaffected.
+    /// Maps the non-RPC surfaces: the deploy webhook, the two SSE streams, the volume archive download,
+    /// the proxy TLS gate, the public App API, and <c>/health</c>. With <paramref name="authEnabled"/> the
+    /// two SSE streams and the volume download — which carry deploy output, container logs and raw volume
+    /// data, i.e. exactly the data the JSON-RPC handlers now protect — require a login session too;
+    /// <c>EventSource</c> and same-origin navigation send cookies, so the UI is unaffected.
     /// </summary>
     /// <remarks>
     /// Endpoints that stay open by design (design.md §11): <c>/health</c> is a liveness probe with no data,
@@ -30,6 +34,7 @@ public static class WatchtowerHttpEndpoints {
         MapWebhook(app);
         Protect(MapDeployOutputStream(app), authEnabled);
         Protect(MapContainerLogStream(app), authEnabled);
+        Protect(MapVolumeDownload(app), authEnabled);
         MapProxyAsk(app);
         // Public, token-authenticated surface for deployed applications (see AppApiEndpoints). The flag is
         // passed down for its one identity-dependent endpoint: the tenant switcher needs a forwarded
@@ -184,6 +189,34 @@ public static class WatchtowerHttpEndpoints {
 
             await response.WriteAsync("event: done\ndata: \n\n", ct);
             await response.Body.FlushAsync(ct);
+        });
+
+    /// <summary>
+    /// Streams a single named volume as a gzipped tar (entries rooted <c>backup/{volume}/…</c>),
+    /// using the same never-started helper-container mechanism as stack backups (ADR-0016 §1) — so
+    /// nothing is staged on disk and no code runs in the helper. A snapshot of a live volume is only
+    /// crash-consistent; for consistent database archives use the backup flow, which can stop the
+    /// stack's containers first.
+    /// </summary>
+    private static RouteHandlerBuilder MapVolumeDownload(WebApplication app) =>
+        app.MapGet("/api/volumes/{name}/download", async (
+            string name, HttpResponse response, DockerEngineClient docker,
+            BackupArchiveService archiveService, IOptionsMonitor<WatchtowerOptions> options,
+            CancellationToken ct) => {
+            var volumes = await docker.ListVolumesAsync(ct);
+            if (!volumes.Any(v => v.Name == name))
+                return Results.NotFound();
+
+            var fileName =
+                $"{BackupNaming.Sanitize(name)}_{DateTimeOffset.UtcNow.UtcDateTime:yyyyMMdd'T'HHmmss'Z'}.tar.gz";
+            response.ContentType = "application/gzip";
+            response.Headers.ContentDisposition = $"attachment; filename=\"{fileName}\"";
+            // Fastest, not Optimal: this is an interactive download, and volume bytes are typically
+            // already-compressed application data; latency beats ratio here.
+            await using (var gzip = new GZipStream(response.Body, CompressionLevel.Fastest, leaveOpen: true))
+                await archiveService.WriteArchiveAsync(
+                    [name], manifestJson: null, gzip, options.CurrentValue.Backup.HelperImage, ct);
+            return Results.Empty;
         });
 
     /// <summary>Streams container logs as Server-Sent Events. Query: tail (default 100), follow (default true).</summary>

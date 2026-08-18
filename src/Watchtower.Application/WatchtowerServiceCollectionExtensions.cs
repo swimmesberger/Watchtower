@@ -228,6 +228,18 @@ public static class WatchtowerServiceCollectionExtensions {
         // answer the deployment-scoped half.
         services.AddScoped<IFeatureFlagService, WatchtowerFeatureFlagService>();
 
+        // Stack backups (ADR-0016) — the archive service streams volumes through never-started
+        // helper containers, the factory resolves the storage backend per run (runtime-switchable),
+        // the queue serializes runs process-wide, and the scheduler opens the daily window. The
+        // queue is a singleton so backups.run can enqueue and read coalesced state; hosted for the
+        // worker loop and graceful shutdown.
+        services.AddSingleton<BackupArchiveService>();
+        services.AddSingleton<BackupStorageFactory>();
+        services.AddSingleton<BackupService>();
+        services.AddSingleton<BackupQueueService>();
+        services.AddHostedService(sp => sp.GetRequiredService<BackupQueueService>());
+        services.AddHostedService<BackupBackgroundService>();
+
         // Background checkers — always registered. Each loops on a short poll and reads its
         // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the
         // settings-configuration provider), so the toggles are runtime-editable without a restart.

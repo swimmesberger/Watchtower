@@ -27,6 +27,8 @@
   <ItemGroup>
     <!-- JWT minting + JWKS for the identity assertion forwarded to protected apps (AuthTokenSigner). -->
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
+    <!-- SFTP backup storage provider (ADR-0016). -->
+    <PackageReference Include="SSH.NET" />
   </ItemGroup>
 
   <ItemGroup>

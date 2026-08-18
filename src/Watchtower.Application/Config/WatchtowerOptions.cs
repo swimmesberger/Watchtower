@@ -102,6 +102,127 @@ public sealed record WatchtowerOptions {
     /// <c>WATCHTOWER__AUTH__BOOTSTRAPPASSWORD=…</c>).
     /// </summary>
     public AuthOptions Auth { get; init; } = new();
+
+    /// <summary>
+    /// Stack backup settings (ADR-0016, docs/backups.md). Bound from <c>WATCHTOWER__BACKUP__*</c>
+    /// (e.g. <c>WATCHTOWER__BACKUP__ENABLED=true</c>, <c>WATCHTOWER__BACKUP__SFTP__HOST=…</c>).
+    /// </summary>
+    public BackupOptions Backup { get; init; } = new();
+}
+
+/// <summary>
+/// Settings for scheduled stack backups (ADR-0016): volume archives shipped to a pluggable storage
+/// backend, optionally encrypted, with retention applied per stack. The feature itself is per-stack
+/// (<see cref="Entities.Stack.BackupEnabled"/>); these are the instance-wide knobs. All of them are
+/// runtime-editable through the settings store; env vars pin (ADR-0014).
+/// </summary>
+public sealed record BackupOptions {
+    /// <summary>
+    /// Master switch for the daily backup schedule. Off by default so no storage credentials are
+    /// required and no containers are ever stopped unless the operator opts in. Manual
+    /// <c>backups.run</c> works regardless of this switch (it still needs a configured provider).
+    /// </summary>
+    public bool Enabled { get; init; } = false;
+
+    /// <summary>
+    /// Server-local time of day ("HH:mm") the daily backup window opens — same semantics as
+    /// <see cref="Entities.Stack.AutoDeployTime"/>. A window that passed while Watchtower was down
+    /// is skipped, so a restart never backs up (or stops containers) outside the window.
+    /// </summary>
+    public string Time { get; init; } = "03:30";
+
+    /// <summary>
+    /// Name identifying this Watchtower instance in the remote layout
+    /// (<c>{basePath}/{instance}/{stack}/…</c>) and in every backup manifest, so two instances can
+    /// share one storage target without ambiguity. Defaults to the machine name — set it explicitly
+    /// in containers, where the machine name is the container id and changes on recreate.
+    /// </summary>
+    public string? InstanceName { get; init; }
+
+    /// <summary>Backups older than this many days are pruned after each successful run. 0 = keep forever.</summary>
+    public int RetentionDays { get; init; } = 30;
+
+    /// <summary>Keep at most this many backups per stack (oldest pruned first). 0 = unlimited.</summary>
+    public int RetentionMaxCount { get; init; } = 0;
+
+    /// <summary>
+    /// When set, every backup is encrypted with AES-256-CBC in the OpenSSL <c>enc</c> container
+    /// format (PBKDF2-SHA256, see <see cref="Services.BackupEncryption"/>), so restore needs nothing
+    /// but stock OpenSSL. Treated as a secret — never logged, never echoed to the UI. Empty =
+    /// unencrypted.
+    /// </summary>
+    public string? EncryptionPassphrase { get; init; }
+
+    /// <summary>
+    /// Image for the never-started helper container whose bind mounts expose the volumes to the
+    /// Docker archive endpoint (ADR-0016 §1). Any locally available or pullable image works; it is
+    /// pulled on first use.
+    /// </summary>
+    public string HelperImage { get; init; } = "busybox:stable";
+
+    /// <summary>Storage backend the archives are shipped to: <c>sftp</c> (default) or <c>local</c>.</summary>
+    public string Provider { get; init; } = "sftp";
+
+    /// <summary>SFTP storage settings. Only used when <see cref="Provider"/> is <c>sftp</c>.</summary>
+    public SftpBackupOptions Sftp { get; init; } = new();
+
+    /// <summary>Local-directory storage settings. Only used when <see cref="Provider"/> is <c>local</c>.</summary>
+    public LocalBackupOptions Local { get; init; } = new();
+
+    /// <summary>The provider <see cref="Provider"/> resolves to (case-insensitive; unknown ⇒ <c>sftp</c>).</summary>
+    public BackupProviderKind ResolveProvider() =>
+        string.Equals(Provider, "local", StringComparison.OrdinalIgnoreCase)
+            ? BackupProviderKind.Local
+            : BackupProviderKind.Sftp;
+
+    /// <summary>Resolved instance name: explicit setting or machine name.</summary>
+    public string ResolveInstanceName() =>
+        string.IsNullOrWhiteSpace(InstanceName) ? Environment.MachineName.ToLowerInvariant() : InstanceName.Trim();
+}
+
+/// <summary>The two backup storage backends (ADR-0016).</summary>
+public enum BackupProviderKind {
+    Sftp,
+    Local,
+}
+
+/// <summary>
+/// SFTP connection settings for the backup storage provider. Password and private-key auth may be
+/// combined (both are offered to the server). A Hetzner Storage Box uses port 23 for SSH/SFTP.
+/// </summary>
+public sealed record SftpBackupOptions {
+    /// <summary>SFTP host name, e.g. <c>u123456.your-storagebox.de</c>.</summary>
+    public string? Host { get; init; }
+
+    /// <summary>SSH port. 22 is the protocol default; Hetzner Storage Boxes use 23.</summary>
+    public int Port { get; init; } = 22;
+
+    /// <summary>SFTP user name.</summary>
+    public string? Username { get; init; }
+
+    /// <summary>Password, when using password auth. Treated as a secret — never logged, never echoed.</summary>
+    public string? Password { get; init; }
+
+    /// <summary>
+    /// PEM-encoded private key, when using key auth (the full <c>-----BEGIN … KEY-----</c> block).
+    /// Treated as a secret — never logged, never echoed.
+    /// </summary>
+    public string? PrivateKey { get; init; }
+
+    /// <summary>Passphrase of <see cref="PrivateKey"/>, when the key is encrypted. Secret.</summary>
+    public string? PrivateKeyPassphrase { get; init; }
+
+    /// <summary>Remote base directory the layout is rooted in (created if missing).</summary>
+    public string BasePath { get; init; } = "watchtower-backups";
+}
+
+/// <summary>
+/// Local-directory storage for backups: a path inside the container, i.e. an operator-mounted
+/// second disk or network share. Also the provider the integration tests exercise.
+/// </summary>
+public sealed record LocalBackupOptions {
+    /// <summary>Directory the layout is rooted in (created if missing).</summary>
+    public string BasePath { get; init; } = "/backups";
 }
 
 /// <summary>

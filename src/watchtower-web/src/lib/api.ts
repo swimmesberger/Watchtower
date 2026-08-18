@@ -7,6 +7,11 @@ import type {
   ActiveDeployment,
   AuthConfig,
   AutomationConfig,
+  BackupConfig,
+  BackupEvent,
+  BackupRunAccepted,
+  BackupStackConfig,
+  UpdateBackupConfigRequest,
   Container,
   ContainerEnvVar,
   ContainerMetrics,
@@ -243,6 +248,39 @@ export const api = {
         grantedUserIds: data.grantedUserIds,
         grantedGroupIds: data.grantedGroupIds,
       })) as RouteAccess,
+  },
+
+  backups: {
+    getConfig: async () => (await rpc('backups.getConfig', {})).config as BackupConfig,
+    updateConfig: async (data: UpdateBackupConfigRequest) =>
+      (await rpc('backups.updateConfig', {
+        enabled: data.enabled,
+        time: data.time,
+        instanceName: data.instanceName ?? null,
+        retentionDays: data.retentionDays,
+        retentionMaxCount: data.retentionMaxCount,
+        helperImage: data.helperImage,
+        provider: data.provider,
+        encryptionPassphrase: data.encryptionPassphrase ?? null,
+        sftpHost: data.sftpHost ?? null,
+        sftpPort: data.sftpPort ?? null,
+        sftpUsername: data.sftpUsername ?? null,
+        sftpPassword: data.sftpPassword ?? null,
+        sftpPrivateKey: data.sftpPrivateKey ?? null,
+        sftpPrivateKeyPassphrase: data.sftpPrivateKeyPassphrase ?? null,
+        sftpBasePath: data.sftpBasePath ?? null,
+        localBasePath: data.localBasePath ?? null,
+      })).config as BackupConfig,
+    testStorage: async () => (await rpc('backups.testStorage', {})).description as string,
+    events: async (stackId?: number, limit?: number) =>
+      (await rpc('backups.events', { stackId: stackId ?? null, limit: limit ?? 50 }))
+        .events as BackupEvent[],
+    run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
+    getStackConfig: async (stackId: number) =>
+      (await rpc('backups.getStackConfig', { stackId })).config as BackupStackConfig,
+    setStackConfig: async (stackId: number, enabled: boolean, stopContainers: boolean) =>
+      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers }))
+        .config as BackupStackConfig,
   },
 
   templates: {

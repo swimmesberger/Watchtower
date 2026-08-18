@@ -2,6 +2,550 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "JSON-RPC 2.0 Schema",
   "methods": {
+    "backups.events": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "stackId": {
+                  "type": "integer"
+                },
+                "stackName": {
+                  "type": "string"
+                },
+                "triggeredBy": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "remotePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sizeBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "output": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "finishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "stackId",
+                "stackName",
+                "triggeredBy",
+                "status",
+                "remotePath",
+                "sizeBytes",
+                "output",
+                "startedAt",
+                "finishedAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      }
+    },
+    "backups.getConfig": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "time": {
+                "type": "string"
+              },
+              "instanceName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolvedInstanceName": {
+                "type": "string"
+              },
+              "retentionDays": {
+                "type": "integer"
+              },
+              "retentionMaxCount": {
+                "type": "integer"
+              },
+              "hasEncryptionPassphrase": {
+                "type": "boolean"
+              },
+              "helperImage": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "sftp": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "type": "integer"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasPassword": {
+                    "type": "boolean"
+                  },
+                  "hasPrivateKey": {
+                    "type": "boolean"
+                  },
+                  "basePath": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "username",
+                  "hasPassword",
+                  "hasPrivateKey",
+                  "basePath"
+                ]
+              },
+              "localBasePath": {
+                "type": "string"
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "time",
+              "instanceName",
+              "resolvedInstanceName",
+              "retentionDays",
+              "retentionMaxCount",
+              "hasEncryptionPassphrase",
+              "helperImage",
+              "provider",
+              "sftp",
+              "localBasePath",
+              "pinnedPaths"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ]
+      }
+    },
+    "backups.getStackConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "stopContainers": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "stackId",
+              "enabled",
+              "stopContainers"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ]
+      }
+    },
+    "backups.run": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "backup": {
+            "type": "object",
+            "properties": {
+              "backupEventId": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "backupEventId",
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "backup"
+        ]
+      }
+    },
+    "backups.setStackConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "stopContainers": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stackId",
+          "enabled",
+          "stopContainers"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "stopContainers": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "stackId",
+              "enabled",
+              "stopContainers"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ]
+      }
+    },
+    "backups.testStorage": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description"
+        ]
+      }
+    },
+    "backups.updateConfig": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "time": {
+            "type": "string"
+          },
+          "instanceName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retentionDays": {
+            "type": "integer"
+          },
+          "retentionMaxCount": {
+            "type": "integer"
+          },
+          "helperImage": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "encryptionPassphrase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpUsername": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpPassword": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpPrivateKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpPrivateKeyPassphrase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "sftpBasePath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "localBasePath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "enabled",
+          "time",
+          "instanceName",
+          "retentionDays",
+          "retentionMaxCount",
+          "helperImage",
+          "provider"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "time": {
+                "type": "string"
+              },
+              "instanceName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolvedInstanceName": {
+                "type": "string"
+              },
+              "retentionDays": {
+                "type": "integer"
+              },
+              "retentionMaxCount": {
+                "type": "integer"
+              },
+              "hasEncryptionPassphrase": {
+                "type": "boolean"
+              },
+              "helperImage": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "sftp": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "type": "integer"
+                  },
+                  "username": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasPassword": {
+                    "type": "boolean"
+                  },
+                  "hasPrivateKey": {
+                    "type": "boolean"
+                  },
+                  "basePath": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "username",
+                  "hasPassword",
+                  "hasPrivateKey",
+                  "basePath"
+                ]
+              },
+              "localBasePath": {
+                "type": "string"
+              },
+              "pinnedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled",
+              "time",
+              "instanceName",
+              "resolvedInstanceName",
+              "retentionDays",
+              "retentionMaxCount",
+              "hasEncryptionPassphrase",
+              "helperImage",
+              "provider",
+              "sftp",
+              "localBasePath",
+              "pinnedPaths"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ]
+      }
+    },
     "ci.addRepo": {
       "params": {
         "type": "object",
@@ -6716,6 +7260,9 @@
   },
   "capabilities": {
     "modules": {
+      "Backups": {
+        "features": []
+      },
       "Ci": {
         "features": []
       },

@@ -772,3 +772,91 @@ export interface UpdateRealmRequest {
   name?: string | null
   authHost?: string | null
 }
+
+// ── Backups (ADR-0016) ───────────────────────────────────────────────────────
+
+export type BackupProvider = 'sftp' | 'local'
+
+/** SFTP connection values for the backup storage (secrets never leave the server). */
+export interface BackupSftpConfig {
+  host: string | null
+  port: number
+  username: string | null
+  /** True when a password is stored — the UI sends a new one only to replace it. */
+  hasPassword: boolean
+  /** True when a private key is stored — the UI sends a new one only to replace it. */
+  hasPrivateKey: boolean
+  basePath: string
+}
+
+/** `backups.getConfig` / `backups.updateConfig` payload. Fully runtime-switchable (no restart). */
+export interface BackupConfig {
+  enabled: boolean
+  /** Server-local daily window, "HH:mm". */
+  time: string
+  instanceName: string | null
+  /** What the instance name resolves to when unset (the machine name). */
+  resolvedInstanceName: string
+  /** Backups older than this many days are pruned; 0 keeps forever. */
+  retentionDays: number
+  /** Keep at most this many backups per stack; 0 is unlimited. */
+  retentionMaxCount: number
+  /** True when an encryption passphrase is stored — archives are OpenSSL-enc encrypted. */
+  hasEncryptionPassphrase: boolean
+  helperImage: string
+  provider: BackupProvider
+  sftp: BackupSftpConfig
+  localBasePath: string
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** `backups.updateConfig` request. Null secret fields keep the stored values; empty string clears. */
+export interface UpdateBackupConfigRequest {
+  enabled: boolean
+  time: string
+  instanceName?: string | null
+  retentionDays: number
+  retentionMaxCount: number
+  helperImage: string
+  provider: BackupProvider
+  encryptionPassphrase?: string | null
+  sftpHost?: string | null
+  sftpPort?: number | null
+  sftpUsername?: string | null
+  sftpPassword?: string | null
+  sftpPrivateKey?: string | null
+  sftpPrivateKeyPassphrase?: string | null
+  sftpBasePath?: string | null
+  localBasePath?: string | null
+}
+
+/** One backup run, for the history views. */
+export interface BackupEvent {
+  id: number
+  stackId: number
+  stackName: string
+  triggeredBy: string
+  status: 'queued' | 'running' | 'success' | 'failed'
+  /** Provider-relative path of the uploaded archive (null until upload, and on failure). */
+  remotePath: string | null
+  /** Uploaded size in bytes (after compression/encryption). */
+  sizeBytes: number | null
+  output: string | null
+  startedAt: string
+  finishedAt: string | null
+}
+
+/** A stack's backup participation. */
+export interface BackupStackConfig {
+  stackId: number
+  /** Included in the daily schedule. */
+  enabled: boolean
+  /** Stop the stack's containers during the snapshot for consistency (ADR-0016 §2). */
+  stopContainers: boolean
+}
+
+export interface BackupRunAccepted {
+  backupEventId: number
+  status: string
+}
