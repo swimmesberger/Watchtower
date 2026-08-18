@@ -41,15 +41,26 @@ public sealed class LocalBackupStorageTests : IDisposable {
     }
 
     [Fact]
-    public async Task ListReturnsFileNamesAndToleratesAMissingDirectory() {
+    public async Task ListReturnsFilesWithSizesAndToleratesAMissingDirectory() {
         var storage = NewStorage();
-        Assert.Empty(await storage.ListFileNamesAsync("nas/none", CancellationToken.None));
+        Assert.Empty(await storage.ListFilesAsync("nas/none", CancellationToken.None));
 
         await storage.UploadAsync("nas/app/a.tar.gz", Write("a"), CancellationToken.None);
-        await storage.UploadAsync("nas/app/b.tar.gz", Write("b"), CancellationToken.None);
+        await storage.UploadAsync("nas/app/bb.tar.gz", Write("bb"), CancellationToken.None);
 
-        var names = await storage.ListFileNamesAsync("nas/app", CancellationToken.None);
-        Assert.Equal(["a.tar.gz", "b.tar.gz"], names.OrderBy(n => n, StringComparer.Ordinal));
+        var files = (await storage.ListFilesAsync("nas/app", CancellationToken.None))
+            .OrderBy(f => f.Name, StringComparer.Ordinal).ToList();
+        Assert.Equal([new("a.tar.gz", 1), new BackupStorageFile("bb.tar.gz", 2)], files);
+    }
+
+    [Fact]
+    public async Task DownloadStreamsTheUploadedContentBack() {
+        var storage = NewStorage();
+        await storage.UploadAsync("nas/app/a.tar.gz", Write("round-trip"), CancellationToken.None);
+
+        var output = new MemoryStream();
+        await storage.DownloadAsync("nas/app/a.tar.gz", output, CancellationToken.None);
+        Assert.Equal("round-trip", Encoding.UTF8.GetString(output.ToArray()));
     }
 
     [Fact]
@@ -60,8 +71,8 @@ public sealed class LocalBackupStorageTests : IDisposable {
 
         await storage.DeleteFileAsync("nas/app/a.tar.gz", CancellationToken.None);
 
-        var names = await storage.ListFileNamesAsync("nas/app", CancellationToken.None);
-        Assert.Equal(["b.tar.gz"], names);
+        var files = await storage.ListFilesAsync("nas/app", CancellationToken.None);
+        Assert.Equal("b.tar.gz", Assert.Single(files).Name);
     }
 
     [Fact]

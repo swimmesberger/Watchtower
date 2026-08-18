@@ -80,6 +80,9 @@ public sealed record BackupEventDto(
 /// <summary>A stack's backup participation: schedule opt-in and the stop-for-snapshot flag.</summary>
 public sealed record BackupStackConfigDto(int StackId, bool Enabled, bool StopContainers);
 
+/// <summary>One archive present on the storage — the restore picker's row.</summary>
+public sealed record BackupRemoteFileDto(string Name, long SizeBytes, DateTimeOffset TakenAt, bool Encrypted);
+
 /// <summary>Returned immediately after a run is enqueued; the event tracks progress.</summary>
 public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 
@@ -103,6 +106,11 @@ public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 [JsonSerializable(typeof(ListBackupEvents.Response), TypeInfoPropertyName = "ListBackupEventsResponse")]
 [JsonSerializable(typeof(RunBackup.Command), TypeInfoPropertyName = "RunBackupCommand")]
 [JsonSerializable(typeof(RunBackup.Response), TypeInfoPropertyName = "RunBackupResponse")]
+[JsonSerializable(typeof(BackupRemoteFileDto))]
+[JsonSerializable(typeof(ListRemoteBackups.Query), TypeInfoPropertyName = "ListRemoteBackupsQuery")]
+[JsonSerializable(typeof(ListRemoteBackups.Response), TypeInfoPropertyName = "ListRemoteBackupsResponse")]
+[JsonSerializable(typeof(RestoreBackup.Command), TypeInfoPropertyName = "RestoreBackupCommand")]
+[JsonSerializable(typeof(RestoreBackup.Response), TypeInfoPropertyName = "RestoreBackupResponse")]
 [JsonSerializable(typeof(GetStackBackupConfig.Query), TypeInfoPropertyName = "GetStackBackupConfigQuery")]
 [JsonSerializable(typeof(GetStackBackupConfig.Response), TypeInfoPropertyName = "GetStackBackupConfigResponse")]
 [JsonSerializable(typeof(SetStackBackupConfig.Command), TypeInfoPropertyName = "SetStackBackupConfigCommand")]

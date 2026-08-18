@@ -22,12 +22,20 @@ public sealed class LocalBackupStorage(string basePath) : IBackupStorage {
         }
     }
 
-    public Task<IReadOnlyList<string>> ListFileNamesAsync(string relativeDirectory, CancellationToken ct) {
+    public async Task DownloadAsync(string relativePath, Stream destination, CancellationToken ct) {
+        await using var file = File.OpenRead(Resolve(relativePath));
+        await file.CopyToAsync(destination, ct);
+    }
+
+    public Task<IReadOnlyList<BackupStorageFile>> ListFilesAsync(string relativeDirectory, CancellationToken ct) {
         var dir = Resolve(relativeDirectory);
-        IReadOnlyList<string> names = Directory.Exists(dir)
-            ? Directory.EnumerateFiles(dir).Select(Path.GetFileName).Where(n => n is not null).Cast<string>().ToList()
+        IReadOnlyList<BackupStorageFile> files = Directory.Exists(dir)
+            ? Directory.EnumerateFiles(dir)
+                .Select(p => new FileInfo(p))
+                .Select(f => new BackupStorageFile(f.Name, f.Length))
+                .ToList()
             : [];
-        return Task.FromResult(names);
+        return Task.FromResult(files);
     }
 
     public Task DeleteFileAsync(string relativePath, CancellationToken ct) {

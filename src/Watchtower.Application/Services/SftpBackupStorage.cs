@@ -42,15 +42,20 @@ public sealed class SftpBackupStorage(SftpBackupOptions options) : IBackupStorag
         }
     }
 
-    public Task<IReadOnlyList<string>> ListFileNamesAsync(string relativeDirectory, CancellationToken ct) {
+    public Task DownloadAsync(string relativePath, Stream destination, CancellationToken ct) {
+        Connect().DownloadFile(Resolve(relativePath), destination);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<BackupStorageFile>> ListFilesAsync(string relativeDirectory, CancellationToken ct) {
         var client = Connect();
         var dir = Resolve(relativeDirectory);
-        if (!client.Exists(dir)) return Task.FromResult<IReadOnlyList<string>>([]);
-        IReadOnlyList<string> names = client.ListDirectory(dir)
+        if (!client.Exists(dir)) return Task.FromResult<IReadOnlyList<BackupStorageFile>>([]);
+        IReadOnlyList<BackupStorageFile> files = client.ListDirectory(dir)
             .Where(f => f.IsRegularFile)
-            .Select(f => f.Name)
+            .Select(f => new BackupStorageFile(f.Name, f.Length))
             .ToList();
-        return Task.FromResult(names);
+        return Task.FromResult(files);
     }
 
     public Task DeleteFileAsync(string relativePath, CancellationToken ct) {

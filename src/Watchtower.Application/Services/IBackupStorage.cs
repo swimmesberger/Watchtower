@@ -1,8 +1,11 @@
 namespace Watchtower.Application.Services;
 
+/// <summary>A file in backup storage: its bare name and size in bytes.</summary>
+public sealed record BackupStorageFile(string Name, long SizeBytes);
+
 /// <summary>
-/// A backup storage backend (ADR-0016 §3): upload / list / delete on paths relative to the
-/// provider's configured base directory. Instances are created per operation by
+/// A backup storage backend (ADR-0016 §3): upload / download / list / delete on paths relative to
+/// the provider's configured base directory. Instances are created per operation by
 /// <see cref="BackupStorageFactory"/> from the current options and disposed afterwards — no
 /// connection outlives the run that needed it.
 /// </summary>
@@ -17,8 +20,11 @@ public interface IBackupStorage : IDisposable {
     /// </summary>
     Task UploadAsync(string relativePath, Func<Stream, CancellationToken, Task> writer, CancellationToken ct);
 
-    /// <summary>File names (no directories) directly inside <paramref name="relativeDirectory"/>; empty when it does not exist.</summary>
-    Task<IReadOnlyList<string>> ListFileNamesAsync(string relativeDirectory, CancellationToken ct);
+    /// <summary>Streams one file's content into <paramref name="destination"/>. Missing files are an error.</summary>
+    Task DownloadAsync(string relativePath, Stream destination, CancellationToken ct);
+
+    /// <summary>Files (no directories) directly inside <paramref name="relativeDirectory"/>; empty when it does not exist.</summary>
+    Task<IReadOnlyList<BackupStorageFile>> ListFilesAsync(string relativeDirectory, CancellationToken ct);
 
     /// <summary>Deletes one file. Missing files are an error — retention only deletes names it just listed.</summary>
     Task DeleteFileAsync(string relativePath, CancellationToken ct);

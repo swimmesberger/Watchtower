@@ -61,6 +61,52 @@ public sealed class BackupArchiveService(DockerEngineClient docker, ILogger<Back
         }
     }
 
+    /// <summary>
+    /// Extracts a backup tar back into the given volumes — the exact inverse of
+    /// <see cref="WriteArchiveAsync"/>: a helper container mounts each volume <b>read-write</b>
+    /// under <c>/backup/{volume}</c>, is started once to clear the volumes' current contents (the
+    /// only step that executes code in the helper, so the image must carry a shell — the default
+    /// busybox does), then the daemon's archive-extract endpoint unpacks the tar's
+    /// <c>backup/{volume}/…</c> entries straight into the mounts, preserving ownership and modes.
+    /// </summary>
+    /// <param name="tarStream">The <b>uncompressed</b> tar (decrypt/gunzip upstream).</param>
+    public async Task RestoreArchiveAsync(
+        IReadOnlyList<string> volumeNames, Stream tarStream, string helperImage, CancellationToken ct) {
+        if (volumeNames.Count == 0)
+            throw new InvalidOperationException("No volumes to restore into.");
+
+        await EnsureHelperImageAsync(helperImage, ct);
+
+        var containerId = await docker.CreateContainerAsync(new DockerCreateContainerBody {
+            Image = helperImage,
+            // Clears every mounted volume (only the target volumes are mounted). The dot-globs pick
+            // up hidden entries; unmatched globs pass through literally and rm -f ignores them.
+            Cmd = ["sh", "-c", "rm -rf /backup/*/* /backup/*/.[!.]* /backup/*/..?*"],
+            Labels = new Dictionary<string, string> { [HelperLabel] = "1" },
+            HostConfig = new DockerCreateHostConfig {
+                Binds = [.. volumeNames.Select(v => $"{v}:{MountRoot}/{v}")],
+                NetworkMode = "none",
+            },
+        }, name: $"watchtower-restore-{Guid.NewGuid():N}"[..32], ct);
+
+        try {
+            await docker.StartContainerAsync(containerId, ct);
+            var exitCode = await docker.WaitContainerAsync(containerId, ct);
+            if (exitCode != 0)
+                throw new InvalidOperationException(
+                    $"Clearing the volumes failed (helper exit code {exitCode}). " +
+                    "The helper image must provide `sh` and `rm` — the default busybox does.");
+
+            await docker.PutContainerArchiveAsync(containerId, "/", tarStream, ct);
+        } finally {
+            try {
+                await docker.RemoveContainerAsync(containerId, CancellationToken.None);
+            } catch (Exception ex) {
+                logger.LogWarning(ex, "Failed to remove restore helper container {ContainerId}", containerId);
+            }
+        }
+    }
+
     private async Task EnsureHelperImageAsync(string image, CancellationToken ct) {
         if (await docker.ImageExistsAsync(image, ct)) return;
         logger.LogInformation("Pulling backup helper image {Image}", image);

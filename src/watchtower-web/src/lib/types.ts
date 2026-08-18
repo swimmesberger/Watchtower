@@ -860,3 +860,12 @@ export interface BackupRunAccepted {
   backupEventId: number
   status: string
 }
+
+/** One archive present on the backup storage — the restore picker's row. */
+export interface BackupRemoteFile {
+  name: string
+  sizeBytes: number
+  /** ISO timestamp parsed from the archive name (UTC). */
+  takenAt: string
+  encrypted: boolean
+}

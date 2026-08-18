@@ -240,6 +240,94 @@
         ]
       }
     },
+    "backups.listRemote": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer"
+                },
+                "takenAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "encrypted": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "sizeBytes",
+                "takenAt",
+                "encrypted"
+              ]
+            }
+          }
+        },
+        "required": [
+          "files"
+        ]
+      }
+    },
+    "backups.restore": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "fileName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "stackId",
+          "fileName"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "restore": {
+            "type": "object",
+            "properties": {
+              "backupEventId": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "backupEventId",
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "restore"
+        ]
+      }
+    },
     "backups.run": {
       "params": {
         "type": "object",

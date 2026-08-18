@@ -9,6 +9,7 @@ import type {
   AutomationConfig,
   BackupConfig,
   BackupEvent,
+  BackupRemoteFile,
   BackupRunAccepted,
   BackupStackConfig,
   UpdateBackupConfigRequest,
@@ -276,6 +277,10 @@ export const api = {
       (await rpc('backups.events', { stackId: stackId ?? null, limit: limit ?? 50 }))
         .events as BackupEvent[],
     run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
+    listRemote: async (stackId: number) =>
+      (await rpc('backups.listRemote', { stackId })).files as BackupRemoteFile[],
+    restore: async (stackId: number, fileName: string) =>
+      (await rpc('backups.restore', { stackId, fileName })).restore as BackupRunAccepted,
     getStackConfig: async (stackId: number) =>
       (await rpc('backups.getStackConfig', { stackId })).config as BackupStackConfig,
     setStackConfig: async (stackId: number, enabled: boolean, stopContainers: boolean) =>

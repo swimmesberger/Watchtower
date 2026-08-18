@@ -108,8 +108,14 @@ never stampede the host.
   on first use and is configurable for air-gapped hosts.
 - CBC without a MAC means an attacker with write access to the storage could tamper with ciphertext
   undetected; accepted for V1 (see §4) — a format change would be a new ADR.
-- Restore is deliberately manual in V1 — documented step-by-step in [docs/backups.md](../backups.md)
-  (download, decrypt with stock OpenSSL, untar into recreated volumes) — because a wrong-direction
-  restore button is more dangerous than a wrong-direction backup.
-- Database-aware dump hooks, restore-from-UI, and additional providers (S3, WebDAV) are explicit
-  non-goals of this ADR and would extend, not replace, the abstraction.
+- Restore exists in two forms. The **UI restore** runs the exact inverse of a backup — download,
+  scan the archive's table of contents, stop the stack, wipe and refill only the volumes present in
+  both the archive and on the host, restart — guarded by a typed-name confirmation, refused while a
+  deploy or another backup/restore is in flight, and serialized through the same single-flight
+  queue. The volume wipe is the one step that executes code in the helper container (the image must
+  carry a shell; the default busybox does). The **manual path** (download, decrypt with stock
+  OpenSSL, untar into recreated volumes) stays documented step-by-step in
+  [docs/backups.md](../backups.md) as the disaster-recovery route for a host where Watchtower is not
+  running — the property §4 was chosen for.
+- Database-aware dump hooks and additional providers (S3, WebDAV) are explicit non-goals of this
+  ADR and would extend, not replace, the abstraction.

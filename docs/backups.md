@@ -9,8 +9,8 @@ every volume labelled with the stack's compose project plus a `backup-manifest.j
 the instance, stack, volumes and timestamp — so any archive identifies itself even after being
 copied around.
 
-What it is **not** (v1): application-aware dumps (`pg_dump` et al.), restore-from-UI, incremental
-backups. A file-level snapshot of the stopped stack is the v1 consistency model.
+What it is **not** (v1): application-aware dumps (`pg_dump` et al.) or incremental backups. A
+file-level snapshot of the stopped stack is the v1 consistency model.
 
 ## Setting it up
 
@@ -80,7 +80,25 @@ does not authenticate (no MAC) — treat the storage as untrusted for confidenti
 
 ## Restoring a backup
 
-Restore is deliberately manual in v1. On any Docker host:
+### From the UI (same host, Watchtower running)
+
+On the stack's **Backups tab → Restore…**: pick an archive (the list shows what is actually on the
+storage right now, not the local history), then confirm by typing the stack's name. Watchtower then
+
+1. downloads the archive (and decrypts it with the configured passphrase),
+2. compares its contents against the stack's volumes — only volumes present in **both** are
+   touched; mismatches are logged, never guessed at (if the stack has no volumes yet, deploy it
+   once first so compose creates them),
+3. stops the stack's containers, **erases the target volumes' current contents**, extracts the
+   archive back into them (ownership and permissions preserved), and restarts the stack.
+
+Data written since the backup was taken is gone afterwards — that is the point, and why the confirm
+is typed. The run lands in the same history as backups (trigger `restore`), with the full log.
+Restores are refused while a deploy or another backup/restore of the stack is in flight. The volume
+wipe is the one step that executes code in the helper container, so the helper image must provide
+`sh`/`rm` — the default busybox does.
+
+### Manually (disaster recovery — any Docker host, no Watchtower needed)
 
 1. **Fetch** the archive (any SFTP client; `scp -P 23 u123456@u123456.your-storagebox.de:watchtower-backups/nas/web-app/web-app_20260817T033000Z.tar.gz.enc .`).
 2. **Decrypt** if needed (command above).
@@ -110,6 +128,10 @@ Restore is deliberately manual in v1. On any Docker host:
 
 A single volume downloaded from the UI (Volumes → ⋯ → *Download archive*) has the same shape
 (`backup/{volume}/…`, no manifest) and restores with the same command.
+
+Moving to a **new host**: register the stack in the new Watchtower, deploy it once (creates the
+volumes), set the backup storage + instance name to the old values, then use the UI restore — the
+picker lists the old instance's archives as long as the instance name matches its directory.
 
 ## How a run works (and its costs)
 

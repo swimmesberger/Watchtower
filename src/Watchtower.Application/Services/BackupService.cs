@@ -71,6 +71,142 @@ public sealed class BackupService(
         }
     }
 
+    /// <summary>
+    /// Runs a restore enqueued by <see cref="BackupQueueService.TryEnqueueRestore"/>: download the
+    /// archive, scan its table of contents, stop the stack's containers, wipe the target volumes
+    /// and extract the archive back into them (ADR-0016), restart. Only volumes present in BOTH the
+    /// archive and on the host are touched; mismatches are logged, never guessed at.
+    /// </summary>
+    public async Task ExecuteRestoreAsync(int backupEventId, string fileName, CancellationToken ct) {
+        var output = new StringBuilder();
+        void Log(string line) => output.AppendLine(line);
+
+        Stack? stack;
+        using (var scope = scopeFactory.CreateScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var evt = await db.BackupEvents.FirstOrDefaultAsync(e => e.Id == backupEventId, ct);
+            if (evt is null) return;
+            stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == evt.StackId, ct);
+            evt.Status = "running";
+            evt.StartedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+
+        if (stack is null) {
+            await FinishAsync(backupEventId, success: false, "Stack no longer exists.", null, null, ct);
+            return;
+        }
+
+        try {
+            var backup = options.CurrentValue.Backup;
+            var result = await RunRestoreAsync(stack, fileName, backup, Log, ct);
+            await FinishAsync(backupEventId, success: true, output.ToString(), result.RemotePath, result.SizeBytes, ct);
+            logger.LogInformation("Restore of {RemotePath} into stack {StackName} completed", result.RemotePath, stack.Name);
+        } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
+            Log($"FAILED: {ex.Message}");
+            await FinishAsync(backupEventId, success: false, output.ToString(), null, null, ct);
+            logger.LogWarning(ex, "Restore into stack {StackName} failed", stack.Name);
+        }
+    }
+
+    private async Task<RunResult> RunRestoreAsync(
+        Stack stack, string fileName, BackupOptions backup, Action<string> log, CancellationToken ct) {
+        var encrypted = fileName.EndsWith(".enc", StringComparison.Ordinal);
+        if (encrypted && string.IsNullOrEmpty(backup.EncryptionPassphrase))
+            throw new InvalidOperationException(
+                "The archive is encrypted but no encryption passphrase is configured.");
+
+        var directory = BackupNaming.StackDirectory(backup.ResolveInstanceName(), stack.Name);
+        var relativePath = $"{directory}/{fileName}";
+
+        var spoolPath = Path.Combine(Path.GetTempPath(), $"watchtower-restore-{Guid.NewGuid():N}.spool");
+        try {
+            // 1. Download the archive to a local spool (two read passes follow: scan, then extract).
+            using (var storage = storageFactory.Create(backup)) {
+                log($"Downloading {relativePath} from {storage.Description}");
+                await using var spool = File.Create(spoolPath);
+                await storage.DownloadAsync(relativePath, spool, ct);
+            }
+            var sizeBytes = new FileInfo(spoolPath).Length;
+            log($"Downloaded {sizeBytes} bytes{(encrypted ? " (encrypted)" : "")}");
+
+            // 2. Scan the table of contents and match it against the host's volumes.
+            var contents = await WithSpoolTarAsync(spoolPath, encrypted, backup,
+                tar => ReadContentsAsync(tar, encrypted, ct));
+            if (contents.ManifestJson is null)
+                log("Note: the archive carries no manifest (single-volume download?) — proceeding by its directory layout.");
+
+            var hostVolumes = (await docker.ListVolumesAsync(ct))
+                .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p)
+                    && p == stack.ComposeProjectName)
+                .Select(v => v.Name)
+                .ToList();
+            var targets = contents.Volumes.Intersect(hostVolumes, StringComparer.Ordinal)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToList();
+            foreach (var archiveOnly in contents.Volumes.Except(hostVolumes, StringComparer.Ordinal))
+                log($"WARNING: archive volume '{archiveOnly}' does not exist on this host — skipped.");
+            foreach (var hostOnly in hostVolumes.Except(contents.Volumes, StringComparer.Ordinal))
+                log($"WARNING: host volume '{hostOnly}' is not in the archive — left untouched.");
+            if (targets.Count == 0)
+                throw new InvalidOperationException(
+                    "None of the archive's volumes exist on this host. Deploy the stack first so its volumes exist.");
+            log($"Restoring {targets.Count} volume(s): {string.Join(", ", targets)}");
+
+            // 3. Stop, wipe + extract, restart. Always stopped for a restore — extracting under a
+            // running application is never sound.
+            var stopped = await StopRunningContainersAsync(stack.ComposeProjectName, log, ct);
+            try {
+                await WithSpoolTarAsync<object?>(spoolPath, encrypted, backup, async tar => {
+                    await archiveService.RestoreArchiveAsync(targets, tar, backup.HelperImage, ct);
+                    return null;
+                });
+                log("Archive extracted into the volumes.");
+            } finally {
+                await RestartContainersAsync(stopped, log);
+            }
+
+            return new RunResult(relativePath, sizeBytes);
+        } finally {
+            try {
+                if (File.Exists(spoolPath)) File.Delete(spoolPath);
+            } catch (Exception ex) {
+                logger.LogWarning(ex, "Failed to delete restore spool file {SpoolPath}", spoolPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> over the spool opened as an uncompressed tar stream
+    /// (file → optional decrypt → gunzip), disposing every layer afterwards — including the file
+    /// handle, which the delete in the caller's finally depends on.
+    /// </summary>
+    private static async Task<T> WithSpoolTarAsync<T>(
+        string spoolPath, bool encrypted, BackupOptions backup, Func<Stream, Task<T>> action) {
+        await using var file = File.OpenRead(spoolPath);
+        var inner = encrypted
+            ? BackupEncryption.CreateDecryptingStream(file, backup.EncryptionPassphrase!)
+            : file;
+        try {
+            await using var tar = new GZipStream(inner, CompressionMode.Decompress, leaveOpen: true);
+            return await action(tar);
+        } finally {
+            if (!ReferenceEquals(inner, file)) await inner.DisposeAsync();
+        }
+    }
+
+    /// <summary>Scans the tar, translating decode failures on encrypted archives into a passphrase hint.</summary>
+    private static async Task<BackupArchiveContents> ReadContentsAsync(
+        Stream tar, bool encrypted, CancellationToken ct) {
+        try {
+            return await BackupArchiveInspector.InspectAsync(tar, ct);
+        } catch (Exception ex) when (encrypted
+            && ex is InvalidDataException or System.Security.Cryptography.CryptographicException) {
+            throw new InvalidOperationException(
+                $"Could not read the encrypted archive — is the encryption passphrase the one it was written with? ({ex.Message})");
+        }
+    }
+
     private sealed record RunResult(string RemotePath, long SizeBytes);
 
     private async Task<RunResult> RunAsync(
@@ -173,7 +309,7 @@ public sealed class BackupService(
         IBackupStorage storage, string directory, BackupOptions backup, Action<string> log, CancellationToken ct) {
         if (backup.RetentionDays <= 0 && backup.RetentionMaxCount <= 0) return;
         try {
-            var names = await storage.ListFileNamesAsync(directory, ct);
+            var names = (await storage.ListFilesAsync(directory, ct)).Select(f => f.Name).ToList();
             var deletions = BackupRetention.SelectDeletions(
                 names, DateTimeOffset.UtcNow, backup.RetentionDays, backup.RetentionMaxCount);
             foreach (var name in deletions) {

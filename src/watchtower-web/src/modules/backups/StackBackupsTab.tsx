@@ -1,13 +1,22 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Archive, ChevronDown, ChevronRight, Play } from 'lucide-react'
+import { Archive, ChevronDown, ChevronRight, History, Lock, Play } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { BackupEvent, Stack } from '@/lib/types'
 import { absoluteTitle, formatBytes, formatDuration, timeAgo } from '@/lib/format'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { EmptyState } from '@/components/ui/empty-state'
 import { SectionHeader } from '@/components/ui/section-header'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -67,6 +76,25 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
     onError: (err: Error) => toast.error('Backup failed to start', err.message),
   })
 
+  // Restore flow: pick an archive from the storage (step 1), typed-name confirm (step 2).
+  const [restoreOpen, setRestoreOpen] = useState(false)
+  const [restoreFile, setRestoreFile] = useState<string | null>(null)
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
+
+  const restore = useMutation({
+    mutationFn: (fileName: string) => api.backups.restore(stack.id, fileName),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['backups', 'events', stack.id] })
+      toast.info(`Restoring ${stack.name}…`, 'The stack is stopped while its volumes are refilled.')
+    },
+    onError: (err: Error) => toast.error('Restore failed to start', err.message),
+    onSettled: () => {
+      setRestoreConfirmOpen(false)
+      setRestoreOpen(false)
+      setRestoreFile(null)
+    },
+  })
+
   const isRunning = events.some((e) => e.status === 'running' || e.status === 'queued')
 
   return (
@@ -74,16 +102,26 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
       <SectionHeader
         title="Backups"
         action={
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={runNow.isPending || isRunning}
-            disabled={runNow.isPending || isRunning}
-            onClick={() => runNow.mutate()}
-          >
-            {!(runNow.isPending || isRunning) && <Play />}
-            Back up now
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={isRunning}
+              onClick={() => setRestoreOpen(true)}
+            >
+              <History /> Restore…
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={runNow.isPending || isRunning}
+              disabled={runNow.isPending || isRunning}
+              onClick={() => runNow.mutate()}
+            >
+              {!(runNow.isPending || isRunning) && <Play />}
+              Back up now
+            </Button>
+          </div>
         }
       />
       <p className="-mt-2 text-[13px] text-text-2">
@@ -182,7 +220,140 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
           ))}
         </div>
       )}
+
+      {/* Step 1 — pick an archive from the storage. */}
+      <RestoreSelectDialog
+        open={restoreOpen}
+        onOpenChange={(o) => {
+          setRestoreOpen(o)
+          if (!o) setRestoreFile(null)
+        }}
+        stack={stack}
+        selected={restoreFile}
+        onSelect={setRestoreFile}
+        onContinue={() => {
+          setRestoreOpen(false)
+          setRestoreConfirmOpen(true)
+        }}
+      />
+
+      {/* Step 2 — typed-name confirm: restoring overwrites the volumes' current data. */}
+      <ConfirmDialog
+        open={restoreConfirmOpen}
+        onOpenChange={(o) => {
+          setRestoreConfirmOpen(o)
+          if (!o) setRestoreOpen(true)
+        }}
+        title={`Restore ${stack.name} from a backup?`}
+        description={
+          <span>
+            This stops the stack, <strong>erases the current contents</strong> of every volume in the
+            archive, refills them from the backup, and restarts the stack. Data written since the
+            backup was taken is lost. <strong>This cannot be undone.</strong>
+            {restoreFile && (
+              <span className="mt-2 block font-mono text-[12px] text-text">{restoreFile}</span>
+            )}
+          </span>
+        }
+        confirmLabel="Erase & restore"
+        tone="danger"
+        requireText={stack.name}
+        loading={restore.isPending}
+        onConfirm={() => restoreFile && restore.mutate(restoreFile)}
+      />
     </div>
+  )
+}
+
+/** Step 1 of the restore flow: the archives actually present on the storage, newest first. */
+function RestoreSelectDialog({
+  open,
+  onOpenChange,
+  stack,
+  selected,
+  onSelect,
+  onContinue,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  stack: Stack
+  selected: string | null
+  onSelect: (name: string) => void
+  onContinue: () => void
+}) {
+  const { data: files, isLoading, isError, error } = useQuery({
+    queryKey: ['backups', 'remote', stack.id],
+    queryFn: () => api.backups.listRemote(stack.id),
+    enabled: open,
+    staleTime: 30_000,
+    retry: false,
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Restore {stack.name}</DialogTitle>
+          <DialogDescription>
+            Choose a backup from the storage. The list shows what is actually there right now.
+          </DialogDescription>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton variant="rect" className="h-10 w-full" />
+            <Skeleton variant="rect" className="h-10 w-full" />
+          </div>
+        ) : isError ? (
+          <Banner tone="danger" title="Couldn’t list the backup storage">
+            {error instanceof Error ? error.message : 'The storage is unreachable.'}
+          </Banner>
+        ) : !files || files.length === 0 ? (
+          <p className="text-sm text-text-3">No backups of this stack exist on the storage yet.</p>
+        ) : (
+          <div className="flex max-h-[40dvh] flex-col gap-1 overflow-y-auto">
+            {files.map((f) => (
+              <label
+                key={f.name}
+                className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 hover:bg-surface-2"
+              >
+                <input
+                  type="radio"
+                  name="restore-file"
+                  checked={selected === f.name}
+                  onChange={() => onSelect(f.name)}
+                  className="size-4 shrink-0 accent-[var(--brand)]"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[12.5px] text-text">{f.name}</span>
+                  <span className="tnum block text-[12px] text-text-2" title={absoluteTitle(f.takenAt)}>
+                    {timeAgo(f.takenAt)} · {formatBytes(f.sizeBytes)}
+                  </span>
+                </span>
+                {f.encrypted && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[11px] text-text-3"
+                    title="Encrypted — restore uses the configured passphrase."
+                  >
+                    <Lock className="size-3 shrink-0" aria-hidden />
+                    encrypted
+                  </span>
+                )}
+              </label>
+            ))}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" disabled={!selected} onClick={onContinue}>
+            Continue
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
