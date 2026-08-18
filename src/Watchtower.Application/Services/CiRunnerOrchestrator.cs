@@ -27,9 +27,11 @@ public sealed class CiRunnerOrchestrator(
 
     internal const string ManagedLabel = "watchtower.managed";
     internal const string ManagedLabelValue = "ci-runner";
+    internal const string WarmerLabelValue = "ci-warmer";
     internal const string RepoIdLabel = "watchtower.ci.repo-id";
     internal const string RepoLabel = "watchtower.ci.repo";
     internal const string RunnerIdLabel = "watchtower.ci.runner-id";
+    internal const string ProfileHashLabel = "watchtower.ci.profile-hash";
 
     private readonly SemaphoreSlim _wake = new(0);
     private readonly ConcurrentDictionary<int, CiRepoRunnerStatus> _status = new();
@@ -76,6 +78,10 @@ public sealed class CiRunnerOrchestrator(
         var byRepoId = containers
             .Where(c => c.Labels.ContainsKey(RepoIdLabel))
             .ToLookup(c => c.Labels[RepoIdLabel]);
+        var warmers = await docker.ListContainersByLabelsAsync([$"{ManagedLabel}={WarmerLabelValue}"], ct);
+        var warmersByRepoId = warmers
+            .Where(c => c.Labels.ContainsKey(RepoIdLabel))
+            .ToLookup(c => c.Labels[RepoIdLabel]);
 
         var knownIds = new HashSet<string>(repos.Select(r => r.Id.ToString()));
 
@@ -83,11 +89,22 @@ public sealed class CiRunnerOrchestrator(
         foreach (var group in byRepoId.Where(g => !knownIds.Contains(g.Key)))
             foreach (var container in group)
                 await RemoveRunnerContainerAsync(container.Id, "repo removed", ct);
+        foreach (var group in warmersByRepoId.Where(g => !knownIds.Contains(g.Key)))
+            foreach (var container in group)
+                await RemoveRunnerContainerAsync(container.Id, "repo removed", ct);
         foreach (var staleId in _status.Keys.Where(id => !knownIds.Contains(id.ToString())).ToList())
             _status.TryRemove(staleId, out _);
 
         foreach (var repo in repos) {
             ct.ThrowIfCancellationRequested();
+            try {
+                await ReconcileWarmerAsync(repo, warmersByRepoId[repo.Id.ToString()].ToList(), ct);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                throw;
+            } catch (Exception ex) {
+                // Warm problems must never take the runner reconcile down with them.
+                logger.LogWarning(ex, "Toolcache warm reconcile failed for CI repo {Repo}", repo.FullName);
+            }
             try {
                 await ReconcileRepoAsync(repo, byRepoId[repo.Id.ToString()].ToList(), ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -154,7 +171,9 @@ public sealed class CiRunnerOrchestrator(
 
         var binds = new List<string> {
             // Warm toolcache shared by all runners of this repo; the workspace itself stays ephemeral.
-            $"watchtower-ci-tool-{Slug(repo.FullName)}:/home/runner/_work/_tool",
+            $"{ToolVolumeName(repo)}:{CiWarmerScript.ToolCacheDir}",
+            // Package caches (NuGet/npm/Go modules) survive across jobs via the env vars below.
+            $"{PkgVolumeName(repo)}:{PkgCacheDir}",
         };
         if (repo.AllowDockerSocket)
             binds.Add("/var/run/docker.sock:/var/run/docker.sock");
@@ -163,6 +182,15 @@ public sealed class CiRunnerOrchestrator(
             Image = image,
             // The JIT config is single-use — its visibility in `docker inspect` is acceptable.
             Cmd = ["/home/runner/run.sh", "--jitconfig", jit.EncodedJitConfig],
+            // Runner-process env is inherited by job steps. DOTNET_INSTALL_DIR points setup-dotnet
+            // (which does not use RUNNER_TOOL_CACHE) at the warmed SDK dir so it skips the download;
+            // the package-manager caches land on the pkg volume instead of the ephemeral workspace.
+            Env = [
+                $"DOTNET_INSTALL_DIR={CiWarmerScript.ToolCacheDir}/dotnet",
+                $"NUGET_PACKAGES={PkgCacheDir}/nuget",
+                $"npm_config_cache={PkgCacheDir}/npm",
+                $"GOMODCACHE={PkgCacheDir}/gomod",
+            ],
             Labels = new Dictionary<string, string> {
                 [ManagedLabel] = ManagedLabelValue,
                 [RepoIdLabel] = repo.Id.ToString(),
@@ -175,6 +203,129 @@ public sealed class CiRunnerOrchestrator(
         var containerId = await docker.CreateContainerAsync(body, runnerName, ct);
         await docker.StartContainerAsync(containerId, ct);
         logger.LogInformation("Spawned CI runner {Runner} for {Repo}", runnerName, repo.FullName);
+    }
+
+    // ── Toolcache warming (docs/ci-runners/design.md) ────────────────────────
+
+    /// <summary>Where the package-cache volume (NuGet/npm/Go modules) is mounted in runners.</summary>
+    internal const string PkgCacheDir = "/home/runner/_pkg";
+
+    /// <summary>Per-repo toolcache volume, shared by runners and the warmer.</summary>
+    internal static string ToolVolumeName(CiRepo repo) => $"watchtower-ci-tool-{Slug(repo.FullName)}";
+
+    /// <summary>Per-repo package-cache volume.</summary>
+    internal static string PkgVolumeName(CiRepo repo) => $"watchtower-ci-pkg-{Slug(repo.FullName)}";
+
+    /// <summary>
+    /// Converges the repo's toolcache volume on its detected toolchain profile: reaps finished
+    /// warmer containers (persisting success/failure on the repo), then spawns a one-shot warmer
+    /// when the current profile hash differs from the last successfully warmed one. Warmers get the
+    /// cache volume and nothing else — no PAT, no JIT config, no Docker socket; they only download
+    /// public SDK releases. Failures are surfaced on the repo and retried with a fixed backoff;
+    /// they never block runners (a cold cache just means jobs download their own tools).
+    /// </summary>
+    private async Task ReconcileWarmerAsync(CiRepo repo, IReadOnlyList<DockerContainerInfo> warmers, CancellationToken ct) {
+        var status = _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus());
+
+        foreach (var dead in warmers.Where(c => !IsRunning(c))) {
+            await ReapWarmerAsync(repo, dead, status, ct);
+        }
+        var running = warmers.Where(IsRunning).ToList();
+
+        if (!repo.Enabled) {
+            foreach (var container in running)
+                await RemoveRunnerContainerAsync(container.Id, "repo disabled", ct);
+            status.SetWarmerRunning(false);
+            return;
+        }
+
+        status.SetWarmerRunning(running.Count > 0);
+        if (running.Count > 0)
+            return;
+
+        var profile = CiToolchainProfile.FromJson(repo.ToolchainProfileJson);
+        if (profile is null)
+            return; // Nothing detected yet — the next deploy of a linked stack fills the profile.
+
+        var hash = profile.ComputeHash();
+        if (hash == repo.WarmedProfileHash || status.InWarmBackoff(DateTimeOffset.UtcNow))
+            return;
+
+        var script = CiWarmerScript.Build(profile);
+        if (script is null) {
+            // Nothing warmable in the profile (e.g. Dockerfile only) — record it as converged so
+            // the loop doesn't re-evaluate the same empty profile every pass.
+            await PersistWarmResultAsync(repo.Id, hash, error: null, ct);
+            return;
+        }
+
+        var ci = options.CurrentValue.Ci;
+        var image = string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
+        await EnsureImageAsync(image, ct);
+
+        var name = $"watchtower-ci-warm-{Slug(repo.Name)}-{Guid.NewGuid().ToString("N")[..8]}";
+        var body = new DockerCreateContainerBody {
+            Image = image,
+            Cmd = ["/bin/bash", "-c", script],
+            Labels = new Dictionary<string, string> {
+                [ManagedLabel] = WarmerLabelValue,
+                [RepoIdLabel] = repo.Id.ToString(),
+                [RepoLabel] = repo.FullName.ToLowerInvariant(),
+                [ProfileHashLabel] = hash,
+            },
+            HostConfig = new DockerCreateHostConfig {
+                Binds = [$"{ToolVolumeName(repo)}:{CiWarmerScript.ToolCacheDir}"],
+            },
+        };
+        var containerId = await docker.CreateContainerAsync(body, name, ct);
+        await docker.StartContainerAsync(containerId, ct);
+        status.SetWarmerRunning(true);
+        logger.LogInformation(
+            "Spawned toolcache warmer {Warmer} for {Repo} ({Toolchains})",
+            name, repo.FullName, string.Join(", ", profile.Toolchains.Select(t => $"{t.Kind} {t.Version}")));
+    }
+
+    /// <summary>Reads a finished warmer's outcome, persists it on the repo, and removes the container.</summary>
+    private async Task ReapWarmerAsync(CiRepo repo, DockerContainerInfo container, CiRepoRunnerStatus status, CancellationToken ct) {
+        var hash = container.Labels.GetValueOrDefault(ProfileHashLabel);
+        try {
+            var details = await docker.InspectContainerAsync(container.Id, ct);
+            if (details.State?.ExitCode == 0 && hash is not null) {
+                await PersistWarmResultAsync(repo.Id, hash, error: null, ct);
+                logger.LogInformation("Toolcache warm for {Repo} succeeded (profile {Hash})", repo.FullName, hash);
+            } else {
+                var tail = new List<string>();
+                try {
+                    await foreach (var line in docker.StreamLogsAsync(container.Id, tail: 30, follow: false, ct))
+                        tail.Add(line);
+                } catch (Exception ex) when (ex is not OperationCanceledException) {
+                    logger.LogDebug(ex, "Could not read warmer logs for {Repo}", repo.FullName);
+                }
+                var message = $"Warmer exited with code {details.State?.ExitCode ?? -1}."
+                              + (tail.Count > 0 ? "\n" + string.Join("\n", tail.TakeLast(10)) : "");
+                await PersistWarmResultAsync(repo.Id, warmedHash: null, error: message, ct);
+                status.RecordWarmFailure();
+                logger.LogWarning("Toolcache warm for {Repo} failed: {Message}", repo.FullName, message);
+            }
+        } finally {
+            await RemoveRunnerContainerAsync(container.Id, "warmer finished", ct);
+        }
+    }
+
+    /// <summary>Persists a warm outcome: success stamps the warmed hash, failure records the error.</summary>
+    private async Task PersistWarmResultAsync(int repoId, string? warmedHash, string? error, CancellationToken ct) {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        if (warmedHash is not null) {
+            await db.CiRepos.Where(r => r.Id == repoId).ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.WarmedProfileHash, warmedHash)
+                .SetProperty(r => r.LastWarmedAt, now)
+                .SetProperty(r => r.LastWarmError, (string?)null), ct);
+        } else {
+            await db.CiRepos.Where(r => r.Id == repoId).ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.LastWarmError, error), ct);
+        }
     }
 
     /// <summary>Best-effort deregistration for runners that never took a job (JIT ids are on the container labels).</summary>
@@ -228,6 +379,7 @@ public sealed class CiRunnerOrchestrator(
 /// <summary>Mutable per-repo runner state surfaced through <c>ci.getRunnerStatus</c>.</summary>
 public sealed class CiRepoRunnerStatus {
     private int _consecutiveFailures;
+    private DateTimeOffset? _warmBackoffUntil;
 
     public int DesiredRunners { get; private set; }
     public int RunningRunners { get; private set; }
@@ -235,6 +387,8 @@ public sealed class CiRepoRunnerStatus {
     public string? LastError { get; private set; }
     public DateTimeOffset? LastErrorAt { get; private set; }
     public DateTimeOffset? BackoffUntil { get; private set; }
+    /// <summary>True while a toolcache warmer container for this repo is running.</summary>
+    public bool WarmerRunning { get; private set; }
 
     internal void Update(int desired, int running) {
         DesiredRunners = desired;
@@ -259,4 +413,14 @@ public sealed class CiRepoRunnerStatus {
     }
 
     internal bool InBackoff(DateTimeOffset now) => BackoffUntil is { } until && until > now;
+
+    internal void SetWarmerRunning(bool running) => WarmerRunning = running;
+
+    /// <summary>
+    /// Fixed 15-minute retry delay after a failed warm. In-memory only: a Watchtower restart retries
+    /// immediately, which is fine — warm failures are cheap and usually transient download errors.
+    /// </summary>
+    internal void RecordWarmFailure() => _warmBackoffUntil = DateTimeOffset.UtcNow.AddMinutes(15);
+
+    internal bool InWarmBackoff(DateTimeOffset now) => _warmBackoffUntil is { } until && until > now;
 }
