@@ -17,6 +17,8 @@ namespace Watchtower.Application.Modules.Users;
 [JsonSerializable(typeof(UpdateUser.Response), TypeInfoPropertyName = "UpdateUserResponse")]
 [JsonSerializable(typeof(ResetUserPassword.Command), TypeInfoPropertyName = "ResetUserPasswordCommand")]
 [JsonSerializable(typeof(ResetUserPassword.Response), TypeInfoPropertyName = "ResetUserPasswordResponse")]
+[JsonSerializable(typeof(ResetUserMfa.Command), TypeInfoPropertyName = "ResetUserMfaCommand")]
+[JsonSerializable(typeof(ResetUserMfa.Response), TypeInfoPropertyName = "ResetUserMfaResponse")]
 [JsonSerializable(typeof(SetUserDisabled.Command), TypeInfoPropertyName = "SetUserDisabledCommand")]
 [JsonSerializable(typeof(SetUserDisabled.Response), TypeInfoPropertyName = "SetUserDisabledResponse")]
 [JsonSerializable(typeof(DeleteUser.Command), TypeInfoPropertyName = "DeleteUserCommand")]

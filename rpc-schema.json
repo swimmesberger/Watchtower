@@ -7549,6 +7549,34 @@
         ]
       }
     },
+    "users.resetMfa": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "wasEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "wasEnabled"
+        ]
+      }
+    },
     "users.resetPassword": {
       "params": {
         "type": "object",
