@@ -12,6 +12,8 @@ import { api } from '@/lib/api'
 import type {
   AuthConfig,
   AutomationConfig,
+  BackupConfig,
+  BackupProvider,
   MetricsBackend,
   MetricsConfig,
   ProxyConfig,
@@ -25,7 +27,7 @@ import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Field } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
+import { Input, Textarea } from '@/components/ui/input'
 import { SecretField } from '@/components/ui/secret-field'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -146,6 +148,8 @@ export function SettingsPage() {
       <MetricsCard />
 
       <ProxyCard />
+
+      <BackupsCard />
 
       <AuthCard />
     </div>
@@ -1139,6 +1143,492 @@ function ProxyCard() {
                 onClick={() => draft && save.mutate(draft)}
               >
                 Save proxy
+              </Button>
+              {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  )
+}
+
+// ── Backups card (ADR-0016) ───────────────────────────────────────────────────
+
+interface BackupDraft {
+  enabled: boolean
+  time: string
+  instanceName: string
+  retentionDays: string
+  retentionMaxCount: string
+  encryptionPassphrase: string
+  helperImage: string
+  provider: BackupProvider
+  sftpHost: string
+  sftpPort: string
+  sftpUsername: string
+  sftpPassword: string
+  sftpPrivateKey: string
+  sftpPrivateKeyPassphrase: string
+  sftpBasePath: string
+  localBasePath: string
+}
+
+function toBackupDraft(config: BackupConfig): BackupDraft {
+  return {
+    enabled: config.enabled,
+    time: config.time,
+    instanceName: config.instanceName ?? '',
+    retentionDays: String(config.retentionDays),
+    retentionMaxCount: String(config.retentionMaxCount),
+    encryptionPassphrase: '',
+    helperImage: config.helperImage,
+    provider: config.provider,
+    sftpHost: config.sftp.host ?? '',
+    sftpPort: String(config.sftp.port),
+    sftpUsername: config.sftp.username ?? '',
+    sftpPassword: '',
+    sftpPrivateKey: '',
+    sftpPrivateKeyPassphrase: '',
+    sftpBasePath: config.sftp.basePath,
+    localBasePath: config.localBasePath,
+  }
+}
+
+function BackupsCard() {
+  const qc = useQueryClient()
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['backups', 'config'],
+    queryFn: api.backups.getConfig,
+    staleTime: 60_000,
+  })
+
+  const [draft, setDraft] = useState<BackupDraft | null>(null)
+  const form = draft ?? (data ? toBackupDraft(data) : null)
+  const dirty =
+    draft != null && data != null && JSON.stringify(draft) !== JSON.stringify(toBackupDraft(data))
+
+  const save = useMutation({
+    mutationFn: (next: BackupDraft) =>
+      api.backups.updateConfig({
+        enabled: next.enabled,
+        time: next.time.trim(),
+        instanceName: next.instanceName.trim() || null,
+        retentionDays: Number(next.retentionDays) || 0,
+        retentionMaxCount: Number(next.retentionMaxCount) || 0,
+        helperImage: next.helperImage.trim(),
+        provider: next.provider,
+        // Secrets: null keeps the stored value; the "(unchanged)" placeholder communicates that.
+        encryptionPassphrase: next.encryptionPassphrase || null,
+        sftpHost: next.sftpHost.trim() || null,
+        sftpPort: Number(next.sftpPort) || null,
+        sftpUsername: next.sftpUsername.trim() || null,
+        sftpPassword: next.sftpPassword || null,
+        sftpPrivateKey: next.sftpPrivateKey.trim() || null,
+        sftpPrivateKeyPassphrase: next.sftpPrivateKeyPassphrase || null,
+        sftpBasePath: next.sftpBasePath.trim() || null,
+        localBasePath: next.localBasePath.trim() || null,
+      }),
+    onSuccess: next => {
+      qc.setQueryData(['backups', 'config'], next)
+      setDraft(null)
+      toast.success('Backup settings saved — changes apply immediately.')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Failed to save.'),
+  })
+
+  const testStorage = useMutation({
+    mutationFn: api.backups.testStorage,
+    onSuccess: description => toast.success(`Storage reachable and writable: ${description}`),
+    onError: err => toast.error(err instanceof Error ? err.message : 'Storage test failed.'),
+  })
+
+  function set<K extends keyof BackupDraft>(key: K, value: BackupDraft[K]) {
+    if (!form) return
+    setDraft({ ...form, [key]: value })
+  }
+
+  const isPinned = (path: string) => data?.pinnedPaths.includes(path) ?? false
+  const pinnedPath = (path: string) => (isPinned(path) ? path : null)
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-text">Backups</h2>
+        <p className="mt-0.5 text-[13px] text-text-2">
+          Daily archives of each opted-in stack’s volumes, shipped to external storage with retention
+          and optional encryption. Which stacks take part is chosen on each stack’s Backups tab.
+        </p>
+      </div>
+
+      {isLoading || !form ? (
+        <Card>
+          <CardContent className="flex flex-col gap-4 p-5">
+            <Skeleton variant="line" className="w-2/3" />
+            <Skeleton variant="line" className="w-1/2" />
+          </CardContent>
+        </Card>
+      ) : isError ? (
+        <Banner
+          tone="danger"
+          title="Couldn't load backup settings"
+          action={
+            <Button size="sm" variant="secondary" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          The backup configuration is unavailable.
+        </Banner>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col gap-5 p-5">
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-text">Daily backup schedule</span>
+                <span className="mt-0.5 block text-[13px] text-text-2">
+                  Backs up every opted-in stack once per day at the configured time. Manual “Back up
+                  now” works even while this is off.
+                </span>
+                {pinnedPath('Watchtower:Backup:Enabled') && (
+                  <span className="mt-1 block">
+                    <PinnedNote path="Watchtower:Backup:Enabled" />
+                  </span>
+                )}
+              </span>
+              <Switch
+                checked={form.enabled}
+                onCheckedChange={v => set('enabled', v)}
+                disabled={isPinned('Watchtower:Backup:Enabled')}
+                aria-label="Enable the daily backup schedule"
+              />
+            </label>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field
+                label="Backup time"
+                hint="Server-local, 24h. Pick a quiet window — stacks with “stop containers” are briefly down."
+              >
+                {({ id }) => (
+                  <>
+                    <Input
+                      id={id}
+                      mono
+                      placeholder="03:30"
+                      value={form.time}
+                      onChange={e => set('time', e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:Time')}
+                    />
+                    {pinnedPath('Watchtower:Backup:Time') && (
+                      <PinnedNote path="Watchtower:Backup:Time" />
+                    )}
+                  </>
+                )}
+              </Field>
+              <Field
+                label="Instance name"
+                hint="Names this Watchtower in the storage layout and manifests, so several instances can share one target."
+              >
+                {({ id }) => (
+                  <>
+                    <Input
+                      id={id}
+                      mono
+                      placeholder={data?.resolvedInstanceName}
+                      value={form.instanceName}
+                      onChange={e => set('instanceName', e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:InstanceName')}
+                    />
+                    {pinnedPath('Watchtower:Backup:InstanceName') && (
+                      <PinnedNote path="Watchtower:Backup:InstanceName" />
+                    )}
+                  </>
+                )}
+              </Field>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Keep backups for (days)" hint="Older backups are deleted after each successful run. 0 keeps forever.">
+                {({ id }) => (
+                  <>
+                    <Input
+                      id={id}
+                      type="number"
+                      min={0}
+                      value={form.retentionDays}
+                      onChange={e => set('retentionDays', e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:RetentionDays')}
+                    />
+                    {pinnedPath('Watchtower:Backup:RetentionDays') && (
+                      <PinnedNote path="Watchtower:Backup:RetentionDays" />
+                    )}
+                  </>
+                )}
+              </Field>
+              <Field label="Keep at most (count)" hint="Per stack, oldest deleted first. 0 is unlimited.">
+                {({ id }) => (
+                  <>
+                    <Input
+                      id={id}
+                      type="number"
+                      min={0}
+                      value={form.retentionMaxCount}
+                      onChange={e => set('retentionMaxCount', e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:RetentionMaxCount')}
+                    />
+                    {pinnedPath('Watchtower:Backup:RetentionMaxCount') && (
+                      <PinnedNote path="Watchtower:Backup:RetentionMaxCount" />
+                    )}
+                  </>
+                )}
+              </Field>
+            </div>
+
+            <Field
+              label="Encryption passphrase"
+              hint={
+                isPinned('Watchtower:Backup:EncryptionPassphrase')
+                  ? 'The passphrase is set via the environment and cannot be changed here.'
+                  : data?.hasEncryptionPassphrase
+                    ? 'A passphrase is stored — backups are encrypted (OpenSSL-compatible AES-256). Leave blank to keep it. Changing it does not re-encrypt old backups.'
+                    : 'Optional. When set, backups are AES-256 encrypted in the OpenSSL enc format — restore needs only stock openssl and this passphrase. Store it somewhere safe: without it, encrypted backups are unrecoverable.'
+              }
+            >
+              {() => (
+                <>
+                  <SecretField
+                    value={form.encryptionPassphrase}
+                    copyable={false}
+                    placeholder={
+                      data?.hasEncryptionPassphrase ? '••••••••  (unchanged)' : 'No encryption'
+                    }
+                    onChange={v => set('encryptionPassphrase', v)}
+                    readOnly={isPinned('Watchtower:Backup:EncryptionPassphrase')}
+                    aria-label="Backup encryption passphrase"
+                  />
+                  {pinnedPath('Watchtower:Backup:EncryptionPassphrase') && (
+                    <PinnedNote path="Watchtower:Backup:EncryptionPassphrase" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            <Field
+              label="Storage provider"
+              hint="SFTP works with any SSH-reachable storage (a Hetzner Storage Box, a NAS, another server). Local writes into a directory mounted into the container."
+            >
+              {({ id }) => (
+                <>
+                  <Select
+                    value={form.provider}
+                    onValueChange={v => set('provider', v as BackupProvider)}
+                    disabled={isPinned('Watchtower:Backup:Provider')}
+                  >
+                    <SelectTrigger id={id}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sftp">SFTP</SelectItem>
+                      <SelectItem value="local">Local directory</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {pinnedPath('Watchtower:Backup:Provider') && (
+                    <PinnedNote path="Watchtower:Backup:Provider" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            {form.provider === 'sftp' && (
+              <div className="flex flex-col gap-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Host" hint="e.g. u123456.your-storagebox.de">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.sftpHost}
+                          onChange={e => set('sftpHost', e.target.value)}
+                          disabled={isPinned('Watchtower:Backup:Sftp:Host')}
+                        />
+                        {pinnedPath('Watchtower:Backup:Sftp:Host') && (
+                          <PinnedNote path="Watchtower:Backup:Sftp:Host" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field label="Port" hint="22 is the SSH default; Hetzner Storage Boxes use 23.">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={form.sftpPort}
+                          onChange={e => set('sftpPort', e.target.value)}
+                          disabled={isPinned('Watchtower:Backup:Sftp:Port')}
+                        />
+                        {pinnedPath('Watchtower:Backup:Sftp:Port') && (
+                          <PinnedNote path="Watchtower:Backup:Sftp:Port" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Username">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          value={form.sftpUsername}
+                          onChange={e => set('sftpUsername', e.target.value)}
+                          disabled={isPinned('Watchtower:Backup:Sftp:Username')}
+                        />
+                        {pinnedPath('Watchtower:Backup:Sftp:Username') && (
+                          <PinnedNote path="Watchtower:Backup:Sftp:Username" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Password"
+                    hint={
+                      data?.sftp.hasPassword
+                        ? 'A password is stored. Leave blank to keep it.'
+                        : 'Optional when a private key is used.'
+                    }
+                  >
+                    {() => (
+                      <>
+                        <SecretField
+                          value={form.sftpPassword}
+                          copyable={false}
+                          placeholder={data?.sftp.hasPassword ? '••••••••  (unchanged)' : 'Password'}
+                          onChange={v => set('sftpPassword', v)}
+                          readOnly={isPinned('Watchtower:Backup:Sftp:Password')}
+                          aria-label="SFTP password"
+                        />
+                        {pinnedPath('Watchtower:Backup:Sftp:Password') && (
+                          <PinnedNote path="Watchtower:Backup:Sftp:Password" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+                <Field
+                  label="Private key (PEM)"
+                  hint={
+                    data?.sftp.hasPrivateKey
+                      ? 'A key is stored. Leave blank to keep it; paste a new one to replace it.'
+                      : 'Optional alternative to the password: paste the full -----BEGIN … KEY----- block. Register the matching public key with the storage.'
+                  }
+                >
+                  {({ id }) => (
+                    <>
+                      <Textarea
+                        id={id}
+                        mono
+                        rows={4}
+                        placeholder={
+                          data?.sftp.hasPrivateKey
+                            ? '(unchanged)'
+                            : '-----BEGIN OPENSSH PRIVATE KEY-----'
+                        }
+                        value={form.sftpPrivateKey}
+                        onChange={e => set('sftpPrivateKey', e.target.value)}
+                        disabled={isPinned('Watchtower:Backup:Sftp:PrivateKey')}
+                      />
+                      {pinnedPath('Watchtower:Backup:Sftp:PrivateKey') && (
+                        <PinnedNote path="Watchtower:Backup:Sftp:PrivateKey" />
+                      )}
+                    </>
+                  )}
+                </Field>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Key passphrase" hint="Only if the private key itself is encrypted.">
+                    {() => (
+                      <>
+                        <SecretField
+                          value={form.sftpPrivateKeyPassphrase}
+                          copyable={false}
+                          placeholder="None"
+                          onChange={v => set('sftpPrivateKeyPassphrase', v)}
+                          readOnly={isPinned('Watchtower:Backup:Sftp:PrivateKeyPassphrase')}
+                          aria-label="SFTP private key passphrase"
+                        />
+                        {pinnedPath('Watchtower:Backup:Sftp:PrivateKeyPassphrase') && (
+                          <PinnedNote path="Watchtower:Backup:Sftp:PrivateKeyPassphrase" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field label="Base directory" hint="Remote directory the backups are rooted in (created if missing).">
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="watchtower-backups"
+                          value={form.sftpBasePath}
+                          onChange={e => set('sftpBasePath', e.target.value)}
+                          disabled={isPinned('Watchtower:Backup:Sftp:BasePath')}
+                        />
+                        {pinnedPath('Watchtower:Backup:Sftp:BasePath') && (
+                          <PinnedNote path="Watchtower:Backup:Sftp:BasePath" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+              </div>
+            )}
+
+            {form.provider === 'local' && (
+              <Field
+                label="Directory"
+                hint="A path inside the Watchtower container — mount a second disk or network share there; backups on the same disk as the data protect against little."
+              >
+                {({ id }) => (
+                  <>
+                    <Input
+                      id={id}
+                      mono
+                      placeholder="/backups"
+                      value={form.localBasePath}
+                      onChange={e => set('localBasePath', e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:Local:BasePath')}
+                    />
+                    {pinnedPath('Watchtower:Backup:Local:BasePath') && (
+                      <PinnedNote path="Watchtower:Backup:Local:BasePath" />
+                    )}
+                  </>
+                )}
+              </Field>
+            )}
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!dirty || save.isPending}
+                loading={save.isPending}
+                onClick={() => draft && save.mutate(draft)}
+              >
+                Save backups
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={dirty || testStorage.isPending}
+                loading={testStorage.isPending}
+                onClick={() => testStorage.mutate()}
+                title={dirty ? 'Save first — the test probes the stored settings.' : undefined}
+              >
+                Test storage
               </Button>
               {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
             </div>

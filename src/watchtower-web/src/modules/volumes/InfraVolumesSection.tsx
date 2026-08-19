@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Database, HardDrive, Trash2 } from 'lucide-react'
+import { Database, Download, HardDrive, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { downloadVolumeArchive } from './download'
 import type { VolumeInfo, VolumeSize } from '@/lib/types'
 import { formatBytes } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
@@ -171,7 +172,19 @@ export function InfraVolumesSection() {
       header: '',
       align: 'right',
       cell: (v) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Download archive of ${v.name}`}
+            title="Download archive (.tar.gz)"
+            onClick={() => {
+              downloadVolumeArchive(v.name)
+              toast.info('Preparing download…', 'The archive is built on the fly — large volumes take a moment.')
+            }}
+          >
+            <Download />
+          </Button>
           <DeleteOrphanButton v={v} />
         </div>
       ),

@@ -70,6 +70,14 @@ public sealed class Stack {
     public DeployStatus? LastDeployStatus { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
+    /// <summary>When true the daily backup schedule includes this stack (ADR-0016). Manual runs work regardless.</summary>
+    public bool BackupEnabled { get; set; }
+    /// <summary>
+    /// When true (default), the stack's running containers are stopped for the duration of the
+    /// volume archive step and restarted afterwards, so the snapshot is consistent (ADR-0016 §2).
+    /// </summary>
+    public bool BackupStopContainers { get; set; } = true;
+
     /// <summary>Set when this stack is a tenant instance of a <see cref="StackTemplate"/>; null for standalone stacks.</summary>
     public int? TemplateId { get; set; }
     public StackTemplate? Template { get; set; }

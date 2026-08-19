@@ -230,6 +230,55 @@ public sealed class DockerEngineClient : IDisposable {
         return result.StatusCode;
     }
 
+    // ── Container filesystem archives ────────────────────────────────────────
+
+    /// <summary>
+    /// Streams a tar archive of <paramref name="path"/> inside the container via
+    /// <c>GET /containers/{id}/archive</c>. Works on created (never started) containers, which is
+    /// what the backup helper containers rely on (ADR-0016 §1): the daemon reads the files itself,
+    /// nothing executes in the container. The returned stream is the live response body — dispose it
+    /// to release the connection.
+    /// </summary>
+    /// <remarks>
+    /// Long-running client: how long the archive takes is a property of the volume size, not of
+    /// Watchtower, so the caller bounds it through <paramref name="ct"/> alone. The requested
+    /// directory arrives as the top-level entry of the tar (e.g. <c>backup/…</c>).
+    /// </remarks>
+    public async Task<Stream> GetContainerArchiveAsync(
+        string containerId, string path, CancellationToken ct = default) {
+        var url = $"{_apiBase}/containers/{containerId}/archive?path={Uri.EscapeDataString(path)}";
+        var response = await _longRunningClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        try {
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsStreamAsync(ct);
+        } catch {
+            response.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Extracts a tar archive into <paramref name="path"/> inside the container via
+    /// <c>PUT /containers/{id}/archive</c>. Also works on created containers — used to inject the
+    /// backup manifest next to the mounted volumes before the archive is read back.
+    /// </summary>
+    public async Task PutContainerArchiveAsync(
+        string containerId, string path, Stream tarStream, CancellationToken ct = default) {
+        var url = $"{_apiBase}/containers/{containerId}/archive?path={Uri.EscapeDataString(path)}";
+        using var content = new StreamContent(tarStream);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-tar");
+        var response = await _client.PutAsync(url, content, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>Whether <paramref name="imageName"/> exists locally (<c>GET /images/{name}/json</c> → 404 = no).</summary>
+    public async Task<bool> ImageExistsAsync(string imageName, CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/images/{Uri.EscapeDataString(imageName)}/json", ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return false;
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
     // ── Volumes ──────────────────────────────────────────────────────────────
 
     /// <summary>

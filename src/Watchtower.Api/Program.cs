@@ -214,6 +214,14 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
             .SetProperty(e => e.FinishedAt, DateTimeOffset.UtcNow)
             .SetProperty(e => e.Output,
                 e => (e.Output ?? "") + "\n[Reset: process restarted while deploy was in progress]"));
+    // Same sweep for backups interrupted by a crash or shutdown (the queue does not persist).
+    await db.BackupEvents
+        .Where(e => e.Status == "running" || e.Status == "queued")
+        .ExecuteUpdateAsync(s => s
+            .SetProperty(e => e.Status, "failed")
+            .SetProperty(e => e.FinishedAt, DateTimeOffset.UtcNow)
+            .SetProperty(e => e.Output,
+                e => (e.Output ?? "") + "\n[Reset: process restarted while backup was in progress]"));
 }
 
 namespace Watchtower.Api {

@@ -51,4 +51,22 @@ public static class WatchtowerSettingPaths {
     public const string ProxyCloudflareAccessAllowedEmailDomains = "Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains";
     public const string ProxyCloudflareAccessGroupIds = "Watchtower:Proxy:Cloudflare:AccessGroupIds";
     public const string ProxyCloudflareAccessReusablePolicyIds = "Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds";
+
+    // ── Backups (backups.updateConfig, ADR-0016) ─────────────────────────────
+    public const string BackupEnabled = "Watchtower:Backup:Enabled";
+    public const string BackupTime = "Watchtower:Backup:Time";
+    public const string BackupInstanceName = "Watchtower:Backup:InstanceName";
+    public const string BackupRetentionDays = "Watchtower:Backup:RetentionDays";
+    public const string BackupRetentionMaxCount = "Watchtower:Backup:RetentionMaxCount";
+    public const string BackupEncryptionPassphrase = "Watchtower:Backup:EncryptionPassphrase";
+    public const string BackupHelperImage = "Watchtower:Backup:HelperImage";
+    public const string BackupProvider = "Watchtower:Backup:Provider";
+    public const string BackupSftpHost = "Watchtower:Backup:Sftp:Host";
+    public const string BackupSftpPort = "Watchtower:Backup:Sftp:Port";
+    public const string BackupSftpUsername = "Watchtower:Backup:Sftp:Username";
+    public const string BackupSftpPassword = "Watchtower:Backup:Sftp:Password";
+    public const string BackupSftpPrivateKey = "Watchtower:Backup:Sftp:PrivateKey";
+    public const string BackupSftpPrivateKeyPassphrase = "Watchtower:Backup:Sftp:PrivateKeyPassphrase";
+    public const string BackupSftpBasePath = "Watchtower:Backup:Sftp:BasePath";
+    public const string BackupLocalBasePath = "Watchtower:Backup:Local:BasePath";
 }
