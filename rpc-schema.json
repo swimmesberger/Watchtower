@@ -7432,6 +7432,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "twoFactorEnabled": {
+                "type": "boolean"
+              },
               "realmId": {
                 "type": "integer"
               },
@@ -7447,6 +7450,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "twoFactorEnabled",
               "realmId",
               "createdAt"
             ]
@@ -7523,6 +7527,9 @@
                 "lockedOut": {
                   "type": "boolean"
                 },
+                "twoFactorEnabled": {
+                  "type": "boolean"
+                },
                 "realmId": {
                   "type": "integer"
                 },
@@ -7538,6 +7545,7 @@
                 "isAdmin",
                 "disabled",
                 "lockedOut",
+                "twoFactorEnabled",
                 "realmId",
                 "createdAt"
               ]
@@ -7648,6 +7656,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "twoFactorEnabled": {
+                "type": "boolean"
+              },
               "realmId": {
                 "type": "integer"
               },
@@ -7663,6 +7674,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "twoFactorEnabled",
               "realmId",
               "createdAt"
             ]
@@ -7727,6 +7739,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "twoFactorEnabled": {
+                "type": "boolean"
+              },
               "realmId": {
                 "type": "integer"
               },
@@ -7742,6 +7757,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "twoFactorEnabled",
               "realmId",
               "createdAt"
             ]

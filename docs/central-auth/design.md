@@ -1,6 +1,9 @@
 # Central Authorization — Access Control Plane for Proxied Webapps
 
-> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 has begun: **groups + group-based grants are implemented** (`Groups` module, group subjects on `RouteAccessGrant`, group forwarding in the JWT and the per-mode ecosystem headers); OIDC upstream, template policy inheritance and MFA remain future work. **§13 (native multi-realm) was designed and built on 2026-08-10** — realms, per-realm credential spaces and login hosts, the realm access invariant and the operator-realm-only management surface all ship. §12 (product-branded login pages/themes) is designed, not implemented.
+> Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 has begun: **groups + group-based grants are implemented** (`Groups` module, group subjects on `RouteAccessGrant`, group forwarding in the JWT and the per-mode ecosystem headers); OIDC upstream and template policy inheritance remain future work. **§4's MFA was designed and built on
+2026-08-19**: TOTP with recovery codes, self-service in every realm, an administrative reset, and
+break-glass clearing the second factor along with the password — per-realm *enforcement* is still future
+work and belongs on the `Realm` entity (§13.8). **§13 (native multi-realm) was designed and built on 2026-08-10** — realms, per-realm credential spaces and login hosts, the realm access invariant and the operator-realm-only management surface all ship. §12 (product-branded login pages/themes) is designed, not implemented.
 > Branch/worktree: `watchtower-central-auth-84057b`.
 > Grounded against the current code (Proxy module, `CaddyManager`/`CaddyConfigBuilder`, `Route`
 > entity, host wiring in `Program.cs`) and Elarion `0.2.3-preview.79.1` (authorization API verified
@@ -133,8 +136,8 @@ meaningless without Caddy); Watchtower's own login works with the proxy off.
   needs one. Forward-auth + JWT covers the product fleet; the realm model that shipped does not
   preclude a protocol-level provider later.
 - **No self-registration, invites, or email flows.** Admin creates users; admin resets passwords.
-- **No MFA in v1** (TOTP/passkeys are v2 — the security-stamp plumbing from Identity core makes
-  this a bounded addition).
+- ~~**No MFA in v1**~~ *(TOTP landed 2026-08-19 — see §4 and §7. Passkeys/WebAuthn remain out of scope,
+  and MFA cannot yet be **required**: enforcement is per-realm policy and belongs on `Realm`, §13.8.)*
 - **No service tokens in v1**, but the verify endpoint is designed for them (§5): per-route
   **bypass paths** cover webhooks/health endpoints now; `Authorization: Bearer <service-token>`
   slots into verify later without a flow change.
@@ -143,8 +146,9 @@ meaningless without Caddy); Watchtower's own login works with the proxy off.
 
 - **Phase 1 — the control plane:** users + sessions, native Watchtower login (app #0), per-route
   policy, forward-auth + redirect dance + JWT, bypass paths, audit events.
-- **Phase 2 — identity federation & groups:** ~~groups + group-based grants~~ *(done)*; generic OIDC
-  upstream (= Keycloak, as per-realm federation per §13), template policy inheritance for tenants, TOTP.
+- **Phase 2 — identity federation & groups:** ~~groups + group-based grants~~ *(done)*; ~~TOTP~~ *(done)*;
+  generic OIDC upstream (= Keycloak, as per-realm federation per §13), template policy inheritance for
+  tenants.
 - **Phase 3 (as needed):** service tokens, SCIM; branded login (§12) climbs its own ladder
   (tokens → per-category auth hosts → runtime themes) as products demand it. ~~Realms land when a
   second user population actually exists~~ — they landed first instead (§13, 2026-08-10): a second
@@ -288,6 +292,13 @@ encryption) are persisted to the same directory — otherwise every restart logs
 - **Logout:** the auth host's logout deletes the SSO session and all App sessions of that user
   (global sign-out); a per-app logout path (`/.watchtower/logout` on the app domain) clears just
   that app's cookie/session.
+- A **pending-MFA record** (`SessionKind.MfaPending`, 5 min) is the half-finished login of a two-factor
+  account: same table, same hashing, same expiry sweep, but returned in the response *body* and never as
+  a cookie. It authenticates nothing — every lookup that turns a token into a principal filters to
+  `Sso`/`App` by an allow-list, so adding a future kind forces a decision rather than inheriting one.
+- **Two-factor (TOTP)** is ASP.NET Identity's own RFC 6238 authenticator provider over the custom user
+  store (no TOTP package). Recovery codes are SHA-256 hashes in `user_recovery_codes`, deleted on
+  redemption — the affected-row count is what makes a code single-use under concurrency.
 - The **JWT** is minted per verified request (cheap: one ES256 sign) with `aud` = app domain and
   short `exp` (5 min) — it is an assertion about *this request*, not a bearer credential.
 
@@ -383,8 +394,14 @@ existing convention for non-RPC/external surfaces):
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/auth/login` | Password login (SPA form); sets `__wt_sso` (+ native Watchtower session). Rate-limited + Identity lockout. Accepts optional `redirect_uri` to continue the dance. |
+| `POST /api/auth/login` | Password login (SPA form); sets `__wt_sso` (+ native Watchtower session). Rate-limited + Identity lockout. Accepts optional `redirect_uri` to continue the dance. For a two-factor account it sets **no cookie** and answers `{ mfaRequired, mfaToken }` instead. |
+| `POST /api/auth/login/mfa` | Redeems that challenge with a TOTP or a recovery code and finishes the login — same cookie, body and `continueUrl` semantics as above. Same rate limiter; a wrong code counts against the lockout. Bound to the realm of the host it arrives on. |
 | `POST /api/auth/logout` | Global sign-out (revokes SSO + all app sessions). |
+| `GET /api/auth/mfa` | The caller's own two-factor state (`totpEnabled`, `recoveryCodesRemaining`). |
+| `POST /api/auth/mfa/totp/begin` | Mints an authenticator key; returns it as a shared key + `otpauth://` URI. Refused (409) while two-factor is already on. |
+| `POST /api/auth/mfa/totp/confirm` | Turns two-factor on given a valid code **and** the account password; returns the ten recovery codes, once. |
+| `POST /api/auth/mfa/totp/disable` | Turns it off given a TOTP *or* a recovery code; clears the key and every code. |
+| `POST /api/auth/mfa/recovery/regenerate` | Replaces the recovery codes given a TOTP code (a recovery code is refused). |
 | `GET /api/access/verify` | The `forward_auth` target (§5). Internal (control network). |
 | `GET /api/access/userinfo` | OIDC UserInfo (Core §5.3): identity claims for a Bearer JWT or the app-session cookie. |
 | `GET /.watchtower/callback` | Code redemption on the app domain (§5). |
@@ -393,8 +410,9 @@ existing convention for non-RPC/external surfaces):
 
 **Modules** (normal Elarion handlers, JSON-RPC):
 
-- `Users` module: `users.list/create/update/delete/resetPassword/setDisabled` — all
-  `[RequireRole("Admin")]`.
+- `Users` module: `users.list/create/update/delete/resetPassword/setDisabled/resetMfa` — all
+  `[RequireRole("Admin")]`. `resetMfa` is one-directional: it removes a second factor and there is no
+  handler that adds one, because enrolling requires a code only the account's owner can produce.
 - `Realms` module: `realms.list/create/update/delete` — all `[RequireRole("Admin")]`, and
   operator-realm-only twice over (§13: the role is emitted for system-realm accounts only, and every
   handler additionally passes the system-realm gate).
@@ -419,7 +437,13 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
 
 - **Login page** (pre-auth route in the SPA) posting to `/api/auth/login`; the session bootstrap's
   `isAuthenticated` drives the redirect-to-login gate.
-- **Users page** (new `users` frontend module, gated `when: { module: 'Users' }` + admin role).
+- **Account security page** (`/account/security`, platform-owned like the login page and gated by
+  nothing): TOTP status, enrolment with a QR code and manual-key fallback, recovery-code display, and the
+  disable/regenerate flows. Deliberately *not* a feature module — every account may protect its own
+  credentials, including one outside the operator realm, for which the shell renders the applications
+  portal instead of module routes and therefore lets this one path through explicitly.
+- **Users page** (new `users` frontend module, gated `when: { module: 'Users' }` + admin role), showing
+  each account's two-factor state and offering the administrative reset.
 - **Groups page** (new `groups` frontend module, gated the same way): group CRUD plus a members
   roster over the account list.
 - **Route form** gains an *Access* section: mode selector (`Public` / `Any authenticated user` /
@@ -462,7 +486,7 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
    app, denial page, bypass path, header-smuggling attempt rejected.
 
 **Phase 2** — ~~groups + group grants~~ *(done)*; generic OIDC upstream (JIT provisioning,
-`issuer+sub` linking), template access inheritance, TOTP.
+`issuer+sub` linking), template access inheritance.
 
 ## 11. Risks / open questions
 
@@ -808,7 +832,8 @@ the same word is noise.
 
 ### 13.8 Still future work
 
-- **Per-realm password, lockout and MFA policy.** Today's are instance-wide `Auth:*` options. `Realm`
+- **Per-realm password, lockout and MFA-enforcement policy.** Today's are instance-wide `Auth:*` options,
+  and two-factor is available to every account but required of none. `Realm`
   is where they hang when they land — the seam is the entity, and it now exists.
 - **Per-realm federation config** — the §2.1 login button, per population.
 - **Realm-scoped management principals.** The token-authenticated management and app APIs

@@ -695,6 +695,12 @@ export interface User {
   disabled: boolean
   /** Temporarily locked by the brute-force counter. Derived server-side from the lockout deadline. */
   lockedOut: boolean
+  /**
+   * Whether the account demands an authenticator code after its password. An administrator can only ever
+   * take a second factor away (`users.resetMfa`), never add one — enrolling needs a code that only the
+   * account's owner can produce.
+   */
+  twoFactorEnabled: boolean
   /** The population the account belongs to; its user name is only unique within it. Immutable. */
   realmId: number
   createdAt: string

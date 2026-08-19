@@ -184,7 +184,9 @@ function SetupDialog({
   const [step, setStep] = useState<SetupStep>('scan')
   const [enrolment, setEnrolment] = useState<MfaEnrolment | null>(null)
   const [code, setCode] = useState('')
+  const [password, setPassword] = useState('')
   const [codes, setCodes] = useState<string[]>([])
+  const [acknowledged, setAcknowledged] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // The key is minted when the dialog opens and discarded when it closes: it is a secret, and one that
@@ -197,10 +199,13 @@ function SetupDialog({
   })
 
   const confirm = useMutation({
-    mutationFn: (value: string) => confirmTotp(value),
+    mutationFn: (vars: { code: string; password: string }) => confirmTotp(vars.code, vars.password),
     onSuccess: (recoveryCodes) => {
       setCodes(recoveryCodes)
       setStep('codes')
+      // The password has done its job; there is no reason for it to stay in component state while the
+      // dialog is still open on the codes step.
+      setPassword('')
       onEnrolled()
     },
     onError: (failure: Error) => setError(failure.message || 'That code is not valid.'),
@@ -211,7 +216,9 @@ function SetupDialog({
     setStep('scan')
     setEnrolment(null)
     setCode('')
+    setPassword('')
     setCodes([])
+    setAcknowledged(false)
     setError(null)
     begin.mutate()
     // Intentionally keyed on `open` alone: this is the dialog's own lifecycle, not a data dependency.
@@ -221,14 +228,25 @@ function SetupDialog({
   function onSubmit(event: FormEvent) {
     event.preventDefault()
     setError(null)
-    confirm.mutate(code)
+    confirm.mutate({ code, password })
+  }
+
+  /** Swallows Radix's dismiss gestures while unsaved codes are on screen. */
+  const guardCodesStep = (event: Event) => {
+    if (step === 'codes' && !acknowledged) event.preventDefault()
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* No close affordance on the codes step: they cannot be shown again, so dismissing by accident is
-          the one mistake this dialog must not make easy. */}
-      <DialogContent hideClose={step === 'codes'}>
+      {/* The codes step is deliberately hard to leave by accident: no close button, and Escape and
+          outside clicks are ignored until the acknowledgement is ticked. They cannot be shown again, so a
+          stray key press here costs the user every code they were just issued. */}
+      <DialogContent
+        hideClose={step === 'codes'}
+        onEscapeKeyDown={guardCodesStep}
+        onPointerDownOutside={guardCodesStep}
+        onInteractOutside={guardCodesStep}
+      >
         {step === 'scan' && (
           <>
             <DialogHeader>
@@ -275,12 +293,12 @@ function SetupDialog({
             <DialogHeader>
               <DialogTitle>Confirm your authenticator</DialogTitle>
               <DialogDescription>
-                Enter the 6-digit code your app is showing now. Two-factor authentication stays off until
-                this matches.
+                Enter the 6-digit code your app is showing now, and your account password. Two-factor
+                authentication stays off until both match.
               </DialogDescription>
             </DialogHeader>
 
-            <Field label="Authentication code" error={error ?? undefined}>
+            <Field label="Authentication code">
               {({ id, describedBy }) => (
                 <Input
                   id={id}
@@ -291,6 +309,27 @@ function SetupDialog({
                   inputMode="numeric"
                   maxLength={7}
                   autoFocus
+                  invalid={error !== null}
+                  required
+                />
+              )}
+            </Field>
+
+            {/* The code proves the new app works; the password proves this is you. Anyone who got hold of
+                your signed-in browser could set up their own authenticator otherwise. */}
+            <Field
+              label="Account password"
+              hint="Confirms it is really you turning this on, not someone using your signed-in browser."
+              error={error ?? undefined}
+            >
+              {({ id, describedBy }) => (
+                <Input
+                  id={id}
+                  aria-describedby={describedBy}
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
                   invalid={error !== null}
                   required
                 />
@@ -312,6 +351,8 @@ function SetupDialog({
           <RecoveryCodesStep
             codes={codes}
             title="Save your recovery codes"
+            saved={acknowledged}
+            onSavedChange={setAcknowledged}
             onDone={() => onOpenChange(false)}
           />
         )}
@@ -409,6 +450,7 @@ function RegenerateDialog({
 }) {
   const [code, setCode] = useState('')
   const [codes, setCodes] = useState<string[]>([])
+  const [acknowledged, setAcknowledged] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const regenerate = useMutation({
@@ -424,16 +466,30 @@ function RegenerateDialog({
     if (!open) return
     setCode('')
     setCodes([])
+    setAcknowledged(false)
     setError(null)
   }, [open])
 
+  // Same rule as the setup dialog: once codes are on screen the old set is already dead, so leaving
+  // without saving these is unrecoverable — and must not be one stray Escape away.
+  const guardCodes = (event: Event) => {
+    if (codes.length > 0 && !acknowledged) event.preventDefault()
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent hideClose={codes.length > 0}>
+      <DialogContent
+        hideClose={codes.length > 0}
+        onEscapeKeyDown={guardCodes}
+        onPointerDownOutside={guardCodes}
+        onInteractOutside={guardCodes}
+      >
         {codes.length > 0 ? (
           <RecoveryCodesStep
             codes={codes}
             title="Your new recovery codes"
+            saved={acknowledged}
+            onSavedChange={setAcknowledged}
             onDone={() => onOpenChange(false)}
           />
         ) : (
@@ -495,13 +551,16 @@ function RegenerateDialog({
 function RecoveryCodesStep({
   codes,
   title,
+  saved,
+  onSavedChange,
   onDone,
 }: {
   codes: string[]
   title: string
+  saved: boolean
+  onSavedChange: (saved: boolean) => void
   onDone: () => void
 }) {
-  const [saved, setSaved] = useState(false)
   const asText = codes.join('\n')
 
   return (
@@ -526,7 +585,7 @@ function RecoveryCodesStep({
           <input
             type="checkbox"
             checked={saved}
-            onChange={(e) => setSaved(e.target.checked)}
+            onChange={(e) => onSavedChange(e.target.checked)}
             className="size-4 accent-[var(--brand)]"
           />
           I have saved these codes

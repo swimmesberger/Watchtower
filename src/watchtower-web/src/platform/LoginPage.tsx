@@ -139,8 +139,15 @@ export function LoginPage() {
         useRecoveryCode ? { recoveryCode: code } : { code },
         redirectUri,
       )
-      // A challenge can only ever resolve to a finished sign-in; the union is shared with the password step.
-      if (outcome.kind === 'signed-in') land(outcome)
+      if (outcome.kind === 'signed-in') {
+        land(outcome)
+        return
+      }
+      // Unreachable today — the second-factor endpoint answers a success or a 401, never another
+      // challenge — but the union it shares with the password step allows the shape, and a missing branch
+      // here would leave the button spinning for ever with no way forward. Start over instead.
+      restart('Something went wrong finishing your sign-in. Please try again.')
+      setBusy(false)
     } catch (failure) {
       setBusy(false)
       // The backend answers a wrong code and a lapsed challenge identically — saying which would tell a

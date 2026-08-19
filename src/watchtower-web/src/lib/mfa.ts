@@ -50,9 +50,17 @@ export function beginTotp(): Promise<MfaEnrolment> {
 /**
  * Finishes enrolment and returns the recovery codes. This is the only time they are readable — the server
  * keeps hashes — so a caller that drops them has thrown them away for good.
+ *
+ * Takes the account password as well as the code. The code only proves possession of the *new*
+ * authenticator, which is something whoever borrowed this session would also have; the password is the one
+ * credential the session does not carry, so it is what makes enrolling an act of the account's owner. The
+ * backend answers a wrong password and a wrong code identically, so neither is a probe for the other.
  */
-export async function confirmTotp(code: string): Promise<string[]> {
-  const body = await send<{ recoveryCodes: string[] }>('POST', '/api/auth/mfa/totp/confirm', { code })
+export async function confirmTotp(code: string, password: string): Promise<string[]> {
+  const body = await send<{ recoveryCodes: string[] }>('POST', '/api/auth/mfa/totp/confirm', {
+    code,
+    password,
+  })
   return body.recoveryCodes
 }
 
@@ -97,6 +105,14 @@ async function send<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
   }
   if (response.status === 409) {
     throw new MfaStateError(await messageOf(response, 'That is not possible in the current state.'))
+  }
+  // These routes share the login rate limiter, so a burst of attempts is answered here rather than at the
+  // handler. Surfaced as a code error because the form is still the right place to be — the message just
+  // has to say waiting is what helps, not a different code.
+  if (response.status === 429) {
+    throw new MfaCodeError(
+      await messageOf(response, 'Too many attempts. Please wait a moment and try again.'),
+    )
   }
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText}`)

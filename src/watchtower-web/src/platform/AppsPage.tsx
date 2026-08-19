@@ -128,7 +128,9 @@ function AppCard({ app }: { app: AppLink }) {
  * authentication is switched off, so the button is not offered. */
 /**
  * The portal's one link out of itself. Realm accounts see no management UI at all, so without this the
- * account-security page would exist for them and be unreachable.
+ * account-security page would exist for them and be unreachable. Hidden for the implicit local
+ * administrator, under the same rule as {@link SignOutButton}: with `Auth:Enabled` off there is no account
+ * to protect and the MFA endpoints answer 404.
  */
 function SecurityLink({ caps }: { caps: SessionCapabilities }) {
   const user = caps.user
@@ -144,6 +146,11 @@ function SecurityLink({ caps }: { caps: SessionCapabilities }) {
   )
 }
 
+/**
+ * Ends the session — globally, since the backend revokes every session the account holds. Rendered only
+ * for a real account: with `Auth:Enabled` off the backend reports an implicit local administrator
+ * (`LOCAL_USER_ID`) that has nothing to sign out of.
+ */
 function SignOutButton({ caps }: { caps: SessionCapabilities }) {
   const user = caps.user
   if (!user.isAuthenticated || user.id === LOCAL_USER_ID) return null
