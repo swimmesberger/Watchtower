@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Identity;
+﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Elarion.Abstractions.Identity;
 using Watchtower.Application.Entities;
@@ -22,6 +22,12 @@ namespace Watchtower.Application.Modules.Users;
 /// it, not across the instance, so an administration screen listing two accounts called <c>admin</c> needs
 /// this to tell them apart.
 /// </param>
+/// <param name="TwoFactorEnabled">
+/// Whether the account demands an authenticator code after its password. Safe to project — it is a policy
+/// fact, not a secret, and the administrator who may reset it needs to know whether there is anything to
+/// reset. The authenticator key and the recovery-code hashes are the secrets, and neither appears here or
+/// in any other response.
+/// </param>
 public sealed record UserDto(
     int Id,
     string UserName,
@@ -29,6 +35,7 @@ public sealed record UserDto(
     bool IsAdmin,
     bool Disabled,
     bool LockedOut,
+    bool TwoFactorEnabled,
     int RealmId,
     DateTimeOffset CreatedAt);
 
@@ -52,6 +59,7 @@ public static class UserMapping {
             user.IsAdmin,
             user.Disabled,
             user.LockoutEnd is { } end && end > now,
+            user.TwoFactorEnabled,
             user.RealmId,
             user.CreatedAt);
     }

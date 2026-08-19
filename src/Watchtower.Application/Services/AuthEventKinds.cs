@@ -20,6 +20,42 @@ public static class AuthEventKinds {
     /// <summary>A global sign-out.</summary>
     public const string Logout = "logout";
 
+    /// <summary>
+    /// A login was completed by a correct second factor. Always preceded by no <see cref="LoginOk"/> row:
+    /// a two-factor login is one event, and this is it, so the trail never suggests that the password alone
+    /// let anyone in.
+    /// </summary>
+    public const string LoginMfaOk = "login.mfa.ok";
+
+    /// <summary>
+    /// A second factor was rejected — wrong code, unusable recovery code, unknown or expired challenge
+    /// alike. The password was already correct at this point, which is exactly why a burst of these matters
+    /// more than a burst of <see cref="LoginFailed"/>.
+    /// </summary>
+    public const string LoginMfaFailed = "login.mfa.failed";
+
+    /// <summary>An account's owner finished enrolling an authenticator and turned two-factor on.</summary>
+    public const string MfaTotpEnabled = "mfa.totp.enabled";
+
+    /// <summary>An account's owner turned two-factor off, clearing the authenticator key and the codes.</summary>
+    public const string MfaTotpDisabled = "mfa.totp.disabled";
+
+    /// <summary>
+    /// An administrator cleared someone else's two-factor enrolment (<c>users.resetMfa</c>) — the locked-out
+    /// -of-their-authenticator recovery path. Distinct from <see cref="MfaTotpDisabled"/> because the actor
+    /// is not the account's owner, which is the whole reason it is worth a row.
+    /// </summary>
+    public const string MfaTotpReset = "mfa.totp.reset";
+
+    /// <summary>A fresh set of recovery codes was issued, replacing whatever was left of the old set.</summary>
+    public const string MfaRecoveryGenerated = "mfa.recovery.generated";
+
+    /// <summary>
+    /// A recovery code was spent to get in. Worth its own kind: it means the authenticator was unavailable,
+    /// and one of a finite set of one-shot credentials is now gone.
+    /// </summary>
+    public const string MfaRecoveryRedeemed = "mfa.recovery.redeemed";
+
     /// <summary>A signed-in visitor was refused an app they hold no grant for (and refused <c>redirect_uri</c> handovers).</summary>
     public const string AccessDenied = "access.denied";
 

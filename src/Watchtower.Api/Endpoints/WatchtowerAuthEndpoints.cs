@@ -21,7 +21,7 @@ namespace Watchtower.Api.Endpoints;
 /// follows to the app's own callback; <c>/api/auth/continue</c> is the same step for a visitor who is
 /// already signed in centrally, which is what makes the second and third app silent.
 /// </remarks>
-public static class WatchtowerAuthEndpoints {
+public static partial class WatchtowerAuthEndpoints {
     /// <summary>
     /// Credentials posted by the login form. <paramref name="RedirectUri"/> is present only when the login
     /// page was reached from a protected app, and is the URL the visitor was originally going to.
@@ -33,6 +33,13 @@ public static class WatchtowerAuthEndpoints {
     /// only for the cross-domain dance and is an opaque target to navigate to — the SPA never renders it.
     /// </summary>
     public sealed record LoginResponse(string UserName, bool IsAdmin, string? ContinueUrl = null);
+
+    /// <summary>
+    /// What a correct password gets an account that also demands a second factor: no cookie, no session,
+    /// just the single-use token that names the challenge. <paramref name="MfaRequired"/> is always true —
+    /// it exists so the SPA can tell the two shapes apart by a field rather than by their absence.
+    /// </summary>
+    public sealed record MfaChallengeResponse(bool MfaRequired, string MfaToken);
 
     /// <summary>The app the caller wants to be handed over to.</summary>
     public sealed record ContinueRequest(string? RedirectUri);
@@ -76,14 +83,18 @@ public static class WatchtowerAuthEndpoints {
     public static WebApplication MapWatchtowerAuthEndpoints(this WebApplication app, bool authEnabled) {
         if (!authEnabled) {
             app.MapPost("/api/auth/login", () => Results.NotFound());
+            app.MapPost("/api/auth/login/mfa", () => Results.NotFound());
             app.MapPost("/api/auth/logout", () => Results.NotFound());
             app.MapPost("/api/auth/continue", () => Results.NotFound());
+            MapMfaNotFound(app);
             return app;
         }
 
         MapLogin(app);
+        MapMfaLogin(app);
         MapLogout(app);
         MapContinue(app);
+        MapMfaSelfService(app);
         return app;
     }
 
@@ -166,6 +177,21 @@ public static class WatchtowerAuthEndpoints {
 
             if (user.Disabled)
                 return await RejectAsync(db, time, user.Id, "account disabled", http);
+
+            // The password was right, which for a two-factor account is half an answer. No cookie is set
+            // and no session exists yet: what comes back is a pending-MFA token in the body, redeemable
+            // once at /api/auth/login/mfa within five minutes and worth nothing anywhere else. The
+            // redirect_uri is not resolved here either — the access check belongs with the session that
+            // is actually minted, which is the one the second factor produces.
+            //
+            // Deliberately *before* the failed-count reset. Clearing the counter here would let anyone
+            // holding the password top the lockout budget back up between code guesses simply by
+            // re-posting it, which would make the five-attempt limit on the second factor unreachable.
+            // Only a completed login resets the counter, and /api/auth/login/mfa does that on success.
+            if (user.TwoFactorEnabled) {
+                var pending = await sessions.CreateMfaPendingAsync(user, ct);
+                return Results.Ok(new MfaChallengeResponse(true, pending));
+            }
 
             if (await users.GetAccessFailedCountAsync(user) > 0)
                 await users.ResetAccessFailedCountAsync(user);

@@ -30,8 +30,10 @@ Watchtower is unauthenticated and belongs behind an authenticating reverse proxy
   break-glass recovery hook.
 - An **Audit** screen over the trail — every login, denial, policy change and break-glass recovery,
   newest first, filterable by event kind, account and app.
+- **Two-factor authentication (TOTP)** — self-service per account, in any realm: an authenticator app
+  plus ten single-use recovery codes, with an administrative reset for the account that loses both.
 
-Not yet (Phase 2): OIDC/SSO upstream, MFA/TOTP, template policy inheritance, and service tokens. See
+Not yet (Phase 2): OIDC/SSO upstream, template policy inheritance, and service tokens. See
 [design.md §2.7–§2.8](design.md).
 
 ## Enabling it
@@ -325,11 +327,49 @@ behind the single reverse proxy every login shares Caddy's address, so the limit
 multi-user instance reached through the proxy — the per-account lockout is the primary control either
 way.
 
+## Two-factor authentication
+
+Any signed-in account can turn it on for itself from **Security** (the shield in the sidebar, and in the
+applications portal for realm accounts) — no administrator involvement, and it works in every realm.
+
+- **Enrolling** scans a QR code (or types the key) into any TOTP app, then proves it with a code *and*
+  the account password. The password is what makes enrolment an act of the account's owner rather than
+  of whoever is holding a signed-in browser; the code alone would be something an attacker also has.
+  Two-factor stays off until both match, so an abandoned setup cannot lock anyone out.
+- **Recovery codes** — ten, single-use, shown once. Only their SHA-256 hashes are stored, so nothing can
+  show them again; redeeming one deletes it. Regenerating replaces the whole set and needs an
+  authenticator code specifically (a recovery code is refused, or one leaked code would mint ten more).
+- **Signing in** becomes password → code. The password step mints no cookie at all: it answers with a
+  single-use challenge token, good for five minutes, that only the second step can redeem. A wrong code
+  keeps the challenge (a typo should not mean retyping your password) but spends the same five-attempt
+  lockout budget a wrong password does, and the per-IP login limiter covers the step too.
+- **Turning it off** takes a code — or a recovery code, so a lost phone does not require an
+  administrator. It clears the flag, the key and every remaining code together.
+- **If both are lost**, an administrator uses **Reset two-factor** on the Users page (`users.resetMfa`).
+  That can only ever *remove* a factor: there is no call that enrols one on somebody's behalf, because
+  enrolling needs a code only the owner can produce. It leaves the account's sessions and password
+  alone — it exists because someone cannot get in.
+- **Break-glass clears it too.** `WATCHTOWER__AUTH__RESETPASSWORD` resets the `admin` password *and*
+  removes that account's second factor, because a lost authenticator is the usual reason to reach for
+  the hook and a recovery that left the code prompt standing would recover nothing. Anyone who can set
+  that variable and restart the process already owns the deployment, so this takes nothing from them
+  that they did not have; both the audit trail (`auth.breakglass`) and the startup warning say the
+  factor was removed.
+- **The trail** gains `mfa.totp.enabled`, `mfa.totp.disabled`, `mfa.totp.reset`,
+  `mfa.recovery.generated`, `mfa.recovery.redeemed`, `login.mfa.ok` and `login.mfa.failed`. A
+  two-factor sign-in writes `login.mfa.ok` and no `login.ok` — it is one event, not two.
+
+Neither the authenticator key nor a recovery code ever appears in a DTO, an API response or the audit
+detail. The one exception is the enrolment response itself, which hands the key to its own owner once.
+
 ## Known limitations
 
-- **No MFA or OIDC/SSO yet.** Local password accounts only; these are Phase 2
+- **No OIDC/SSO upstream yet.** Local password accounts only; federation is Phase 2
   ([design.md §2.8](design.md)). Groups have landed — see **Groups** in the sidebar — but group
   membership comes from Watchtower's own directory, not from a federated identity provider.
+- **Two-factor cannot be *required*.** It is available to every account and enrolment is entirely
+  self-service, but nothing lets an operator make it mandatory — per-realm enforcement lands on the
+  `Realm` entity alongside the rest of the per-realm login policy below.
 - **Groups are not inherited by tenant routes.** A stack template carries no access policy yet, so a
   route auto-created for a new tenant starts at the default and has to be granted explicitly. Also
   Phase 2 ([design.md §2.8](design.md)).

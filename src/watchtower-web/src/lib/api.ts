@@ -421,6 +421,11 @@ export const api = {
     },
     setDisabled: async (id: number, disabled: boolean) =>
       (await rpc('users.setDisabled', { id, disabled })).user as User,
+    // Clears the account's two-factor enrolment: the flag, the authenticator key and every unused recovery
+    // code. One-directional by design — there is no call that turns a second factor *on* for someone else.
+    // `wasEnabled` reports what was actually undone, so the UI can say "cleared" rather than "done".
+    resetMfa: async (id: number) =>
+      (await rpc('users.resetMfa', { id })).wasEnabled as boolean,
     delete: async (id: number) => {
       await rpc('users.delete', { id })
     },

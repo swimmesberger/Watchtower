@@ -6,6 +6,20 @@ public enum SessionKind {
     Sso,
     /// <summary>A per-app session on the app's own domain (<c>__wt_access</c>), scoped to <see cref="AuthSession.RouteId"/>.</summary>
     App,
+    /// <summary>
+    /// A half-finished login: the password was accepted, the second factor was not supplied yet. Its token
+    /// is returned in the response body, never as a cookie, and it authenticates <em>nothing</em> — it only
+    /// says which account <c>POST /api/auth/login/mfa</c> may finish signing in, once, within five minutes.
+    /// </summary>
+    /// <remarks>
+    /// Sharing the <c>auth_sessions</c> table is what makes the expiry sweep, the hashing at rest and the
+    /// cascade on account delete apply to it for free. It is kept out of every authentication path by kind:
+    /// <see cref="Services.AuthSessionService.ValidateAsync"/> and
+    /// <see cref="Services.AuthSessionService.ValidateAppSessionAsync"/> match on <see cref="Sso"/>/
+    /// <see cref="App"/>, and <see cref="Services.AuthSessionService.ValidateAnyAsync"/> excludes this kind
+    /// explicitly — a pending record presented as a cookie is simply not a session.
+    /// </remarks>
+    MfaPending,
 }
 
 /// <summary>

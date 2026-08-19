@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Elarion.Abstractions;
 using Elarion.Abstractions.Dispatch;
 using Microsoft.AspNetCore.Identity;
@@ -31,6 +31,7 @@ public sealed class UsersModuleTests {
         services.AddResetUserPassword();
         services.AddSetUserDisabled();
         services.AddDeleteUser();
+        services.AddResetUserMfa();
     };
 
     // -- Listing ---------------------------------------------------------------------------------
@@ -76,6 +77,7 @@ public sealed class UsersModuleTests {
     [InlineData("resetPassword")]
     [InlineData("setDisabled")]
     [InlineData("delete")]
+    [InlineData("resetMfa")]
     public async Task Mutations_WithAuthEnabled_AreDeniedToANonAdministrator(string operation) {
         using var host = AuthTestHost.Start(WithUsersModule, ("Watchtower:Auth:Enabled", "true"));
 
@@ -94,6 +96,8 @@ public sealed class UsersModuleTests {
                     sp, new SetUserDisabled.Command(1, Disabled: true)),
                 "delete" => await DeniedKindAsync<DeleteUser.Command, DeleteUser.Response>(
                     sp, new DeleteUser.Command(1)),
+                "resetMfa" => await DeniedKindAsync<ResetUserMfa.Command, ResetUserMfa.Response>(
+                    sp, new ResetUserMfa.Command(1)),
                 _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null),
             };
 
@@ -461,7 +465,147 @@ public sealed class UsersModuleTests {
         Assert.Equal(ErrorKind.NotFound, result.Error.Kind);
     }
 
+    // -- MFA reset -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The administrator's recovery path: everything the account's own owner would have had to prove
+    /// possession of is cleared, and the security stamp moves.
+    /// </summary>
+    /// <remarks>
+    /// The stamp assertion is about the record, not about access: nothing compares the stamp when a session
+    /// is validated (<see cref="User.SecurityStamp"/>), so rotating it signs nobody out today. It is pinned
+    /// here so the value a future stamp-validation hook will read is actually being maintained.
+    /// </remarks>
+    [Fact]
+    public async Task ResetMfa_ClearsTheFlagTheKeyAndTheCodes_AndRotatesTheSecurityStamp() {
+        using var host = AuthTestHost.Start(WithUsersModule);
+        var id = await SeedUserAsync(host, "alice", isAdmin: false);
+        await SeedUserAsync(host, "admin", isAdmin: true);
+        await EnrolMfaAsync(host, id);
+
+        var stampBefore = await SecurityStampAsync(host, id);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<ResetUserMfa.Command, ResetUserMfa.Response>(
+                scope.ServiceProvider, new ResetUserMfa.Command(id));
+            Assert.True(result.IsSuccess, Describe(result));
+            Assert.Equal(id, result.Value.Id);
+            // The response says what was actually undone, not merely that a request was accepted.
+            Assert.True(result.Value.WasEnabled);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var alice = await db.Users.SingleAsync(u => u.Id == id, TestContext.Current.CancellationToken);
+            Assert.False(alice.TwoFactorEnabled);
+            Assert.Null(alice.AuthenticatorKey);
+            Assert.NotEqual(stampBefore, alice.SecurityStamp);
+            Assert.False(await db.UserRecoveryCodes.AnyAsync(
+                c => c.UserId == id, TestContext.Current.CancellationToken));
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var row = await db.AuthEvents.SingleAsync(
+                e => e.Kind == "mfa.totp.reset", TestContext.Current.CancellationToken);
+            Assert.Equal(id, row.UserId);
+            Assert.Contains($"target=alice#{id}", row.Detail);
+            Assert.Contains("wasEnabled=True", row.Detail);
+            Assert.Contains($"recoveryCodesDropped={UserMfaService.RecoveryCodeCount}", row.Detail);
+        }
+    }
+
+    /// <summary>
+    /// Idempotent on an account that had nothing enrolled — an administrator asking for a clean slate gets
+    /// one — but the row records that there was nothing to undo rather than implying a factor was removed.
+    /// </summary>
+    [Fact]
+    public async Task ResetMfa_OnAnAccountWithoutMfa_SucceedsAndSaysSo() {
+        using var host = AuthTestHost.Start(WithUsersModule);
+        var id = await SeedUserAsync(host, "alice", isAdmin: false);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<ResetUserMfa.Command, ResetUserMfa.Response>(
+                scope.ServiceProvider, new ResetUserMfa.Command(id));
+            Assert.True(result.IsSuccess, Describe(result));
+            Assert.False(result.Value.WasEnabled);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var row = await db.AuthEvents.SingleAsync(
+                e => e.Kind == "mfa.totp.reset", TestContext.Current.CancellationToken);
+            Assert.Contains("wasEnabled=False", row.Detail);
+        }
+    }
+
+    [Fact]
+    public async Task ResetMfa_ReportsAnUnknownAccountAsNotFound() {
+        using var host = AuthTestHost.Start(WithUsersModule);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<ResetUserMfa.Command, ResetUserMfa.Response>(
+            scope.ServiceProvider, new ResetUserMfa.Command(404));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorKind.NotFound, result.Error.Kind);
+        Assert.Empty(await AuditKindsAsync(host));
+    }
+
+    /// <summary>
+    /// The reset is one-directional by construction: there is no command that turns a second factor
+    /// <em>on</em> for somebody else, because enrolment needs a code only the account's owner can produce.
+    /// Asserted on the surface so a future handler cannot quietly add one.
+    /// </summary>
+    [Fact]
+    public async Task ResetMfa_LeavesTheAccountSignedInAndUsable() {
+        using var host = AuthTestHost.Start(WithUsersModule);
+        var id = await SeedUserAsync(host, "alice", isAdmin: false);
+        await EnrolMfaAsync(host, id);
+        await CreateSessionAsync(host, id);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<ResetUserMfa.Command, ResetUserMfa.Response>(
+                scope.ServiceProvider, new ResetUserMfa.Command(id));
+            Assert.True(result.IsSuccess, Describe(result));
+        }
+
+        // Deliberately not a sign-out: this exists because someone cannot get in, and revoking the sessions
+        // they might still hold would work against that. The password is untouched too.
+        Assert.Equal(1, await SessionCountAsync(host, id));
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var alice = await users.FindByIdAsync(id.ToString());
+            Assert.NotNull(alice);
+            Assert.True(await users.CheckPasswordAsync(alice, GoodPassword));
+        }
+    }
+
     // -- Helpers ---------------------------------------------------------------------------------
+
+    /// <summary>Takes an account all the way through enrolment, so it really holds a key and ten codes.</summary>
+    private static async Task EnrolMfaAsync(AuthTestHost host, int userId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+        var mfa = scope.ServiceProvider.GetRequiredService<UserMfaService>();
+        var user = await users.FindByIdAsync(userId.ToString());
+        Assert.NotNull(user);
+
+        var enrolment = await mfa.BeginTotpAsync(user, TestContext.Current.CancellationToken);
+        Assert.NotNull(enrolment);
+        var confirmed = await mfa.ConfirmTotpAsync(
+            user, TotpCodes.Current(enrolment.SharedKey), TestContext.Current.CancellationToken);
+        Assert.Equal(UserMfaService.ConfirmOutcome.Enabled, confirmed.Outcome);
+    }
+
+    private static async Task<string> SecurityStampAsync(AuthTestHost host, int userId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Users
+            .Where(u => u.Id == userId)
+            .Select(u => u.SecurityStamp)
+            .SingleAsync(TestContext.Current.CancellationToken);
+    }
 
     private static ValueTask<Result<TResponse>> SendAsync<TRequest, TResponse>(
         IServiceProvider scope, TRequest request) =>

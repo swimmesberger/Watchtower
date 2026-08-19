@@ -7,6 +7,14 @@ import { apiBase } from './config'
 export const LOGIN_PATH = '/login'
 
 /**
+ * Where an account manages its own credentials. Platform, not a feature module, and kept next to
+ * {@link LOGIN_PATH} for the same reason: the shell, the route and the two places that link to it all have
+ * to name the same path, and the page must be reachable by *any* signed-in account — including one outside
+ * the operator realm, for whom the shell otherwise renders the applications portal instead of routes.
+ */
+export const ACCOUNT_SECURITY_PATH = '/account/security'
+
+/**
  * The user id the backend reports when authentication is switched off
  * (`ImplicitAdminCurrentUser.LocalUserId`). Such a session is implicit: there is nothing to sign out of,
  * so the shell hides the affordance rather than offering a button that 404s.
@@ -23,6 +31,38 @@ export interface LoginResult {
    * {@link continueSession}).
    */
   continueUrl?: string
+}
+
+/**
+ * What the password step answers for an account that also demands a second factor. No cookie was set and
+ * no session exists yet; `mfaToken` names the challenge and is redeemable exactly once, at
+ * {@link completeMfaLogin}, within {@link MFA_CHALLENGE_LIFETIME_MS}.
+ */
+export interface MfaChallenge {
+  mfaToken: string
+  /** When this client received the challenge — see {@link isChallengeExpired}. */
+  issuedAt: number
+}
+
+/** What {@link login} produced: a finished sign-in, or a challenge still to answer. */
+export type LoginOutcome =
+  | { kind: 'signed-in'; result: LoginResult }
+  | { kind: 'mfa-required'; challenge: MfaChallenge }
+
+/**
+ * How long the backend keeps a pending-MFA record (`AuthSessionService.MfaPendingLifetime`).
+ *
+ * Duplicated here on purpose. The backend answers a wrong code and an expired challenge with the *same*
+ * 401 and the same body — telling them apart would let a caller holding a stolen password learn whether
+ * the challenge is still worth grinding. The client, though, knows how long ago it asked, so it can offer
+ * the right recovery ("your request timed out, sign in again" rather than "wrong code") without the
+ * server ever having to say which it was.
+ */
+export const MFA_CHALLENGE_LIFETIME_MS = 5 * 60 * 1000
+
+/** Whether the challenge is old enough that a refusal is almost certainly the window having closed. */
+export function isChallengeExpired(challenge: MfaChallenge): boolean {
+  return Date.now() - challenge.issuedAt >= MFA_CHALLENGE_LIFETIME_MS
 }
 
 /** Thrown when the credentials were rejected; the message is the backend's deliberately generic one. */
@@ -47,7 +87,7 @@ export async function login(
   userName: string,
   password: string,
   redirectUri?: string,
-): Promise<LoginResult> {
+): Promise<LoginOutcome> {
   const response = await fetch(`${apiBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -55,9 +95,38 @@ export async function login(
     body: JSON.stringify({ userName, password, redirectUri }),
   })
 
+  return interpretLogin(response, 'Invalid user name or password.')
+}
+
+/**
+ * Answers the challenge the password step returned, with either an authenticator code or a recovery code,
+ * and — on success — leaves the `__wt_sso` cookie in place exactly as a single-factor sign-in would.
+ *
+ * `redirectUri` is passed again rather than remembered server-side: the challenge record holds one fact
+ * (which account may finish signing in), and the access check for a protected app belongs with the session
+ * that is actually minted, which is this one. The backend validates the URL against its own route table
+ * either way, so nothing is trusted here that was not trusted at the password step.
+ */
+export async function completeMfaLogin(
+  challenge: MfaChallenge,
+  proof: { code: string } | { recoveryCode: string },
+  redirectUri?: string,
+): Promise<LoginOutcome> {
+  const response = await fetch(`${apiBase}/api/auth/login/mfa`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ mfaToken: challenge.mfaToken, ...proof, redirectUri }),
+  })
+
+  return interpretLogin(response, 'That code is not valid.')
+}
+
+/** The response handling both login steps share — they answer with the same three shapes. */
+async function interpretLogin(response: Response, rejection: string): Promise<LoginOutcome> {
   if (response.status === 401) {
     const body = (await response.json().catch(() => null)) as { message?: string } | null
-    throw new LoginError(body?.message ?? 'Invalid user name or password.')
+    throw new LoginError(body?.message ?? rejection)
   }
   if (response.status === 403) {
     throw new AccessDeniedError(await deniedMessage(response))
@@ -66,7 +135,10 @@ export async function login(
     throw new Error(`Sign-in failed: ${response.status} ${response.statusText}`)
   }
 
-  return (await response.json()) as LoginResult
+  const body = (await response.json()) as LoginResult & { mfaRequired?: boolean; mfaToken?: string }
+  return body.mfaRequired && body.mfaToken
+    ? { kind: 'mfa-required', challenge: { mfaToken: body.mfaToken, issuedAt: Date.now() } }
+    : { kind: 'signed-in', result: body }
 }
 
 /**

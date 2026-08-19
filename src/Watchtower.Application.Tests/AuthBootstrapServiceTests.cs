@@ -103,6 +103,81 @@ public sealed class AuthBootstrapServiceTests {
         }
     }
 
+    /// <summary>
+    /// Break-glass clears the second factor as well as the password, and it has to: the commonest reason an
+    /// operator reaches for this hook is a lost authenticator, and a recovery that restored the password but
+    /// still demanded a code from a phone that is gone would restore nothing at all.
+    /// </summary>
+    /// <remarks>
+    /// The trade is not hidden. Anyone who can set <c>WATCHTOWER__AUTH__RESETPASSWORD</c> and restart the
+    /// process already owns the deployment, so the second factor was never a barrier to them — only to the
+    /// account's legitimate owner. Both the audit row and the warning log say the factor was removed, which
+    /// is what keeps the recovery from being silent.
+    /// </remarks>
+    [Fact]
+    public async Task ResetPassword_AlsoClearsTheSecondFactor() {
+        const string recoveryPassword = "break-glass-recovery";
+        var ct = TestContext.Current.CancellationToken;
+
+        using var host = AuthTestHost.Start(Enabled, Bootstrap);
+        await host.CreateBootstrapService().StartAsync(ct);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var mfa = scope.ServiceProvider.GetRequiredService<UserMfaService>();
+            var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+            Assert.NotNull(admin);
+
+            var enrolment = await mfa.BeginTotpAsync(admin, ct);
+            Assert.NotNull(enrolment);
+            var confirmed = await mfa.ConfirmTotpAsync(admin, TotpCodes.Current(enrolment.SharedKey), ct);
+            Assert.Equal(UserMfaService.ConfirmOutcome.Enabled, confirmed.Outcome);
+        }
+
+        using var recovered = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", recoveryPassword));
+        await recovered.CreateBootstrapService().StartAsync(ct);
+
+        await using (var scope = recovered.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var admin = await db.Users.SingleAsync(
+                u => u.UserName == AuthBootstrapService.AdminUserName, ct);
+
+            // All three, so the next login is password-only — which is the whole point of the hook.
+            Assert.False(admin.TwoFactorEnabled);
+            Assert.Null(admin.AuthenticatorKey);
+            Assert.False(await db.UserRecoveryCodes.AnyAsync(c => c.UserId == admin.Id, ct));
+
+            // The trail says so rather than leaving the removal to be inferred from the account's state.
+            var row = await db.AuthEvents.SingleAsync(e => e.Kind == "auth.breakglass", ct);
+            Assert.Contains("cleared two-factor enrolment", row.Detail);
+        }
+
+        await using (var scope = recovered.Services.CreateAsyncScope()) {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
+            var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
+            Assert.NotNull(admin);
+            Assert.True(await users.CheckPasswordAsync(admin, recoveryPassword));
+            Assert.False(await users.GetTwoFactorEnabledAsync(admin));
+        }
+    }
+
+    /// <summary>An account with nothing enrolled is unaffected, and the row says that rather than implying a removal.</summary>
+    [Fact]
+    public async Task ResetPassword_OnAnAccountWithoutASecondFactor_SaysThereWasNothingToClear() {
+        var ct = TestContext.Current.CancellationToken;
+
+        using var host = AuthTestHost.Start(Enabled, Bootstrap);
+        await host.CreateBootstrapService().StartAsync(ct);
+
+        using var recovered = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", "break-glass-recovery"));
+        await recovered.CreateBootstrapService().StartAsync(ct);
+
+        await using var scope = recovered.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuthEvents.SingleAsync(e => e.Kind == "auth.breakglass", ct);
+        Assert.Contains("no two-factor enrolment to clear", row.Detail);
+    }
+
     [Fact]
     public async Task ResetPassword_ThatViolatesThePolicy_LeavesTheOldPasswordWorking() {
         using var host = AuthTestHost.Start(Enabled, Bootstrap);
