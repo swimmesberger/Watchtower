@@ -28,6 +28,8 @@ Watchtower is unauthenticated and belongs behind an authenticating reverse proxy
   forwarded to apps so they can map them onto their own roles.
 - Per-route **bypass paths** for webhooks/health endpoints, a first-run admin bootstrap, and a
   break-glass recovery hook.
+- An **Audit** screen over the trail — every login, denial, policy change and break-glass recovery,
+  newest first, filterable by event kind, account and app.
 
 Not yet (Phase 2): OIDC/SSO upstream, MFA/TOTP, template policy inheritance, and service tokens. See
 [design.md §2.7–§2.8](design.md).
@@ -331,9 +333,10 @@ way.
 - **Groups are not inherited by tenant routes.** A stack template carries no access policy yet, so a
   route auto-created for a new tenant starts at the default and has to be granted explicitly. Also
   Phase 2 ([design.md §2.8](design.md)).
-- **No audit-viewing UI.** Every login, denial, policy change, and break-glass recovery is written to
-  an `AuthEvent` row, but v1 ships no screen or query API over them — read the table directly if you
-  need the trail. A viewing surface is a planned follow-up.
+- **The audit trail is kept forever, and only viewable.** Every login, denial, policy change and
+  break-glass recovery is an `AuthEvent` row, readable from the **Audit** screen (or `audit.list` /
+  `audit.kinds`) — but there is no retention policy, no export, and no way to delete a row from the
+  product. On a busy instance the table grows without bound; prune it out of band if that matters.
 - **Login policy is instance-wide, not per realm.** Password rules, lockout and rate limiting are the
   `Auth:*` settings above and apply to every realm alike; a realm cannot yet have its own. Per-realm
   policy (and per-realm federation to an external IdP) is where realms grow next — see
