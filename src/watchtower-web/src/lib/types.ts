@@ -773,6 +773,52 @@ export interface UpdateRealmRequest {
   authHost?: string | null
 }
 
+// ── Audit ────────────────────────────────────────────────────────────────────
+
+/**
+ * One row of the access-control plane's audit trail — a login, a denial, a policy change or a
+ * break-glass recovery (docs/central-auth/design.md §3). Mirrors the backend `AuthEventDto`.
+ *
+ * The trail outlives the subjects it mentions: both references are `SET NULL` on delete, so a row about
+ * an account that has since been removed keeps its `detail` (which is where the writers put the name for
+ * exactly this reason) and comes back with `userId` and `userName` null.
+ */
+export interface AuthEvent {
+  id: number
+  /** Dotted identifier, e.g. `login.ok`, `access.denied`, `group.members.changed`. */
+  kind: string
+  userId: number | null
+  userName: string | null
+  routeId: number | null
+  routeDomain: string | null
+  /** Free-form context: reason, actor, remote address, changed fields. */
+  detail: string | null
+  createdAt: string
+}
+
+/**
+ * One page of the trail, newest first.
+ *
+ * `nextBeforeId` is a keyset cursor, not an offset: the trail is append-only and is being written while
+ * it is read, so an offset page would shift under the reader. Null means this was the last page.
+ */
+export interface AuthEventPage {
+  events: AuthEvent[]
+  nextBeforeId: number | null
+}
+
+/** Filters and cursor for one `audit.list` call. Every field is optional and the filters are ANDed. */
+export interface AuditQuery {
+  /** Return only rows older than this id — the previous page's `nextBeforeId`. */
+  beforeId?: number | null
+  /** Page size; the server defaults to 100 and clamps to 500. */
+  limit?: number | null
+  /** Exact `kind` match — one of the values `audit.kinds` reports. */
+  kind?: string | null
+  userId?: number | null
+  routeId?: number | null
+}
+
 // ── Backups (ADR-0016) ───────────────────────────────────────────────────────
 
 export type BackupProvider = 'sftp' | 'local'

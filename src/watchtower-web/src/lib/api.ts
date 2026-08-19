@@ -5,7 +5,9 @@
 import { rpc } from './rpc-client'
 import type {
   ActiveDeployment,
+  AuditQuery,
   AuthConfig,
+  AuthEventPage,
   AutomationConfig,
   BackupConfig,
   BackupEvent,
@@ -463,6 +465,23 @@ export const api = {
     remove: async (id: number) => {
       await rpc('realms.delete', { id })
     },
+  },
+
+  audit: {
+    // Read-only, and deliberately the whole surface: the trail is written by the modules whose acts it
+    // records, never from here. A page is a keyset cursor rather than an offset — the trail is being
+    // appended to while it is read, so an offset would shift under the reader between "load more" clicks.
+    list: async (query: AuditQuery = {}) =>
+      (await rpc('audit.list', {
+        beforeId: query.beforeId ?? null,
+        limit: query.limit ?? null,
+        kind: query.kind ?? null,
+        userId: query.userId ?? null,
+        routeId: query.routeId ?? null,
+      })) as AuthEventPage,
+    // The kinds actually present, so the filter offers what is there rather than a frontend constant that
+    // drifts the moment a new writer lands.
+    kinds: async () => (await rpc('audit.kinds', {})).kinds as string[],
   },
 
   system: {
