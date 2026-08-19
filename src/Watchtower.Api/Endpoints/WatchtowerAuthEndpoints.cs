@@ -178,18 +178,23 @@ public static partial class WatchtowerAuthEndpoints {
             if (user.Disabled)
                 return await RejectAsync(db, time, user.Id, "account disabled", http);
 
-            if (await users.GetAccessFailedCountAsync(user) > 0)
-                await users.ResetAccessFailedCountAsync(user);
-
             // The password was right, which for a two-factor account is half an answer. No cookie is set
             // and no session exists yet: what comes back is a pending-MFA token in the body, redeemable
             // once at /api/auth/login/mfa within five minutes and worth nothing anywhere else. The
             // redirect_uri is not resolved here either — the access check belongs with the session that
             // is actually minted, which is the one the second factor produces.
+            //
+            // Deliberately *before* the failed-count reset. Clearing the counter here would let anyone
+            // holding the password top the lockout budget back up between code guesses simply by
+            // re-posting it, which would make the five-attempt limit on the second factor unreachable.
+            // Only a completed login resets the counter, and /api/auth/login/mfa does that on success.
             if (user.TwoFactorEnabled) {
                 var pending = await sessions.CreateMfaPendingAsync(user, ct);
                 return Results.Ok(new MfaChallengeResponse(true, pending));
             }
+
+            if (await users.GetAccessFailedCountAsync(user) > 0)
+                await users.ResetAccessFailedCountAsync(user);
 
             var token = await sessions.CreateSsoSessionAsync(user, ct);
             AuthCookies.Append(

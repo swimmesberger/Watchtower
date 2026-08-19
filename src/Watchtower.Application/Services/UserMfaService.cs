@@ -110,25 +110,53 @@ public sealed class UserMfaService(WatchtowerDbContext db, UserManager<User> use
         return (await users.RedeemTwoFactorRecoveryCodeAsync(user, hyphenated)).Succeeded;
     }
 
+    /// <summary>How <see cref="ConfirmTotpAsync"/> ended. Three outcomes, because they need three answers.</summary>
+    public enum ConfirmOutcome {
+        /// <summary>Two-factor is on and <see cref="ConfirmResult.Codes"/> holds the recovery codes.</summary>
+        Enabled,
+        /// <summary>The code was wrong, or nothing was enrolled to check it against. Two-factor is still off.</summary>
+        RejectedCode,
+        /// <summary>A write failed. Two-factor is still off, and the caller owes the user an error, not a refusal.</summary>
+        Failed,
+    }
+
+    /// <summary>The outcome of an enrolment attempt, and the codes when there are any.</summary>
+    public sealed record ConfirmResult(ConfirmOutcome Outcome, IReadOnlyList<string>? Codes);
+
     /// <summary>
     /// Turns two-factor on once <paramref name="code"/> proves the authenticator works, and returns the
     /// recovery codes — the only time they exist in readable form.
     /// </summary>
-    /// <returns>The codes, or <see langword="null"/> when the code was wrong or no key is enrolled.</returns>
-    public async Task<IReadOnlyList<string>?> ConfirmTotpAsync(
+    /// <remarks>
+    /// The flag and the codes land together or not at all. Enabling has to come first — recovery codes are
+    /// only meaningful for an account that demands a second factor — so if generating them then fails the
+    /// flag is put back; otherwise a failed enrolment would leave an account that demands a code at every
+    /// login and holds not one way around it. That state is worse than either outcome the user asked for.
+    /// <para>
+    /// It is also why the failure is its own outcome rather than folded into "wrong code": telling someone
+    /// their code was rejected when the database refused a write sends them to retype digits that were
+    /// never the problem.
+    /// </para>
+    /// </remarks>
+    public async Task<ConfirmResult> ConfirmTotpAsync(
         User user, string? code, CancellationToken ct = default) {
         ArgumentNullException.ThrowIfNull(user);
 
         var key = await users.GetAuthenticatorKeyAsync(user);
-        if (string.IsNullOrEmpty(key)) return null;
-        if (!await VerifyTotpAsync(user, code, ct)) return null;
+        if (string.IsNullOrEmpty(key)) return new ConfirmResult(ConfirmOutcome.RejectedCode, null);
+        if (!await VerifyTotpAsync(user, code, ct)) return new ConfirmResult(ConfirmOutcome.RejectedCode, null);
 
-        // Enable first: recovery codes are only meaningful for an account that actually demands a second
-        // factor, and this is the write that rotates the security stamp.
         var enabled = await users.SetTwoFactorEnabledAsync(user, true);
-        if (!enabled.Succeeded) return null;
+        if (!enabled.Succeeded) return new ConfirmResult(ConfirmOutcome.Failed, null);
 
-        return await RegenerateRecoveryCodesAsync(user, ct);
+        var codes = await RegenerateRecoveryCodesAsync(user, ct);
+        if (codes is not null) return new ConfirmResult(ConfirmOutcome.Enabled, codes);
+
+        // Roll back rather than leave the account demanding a factor it has no way around. A failure here
+        // too is reported the same way: the caller's answer is "something went wrong", and the account is
+        // in whichever of the two consistent states the writes reached.
+        await users.SetTwoFactorEnabledAsync(user, false);
+        return new ConfirmResult(ConfirmOutcome.Failed, null);
     }
 
     /// <summary>
@@ -151,25 +179,46 @@ public sealed class UserMfaService(WatchtowerDbContext db, UserManager<User> use
     /// back to life the moment two-factor was switched on again, and leaving spent-set recovery codes on a
     /// disabled account would keep credentials alive that nothing checks the state of.
     /// <para>
-    /// The security stamp rotates because <see cref="UserManager{TUser}.SetTwoFactorEnabledAsync"/> rotates
-    /// it — losing a factor is a credential change, so anything minted under the old state is stale.
+    /// The user row is written <em>once</em>. The key has no <c>UserManager</c> "clear" —
+    /// <c>SetAuthenticatorKeyAsync</c> takes a non-null value — so it is nulled on the tracked entity
+    /// <em>before</em> <see cref="UserManager{TUser}.SetTwoFactorEnabledAsync"/>, whose own
+    /// <c>UpdateAsync</c> then persists both properties together. Two sequential updates would each rotate
+    /// the concurrency stamp and open a window in which the account has no flag but still has a key.
+    /// </para>
+    /// <para>
+    /// The transaction is what makes "all three" true rather than aspirational: the recovery codes go by
+    /// <c>ExecuteDelete</c>, which is its own statement, and a failure between the two would otherwise
+    /// leave live recovery codes on an account with no second factor — credentials nothing checks the
+    /// state of. An ambient transaction is joined rather than nested, since SQLite has no nested
+    /// transactions and a caller that opened one owns the commit.
+    /// </para>
+    /// <para>
+    /// The security stamp rotates as part of that write. Nothing re-checks the stamp when a session is
+    /// validated today (see <see cref="Entities.User.SecurityStamp"/>), so this does not by itself sign
+    /// anyone out; it is the bookkeeping a future stamp-validation hook will read.
     /// </para>
     /// </remarks>
     public async Task<bool> DisableAsync(User user, CancellationToken ct = default) {
         ArgumentNullException.ThrowIfNull(user);
         ct.ThrowIfCancellationRequested();
 
-        var disabled = await users.SetTwoFactorEnabledAsync(user, false);
-        if (!disabled.Succeeded) return false;
+        var owned = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
+        try {
+            user.AuthenticatorKey = null;
+            var disabled = await users.SetTwoFactorEnabledAsync(user, false);
+            if (!disabled.Succeeded) {
+                if (owned is not null) await owned.RollbackAsync(ct);
+                return false;
+            }
 
-        // The key has no UserManager "clear" — SetAuthenticatorKeyAsync takes a non-null value — so it is
-        // nulled on the tracked entity and persisted through the same store write path everything else uses.
-        user.AuthenticatorKey = null;
-        var cleared = await users.UpdateAsync(user);
-        if (!cleared.Succeeded) return false;
-
-        await db.UserRecoveryCodes.Where(c => c.UserId == user.Id).ExecuteDeleteAsync(ct);
-        return true;
+            await db.UserRecoveryCodes.Where(c => c.UserId == user.Id).ExecuteDeleteAsync(ct);
+            if (owned is not null) await owned.CommitAsync(ct);
+            return true;
+        } finally {
+            if (owned is not null) await owned.DisposeAsync();
+        }
     }
 
     /// <summary>

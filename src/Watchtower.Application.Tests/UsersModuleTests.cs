@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Elarion.Abstractions;
 using Elarion.Abstractions.Dispatch;
 using Microsoft.AspNetCore.Identity;
@@ -469,9 +469,13 @@ public sealed class UsersModuleTests {
 
     /// <summary>
     /// The administrator's recovery path: everything the account's own owner would have had to prove
-    /// possession of is cleared, and the security stamp moves so anything minted under the old state is
-    /// stale.
+    /// possession of is cleared, and the security stamp moves.
     /// </summary>
+    /// <remarks>
+    /// The stamp assertion is about the record, not about access: nothing compares the stamp when a session
+    /// is validated (<see cref="User.SecurityStamp"/>), so rotating it signs nobody out today. It is pinned
+    /// here so the value a future stamp-validation hook will read is actually being maintained.
+    /// </remarks>
     [Fact]
     public async Task ResetMfa_ClearsTheFlagTheKeyAndTheCodes_AndRotatesTheSecurityStamp() {
         using var host = AuthTestHost.Start(WithUsersModule);
@@ -589,9 +593,9 @@ public sealed class UsersModuleTests {
 
         var enrolment = await mfa.BeginTotpAsync(user, TestContext.Current.CancellationToken);
         Assert.NotNull(enrolment);
-        var codes = await mfa.ConfirmTotpAsync(
+        var confirmed = await mfa.ConfirmTotpAsync(
             user, TotpCodes.Current(enrolment.SharedKey), TestContext.Current.CancellationToken);
-        Assert.NotNull(codes);
+        Assert.Equal(UserMfaService.ConfirmOutcome.Enabled, confirmed.Outcome);
     }
 
     private static async Task<string> SecurityStampAsync(AuthTestHost host, int userId) {

@@ -201,9 +201,11 @@ public sealed class AuthSessionService(
     /// bind against. Deliberately does <em>not</em> renew the sliding window: UserInfo is a read, not a page
     /// visit, and must not silently extend a session's life.
     /// <para>
-    /// "Any kind" means any kind of <em>session</em>. <see cref="SessionKind.MfaPending"/> is excluded
-    /// explicitly, because it is not one: a half-finished login must not become an identity just because
-    /// this path does not care which cookie a token came from.
+    /// "Any kind" means any kind of <em>session</em>, and the filter names those two rather than excluding
+    /// what is not one. An allow-list is the difference between a rule and a habit here: a deny-list would
+    /// silently admit the next <see cref="SessionKind"/> anybody adds, and the kind most likely to be added
+    /// is another half-authenticated state like <see cref="SessionKind.MfaPending"/>. Adding a kind must
+    /// mean deciding, in this line, whether it is an identity.
     /// </para>
     /// </summary>
     public async Task<AuthSession?> ValidateAnyAsync(string? rawToken, CancellationToken ct = default) {
@@ -213,7 +215,8 @@ public sealed class AuthSessionService(
         var session = await db.AuthSessions
             .Include(s => s.User)
             .ThenInclude(u => u!.Realm)
-            .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind != SessionKind.MfaPending, ct);
+            .FirstOrDefaultAsync(
+                s => s.TokenHash == hash && (s.Kind == SessionKind.Sso || s.Kind == SessionKind.App), ct);
         if (session is null) return null;
 
         var now = time.GetUtcNow();

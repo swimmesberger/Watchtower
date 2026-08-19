@@ -57,8 +57,18 @@ public sealed class User {
     /// <summary>
     /// Random value regenerated whenever credentials change — including every MFA change, since
     /// <c>UserManager</c> rotates it for <c>ResetAuthenticatorKeyAsync</c> and
-    /// <c>SetTwoFactorEnabledAsync</c>. Sessions minted before the change can be recognised as stale.
+    /// <c>SetTwoFactorEnabledAsync</c>.
     /// </summary>
+    /// <remarks>
+    /// <strong>Nothing reads it yet.</strong> Sessions are validated by row
+    /// (<see cref="Services.AuthSessionService.ValidateAsync"/>), which never compares the stamp, so
+    /// rotating it does <em>not</em> invalidate any session today — a live session survives a password
+    /// change, an MFA change and an administrative reset alike, and only an explicit revoke ends it. The
+    /// column is the bookkeeping a stamp-validation hook will read when one lands; treat "the stamp
+    /// rotated" as a recorded fact, never as a sign-out that already happened. Where a change must take
+    /// effect immediately the code revokes sessions outright and says so (password reset, account
+    /// suspension, logout).
+    /// </remarks>
     public required string SecurityStamp { get; set; }
 
     /// <summary>

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Identity;
+﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
@@ -39,7 +39,9 @@ public sealed class UserMfaStoreTests {
         Assert.False(string.IsNullOrEmpty(key));
         // Base32, so an authenticator app can take it as typed.
         Assert.All(key!, c => Assert.Contains(c, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"));
-        // Enrolling is a credential change, so anything minted under the old stamp is stale.
+        // Enrolling rotates the stamp. Recorded, not enforced: session validation does not compare it
+        // (see User.SecurityStamp), so nobody is signed out by this — the assertion pins that the value a
+        // future stamp-validation hook will read is being maintained.
         Assert.NotEqual(stampBefore, stampAfter);
 
         // …and it survived the round trip rather than only living on the tracked entity.
@@ -213,10 +215,11 @@ public sealed class UserMfaStoreTests {
 
             var enrolment = await mfa.BeginTotpAsync(alice, TestContext.Current.CancellationToken);
             Assert.NotNull(enrolment);
-            var codes = await mfa.ConfirmTotpAsync(
+            var confirmed = await mfa.ConfirmTotpAsync(
                 alice, TotpCodes.Current(enrolment.SharedKey), TestContext.Current.CancellationToken);
-            Assert.NotNull(codes);
-            Assert.Equal(UserMfaService.RecoveryCodeCount, codes.Count);
+            Assert.Equal(UserMfaService.ConfirmOutcome.Enabled, confirmed.Outcome);
+            Assert.NotNull(confirmed.Codes);
+            Assert.Equal(UserMfaService.RecoveryCodeCount, confirmed.Codes.Count);
 
             Assert.True(await mfa.DisableAsync(alice, TestContext.Current.CancellationToken));
         }
@@ -246,8 +249,10 @@ public sealed class UserMfaStoreTests {
 
             var enrolment = await mfa.BeginTotpAsync(alice, TestContext.Current.CancellationToken);
             Assert.NotNull(enrolment);
-            Assert.Null(await mfa.ConfirmTotpAsync(
-                alice, TotpCodes.Wrong(enrolment.SharedKey), TestContext.Current.CancellationToken));
+            var refused = await mfa.ConfirmTotpAsync(
+                alice, TotpCodes.Wrong(enrolment.SharedKey), TestContext.Current.CancellationToken);
+            Assert.Equal(UserMfaService.ConfirmOutcome.RejectedCode, refused.Outcome);
+            Assert.Null(refused.Codes);
         }
 
         await using (var scope = host.Services.CreateAsyncScope()) {

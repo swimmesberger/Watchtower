@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Identity;
+﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
 using Watchtower.Api.Authentication;
 using Watchtower.Application.Config;
@@ -47,6 +47,13 @@ public static partial class WatchtowerAuthEndpoints {
     public sealed record MfaCodeRequest(string? Code);
 
     /// <summary>
+    /// Finishing enrolment takes both: the <paramref name="Code"/> proves the new authenticator works, and
+    /// the account <paramref name="Password"/> proves the request comes from the account's owner rather
+    /// than from whoever is holding its session.
+    /// </summary>
+    public sealed record MfaConfirmRequest(string? Code, string? Password);
+
+    /// <summary>
     /// A freshly issued set of recovery codes. Returned exactly once per generation: only their hashes are
     /// kept, so nothing can ever show them again.
     /// </summary>
@@ -74,6 +81,14 @@ public static partial class WatchtowerAuthEndpoints {
     /// <summary>Refusal for the operations that only mean something once an authenticator is enrolled.</summary>
     private static readonly AuthErrorResponse NotEnrolled =
         new("Two-factor authentication is not enabled for this account.");
+
+    /// <summary>
+    /// Answer for an enrolment that failed on a write rather than on the caller's input. Distinct from
+    /// <see cref="InvalidSecondFactor"/> because the remedy is different: retrying the same code is the
+    /// right thing to do, and being told the code was wrong would send someone to re-scan a working key.
+    /// </summary>
+    private static readonly AuthErrorResponse EnrolmentFailed =
+        new("Two-factor authentication could not be turned on. Nothing was changed — please try again.");
 
     /// <summary>404 stubs for the MFA routes when central authorization is switched off, like the login ones.</summary>
     private static void MapMfaNotFound(WebApplication app) {
@@ -104,6 +119,7 @@ public static partial class WatchtowerAuthEndpoints {
             AuthSessionService sessions,
             IOptionsMonitor<WatchtowerOptions> options,
             WatchtowerDbContext db,
+            RealmResolver realms,
             IRealmContext realmContext,
             TimeProvider time,
             CancellationToken ct) => {
@@ -120,15 +136,26 @@ public static partial class WatchtowerAuthEndpoints {
                 return Results.BadRequest();
             }
 
+            // Which population this request belongs to, decided by the host it arrived on — exactly as the
+            // password step decides it (design.md §13). Resolved before the challenge is looked at so the
+            // two halves of one login are answered by one realm and not two.
+            var hostRealm = await realms.ResolveByHostAsync(http.Request.Host.Host, ct);
+            realmContext.SetRealm(hostRealm.Id);
+
             var pending = await sessions.FindMfaPendingAsync(body?.MfaToken, ct);
             if (pending?.User is null)
                 return await RejectSecondFactorAsync(db, time, null, "unknown or expired challenge", http);
 
             var user = pending.User;
-            // Every UserManager write below re-runs Identity's duplicate-name check through the store, and
-            // that lookup is realm-scoped (design.md §13) — so point the scope at this account's realm
-            // before touching it, exactly as the password step pins the realm of the login host.
-            realmContext.SetRealm(user.RealmId);
+
+            // A challenge is redeemable only on the login host of the realm that issued it. Without this a
+            // pending token minted on realm A's host would finish on realm B's, and the __wt_sso cookie
+            // would be set on B's host for an account that does not exist in B's population — the cookie
+            // jar and the credential space are supposed to be the same boundary, and this is where that
+            // could come apart. Refused as the same generic 401 as a wrong code: which realm an account
+            // lives in is not something a caller gets to probe.
+            if (user.RealmId != hostRealm.Id)
+                return await RejectSecondFactorAsync(db, time, user.Id, "wrong realm host", http);
 
             // A lockout that landed between the password and the code still refuses, and still without
             // being extended: the same rule the password step applies.
@@ -147,8 +174,20 @@ public static partial class WatchtowerAuthEndpoints {
                     db, time, user.Id, usingRecoveryCode ? "bad recovery code" : "bad code", http);
             }
 
-            // The delete is the claim: two requests that both present a correct code for one challenge
-            // produce one session, not two.
+            // Verify first, then consume — and the order is a decision, not an accident.
+            //
+            // Consuming up front would make the challenge strictly single-attempt: every mistyped digit
+            // would burn it and send the visitor back to the password form. Verifying first means the
+            // challenge survives a typo, at the cost of one race: two requests carrying the *same correct*
+            // code can both pass verification before either deletes the row. The delete is what settles it
+            // — its affected-row count is the claim, so exactly one of them mints a session and the other
+            // gets the generic refusal below. What the loser can cost is one recovery code, since
+            // RedeemCodeAsync has already spent it by then.
+            //
+            // That is the whole exposure: a double-submitted recovery code can consume two codes and yield
+            // one session. Weighed against a full re-login on every typo — which is the common case, not
+            // the rare one — it is the better trade. Brute force is not what is being bounded here anyway;
+            // the lockout above and the five-minute window are.
             if (!await sessions.ConsumeMfaPendingAsync(pending.Id, ct))
                 return await RejectSecondFactorAsync(db, time, user.Id, "challenge already used", http);
 
@@ -187,6 +226,20 @@ public static partial class WatchtowerAuthEndpoints {
     }
 
     /// <summary>Maps the five self-service routes. All operate on the caller's own account, and only on it.</summary>
+    /// <remarks>
+    /// Every route that judges a code carries the login rate limiter and drives the account lockout on a
+    /// refusal, exactly as the two login steps do. Holding a session is not a reason to relax either: a
+    /// stolen or borrowed session is precisely the case where an attacker would sit and grind six digits to
+    /// turn the second factor off, and without the limiter this surface would be the one login-adjacent
+    /// place they could do it freely. The limiter partitions by client address under the same
+    /// <c>login:{ip}</c> key as the login routes, so a burst here also spends the login budget — deliberate,
+    /// since both are the same client trying credentials at the same instance.
+    /// <para>
+    /// The status read is deliberately unlimited: it judges nothing, returns no secret, and a page that
+    /// could not tell you whether two-factor is on would be worse than useless during exactly the incident
+    /// the limiter exists for.
+    /// </para>
+    /// </remarks>
     private static void MapMfaSelfService(WebApplication app) {
         // ── Status ──────────────────────────────────────────────────────────
         app.MapGet("/api/auth/mfa", async (
@@ -229,11 +282,21 @@ public static partial class WatchtowerAuthEndpoints {
             return enrolment is null
                 ? Results.StatusCode(StatusCodes.Status500InternalServerError)
                 : Results.Ok(new MfaBeginResponse(enrolment.SharedKey, enrolment.OtpauthUri));
-        });
+        })
+        // Judges nothing, but it does mint a secret and it is the entry point to the flow — limited for
+        // symmetry, so no route in this group is the cheap one to hammer.
+        .RequireRateLimiting(LoginRateLimiting.PolicyName);
 
         // ── Confirm enrolment ───────────────────────────────────────────────
+        // Takes the account password as well as the code. The code proves possession of the new
+        // authenticator, which is exactly what an attacker holding a borrowed session would have — they
+        // enrol *their* app and inherit the account permanently. The password is the one thing that
+        // session does not carry, so it is what makes enrolment an act of the account's owner rather than
+        // of whoever is holding the cookie. Mirrors the reason begin is refused while two-factor is on:
+        // both keep control of the second factor with the person who holds the first.
         app.MapPost("/api/auth/mfa/totp/confirm", async (
             HttpContext http,
+            UserManager<User> users,
             AuthSessionService sessions,
             UserMfaService mfa,
             WatchtowerDbContext db,
@@ -241,7 +304,7 @@ public static partial class WatchtowerAuthEndpoints {
             TimeProvider time,
             CancellationToken ct) => {
 
-            var request = await ReadCodeAsync(http, ct);
+            var request = await ReadJsonAsync<MfaConfirmRequest>(http, ct);
             if (request.Failure is not null) return request.Failure;
 
             var user = await CurrentAccountAsync(http, sessions, realmContext, ct);
@@ -250,9 +313,26 @@ public static partial class WatchtowerAuthEndpoints {
             if (user.TwoFactorEnabled)
                 return Results.Json(AlreadyEnrolled, statusCode: StatusCodes.Status409Conflict);
 
-            var codes = await mfa.ConfirmTotpAsync(user, request.Code, ct);
-            if (codes is null)
+            // Lockout first, so a parked account cannot be ground at through this route either.
+            if (await users.IsLockedOutAsync(user))
                 return Results.Json(InvalidSecondFactor, statusCode: StatusCodes.Status401Unauthorized);
+
+            var password = request.Body?.Password;
+            if (string.IsNullOrEmpty(password) || !await users.CheckPasswordAsync(user, password))
+                return await RefuseAsync(users, user);
+
+            var confirmed = await mfa.ConfirmTotpAsync(user, request.Body?.Code, ct);
+            if (confirmed.Outcome == UserMfaService.ConfirmOutcome.RejectedCode)
+                return await RefuseAsync(users, user);
+            if (confirmed.Outcome != UserMfaService.ConfirmOutcome.Enabled || confirmed.Codes is null) {
+                // A write failed and the flag was rolled back. Not the caller's input, so not a 401 —
+                // sending them to retype digits that were never the problem is the wrong answer.
+                return Results.Json(EnrolmentFailed, statusCode: StatusCodes.Status500InternalServerError);
+            }
+
+            var codes = confirmed.Codes;
+            if (await users.GetAccessFailedCountAsync(user) > 0)
+                await users.ResetAccessFailedCountAsync(user);
 
             Record(db, time, AuthEventKinds.MfaTotpEnabled, user.Id, Describe(http, reason: null));
             Record(
@@ -262,7 +342,8 @@ public static partial class WatchtowerAuthEndpoints {
 
             // The one moment the codes are readable. Nothing can show them again.
             return Results.Ok(new MfaRecoveryCodesResponse(codes));
-        });
+        })
+        .RequireRateLimiting(LoginRateLimiting.PolicyName);
 
         // ── Disable ─────────────────────────────────────────────────────────
         // A recovery code is accepted here as well as an authenticator code, deliberately: someone whose
@@ -270,6 +351,7 @@ public static partial class WatchtowerAuthEndpoints {
         // alternative would be to make an administrator the only route out of an ordinary mishap.
         app.MapPost("/api/auth/mfa/totp/disable", async (
             HttpContext http,
+            UserManager<User> users,
             AuthSessionService sessions,
             UserMfaService mfa,
             WatchtowerDbContext db,
@@ -277,7 +359,7 @@ public static partial class WatchtowerAuthEndpoints {
             TimeProvider time,
             CancellationToken ct) => {
 
-            var request = await ReadCodeAsync(http, ct);
+            var request = await ReadJsonAsync<MfaCodeRequest>(http, ct);
             if (request.Failure is not null) return request.Failure;
 
             var user = await CurrentAccountAsync(http, sessions, realmContext, ct);
@@ -286,11 +368,15 @@ public static partial class WatchtowerAuthEndpoints {
             if (!user.TwoFactorEnabled)
                 return Results.Json(NotEnrolled, statusCode: StatusCodes.Status409Conflict);
 
+            if (await users.IsLockedOutAsync(user))
+                return Results.Json(InvalidSecondFactor, statusCode: StatusCodes.Status401Unauthorized);
+
             var byRecoveryCode = false;
-            if (!await mfa.VerifyTotpAsync(user, request.Code, ct)) {
-                byRecoveryCode = await mfa.RedeemRecoveryCodeAsync(user, request.Code, ct);
-                if (!byRecoveryCode)
-                    return Results.Json(InvalidSecondFactor, statusCode: StatusCodes.Status401Unauthorized);
+            if (!await mfa.VerifyTotpAsync(user, request.Body?.Code, ct)) {
+                byRecoveryCode = await mfa.RedeemRecoveryCodeAsync(user, request.Body?.Code, ct);
+                // Counted: turning the second factor off is the outcome an attacker on a borrowed session
+                // wants most, so guesses at it cost the same lockout budget as guesses at a login.
+                if (!byRecoveryCode) return await RefuseAsync(users, user);
             }
 
             if (!await mfa.DisableAsync(user, ct))
@@ -298,13 +384,17 @@ public static partial class WatchtowerAuthEndpoints {
                     new AuthErrorResponse("Two-factor authentication could not be turned off. Please try again."),
                     statusCode: StatusCodes.Status409Conflict);
 
+            if (await users.GetAccessFailedCountAsync(user) > 0)
+                await users.ResetAccessFailedCountAsync(user);
+
             Record(
                 db, time, AuthEventKinds.MfaTotpDisabled, user.Id,
                 Describe(http, byRecoveryCode ? "authorised by recovery code" : null));
             await db.SaveChangesAsync(CancellationToken.None);
 
             return Results.Ok(new MfaStatusResponse(TotpEnabled: false, RecoveryCodesRemaining: 0));
-        });
+        })
+        .RequireRateLimiting(LoginRateLimiting.PolicyName);
 
         // ── Reissue recovery codes ──────────────────────────────────────────
         // An authenticator code only — no recovery code. Spending one recovery code to mint ten fresh ones
@@ -312,6 +402,7 @@ public static partial class WatchtowerAuthEndpoints {
         // authenticator is the whole point of the check.
         app.MapPost("/api/auth/mfa/recovery/regenerate", async (
             HttpContext http,
+            UserManager<User> users,
             AuthSessionService sessions,
             UserMfaService mfa,
             WatchtowerDbContext db,
@@ -319,7 +410,7 @@ public static partial class WatchtowerAuthEndpoints {
             TimeProvider time,
             CancellationToken ct) => {
 
-            var request = await ReadCodeAsync(http, ct);
+            var request = await ReadJsonAsync<MfaCodeRequest>(http, ct);
             if (request.Failure is not null) return request.Failure;
 
             var user = await CurrentAccountAsync(http, sessions, realmContext, ct);
@@ -328,12 +419,18 @@ public static partial class WatchtowerAuthEndpoints {
             if (!user.TwoFactorEnabled)
                 return Results.Json(NotEnrolled, statusCode: StatusCodes.Status409Conflict);
 
-            if (!await mfa.VerifyTotpAsync(user, request.Code, ct))
+            if (await users.IsLockedOutAsync(user))
                 return Results.Json(InvalidSecondFactor, statusCode: StatusCodes.Status401Unauthorized);
+
+            if (!await mfa.VerifyTotpAsync(user, request.Body?.Code, ct))
+                return await RefuseAsync(users, user);
 
             var codes = await mfa.RegenerateRecoveryCodesAsync(user, ct);
             if (codes is null)
                 return Results.StatusCode(StatusCodes.Status500InternalServerError);
+
+            if (await users.GetAccessFailedCountAsync(user) > 0)
+                await users.ResetAccessFailedCountAsync(user);
 
             Record(
                 db, time, AuthEventKinds.MfaRecoveryGenerated, user.Id,
@@ -341,7 +438,22 @@ public static partial class WatchtowerAuthEndpoints {
             await db.SaveChangesAsync(CancellationToken.None);
 
             return Results.Ok(new MfaRecoveryCodesResponse(codes));
-        });
+        })
+        .RequireRateLimiting(LoginRateLimiting.PolicyName);
+    }
+
+    /// <summary>
+    /// Counts a refused code or password against the account lockout and answers with the one generic
+    /// rejection this surface has.
+    /// </summary>
+    /// <remarks>
+    /// The same five-attempt budget the login endpoints drive, on purpose: an attacker who has a session
+    /// but not the password, or the password but not the authenticator, must not get an unlimited private
+    /// gallery to guess in just because they got past the front door once.
+    /// </remarks>
+    private static async Task<IResult> RefuseAsync(UserManager<User> users, User user) {
+        await users.AccessFailedAsync(user);
+        return Results.Json(InvalidSecondFactor, statusCode: StatusCodes.Status401Unauthorized);
     }
 
     /// <summary>
@@ -368,25 +480,25 @@ public static partial class WatchtowerAuthEndpoints {
     private static IResult Unauthenticated() =>
         Results.Json(NotSignedIn, statusCode: StatusCodes.Status401Unauthorized);
 
-    /// <summary>A parsed <c>{ code }</c> body, or the response that should be returned instead of reading one.</summary>
-    private readonly record struct CodeRequest(string? Code, IResult? Failure);
+    /// <summary>A parsed request body, or the response that should be returned instead of reading one.</summary>
+    private readonly record struct ParsedBody<T>(T? Body, IResult? Failure) where T : class;
 
     /// <summary>
-    /// Reads the <c>{ code }</c> body every proving endpoint takes, enforcing the JSON content type first.
+    /// Reads a JSON body, enforcing the content type first.
     /// </summary>
     /// <remarks>
     /// The content-type requirement is the CSRF control the whole file relies on (design.md §9): a
     /// cross-site HTML form can only send "simple" content types, so refusing everything else is what keeps
     /// a forged POST from switching somebody's second factor off behind their back.
     /// </remarks>
-    private static async Task<CodeRequest> ReadCodeAsync(HttpContext http, CancellationToken ct) {
+    private static async Task<ParsedBody<T>> ReadJsonAsync<T>(HttpContext http, CancellationToken ct)
+        where T : class {
         if (!http.Request.HasJsonContentType())
-            return new CodeRequest(null, Results.StatusCode(StatusCodes.Status415UnsupportedMediaType));
+            return new ParsedBody<T>(null, Results.StatusCode(StatusCodes.Status415UnsupportedMediaType));
         try {
-            var body = await http.Request.ReadFromJsonAsync<MfaCodeRequest>(ct);
-            return new CodeRequest(body?.Code, null);
+            return new ParsedBody<T>(await http.Request.ReadFromJsonAsync<T>(ct), null);
         } catch (System.Text.Json.JsonException) {
-            return new CodeRequest(null, Results.BadRequest());
+            return new ParsedBody<T>(null, Results.BadRequest());
         }
     }
 

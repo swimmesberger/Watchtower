@@ -261,6 +261,15 @@ public sealed class WatchtowerUserStore(
     /// immediate <c>ExecuteDelete</c>, so the swap lands in the same <c>SaveChanges</c> as the user write
     /// that <c>UserManager.GenerateNewTwoFactorRecoveryCodesAsync</c> performs straight afterwards. An
     /// eager delete would leave an account with no codes at all if that write then failed.
+    /// <para>
+    /// That batching leans on EF Core ordering deletes before inserts within one <c>SaveChanges</c>, which
+    /// matters because of the unique index on <c>(user_id, code_hash)</c>: were an insert to run first and
+    /// a new code collide with an old one, the constraint would reject the whole batch. The collision is
+    /// vanishingly unlikely — Identity's codes are random over a 26-character alphabet — so this is a
+    /// correctness note rather than a live hazard, and it is the reason not to "simplify" the removal into
+    /// a post-insert cleanup. Should EF's ordering ever stop holding, the fix is an explicit
+    /// <c>SaveChanges</c> after the removal inside a transaction, not a reordering here.
+    /// </para>
     /// </remarks>
     public async Task ReplaceCodesAsync(
         User user, IEnumerable<string> recoveryCodes, CancellationToken cancellationToken) {

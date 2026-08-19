@@ -1,8 +1,11 @@
+﻿using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Tests;
@@ -26,6 +29,13 @@ public sealed class MfaEndpointTests {
         ("Watchtower:Auth:Enabled", "true"),
         ("Watchtower:Auth:LoginRateLimitPerMinute", "100"),
     ];
+
+    /// <summary>The operator realm's login host, and a second realm's — the two credential spaces §13 defines.</summary>
+    private const string OperatorHost = "watchtower.example.invalid";
+    private const string AcmeHost = "login.acme.invalid";
+
+    /// <summary>Password of the seeded realm account (<c>AccessTestEstate</c>'s default).</summary>
+    private const string RealmPassword = "correct-horse-battery";
 
     // -- Login ------------------------------------------------------------------------------------
 
@@ -218,6 +228,73 @@ public sealed class MfaEndpointTests {
         Assert.False(response.Headers.Contains("Set-Cookie"));
     }
 
+    /// <summary>
+    /// The per-IP limiter is really attached to the second-factor route. Asserted at a limit of one and
+    /// without any account state, so the only thing that can explain the second answer is the limiter —
+    /// the other tests in this file raise the limit out of the way and therefore prove nothing about it.
+    /// </summary>
+    [Fact]
+    public async Task MfaLogin_IsCoveredByThePerIpLimiter() {
+        using var factory = new WatchtowerApiFactory(
+            ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Auth:LoginRateLimitPerMinute", "1"));
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        var first = await client.SendAsync(MfaLogin(new { mfaToken = "nonsense", code = "123456" }), ct);
+        var second = await client.SendAsync(MfaLogin(new { mfaToken = "nonsense", code = "123456" }), ct);
+
+        // The first attempt is judged (and refused); the second never reaches the handler at all.
+        Assert.Equal(HttpStatusCode.Unauthorized, first.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
+    }
+
+    /// <summary>
+    /// A challenge is redeemable only on the login host of the realm that issued it. Otherwise a pending
+    /// token minted on one realm's host would mint an SSO cookie on another's, for an account that does not
+    /// exist in that population — the cookie jar and the credential space would stop being one boundary.
+    /// </summary>
+    [Fact]
+    public async Task Challenge_IsRefusedOnAnotherRealmsLoginHost() {
+        using var factory = new WatchtowerApiFactory(
+            ("Watchtower:Auth:Enabled", "true"),
+            ("Watchtower:Auth:Host", OperatorHost),
+            ("Watchtower:Auth:LoginRateLimitPerMinute", "100"));
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        var acme = await factory.AddRealmAsync("acme", AcmeHost);
+        var aliceId = await factory.AddUserAsync("alice", realmId: acme, password: RealmPassword);
+        var sharedKey = await EnrolDirectlyAsync(factory, aliceId);
+
+        // The password step on acme's own login host: a proper challenge for a proper account.
+        var challenged = await client.SendAsync(
+            OnHost(
+                new HttpRequestMessage(HttpMethod.Post, "/api/auth/login") {
+                    Content = JsonContent.Create(new { userName = "alice", password = RealmPassword }),
+                },
+                AcmeHost),
+            ct);
+        Assert.Equal(HttpStatusCode.OK, challenged.StatusCode);
+        var token = (await ReadJsonAsync(challenged)).GetProperty("mfaToken").GetString()!;
+
+        // The same token, the same correct code, presented on the operator realm's login host.
+        var crossRealm = await client.SendAsync(
+            OnHost(MfaLogin(new { mfaToken = token, code = TotpCodes.Current(sharedKey) }), OperatorHost), ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, crossRealm.StatusCode);
+        Assert.False(crossRealm.Headers.Contains("Set-Cookie"));
+
+        // …and it is still perfectly good on the host that issued it, so the refusal was about the realm
+        // and not about the token having been spent or the code being wrong.
+        var sameRealm = await client.SendAsync(
+            OnHost(MfaLogin(new { mfaToken = token, code = TotpCodes.Current(sharedKey) }), AcmeHost), ct);
+        Assert.Equal(HttpStatusCode.OK, sameRealm.StatusCode);
+        Assert.Contains(
+            $"{AuthSessionService.SsoCookieName}=",
+            Assert.Single(sameRealm.Headers.GetValues("Set-Cookie")),
+            StringComparison.Ordinal);
+    }
+
     // -- Self-service ------------------------------------------------------------------------------
 
     [Fact]
@@ -234,7 +311,9 @@ public sealed class MfaEndpointTests {
             (await client.SendAsync(Post("/api/auth/mfa/totp/begin", new { }, cookie: null), ct)).StatusCode);
         Assert.Equal(
             HttpStatusCode.Unauthorized,
-            (await client.SendAsync(Post("/api/auth/mfa/totp/confirm", new { code = "123456" }, null), ct)).StatusCode);
+            (await client.SendAsync(
+                Post("/api/auth/mfa/totp/confirm", new { code = "123456", password = "whatever" }, null), ct))
+                .StatusCode);
     }
 
     [Fact]
@@ -294,7 +373,11 @@ public sealed class MfaEndpointTests {
         var sharedKey = begun.GetProperty("sharedKey").GetString()!;
 
         var response = await client.SendAsync(
-            Post("/api/auth/mfa/totp/confirm", new { code = TotpCodes.Wrong(sharedKey) }, cookie), ct);
+            Post(
+                "/api/auth/mfa/totp/confirm",
+                new { code = TotpCodes.Wrong(sharedKey), password = WatchtowerApiFactory.AdminPassword },
+                cookie),
+            ct);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
         var status = await ReadJsonAsync(await client.SendAsync(Get("/api/auth/mfa", cookie), ct));
@@ -387,6 +470,107 @@ public sealed class MfaEndpointTests {
         Assert.Equal(2, (await AuditKindsAsync(factory)).Count(k => k == "mfa.recovery.generated"));
     }
 
+    /// <summary>
+    /// Holding a session is not a reason to relax the lockout: a borrowed session is exactly the case where
+    /// someone would sit and grind six digits to switch the second factor off, so those guesses spend the
+    /// same five-attempt budget a login does.
+    /// </summary>
+    [Fact]
+    public async Task WrongCodes_OnTheManagementSurface_CountTowardsTheLockout() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var estate = await EnrolAsync(factory, client);
+        var ct = TestContext.Current.CancellationToken;
+
+        Assert.Null(await ReadLockoutEndAsync(factory));
+
+        var wrong = TotpCodes.Wrong(estate.SharedKey);
+        for (var attempt = 0; attempt < 5; attempt++) {
+            var refused = await client.SendAsync(
+                Post("/api/auth/mfa/totp/disable", new { code = wrong }, estate.Cookie), ct);
+            Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
+        }
+
+        Assert.NotNull(await ReadLockoutEndAsync(factory));
+
+        // And the lockout governs this surface too — a correct code is refused while it stands, so the
+        // budget cannot simply be waited out inside the same session.
+        var correct = await client.SendAsync(
+            Post("/api/auth/mfa/totp/disable", new { code = TotpCodes.Current(estate.SharedKey) }, estate.Cookie),
+            ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, correct.StatusCode);
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            Assert.True(await db.Users.AnyAsync(u => u.UserName == "admin" && u.TwoFactorEnabled, ct));
+        });
+    }
+
+    /// <summary>
+    /// Enrolment takes the account password as well as the code. The code proves possession of the new
+    /// authenticator — which whoever holds a borrowed session also has — so the password is the only thing
+    /// that makes enrolling an act of the account's owner.
+    /// </summary>
+    [Fact]
+    public async Task Confirm_WithoutTheAccountPassword_IsRefusedAndCounted() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        var cookie = await SignInAsync(client);
+        var begun = await ReadJsonAsync(
+            await client.SendAsync(Post("/api/auth/mfa/totp/begin", new { }, cookie), ct));
+        var sharedKey = begun.GetProperty("sharedKey").GetString()!;
+
+        var missing = await client.SendAsync(
+            Post("/api/auth/mfa/totp/confirm", new { code = TotpCodes.Current(sharedKey) }, cookie), ct);
+        var wrong = await client.SendAsync(
+            Post(
+                "/api/auth/mfa/totp/confirm",
+                new { code = TotpCodes.Current(sharedKey), password = "not-the-password" },
+                cookie),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
+        // A correct code with a wrong password is indistinguishable from a wrong code — the response says
+        // nothing about which half was the problem.
+        Assert.Equal(
+            await wrong.Content.ReadAsStringAsync(ct),
+            await missing.Content.ReadAsStringAsync(ct));
+
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var admin = await db.Users.SingleAsync(u => u.UserName == "admin", ct);
+            Assert.False(admin.TwoFactorEnabled);
+            // Both refusals counted, so password guessing here is bounded exactly as it is at login.
+            Assert.Equal(2, admin.AccessFailedCount);
+        });
+        Assert.DoesNotContain("mfa.totp.enabled", await AuditKindsAsync(factory));
+    }
+
+    /// <summary>The management routes carry the limiter too, so this is not the cheap surface to hammer.</summary>
+    [Fact]
+    public async Task ManagementRoutes_AreCoveredByThePerIpLimiter() {
+        using var factory = new WatchtowerApiFactory(
+            ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Auth:LoginRateLimitPerMinute", "2"));
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Permit 1 goes on the sign-in, permit 2 on the first enrolment request…
+        var cookie = await SignInAsync(client);
+        var first = await client.SendAsync(Post("/api/auth/mfa/totp/begin", new { }, cookie), ct);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        // …and the window is now full, even though nothing about the account changed.
+        var throttled = await client.SendAsync(Post("/api/auth/mfa/totp/begin", new { }, cookie), ct);
+        Assert.Equal(HttpStatusCode.TooManyRequests, throttled.StatusCode);
+
+        // The status read is deliberately outside the limiter: a page that could not say whether
+        // two-factor is on would be worst during exactly the incident the limiter exists for.
+        var status = await client.SendAsync(Get("/api/auth/mfa", cookie), ct);
+        Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+    }
+
     [Fact]
     public async Task Routes_Are404_WhenAuthorizationIsSwitchedOff() {
         using var factory = new WatchtowerApiFactory();
@@ -456,7 +640,11 @@ public sealed class MfaEndpointTests {
         var otpauthUri = begun.GetProperty("otpauthUri").GetString()!;
 
         var confirmed = await client.SendAsync(
-            Post("/api/auth/mfa/totp/confirm", new { code = TotpCodes.Current(sharedKey) }, cookie), ct);
+            Post(
+                "/api/auth/mfa/totp/confirm",
+                new { code = TotpCodes.Current(sharedKey), password = WatchtowerApiFactory.AdminPassword },
+                cookie),
+            ct);
         Assert.Equal(HttpStatusCode.OK, confirmed.StatusCode);
 
         var codes = (await ReadJsonAsync(confirmed)).GetProperty("recoveryCodes")
@@ -472,6 +660,35 @@ public sealed class MfaEndpointTests {
         var body = await ReadJsonAsync(response);
         Assert.True(body.GetProperty("mfaRequired").GetBoolean());
         return new Challenge(body.GetProperty("mfaToken").GetString()!);
+    }
+
+    /// <summary>Sends the request as if the browser had reached <paramref name="host"/> — which realm decides.</summary>
+    private static HttpRequestMessage OnHost(HttpRequestMessage request, string host) {
+        request.Headers.Host = host;
+        return request;
+    }
+
+    /// <summary>
+    /// Enrols an account through the service rather than the endpoints, for the cases where the endpoints
+    /// are not the subject — a realm account has no operator-realm session to drive them with.
+    /// </summary>
+    private static async Task<string> EnrolDirectlyAsync(WatchtowerApiFactory factory, int userId) {
+        var sharedKey = string.Empty;
+        await factory.WithScopeAsync(async sp => {
+            var ct = TestContext.Current.CancellationToken;
+            var users = sp.GetRequiredService<UserManager<User>>();
+            var mfa = sp.GetRequiredService<UserMfaService>();
+            var user = await users.FindByIdAsync(userId.ToString(CultureInfo.InvariantCulture));
+            Assert.NotNull(user);
+            sp.GetRequiredService<IRealmContext>().SetRealm(user.RealmId);
+
+            var enrolment = await mfa.BeginTotpAsync(user, ct);
+            Assert.NotNull(enrolment);
+            var confirmed = await mfa.ConfirmTotpAsync(user, TotpCodes.Current(enrolment.SharedKey), ct);
+            Assert.Equal(UserMfaService.ConfirmOutcome.Enabled, confirmed.Outcome);
+            sharedKey = enrolment.SharedKey;
+        });
+        return sharedKey;
     }
 
     private static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response) =>

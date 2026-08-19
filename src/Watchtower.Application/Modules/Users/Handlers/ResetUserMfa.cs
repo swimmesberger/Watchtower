@@ -25,9 +25,10 @@ namespace Watchtower.Application.Modules.Users.Handlers;
 /// </para>
 /// <para>
 /// The security stamp rotates as part of the change, because
-/// <see cref="UserManager{TUser}.SetTwoFactorEnabledAsync"/> rotates it: losing a factor is a credential
-/// change. Existing sessions are deliberately <em>not</em> revoked — this operation exists because someone
-/// cannot get in, and signing out the sessions they might still hold would work against that.
+/// <see cref="UserManager{TUser}.SetTwoFactorEnabledAsync"/> rotates it. That is bookkeeping and nothing
+/// more today: session validation never compares the stamp (see <see cref="User.SecurityStamp"/>), so no
+/// session ends as a result. Nor should one — this operation exists because someone <em>cannot</em> get in,
+/// and signing out whatever sessions they might still hold would work against that.
 /// </para>
 /// </remarks>
 [Handler("users.resetMfa")]
