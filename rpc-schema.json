@@ -2,6 +2,140 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "JSON-RPC 2.0 Schema",
   "methods": {
+    "audit.kinds": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "kinds"
+        ]
+      }
+    },
+    "audit.list": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "beforeId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "userId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "routeId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "userId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "userName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "routeId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "routeDomain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "userId",
+                "userName",
+                "routeId",
+                "routeDomain",
+                "detail",
+                "createdAt"
+              ]
+            }
+          },
+          "nextBeforeId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "events",
+          "nextBeforeId"
+        ]
+      }
+    },
     "backups.events": {
       "params": {
         "type": "object",
@@ -7959,6 +8093,9 @@
   },
   "capabilities": {
     "modules": {
+      "Audit": {
+        "features": []
+      },
       "Backups": {
         "features": []
       },

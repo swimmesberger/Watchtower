@@ -404,6 +404,16 @@ existing convention for non-RPC/external surfaces):
 - `Access` handlers (fold into the existing `Proxy` module — policy is route-scoped):
   `proxy.getAccess` / `proxy.setAccess` (mode + grants + bypass paths), calling
   `CaddyManager.ApplyAsync()` on change like the route CRUD does.
+- `Audit` module: `audit.list` / `audit.kinds` — both `[RequireRole("Admin")]`, and both **read-only**.
+  The trail's writers stay in the modules whose acts they record (and in the login endpoints), so a
+  disabled `Audit` module hides the view without interrupting the recording. `audit.list` is keyset-paged
+  on the primary key (`Id < beforeId`, `ORDER BY Id DESC`, default 100 rows, clamped at 500) rather than
+  offset-paged, because the table is append-only and is being written while it is read; ordering by `Id`
+  rather than `CreatedAt` is also forced by SQLite, which cannot `ORDER BY` a `DateTimeOffset` (the same
+  limitation `stacks.events` works around). `audit.kinds` reports the distinct kinds actually present, so
+  the filter never drifts from the vocabulary in `AuthEventKinds`. Both references are projected
+  null-safely: the foreign keys are `SET NULL`, so a row about a deleted account keeps its `Detail` — the
+  reason every writer names its target there — and loses the reference.
 - Secure-by-default via `[assembly: ElarionAuthorizationDefaults]`; `[AllowAnonymous]` on the
   session-bootstrap surface and anything the login page needs pre-auth.
 
@@ -424,6 +434,11 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
   roster over the account list.
 - **Route form** gains an *Access* section: mode selector (`Public` / `Any authenticated user` /
   `Selected users and groups`), user picker, group picker, bypass-path list.
+- **Audit page** (new `audit` frontend module, gated the same way): the trail newest-first, filtered by
+  event kind, account and app, with a *Load more* button following `nextBeforeId` and a manual refresh.
+  Read-only — the screen issues no mutations, and there is deliberately no live tail: the filters are part
+  of the query key, so changing one starts a fresh first page rather than appending an unrelated result to
+  the rows on screen.
 - Schema regeneration as usual — pass an **absolute repo-root path** for the output:
   `dotnet run --project src/Watchtower.Api -- --export-schema "$PWD/rpc-schema.json"`. A bare relative
   path lands in `src/Watchtower.Api/` because `dotnet run --project` runs the app with its CWD set to the
