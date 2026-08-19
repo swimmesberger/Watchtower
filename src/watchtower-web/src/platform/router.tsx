@@ -7,6 +7,7 @@
 import { createRouter } from '@tanstack/react-router'
 import { rootRoute } from './root-route'
 import { loginRoute } from './login-route'
+import { securityRoute } from './security-route'
 import type { AppModule } from './app-module'
 import credentials from '@/modules/credentials'
 import dashboard from '@/modules/dashboard'
@@ -42,6 +43,9 @@ export const appManifests = appModules.map((m) => m.manifest)
 const routeTree = rootRoute.addChildren([
   // Platform-owned and deliberately ungated: it is the page an unauthenticated visitor is sent to.
   loginRoute,
+  // Also platform-owned and ungated, for the mirror-image reason: every signed-in account may protect its
+  // own credentials, including one outside the operator realm that no feature module is visible to.
+  securityRoute,
   ...credentials.routes,
   ...dashboard.routes,
   ...groups.routes,

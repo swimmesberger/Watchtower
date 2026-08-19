@@ -3,9 +3,10 @@
 // renders it *instead of* the management UI (see `app-shell.tsx`), so there is no navigation to gate and no
 // capability module behind it. Realm accounts have none.
 import { useQuery } from '@tanstack/react-query'
-import { AppWindow, ArrowUpRight, Eye } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { AppWindow, ArrowUpRight, Eye, ShieldCheck } from 'lucide-react'
 import { listApps, type AppLink } from '@/lib/apps'
-import { goToLogin, logout, LOCAL_USER_ID } from '@/lib/auth'
+import { ACCOUNT_SECURITY_PATH, goToLogin, logout, LOCAL_USER_ID } from '@/lib/auth'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -36,6 +37,7 @@ export function AppsPage({ caps }: { caps: SessionCapabilities }) {
         </span>
         <div className="flex items-center gap-1">
           <ThemeToggle />
+          <SecurityLink caps={caps} />
           <SignOutButton caps={caps} />
         </div>
       </header>
@@ -124,6 +126,24 @@ function AppCard({ app }: { app: AppLink }) {
 
 /** The one affordance the portal keeps from the management shell. Same rule: nothing to sign out of when
  * authentication is switched off, so the button is not offered. */
+/**
+ * The portal's one link out of itself. Realm accounts see no management UI at all, so without this the
+ * account-security page would exist for them and be unreachable.
+ */
+function SecurityLink({ caps }: { caps: SessionCapabilities }) {
+  const user = caps.user
+  if (!user.isAuthenticated || user.id === LOCAL_USER_ID) return null
+
+  return (
+    <Button variant="ghost" size="sm" asChild>
+      <Link to={ACCOUNT_SECURITY_PATH}>
+        <ShieldCheck />
+        Security
+      </Link>
+    </Button>
+  )
+}
+
 function SignOutButton({ caps }: { caps: SessionCapabilities }) {
   const user = caps.user
   if (!user.isAuthenticated || user.id === LOCAL_USER_ID) return null
