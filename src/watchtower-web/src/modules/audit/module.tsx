@@ -13,11 +13,13 @@ export const auditManifest = defineModule({
   name: 'Audit',
   when: AUDIT_GATE,
   contributes: [
-    // After Users (55) and Groups (56), before Settings (60): the trail is the record of what was done
-    // to the entries above it, so it reads as the last of the access-control group rather than the first
-    // of the instance-configuration one.
+    // After Users (55), Groups (56) and Realms (57), before Settings (60): the trail is the record of
+    // what was done to the three entries above it, so it reads as the last of the access-control group
+    // rather than the first of the instance-configuration one. Its own number rather than a tie on 57 —
+    // equal orders fall back to an alphabetical tie-break, which would slot Audit between Groups and
+    // Realms and split the three screens that are meant to be read together.
     contribute(sidebarItems, [
-      { id: 'audit', label: 'Audit', icon: ScrollText, to: '/audit', exact: true, order: 57 },
+      { id: 'audit', label: 'Audit', icon: ScrollText, to: '/audit', exact: true, order: 58 },
     ]),
   ],
 })

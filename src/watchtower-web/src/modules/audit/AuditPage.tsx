@@ -96,6 +96,9 @@ export function AuditPage() {
   /** Drops every loaded page and re-reads from the newest row — the trail has no live tail. */
   function refresh() {
     qc.resetQueries({ queryKey })
+    // The dropdown is derived from the same rows, so a refresh that found a kind nobody had recorded
+    // before would otherwise leave it unfilterable until a reload.
+    qc.invalidateQueries({ queryKey: ['audit', 'kinds'] })
   }
 
   function clearFilters() {
@@ -161,7 +164,13 @@ export function AuditPage() {
             from here.
           </p>
         </div>
-        <Button variant="secondary" onClick={refresh} loading={isFetching && !isFetchingNextPage}>
+        {/* Spins only for a refresh: the first load is already reported by the list's own skeleton rows,
+            and "load more" by the button at the foot of the list. */}
+        <Button
+          variant="secondary"
+          onClick={refresh}
+          loading={isFetching && !isLoading && !isFetchingNextPage}
+        >
           <RefreshCw /> Refresh
         </Button>
       </div>

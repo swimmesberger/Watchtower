@@ -24,6 +24,8 @@ public sealed class ListAuthEventKinds(WatchtowerDbContext db)
     public sealed record Response(IReadOnlyList<string> Kinds);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(query);
+
         var kinds = await db.AuthEvents.AsNoTracking()
             .Select(e => e.Kind)
             .Distinct()
