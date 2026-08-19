@@ -1,6 +1,7 @@
 # CI Runners — self-hosted GitHub Actions runners managed by Watchtower
 
-Status: draft (2026-08-02)
+Status: draft (2026-08-02); amended 2026-08-18 with the per-stack CI section
+([Stack-linked CI](#stack-linked-ci-toolchain-detection--cache-pre-warming)) — implemented.
 
 ## Motivation
 
@@ -137,13 +138,18 @@ Runner container spec:
 ### Caching (avoiding the ephemeral-runner slowdown)
 
 The manually-managed VM had warm caches; a fresh container has none. Per-repo named
-volumes mounted into every runner of that repo:
+volumes mounted into every runner of that repo (implemented):
 
-- `watchtower-ci-tool-{repo}` → `/home/runner/_work/_tool` (setup-* action toolcache)
-- `watchtower-ci-pkg-{repo}` → NuGet/npm cache dirs (via runner env)
+- `watchtower-ci-tool-{repo}` → `/home/runner/_work/_tool` (setup-* action toolcache;
+  also `DOTNET_INSTALL_DIR={toolcache}/dotnet`, because setup-dotnet installs to that
+  env var's dir rather than `RUNNER_TOOL_CACHE`)
+- `watchtower-ci-pkg-{repo}` → `/home/runner/_pkg`, exposed via runner env inherited by
+  job steps: `NUGET_PACKAGES=…/nuget`, `npm_config_cache=…/npm`, `GOMODCACHE=…/gomod`
 
 The workspace itself stays ephemeral (clean checkout per job). Volumes are removable via
-the existing Volumes module; GC/pruning is future work.
+the existing Volumes module; GC/pruning is future work. Pre-warming the toolcache from the
+detected toolchain profile is described in
+[Stack-linked CI](#stack-linked-ci-toolchain-detection--cache-pre-warming).
 
 ### RPC surface
 
@@ -270,6 +276,87 @@ Sovereign mode is shelved, not planned; this section stays as the record of the 
 should the trade-off ever be revisited (e.g. a forge migration, where act is the natural
 engine anyway).
 
+## Stack-linked CI, toolchain detection & cache pre-warming
+
+Status: implemented (2026-08-18). Stacks are where repositories already live in
+Watchtower — the natural place to turn CI on. This section covers the stack↔CI link, the
+toolchain profile detected from deploy clones, and the toolcache warmer driven by it.
+
+### "Enable CI" per stack
+
+A stack's `RepositoryUrl` is parsed into `owner/name` (`GitHubRepoUrl`, github.com HTTPS
+and SSH forms only — other forges can't get Actions runners and say so). `ci.enableForStack`
+creates — or re-enables — the `CiRepo` for that pair; since CI repos are unique on
+`owner/name`, **multiple stacks deploying the same repository share one runner pool and one
+cache**. `ci.getStackCi` is the read side the stack page's CI tab polls: parse result,
+linked repo, runner status, toolchain profile.
+
+Credentials: the stack's clone credential usually holds a Contents-read PAT, while runner
+registration needs repository **Administration (read and write)**. The chosen credential —
+explicit, or defaulting to the stack's — is probed via `ValidateRepoAccessAsync` before
+anything is written, and a wrong-scoped PAT fails with a message naming the missing
+permission and the way out (choose/create a runner-admin credential). Re-enabling with the
+already-validated credential skips the probe.
+
+### Toolchain detection (heuristics)
+
+Every deploy already clones the repository, so detection piggybacks on that clone at zero
+extra cost: right after a successful clone, `CiToolchainRecorder` (best-effort by contract —
+it can never fail a deploy) detects a **toolchain profile** for the matching CI repo, if one
+is configured. Signals, strongest first:
+
+1. `.github/workflows/*.yml` `setup-dotnet`/`setup-node`/`setup-go` steps and their
+   `*-version:` inputs (inline, block-scalar and flow-list forms; matrix expressions are
+   ignored). What a workflow names is what jobs will install, so when a workflow names
+   versions for a kind, manifest signals for that kind are dropped.
+2. Manifests: `global.json` (SDK channel), `*.csproj` TFMs (bounded tree walk that skips
+   `node_modules`/`bin`/`obj`/…), `.nvmrc`/`package.json` `engines.node`, `go.mod`'s `go`
+   directive. Dockerfile presence is recorded as a flag (a docker-based build needs no
+   toolcache).
+
+The profile is persisted as JSON on the `CiRepo` (`toolchain_profile_json` +
+`toolchain_detected_at`) and shown in the UI ("detected: .NET 10.0, Node 22"). The parser
+is line-based and deliberately heuristic; a malformed file contributes nothing, and an empty
+profile is a valid result. Detection failure never blocks deploys or runners.
+
+### Cache pre-warming
+
+The whole point of the toolcache volume is that `setup-*` actions find a local hit and skip
+their downloads — but something has to put the SDKs there first. The orchestrator's
+reconcile loop converges on that: whenever the profile's hash (over kind+version pairs
+only — source attribution and Dockerfile presence don't change what gets installed) differs
+from the last successfully warmed hash, it spawns a **one-shot warmer container** (label
+`watchtower.managed=ci-warmer`, same tracking scheme as runners, restart-safe) running a
+generated bash script (`CiWarmerScript`) that installs into the shared toolcache volume:
+
+- Node/Go: tarballs extracted to `{tool}/node/{version}/{arch}` + `.complete` marker —
+  exactly the layout `tc.find` probes; partial versions ("22", "1.24") resolve to the
+  latest release of the line at warm time.
+- .NET: `dotnet-install.sh --channel {X.Y}` into `{tool}/dotnet`, which runners expose as
+  `DOTNET_INSTALL_DIR`; dotnet-install then reports the SDK as already installed.
+
+Outcomes are persisted on the repo (`warmed_profile_hash`/`last_warmed_at` on success,
+`last_warm_error` with the log tail on failure) and surfaced in the UI as
+warmed/warming/failed/pending. Failures retry after a fixed 15-minute in-memory backoff and
+are **never fatal** — a cold cache just means jobs download their own tools. Re-warming
+happens on profile change only; an unchanged profile costs the loop nothing but a hash
+comparison.
+
+Security: warmer containers get **no PAT, no JIT config, no Docker socket** — only the
+cache volume. The script downloads exclusively from the public SDK hosts (nodejs.org,
+dot.net, go.dev), and toolchain versions are re-validated against a strict numeric pattern
+at the script boundary so a hostile repository manifest cannot smuggle shell syntax into
+the warmer.
+
+### Not implemented (future work)
+
+- **Generated per-profile runner images** (bake the toolchains into an image built over the
+  Docker socket instead of a shared volume): stronger isolation between repos and faster
+  container start, at the cost of an image build pipeline + registry storage per profile.
+  The volume approach was chosen first because it needs no image builds and converges
+  per-repo; images remain the intended end state for the "house toolchain" case.
+- Warm-aware cache GC (drop toolcache entries the profile no longer names).
+
 ## Multi-instance behavior
 
 Watchtower stays single-host; each instance (NAS, each Hetzner box) manages runners
@@ -294,9 +381,12 @@ actions + warm toolcache volume).
    (JIT + validation), `RunnerOrchestrator` reconcile loop, `ci.addRepo/listRepos/
    updateRepo/removeRepo/getRunnerStatus`. Proven end-to-end against one real repo.
 2. **Builds UI**: `ci.listRuns/listJobs/getJobLogs` + the frontend module.
-3. **Comfort**: cache volumes wired by default, custom house runner image, run-completed
-   → stack deploy hook, live log tail (mount runner `_diag` volume, SSE tail endpoint —
-   possible precisely because Watchtower hosts the runner), cache volume GC.
+3. **Comfort**: cache volumes wired by default ✓, stack-linked enablement + toolchain
+   detection + toolcache pre-warming ✓ (see
+   [Stack-linked CI](#stack-linked-ci-toolchain-detection--cache-pre-warming)), custom house
+   runner image, run-completed → stack deploy hook, live log tail (mount runner `_diag`
+   volume, SSE tail endpoint — possible precisely because Watchtower hosts the runner),
+   cache volume GC.
 
 ## Open questions
 

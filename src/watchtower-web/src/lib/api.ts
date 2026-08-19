@@ -17,6 +17,8 @@ import type {
   ContainerEnvVar,
   ContainerMetrics,
   AddTenantRequest,
+  CiRepo,
+  StackCi,
   CreateCredentialRequest,
   CreateRealmRequest,
   CreateRegistryRequest,
@@ -170,6 +172,32 @@ export const api = {
 
   deployments: {
     active: async () => (await rpc('deployments.active', {})).deployments as ActiveDeployment[],
+  },
+
+  ci: {
+    getStackCi: async (stackId: number) => (await rpc('ci.getStackCi', { stackId })).ci as StackCi,
+    enableForStack: async (stackId: number, credentialId?: number | null) =>
+      (await rpc('ci.enableForStack', { stackId, credentialId: credentialId ?? null })).repo as CiRepo,
+    updateRepo: async (repo: {
+      id: number
+      enabled: boolean
+      maxConcurrentRunners: number
+      credentialId: number
+      runnerImage?: string | null
+      extraLabels?: string | null
+      allowDockerSocket: boolean
+    }) =>
+      (
+        await rpc('ci.updateRepo', {
+          id: repo.id,
+          enabled: repo.enabled,
+          maxConcurrentRunners: repo.maxConcurrentRunners,
+          credentialId: repo.credentialId,
+          runnerImage: repo.runnerImage ?? null,
+          extraLabels: repo.extraLabels ?? null,
+          allowDockerSocket: repo.allowDockerSocket,
+        })
+      ).repo as CiRepo,
   },
 
   volumes: {

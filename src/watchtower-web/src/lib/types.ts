@@ -869,3 +869,65 @@ export interface BackupRemoteFile {
   takenAt: string
   encrypted: boolean
 }
+
+// ── CI runners ───────────────────────────────────────────────────────────────
+
+/** One detected toolchain of a CI repo, e.g. kind "dotnet", version "10.0", source "workflow". */
+export interface CiToolchain {
+  kind: string
+  version: string
+  source: string
+}
+
+/**
+ * The toolchain profile detected from the repository's working tree during stack deploys, plus the
+ * toolcache warm state derived from it. Null on a `CiRepo` until a linked stack has deployed once.
+ */
+export interface CiToolchainProfile {
+  toolchains: CiToolchain[]
+  hasDockerfile: boolean
+  detectedAt: string | null
+  /** 'warmed' | 'warming' | 'failed' | 'pending' — whether the toolcache matches the profile. */
+  warmStatus: 'warmed' | 'warming' | 'failed' | 'pending'
+  lastWarmedAt: string | null
+  lastWarmError: string | null
+}
+
+/** Live orchestrator state for one repo's runner slots. */
+export interface CiRunnerStatus {
+  desiredRunners: number
+  runningRunners: number
+  totalSpawned: number
+  lastError: string | null
+  lastErrorAt: string | null
+  backoffUntil: string | null
+}
+
+/** A GitHub repository with CI runners managed by this Watchtower instance. */
+export interface CiRepo {
+  id: number
+  owner: string
+  name: string
+  fullName: string
+  credentialId: number
+  enabled: boolean
+  maxConcurrentRunners: number
+  runnerImage: string | null
+  extraLabels: string | null
+  allowDockerSocket: boolean
+  createdAt: string
+  runnerStatus: CiRunnerStatus | null
+  toolchain: CiToolchainProfile | null
+}
+
+/**
+ * The CI view of one stack: whether its repository is on github.com (only those can get Actions
+ * runners) and the linked CI repo when enabled. Stacks deploying the same repository share one
+ * CI repo — one runner pool, one toolcache.
+ */
+export interface StackCi {
+  isGitHub: boolean
+  owner: string | null
+  name: string | null
+  repo: CiRepo | null
+}

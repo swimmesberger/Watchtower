@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Watchtower.Application.Persistence;
 
@@ -10,9 +11,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260817210815_AddCiToolchainProfile")]
+    partial class AddCiToolchainProfile
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -146,59 +149,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_auth_sessions_user_id");
 
                     b.ToTable("auth_sessions", (string)null);
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.BackupEvent", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset?>("FinishedAt")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("finished_at");
-
-                    b.Property<string>("Output")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("output");
-
-                    b.Property<string>("RemotePath")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("remote_path");
-
-                    b.Property<long?>("SizeBytes")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("size_bytes");
-
-                    b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("stack_id");
-
-                    b.Property<DateTimeOffset>("StartedAt")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("started_at");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("status");
-
-                    b.Property<string>("TriggeredBy")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("triggered_by");
-
-                    b.HasKey("Id")
-                        .HasName("pk_backup_events");
-
-                    b.HasIndex("Status")
-                        .HasDatabaseName("ix_backup_events_status");
-
-                    b.HasIndex("StackId", "StartedAt")
-                        .HasDatabaseName("ix_backup_events_stack_id_started_at");
-
-                    b.ToTable("backup_events", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>
@@ -796,14 +746,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("auto_deploy_time");
 
-                    b.Property<bool>("BackupEnabled")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("backup_enabled");
-
-                    b.Property<bool>("BackupStopContainers")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("backup_stop_containers");
-
                     b.Property<string>("Branch")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -1195,18 +1137,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("Route");
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.BackupEvent", b =>
-                {
-                    b.HasOne("Watchtower.Application.Entities.Stack", "Stack")
-                        .WithMany()
-                        .HasForeignKey("StackId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_backup_events_stacks_stack_id");
-
-                    b.Navigation("Stack");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>

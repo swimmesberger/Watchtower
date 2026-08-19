@@ -207,6 +207,9 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<GitHubApiClient>();
         services.AddSingleton<CiRunnerOrchestrator>();
         services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
+        // Toolchain detection piggybacks on deploy clones; the recorder persists the profile and
+        // wakes the orchestrator so the toolcache warmer converges (docs/ci-runners/design.md).
+        services.AddSingleton<CiToolchainRecorder>();
 
         // Metrics backend (ADR-0007, amended by ADR-0013) — three backends behind one runtime router:
         // "sqlite" (default) persists windowed history next to the live ring, "memory" keeps the ring
