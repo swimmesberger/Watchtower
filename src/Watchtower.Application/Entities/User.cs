@@ -55,10 +55,35 @@ public sealed class User {
     public DateTimeOffset? LockoutEnd { get; set; }
 
     /// <summary>
-    /// Random value regenerated whenever credentials change. Sessions minted before the change can be
-    /// recognised as stale, which is also the hook the planned MFA work builds on.
+    /// Random value regenerated whenever credentials change — including every MFA change, since
+    /// <c>UserManager</c> rotates it for <c>ResetAuthenticatorKeyAsync</c> and
+    /// <c>SetTwoFactorEnabledAsync</c>. Sessions minted before the change can be recognised as stale.
     /// </summary>
     public required string SecurityStamp { get; set; }
+
+    /// <summary>
+    /// Whether a TOTP authenticator is enrolled and a second factor is therefore demanded at login
+    /// (docs/central-auth/design.md §4). Self-service: the account's owner turns it on, an administrator
+    /// can only turn it off (<c>users.resetMfa</c>), never on somebody's behalf.
+    /// </summary>
+    /// <remarks>
+    /// Stays false while <see cref="AuthenticatorKey"/> is being enrolled but not yet proven: the key is
+    /// written first so the authenticator app can be set up, and only a correct code from it flips this.
+    /// An abandoned enrolment therefore leaves a key nobody uses rather than an account nobody can enter.
+    /// </remarks>
+    public bool TwoFactorEnabled { get; set; }
+
+    /// <summary>
+    /// The shared TOTP secret, Base32-encoded as <c>UserManager.GenerateNewAuthenticatorKey</c> produces
+    /// it. Null until the first enrolment begins, and cleared again when two-factor is switched off.
+    /// </summary>
+    /// <remarks>
+    /// This is a <em>secret</em> in the same class as <see cref="PasswordHash"/> — anyone holding it can
+    /// mint valid codes — so it never appears in a DTO or an API response. The one moment it leaves the
+    /// server is the enrolment response that hands it to its own owner, which is a deliberate, audited
+    /// hand-off and not a projection of the entity.
+    /// </remarks>
+    public string? AuthenticatorKey { get; set; }
 
     /// <summary>
     /// EF Core optimistic-concurrency token, rotated on every write by
