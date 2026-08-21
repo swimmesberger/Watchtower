@@ -609,6 +609,8 @@ export interface CloudflareForeignRoute {
   hostname: string
   service: string
   path?: string | null
+  /** The tunnel the rule lives on — every account tunnel is scanned, not just Watchtower's own. */
+  tunnelName: string
   suggestedStackId?: number | null
   suggestedStackName?: string | null
   suggestedServiceName?: string | null

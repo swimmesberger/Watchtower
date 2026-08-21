@@ -34,6 +34,14 @@ public sealed class CloudflareApiClient : IDisposable {
         return result.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.Ordinal));
     }
 
+    /// <summary>All non-deleted tunnels in the account — foreign-hostname discovery reads every one,
+    /// because pre-existing applications typically live on a tunnel Watchtower did not create.</summary>
+    public async Task<IReadOnlyList<CloudflareTunnel>> ListTunnelsAsync(
+        string accountId, string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, $"accounts/{accountId}/cfd_tunnel?is_deleted=false&per_page=100",
+            token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareTunnel, ct);
+    }
+
     /// <summary>Creates a remotely-managed tunnel (<c>config_src: cloudflare</c>) so ingress lives in the API.</summary>
     public async Task<CloudflareTunnel> CreateTunnelAsync(string accountId, string name, string token, CancellationToken ct = default) {
         var body = JsonSerializer.Serialize(

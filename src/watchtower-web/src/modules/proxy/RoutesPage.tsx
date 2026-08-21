@@ -14,7 +14,6 @@ import type {
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { timeAgo } from '@/lib/format'
 import { useRealms } from '@/hooks/use-realms'
-import { AuditTrailCard } from '@/components/audit-trail'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -42,7 +41,6 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { routesRoute } from './module'
@@ -189,8 +187,6 @@ export function RoutesPage() {
   // admin operation, so the affordance is shown only to an administrator on an auth-enabled deployment. The
   // implicit local administrator (Auth:Enabled=false) reports the reserved `local` id — see auth.ts.
   const canManageAccess = caps.hasRole('Admin') && caps.user.id !== LOCAL_USER_ID
-  // The audit trail is admin-gated server-side; the implicit local administrator qualifies too.
-  const canViewAudit = caps.hasRole('Admin')
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...emptyForm })
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
@@ -199,13 +195,19 @@ export function RoutesPage() {
   const { data: status } = useQuery({ queryKey: ['proxy-status'], queryFn: api.proxy.getStatus })
 
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
-  // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption.
-  const { data: foreignRoutes = [] } = useQuery({
+  // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
+  // and "the tunnel cannot be seen" both render as a banner — a silently empty list here reads as
+  // "my Cloudflare routes are not showing up".
+  const foreignQuery = useQuery({
     queryKey: ['cloudflare-foreign-routes'],
     queryFn: api.proxy.listCloudflareForeignRoutes,
     enabled: status?.enabled === true && status.provider === 'cloudflare',
     staleTime: 60_000,
   })
+  const foreignRoutes = foreignQuery.data?.routes ?? []
+  const foreignWarning = foreignQuery.isError
+    ? ((foreignQuery.error as Error)?.message ?? 'Could not read the tunnel configuration from Cloudflare.')
+    : (foreignQuery.data?.warning ?? null)
 
   const {
     data: routes = [],
@@ -470,37 +472,37 @@ export function RoutesPage() {
         </Banner>
       )}
 
-      <Tabs defaultValue="routes">
-        {canViewAudit && (
-          <TabsList>
-            <TabsTrigger value="routes">Routes</TabsTrigger>
-            <TabsTrigger value="audit">Audit</TabsTrigger>
-          </TabsList>
-        )}
-        <TabsContent value="routes" className="space-y-6">
+      {foreignWarning && (
+        <Banner tone="warn" title="Cloudflare hostnames not visible">
+          {foreignWarning}
+        </Banner>
+      )}
 
       {foreignRoutes.length > 0 && (
         <Card>
           <CardContent className="pt-5">
             <SectionHeader
               title={`Found in Cloudflare (${foreignRoutes.length})`}
-              description="Public hostnames configured on the tunnel in the Cloudflare dashboard. Watchtower keeps serving them untouched — import one to manage it as a route (access control, per-stack networking, cleanup on stack removal)."
+              description="Public hostnames configured in the Cloudflare dashboard, across all of the account's tunnels. Watchtower leaves them untouched — import one to manage it as a route (served from Watchtower's tunnel, with access control, per-stack networking and cleanup on stack removal)."
             />
             <ul className="divide-y divide-border">
               {foreignRoutes.map((f) => (
-                <li key={f.hostname} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <li key={`${f.tunnelName}/${f.hostname}`} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
                   <div className="min-w-0">
                     <span className="block truncate font-medium text-text">{f.hostname}</span>
                     <span className="block truncate font-mono text-[13px] text-text-2">
                       → {f.service}
                       {f.path ? ` (path ${f.path})` : ''}
                     </span>
-                    {f.suggestedStackName && (
-                      <span className="block text-xs text-text-3">
-                        looks like stack “{f.suggestedStackName}”, service{' '}
-                        <span className="font-mono">{f.suggestedServiceName}:{f.suggestedContainerPort}</span>
-                      </span>
-                    )}
+                    <span className="block text-xs text-text-3">
+                      on tunnel “{f.tunnelName}”
+                      {f.suggestedStackName && (
+                        <>
+                          {' '}· looks like stack “{f.suggestedStackName}”, service{' '}
+                          <span className="font-mono">{f.suggestedServiceName}:{f.suggestedContainerPort}</span>
+                        </>
+                      )}
+                    </span>
                   </div>
                   <Button size="sm" variant="secondary" onClick={() => startImport(f)}>
                     <CloudDownload /> Import
@@ -707,19 +709,6 @@ export function RoutesPage() {
           aria-label="Routes"
         />
       )}
-        </TabsContent>
-
-        {canViewAudit && (
-          <TabsContent value="audit">
-            <AuditTrailCard
-              category="proxy"
-              title="Cloudflare writes"
-              description="Every change Watchtower made in your Cloudflare account — tunnel configuration, DNS records, Access applications — newest first. Reads are not logged. The Audit page shows all categories."
-              emptyText="No writes recorded yet. Entries appear when a reconcile changes something — enabling the provider, creating routes, or protecting them."
-            />
-          </TabsContent>
-        )}
-      </Tabs>
 
       <ConfirmDialog
         open={pendingDelete != null}

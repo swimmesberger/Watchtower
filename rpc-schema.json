@@ -3961,6 +3961,9 @@
                     "null"
                   ]
                 },
+                "tunnelName": {
+                  "type": "string"
+                },
                 "suggestedStackId": {
                   "type": [
                     "integer",
@@ -3990,12 +3993,20 @@
                 "hostname",
                 "service",
                 "path",
+                "tunnelName",
                 "suggestedStackId",
                 "suggestedStackName",
                 "suggestedServiceName",
                 "suggestedContainerPort"
               ]
             }
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [

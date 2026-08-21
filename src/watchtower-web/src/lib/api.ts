@@ -249,7 +249,10 @@ export const api = {
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
     listCloudflareForeignRoutes: async () =>
-      (await rpc('proxy.listCloudflareForeignRoutes', {})).routes as CloudflareForeignRoute[],
+      (await rpc('proxy.listCloudflareForeignRoutes', {})) as {
+        routes: CloudflareForeignRoute[]
+        warning?: string | null
+      },
     getConfig: async () => (await rpc('proxy.getConfig', {})).config as ProxyConfig,
     updateConfig: async (data: UpdateProxyConfigRequest) =>
       (await rpc('proxy.updateConfig', {
