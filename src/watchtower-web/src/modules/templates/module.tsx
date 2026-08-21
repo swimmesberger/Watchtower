@@ -9,7 +9,7 @@ export const templatesManifest = defineModule({
   when: { module: 'Tenancy' },
   contributes: [
     contribute(sidebarItems, [
-      { id: 'templates', label: 'Templates', icon: Layers, to: '/templates', order: 22 },
+      { id: 'templates', label: 'Templates', icon: Layers, to: '/templates', group: 'deploy', order: 22 },
     ]),
   ],
 })

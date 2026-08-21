@@ -15,7 +15,7 @@ export const groupsManifest = defineModule({
   contributes: [
     // Immediately after Users (55): the two are read together — a group is only a set of those accounts.
     contribute(sidebarItems, [
-      { id: 'groups', label: 'Groups', icon: UsersRound, to: '/groups', exact: true, order: 56 },
+      { id: 'groups', label: 'Groups', icon: UsersRound, to: '/groups', group: 'access', exact: true, order: 56 },
     ]),
   ],
 })

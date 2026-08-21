@@ -9,7 +9,7 @@ export const registriesManifest = defineModule({
   when: { module: 'Registries' },
   contributes: [
     contribute(sidebarItems, [
-      { id: 'registries', label: 'Registries', icon: Container, to: '/registries', exact: true, order: 40 },
+      { id: 'registries', label: 'Registries', icon: Container, to: '/registries', group: 'infra', exact: true, order: 40 },
     ]),
   ],
 })

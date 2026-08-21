@@ -17,7 +17,7 @@ export const realmsManifest = defineModule({
     // After Groups (56) and before Settings (60): Users, Groups and Realms are read together — a realm is
     // the population the other two are scoped to.
     contribute(sidebarItems, [
-      { id: 'realms', label: 'Realms', icon: Building2, to: '/realms', exact: true, order: 57 },
+      { id: 'realms', label: 'Realms', icon: Building2, to: '/realms', group: 'access', exact: true, order: 57 },
     ]),
   ],
 })

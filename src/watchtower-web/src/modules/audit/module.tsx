@@ -14,7 +14,7 @@ export const auditManifest = defineModule({
   contributes: [
     // With the instance-administration entries: after Users/Groups/Realms (55–57), before Settings (60).
     contribute(sidebarItems, [
-      { id: 'audit', label: 'Audit', icon: ScrollText, to: '/audit', exact: true, order: 58 },
+      { id: 'audit', label: 'Audit', icon: ScrollText, to: '/audit', group: 'system', exact: true, order: 58 },
     ]),
   ],
 })

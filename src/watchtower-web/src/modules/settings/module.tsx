@@ -15,6 +15,7 @@ export const settingsManifest = defineModule({
         label: 'Settings',
         icon: Settings,
         to: '/settings',
+        group: 'system',
         exact: true,
         order: 60,
         badge: SettingsUpdateBadge,
