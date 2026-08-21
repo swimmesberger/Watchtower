@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Elarion.Settings;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
@@ -17,7 +18,9 @@ namespace Watchtower.Application.Modules.System.Handlers;
 public sealed class UpdateAutomation(
     ISettingsManager settings,
     IOptionsMonitor<WatchtowerOptions> options,
-    EnvironmentSettingPins pins)
+    EnvironmentSettingPins pins,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<UpdateAutomation.Command, Result<UpdateAutomation.Response>> {
     public sealed record Command(
         bool AutoCheckEnabled,
@@ -60,6 +63,14 @@ public sealed class UpdateAutomation(
         foreach (var (path, value, _) in writes.Where(w => !pins.IsPinned(w.Path)))
             await settings.SetStringAsync(path, value, SettingsScope.Global, expectedVersion: null, ct);
 
+        // Recorded post-write with the new effective toggles.
+        await audit.RecordAsync("system", "automation.update", "automation settings",
+            string.Join(" · ",
+                Toggle("self-update check", command.AutoCheckEnabled, command.AutoCheckIntervalMinutes),
+                Toggle("stack check", command.StackCheckEnabled, command.StackCheckIntervalMinutes),
+                Toggle("image prune", command.ImagePruneEnabled, command.ImagePruneIntervalMinutes)),
+            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+
         // Echo back exactly what was persisted (pinned values are unchanged by construction). The config
         // provider reloads asynchronously, so IOptionsMonitor.CurrentValue may lag by a moment; returning
         // the written values gives the caller an immediately-consistent view.
@@ -74,6 +85,9 @@ public sealed class UpdateAutomation(
 
         static string Bool(bool value) => value ? "true" : "false";
     }
+
+    private static string Toggle(string name, bool on, int minutes) =>
+        on ? $"{name} on ({minutes}m)" : $"{name} off";
 
     /// <summary>Every path this handler manages, in UI order — shared with <see cref="GetAutomation"/>.</summary>
     internal static readonly string[] AutomationPaths = [

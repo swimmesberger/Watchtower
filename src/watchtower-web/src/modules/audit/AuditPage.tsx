@@ -12,7 +12,8 @@ export function AuditPage() {
         <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Audit</h1>
         <p className="mt-1 text-[13px] text-text-2">
           What Watchtower changed — writes against external control planes (Cloudflare), backup runs,
-          restores and retention prunes, more planes as they start recording. Reads are never logged.
+          restores and retention prunes, self-updates, and every settings change (with secrets reduced
+          to which fields were touched). Reads are never logged.
         </p>
       </header>
       <AuditTrailCard
