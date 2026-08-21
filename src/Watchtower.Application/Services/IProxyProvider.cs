@@ -22,6 +22,16 @@ public interface IProxyProvider {
     Task ApplyAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Removes what the provider holds for a hostname that is no longer a route — the route-delete
+    /// "remove from the provider too" path. Cloudflare: the tunnel ingress rule and the CNAME Watchtower
+    /// pointed at the tunnel; Caddy: nothing, its configuration is regenerated from the table. Unlike
+    /// <see cref="ApplyAsync"/> this THROWS on failure — the caller asked for a specific external
+    /// change and must be told when it did not happen. <paramref name="actor"/> is recorded on the
+    /// audit rows.
+    /// </summary>
+    Task ForgetDomainAsync(string domain, string? actor, CancellationToken ct = default);
+
+    /// <summary>
     /// Joins the routed service container(s) of a stack to its ingress network under the stable
     /// alias, so the proxy can reach them. Best-effort: never throws.
     /// </summary>

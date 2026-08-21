@@ -308,14 +308,28 @@ export function RoutesPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  // Under Cloudflare a delete is a choice: unown the hostname (its tunnel rule and DNS record stay and
+  // it reappears as importable) or remove it from Cloudflare too. Off by default — the conservative one.
+  const [removeFromCloudflare, setRemoveFromCloudflare] = useState(false)
   const remove = useMutation({
-    mutationFn: (route: Route) => api.proxy.deleteRoute(route.id),
-    onSuccess: (_data, route) => {
-      toast.success(`Deleted ${route.domain}.`)
+    mutationFn: ({ route, removeFromProvider }: { route: Route; removeFromProvider: boolean }) =>
+      api.proxy.deleteRoute(route.id, removeFromProvider),
+    onSuccess: (_data, { route, removeFromProvider }) => {
+      toast.success(removeFromProvider ? `Deleted ${route.domain} and removed it from Cloudflare.` : `Deleted ${route.domain}.`)
       qc.invalidateQueries({ queryKey: ['routes'] })
+      // An unowned hostname is foreign again (and a removed one is gone) — either way the card changes.
+      qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
     },
-    onError: (err: Error, route) => toast.error(`Failed to delete ${route.domain}: ${err.message}`),
-    onSettled: () => setPendingDelete(null),
+    onError: (err: Error, { route }) => {
+      toast.error(`Failed to delete ${route.domain}: ${err.message}`)
+      // A cleanup failure still deleted the route row; show the table as it now is.
+      qc.invalidateQueries({ queryKey: ['routes'] })
+      qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
+    },
+    onSettled: () => {
+      setPendingDelete(null)
+      setRemoveFromCloudflare(false)
+    },
   })
 
   function submit(e: React.FormEvent) {
@@ -762,12 +776,36 @@ export function RoutesPage() {
           if (!open && !remove.isPending) setPendingDelete(null)
         }}
         title={pendingDelete ? `Delete ${pendingDelete.domain}?` : 'Delete route?'}
-        description="The proxy will stop serving this domain. The target container keeps running."
-        confirmLabel="Delete"
+        description={
+          isCloudflare
+            ? 'Watchtower stops managing this domain. The target container keeps running.'
+            : 'The proxy will stop serving this domain. The target container keeps running.'
+        }
+        extra={
+          isCloudflare ? (
+            <div className="flex items-start justify-between gap-4 rounded-md border border-border p-3">
+              <div className="min-w-0">
+                <Label htmlFor="route-delete-cf">Also remove from Cloudflare</Label>
+                <p className="mt-1 text-xs text-text-3">
+                  Deletes the tunnel's ingress rule and the DNS record Watchtower created for this
+                  hostname. Off, the hostname stays in Cloudflare as it is and shows up again under
+                  “Found in Cloudflare”.
+                </p>
+              </div>
+              <Switch
+                id="route-delete-cf"
+                checked={removeFromCloudflare}
+                onCheckedChange={setRemoveFromCloudflare}
+              />
+            </div>
+          ) : undefined
+        }
+        confirmLabel={isCloudflare && removeFromCloudflare ? 'Delete everywhere' : 'Delete'}
         tone="danger"
         loading={remove.isPending}
         onConfirm={() => {
-          if (pendingDelete) remove.mutate(pendingDelete)
+          if (pendingDelete)
+            remove.mutate({ route: pendingDelete, removeFromProvider: isCloudflare && removeFromCloudflare })
         }}
       />
 

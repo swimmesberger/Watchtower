@@ -225,6 +225,10 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
     /// Joins the routed service container(s) of a stack to the edge network under a stable alias.
     /// Best-effort: never throws.
     /// </summary>
+    /// <inheritdoc />
+    /// <remarks>Nothing to forget: the Caddyfile is regenerated from the route table on every apply.</remarks>
+    public Task ForgetDomainAsync(string domain, string? actor, CancellationToken ct = default) => Task.CompletedTask;
+
     public async Task ConnectStackAsync(int stackId, CancellationToken ct = default) {
         if (!Enabled) return;
         try {

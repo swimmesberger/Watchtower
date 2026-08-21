@@ -82,6 +82,12 @@ public sealed class CloudflareApiClient : IDisposable {
         return result.Config?.Ingress ?? [];
     }
 
+    /// <summary>Deletes one DNS record — the route-removal path, for a CNAME Watchtower itself pointed at the tunnel.</summary>
+    public async Task DeleteDnsRecordAsync(string zoneId, string recordId, string token, CancellationToken ct = default) {
+        await SendAsync(HttpMethod.Delete, $"zones/{zoneId}/dns_records/{recordId}", token, body: null,
+            CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+    }
+
     /// <summary>DNS records in the zone with this exact name (any type), for the CNAME upsert.</summary>
     public async Task<IReadOnlyList<CloudflareDnsRecord>> ListDnsRecordsAsync(
         string zoneId, string name, string token, CancellationToken ct = default) {

@@ -223,6 +223,53 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         }
     }
 
+    /// <inheritdoc />
+    public async Task ForgetDomainAsync(string domain, string? actor, CancellationToken ct = default) {
+        if (!Enabled) return;
+        var cf = _options.CurrentValue.Proxy.Cloudflare;
+        if (Misconfigured(cf, out var why))
+            throw new InvalidOperationException($"Cloudflare tunnel provider is not configured: {why}");
+        var tunnel = await _api.FindTunnelAsync(cf.AccountId!, cf.TunnelName, cf.ApiToken!, ct);
+        if (tunnel is null) return; // Nothing of Watchtower's to remove.
+
+        // 1. The ingress rule(s) for the hostname, from the configured tunnel only.
+        var existing = await _api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct);
+        var remaining = WithoutHostname(existing, domain);
+        if (remaining.Count != existing.Count) {
+            try {
+                await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, remaining, cf.ApiToken!, ct);
+                await _audit.RecordAsync(AuditCategory, "tunnel.rule.remove", domain,
+                    $"{existing.Count - remaining.Count} ingress rule(s) removed from {tunnel.Name}", actor: actor, ct: ct);
+            } catch (Exception ex) {
+                await _audit.RecordAsync(AuditCategory, "tunnel.rule.remove", domain, $"from {tunnel.Name}",
+                    success: false, error: ex.Message, actor: actor, ct: ct);
+                throw;
+            }
+        }
+
+        // 2. The CNAME — but only one that points at THIS tunnel. A record someone else made for the
+        // name is not Watchtower's to delete, even though the route named the same hostname.
+        var target = $"{tunnel.Id}.cfargotunnel.com";
+        var records = await _api.ListDnsRecordsAsync(cf.ZoneId!, domain, cf.ApiToken!, ct);
+        foreach (var record in records.Where(r =>
+                     string.Equals(r.Type, "CNAME", StringComparison.OrdinalIgnoreCase)
+                     && string.Equals(r.Content, target, StringComparison.OrdinalIgnoreCase))) {
+            try {
+                await _api.DeleteDnsRecordAsync(cf.ZoneId!, record.Id, cf.ApiToken!, ct);
+                await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}", actor: actor, ct: ct);
+            } catch (Exception ex) {
+                await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}",
+                    success: false, error: ex.Message, actor: actor, ct: ct);
+                throw;
+            }
+        }
+        _logger.LogInformation("Forgot {Domain}: its ingress rule and tunnel CNAME were removed.", domain);
+    }
+
+    /// <summary>Every rule except those for <paramref name="hostname"/>; the catch-all (no hostname) always stays.</summary>
+    internal static List<CloudflareIngressRule> WithoutHostname(IReadOnlyList<CloudflareIngressRule> rules, string hostname) =>
+        rules.Where(r => !string.Equals(r.Hostname, hostname, StringComparison.OrdinalIgnoreCase)).ToList();
+
     // ── Reconcile ─────────────────────────────────────────────────────────────
 
     private async Task ReconcileAsync(CancellationToken ct) {
