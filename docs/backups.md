@@ -44,9 +44,11 @@ a NAS, another server:
 
 - **Host / port / username** — for a Storage Box: `u123456.your-storagebox.de`, port **23**,
   user `u123456` (or a sub-account limited to its own directory, recommended).
-- **Auth** — password and/or an SSH private key (paste the PEM block; register the matching public
-  key with the storage — for Hetzner Storage Boxes SSH keys must be **RSA or ECDSA** (ed25519 is
-  supported on newer boxes); generate e.g. `ssh-keygen -t ecdsa -b 521 -f storagebox_key`).
+- **Auth** — password and/or an SSH private key (paste the full key block; register the matching
+  public key with the storage). Watchtower accepts **Ed25519, ECDSA and RSA** keys in OpenSSH, PEM
+  or PuTTY (`.ppk`) format — Ed448 is not supported. For Hetzner Storage Boxes SSH keys must be
+  **RSA or ECDSA** (ed25519 is supported on newer boxes); generate e.g.
+  `ssh-keygen -t ecdsa -b 521 -f storagebox_key`.
 - **Base directory** — remote directory the layout is rooted in (default `watchtower-backups`),
   created automatically.
 
