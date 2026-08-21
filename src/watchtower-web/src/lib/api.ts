@@ -9,10 +9,18 @@ import type {
   ActiveDeployment,
   AuthConfig,
   AutomationConfig,
+  BackupConfig,
+  BackupEvent,
+  BackupRemoteFile,
+  BackupRunAccepted,
+  BackupStackConfig,
+  UpdateBackupConfigRequest,
   Container,
   ContainerEnvVar,
   ContainerMetrics,
   AddTenantRequest,
+  CiRepo,
+  StackCi,
   CreateCredentialRequest,
   CreateRealmRequest,
   CreateRegistryRequest,
@@ -168,6 +176,32 @@ export const api = {
     active: async () => (await rpc('deployments.active', {})).deployments as ActiveDeployment[],
   },
 
+  ci: {
+    getStackCi: async (stackId: number) => (await rpc('ci.getStackCi', { stackId })).ci as StackCi,
+    enableForStack: async (stackId: number, credentialId?: number | null) =>
+      (await rpc('ci.enableForStack', { stackId, credentialId: credentialId ?? null })).repo as CiRepo,
+    updateRepo: async (repo: {
+      id: number
+      enabled: boolean
+      maxConcurrentRunners: number
+      credentialId: number
+      runnerImage?: string | null
+      extraLabels?: string | null
+      allowDockerSocket: boolean
+    }) =>
+      (
+        await rpc('ci.updateRepo', {
+          id: repo.id,
+          enabled: repo.enabled,
+          maxConcurrentRunners: repo.maxConcurrentRunners,
+          credentialId: repo.credentialId,
+          runnerImage: repo.runnerImage ?? null,
+          extraLabels: repo.extraLabels ?? null,
+          allowDockerSocket: repo.allowDockerSocket,
+        })
+      ).repo as CiRepo,
+  },
+
   volumes: {
     list: async (project?: string | null) =>
       (await rpc('volumes.list', { project: project ?? null })).volumes as VolumeInfo[],
@@ -247,6 +281,43 @@ export const api = {
         grantedUserIds: data.grantedUserIds,
         grantedGroupIds: data.grantedGroupIds,
       })) as RouteAccess,
+  },
+
+  backups: {
+    getConfig: async () => (await rpc('backups.getConfig', {})).config as BackupConfig,
+    updateConfig: async (data: UpdateBackupConfigRequest) =>
+      (await rpc('backups.updateConfig', {
+        enabled: data.enabled,
+        time: data.time,
+        instanceName: data.instanceName ?? null,
+        retentionDays: data.retentionDays,
+        retentionMaxCount: data.retentionMaxCount,
+        helperImage: data.helperImage,
+        provider: data.provider,
+        encryptionPassphrase: data.encryptionPassphrase ?? null,
+        sftpHost: data.sftpHost ?? null,
+        sftpPort: data.sftpPort ?? null,
+        sftpUsername: data.sftpUsername ?? null,
+        sftpPassword: data.sftpPassword ?? null,
+        sftpPrivateKey: data.sftpPrivateKey ?? null,
+        sftpPrivateKeyPassphrase: data.sftpPrivateKeyPassphrase ?? null,
+        sftpBasePath: data.sftpBasePath ?? null,
+        localBasePath: data.localBasePath ?? null,
+      })).config as BackupConfig,
+    testStorage: async () => (await rpc('backups.testStorage', {})).description as string,
+    events: async (stackId?: number, limit?: number) =>
+      (await rpc('backups.events', { stackId: stackId ?? null, limit: limit ?? 50 }))
+        .events as BackupEvent[],
+    run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
+    listRemote: async (stackId: number) =>
+      (await rpc('backups.listRemote', { stackId })).files as BackupRemoteFile[],
+    restore: async (stackId: number, fileName: string) =>
+      (await rpc('backups.restore', { stackId, fileName })).restore as BackupRunAccepted,
+    getStackConfig: async (stackId: number) =>
+      (await rpc('backups.getStackConfig', { stackId })).config as BackupStackConfig,
+    setStackConfig: async (stackId: number, enabled: boolean, stopContainers: boolean) =>
+      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers }))
+        .config as BackupStackConfig,
   },
 
   templates: {

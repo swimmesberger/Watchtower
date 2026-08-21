@@ -37,6 +37,12 @@
        Microsoft.Extensions.* — see docs/central-auth/design.md §2.4. -->
 
   <ItemGroup>
+    <!-- SFTP uploads for the stack backup storage provider (ADR-0016). Pure managed, no native
+         payload — the shipped image grows no new binaries. -->
+    <PackageVersion Include="SSH.NET" Version="2026.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- ES256 identity assertions forwarded to protected apps (docs/central-auth/design.md §2.3): token
          minting, the JWKS document, and the validation the tests do against it. Not part of the ASP.NET
          shared framework (only the JwtBearer *handler* would be, and we are the issuer, not a consumer). -->

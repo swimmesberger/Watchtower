@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Database, HardDrive, MoreHorizontal, RotateCcw } from 'lucide-react'
+import { Copy, Database, Download, HardDrive, MoreHorizontal, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
+import { downloadVolumeArchive } from './download'
 import type { Stack, VolumeInfo, VolumeSize } from '@/lib/types'
 import { absoluteTitle, formatBytes } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
@@ -206,6 +207,14 @@ export function StackVolumesTab({ stack }: { stack: Stack }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent>
+            <DropdownMenuItem
+              onSelect={() => {
+                downloadVolumeArchive(v.name)
+                toast.info('Preparing download…', 'The archive is built on the fly — large volumes take a moment.')
+              }}
+            >
+              <Download /> Download archive
+            </DropdownMenuItem>
             <DropdownMenuItem destructive onSelect={() => openRecreate(v.name)}>
               <RotateCcw /> Recreate…
             </DropdownMenuItem>
@@ -296,6 +305,14 @@ export function StackVolumesTab({ stack }: { stack: Stack }) {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        downloadVolumeArchive(v.name)
+                        toast.info('Preparing download…', 'The archive is built on the fly — large volumes take a moment.')
+                      }}
+                    >
+                      <Download /> Download archive
+                    </DropdownMenuItem>
                     <DropdownMenuItem destructive onSelect={() => openRecreate(v.name)}>
                       <RotateCcw /> Recreate…
                     </DropdownMenuItem>

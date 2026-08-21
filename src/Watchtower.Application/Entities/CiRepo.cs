@@ -39,6 +39,28 @@ public sealed class CiRepo {
     /// </summary>
     public bool AllowDockerSocket { get; set; }
 
+    /// <summary>
+    /// Detected toolchain profile (serialized <see cref="Services.CiToolchainProfile"/>), refreshed
+    /// from the working tree of every stack deploy that clones this repo. Null until a linked stack
+    /// deploys. Detection is heuristic and best-effort — an empty/absent profile never blocks runners.
+    /// </summary>
+    public string? ToolchainProfileJson { get; set; }
+
+    /// <summary>When the toolchain profile was last (re)detected.</summary>
+    public DateTimeOffset? ToolchainDetectedAt { get; set; }
+
+    /// <summary>
+    /// Hash of the profile the toolcache volume was last successfully pre-warmed for. The
+    /// orchestrator re-warms only when this differs from the current profile's hash.
+    /// </summary>
+    public string? WarmedProfileHash { get; set; }
+
+    /// <summary>When the last successful cache pre-warm finished.</summary>
+    public DateTimeOffset? LastWarmedAt { get; set; }
+
+    /// <summary>Tail output of the last failed warmer run; null after a success. Never fatal.</summary>
+    public string? LastWarmError { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>"owner/name" as used by the GitHub API and container labels.</summary>

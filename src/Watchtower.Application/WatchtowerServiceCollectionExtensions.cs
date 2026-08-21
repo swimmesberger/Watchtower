@@ -210,6 +210,9 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<GitHubApiClient>();
         services.AddSingleton<CiRunnerOrchestrator>();
         services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
+        // Toolchain detection piggybacks on deploy clones; the recorder persists the profile and
+        // wakes the orchestrator so the toolcache warmer converges (docs/ci-runners/design.md).
+        services.AddSingleton<CiToolchainRecorder>();
 
         // Metrics backend (ADR-0007, amended by ADR-0013) — three backends behind one runtime router:
         // "sqlite" (default) persists windowed history next to the live ring, "memory" keeps the ring
@@ -230,6 +233,18 @@ public static class WatchtowerServiceCollectionExtensions {
         // caller's realm. Scoped because the second of those reads ICurrentUser; a singleton could only
         // answer the deployment-scoped half.
         services.AddScoped<IFeatureFlagService, WatchtowerFeatureFlagService>();
+
+        // Stack backups (ADR-0016) — the archive service streams volumes through never-started
+        // helper containers, the factory resolves the storage backend per run (runtime-switchable),
+        // the queue serializes runs process-wide, and the scheduler opens the daily window. The
+        // queue is a singleton so backups.run can enqueue and read coalesced state; hosted for the
+        // worker loop and graceful shutdown.
+        services.AddSingleton<BackupArchiveService>();
+        services.AddSingleton<BackupStorageFactory>();
+        services.AddSingleton<BackupService>();
+        services.AddSingleton<BackupQueueService>();
+        services.AddHostedService(sp => sp.GetRequiredService<BackupQueueService>());
+        services.AddHostedService<BackupBackgroundService>();
 
         // Background checkers — always registered. Each loops on a short poll and reads its
         // enabled/interval toggle live from IOptionsMonitor<WatchtowerOptions> (backed by the

@@ -11,8 +11,10 @@ namespace Watchtower.Application.Services;
 /// just-in-time runner registration, runner cleanup, credential validation, and the repo picker.
 /// Stateless singleton; the PAT is passed per call (it comes from the repo's <c>Credential</c>)
 /// and never leaves this process — runner containers only ever see single-use JIT configs.
+/// Unsealed with a virtual scope probe so handler tests can stub GitHub out (the
+/// <see cref="GitCloneService"/> precedent); everything else stays non-virtual.
 /// </summary>
-public sealed class GitHubApiClient : IDisposable {
+public class GitHubApiClient : IDisposable {
     private readonly HttpClient _client;
 
     public GitHubApiClient() {
@@ -61,7 +63,7 @@ public sealed class GitHubApiClient : IDisposable {
     /// in <c>ci.addRepo</c> with a clear message instead of at reconcile time. Listing runners
     /// requires the same Administration permission as generating JIT configs.
     /// </summary>
-    public async Task<string?> ValidateRepoAccessAsync(string owner, string repo, string token, CancellationToken ct = default) {
+    public virtual async Task<string?> ValidateRepoAccessAsync(string owner, string repo, string token, CancellationToken ct = default) {
         using var request = NewRequest(HttpMethod.Get, $"repos/{owner}/{repo}/actions/runners?per_page=1", token);
         var response = await _client.SendAsync(request, ct);
         return response.StatusCode switch {

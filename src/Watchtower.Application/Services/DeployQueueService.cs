@@ -241,6 +241,12 @@ public class DeployQueueService : IHostedService, IDisposable {
             if (deployedCommit is not null)
                 WriteHeader($"[Watchtower] Checked out commit {deployedCommit[..8]}");
 
+            // 2a. CI toolchain detection piggybacks on the clone (docs/ci-runners/design.md): when
+            //     this repository has CI runners enabled, refresh its detected toolchain profile from
+            //     the working tree. Best-effort by contract — the recorder swallows its own failures.
+            if (await RecordCiToolchainsAsync(stack.RepositoryUrl, tempRepoDir, ct) is { } toolchainSummary)
+                WriteHeader($"[Watchtower] {toolchainSummary}");
+
             // TrimStart ensures an accidentally absolute path is treated as relative to the cloned repo root.
             var composePath = Path.Combine(tempRepoDir, stack.ComposeFilePath.TrimStart('/', '\\'));
 
@@ -694,6 +700,17 @@ public class DeployQueueService : IHostedService, IDisposable {
         var value = line[(equals + 1)..].TrimStart();
         if (value.Length == 0 || (value[0] != '"' && value[0] != '\'')) return null;
         return value.IndexOf(value[0], 1) >= 0 ? null : value[0];
+    }
+
+    /// <summary>
+    /// Refreshes the CI toolchain profile for the deployed repository (no-op unless CI is enabled
+    /// for it). Resolved through a scope like <see cref="EnsureAppApiTokenAsync"/> so the recorder
+    /// stays out of this singleton's constructor surface.
+    /// </summary>
+    private async Task<string?> RecordCiToolchainsAsync(string repositoryUrl, string cloneDir, CancellationToken ct) {
+        using var scope = _scopeFactory.CreateScope();
+        var recorder = scope.ServiceProvider.GetRequiredService<CiToolchainRecorder>();
+        return await recorder.TryRecordAsync(repositoryUrl, cloneDir, ct);
     }
 
     /// <summary>

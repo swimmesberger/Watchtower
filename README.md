@@ -5,7 +5,11 @@ file), and Watchtower clones it, pulls images, and runs `docker compose up -d` �
 UI, via an authenticated webhook from your CI, or **pull-based** for hosts your CI can't reach:
 per stack, deploy as soon as polling finds a newer image or a new commit on the branch, or once per
 day at a fixed time (e.g. 02:00). It also inspects running containers, streams logs and deploy
-output live, checks registries for newer images, and can update itself.
+output live, checks registries for newer images, and can update itself. Stack volumes can be
+**backed up on a daily schedule to external storage** (SFTP — e.g. a Hetzner Storage Box — or a
+mounted directory) with retention and optional encryption, and any volume can be downloaded as an
+archive straight from the UI — see [docs/backups.md](docs/backups.md), including the restore
+procedure.
 
 Watchtower is built on **[Elarion](https://github.com/swimmesberger/Elarion)** — an opinionated .NET
 application framework for module-based handler pipelines with compile-time registration and JSON-RPC
@@ -70,7 +74,8 @@ See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
 is no longer enough (Docker Swarm vs k3s),
 [docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip,
-[docs/metrics-history.md](docs/metrics-history.md) for the metrics backends (persisted SQLite history by default, BYO InfluxDB opt-in), and
+[docs/metrics-history.md](docs/metrics-history.md) for the metrics backends (persisted SQLite history by default, BYO InfluxDB opt-in),
+[docs/backups.md](docs/backups.md) for scheduled stack backups — setup, encryption, and **how to restore** — and
 [docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure

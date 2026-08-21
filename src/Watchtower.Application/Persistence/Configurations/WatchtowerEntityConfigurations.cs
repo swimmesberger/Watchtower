@@ -166,6 +166,23 @@ public sealed class DeployEventConfiguration : IEntityTypeConfiguration<DeployEv
 }
 
 [EntityConfiguration]
+public sealed class BackupEventConfiguration : IEntityTypeConfiguration<BackupEvent> {
+    public void Configure(EntityTypeBuilder<BackupEvent> b) {
+        b.ToTable("backup_events");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.TriggeredBy).IsRequired();
+        b.Property(x => x.Status).IsRequired();
+        // The history view reads newest-first per stack; the startup sweep scans by status.
+        b.HasIndex(x => new { x.StackId, x.StartedAt });
+        b.HasIndex(x => x.Status);
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnvVar> {
     public void Configure(EntityTypeBuilder<StackEnvVar> b) {
         b.ToTable("stack_env_vars");

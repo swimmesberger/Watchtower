@@ -35,3 +35,4 @@ live here.
 - [ADR-0013: SQLite-persisted metrics history by default, runtime-switchable backend](0013-sqlite-metrics-history.md)
 - [ADR-0014: Environment variables win over runtime settings; pinned settings are read-only in the UI](0014-env-wins-runtime-settings.md)
 - [ADR-0015: Pluggable reverse-proxy provider — built-in Caddy, or a Cloudflare Tunnel](0015-proxy-provider-abstraction.md)
+- [ADR-0016: Stack backups — volume archives to pluggable remote storage](0016-stack-backups.md)

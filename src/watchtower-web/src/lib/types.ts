@@ -803,3 +803,162 @@ export interface UpdateRealmRequest {
   name?: string | null
   authHost?: string | null
 }
+
+// ── Backups (ADR-0016) ───────────────────────────────────────────────────────
+
+export type BackupProvider = 'sftp' | 'local'
+
+/** SFTP connection values for the backup storage (secrets never leave the server). */
+export interface BackupSftpConfig {
+  host: string | null
+  port: number
+  username: string | null
+  /** True when a password is stored — the UI sends a new one only to replace it. */
+  hasPassword: boolean
+  /** True when a private key is stored — the UI sends a new one only to replace it. */
+  hasPrivateKey: boolean
+  basePath: string
+}
+
+/** `backups.getConfig` / `backups.updateConfig` payload. Fully runtime-switchable (no restart). */
+export interface BackupConfig {
+  enabled: boolean
+  /** Server-local daily window, "HH:mm". */
+  time: string
+  instanceName: string | null
+  /** What the instance name resolves to when unset (the machine name). */
+  resolvedInstanceName: string
+  /** Backups older than this many days are pruned; 0 keeps forever. */
+  retentionDays: number
+  /** Keep at most this many backups per stack; 0 is unlimited. */
+  retentionMaxCount: number
+  /** True when an encryption passphrase is stored — archives are OpenSSL-enc encrypted. */
+  hasEncryptionPassphrase: boolean
+  helperImage: string
+  provider: BackupProvider
+  sftp: BackupSftpConfig
+  localBasePath: string
+  /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
+  pinnedPaths: string[]
+}
+
+/** `backups.updateConfig` request. Null secret fields keep the stored values; empty string clears. */
+export interface UpdateBackupConfigRequest {
+  enabled: boolean
+  time: string
+  instanceName?: string | null
+  retentionDays: number
+  retentionMaxCount: number
+  helperImage: string
+  provider: BackupProvider
+  encryptionPassphrase?: string | null
+  sftpHost?: string | null
+  sftpPort?: number | null
+  sftpUsername?: string | null
+  sftpPassword?: string | null
+  sftpPrivateKey?: string | null
+  sftpPrivateKeyPassphrase?: string | null
+  sftpBasePath?: string | null
+  localBasePath?: string | null
+}
+
+/** One backup run, for the history views. */
+export interface BackupEvent {
+  id: number
+  stackId: number
+  stackName: string
+  triggeredBy: string
+  status: 'queued' | 'running' | 'success' | 'failed'
+  /** Provider-relative path of the uploaded archive (null until upload, and on failure). */
+  remotePath: string | null
+  /** Uploaded size in bytes (after compression/encryption). */
+  sizeBytes: number | null
+  output: string | null
+  startedAt: string
+  finishedAt: string | null
+}
+
+/** A stack's backup participation. */
+export interface BackupStackConfig {
+  stackId: number
+  /** Included in the daily schedule. */
+  enabled: boolean
+  /** Stop the stack's containers during the snapshot for consistency (ADR-0016 §2). */
+  stopContainers: boolean
+}
+
+export interface BackupRunAccepted {
+  backupEventId: number
+  status: string
+}
+
+/** One archive present on the backup storage — the restore picker's row. */
+export interface BackupRemoteFile {
+  name: string
+  sizeBytes: number
+  /** ISO timestamp parsed from the archive name (UTC). */
+  takenAt: string
+  encrypted: boolean
+}
+
+// ── CI runners ───────────────────────────────────────────────────────────────
+
+/** One detected toolchain of a CI repo, e.g. kind "dotnet", version "10.0", source "workflow". */
+export interface CiToolchain {
+  kind: string
+  version: string
+  source: string
+}
+
+/**
+ * The toolchain profile detected from the repository's working tree during stack deploys, plus the
+ * toolcache warm state derived from it. Null on a `CiRepo` until a linked stack has deployed once.
+ */
+export interface CiToolchainProfile {
+  toolchains: CiToolchain[]
+  hasDockerfile: boolean
+  detectedAt: string | null
+  /** 'warmed' | 'warming' | 'failed' | 'pending' — whether the toolcache matches the profile. */
+  warmStatus: 'warmed' | 'warming' | 'failed' | 'pending'
+  lastWarmedAt: string | null
+  lastWarmError: string | null
+}
+
+/** Live orchestrator state for one repo's runner slots. */
+export interface CiRunnerStatus {
+  desiredRunners: number
+  runningRunners: number
+  totalSpawned: number
+  lastError: string | null
+  lastErrorAt: string | null
+  backoffUntil: string | null
+}
+
+/** A GitHub repository with CI runners managed by this Watchtower instance. */
+export interface CiRepo {
+  id: number
+  owner: string
+  name: string
+  fullName: string
+  credentialId: number
+  enabled: boolean
+  maxConcurrentRunners: number
+  runnerImage: string | null
+  extraLabels: string | null
+  allowDockerSocket: boolean
+  createdAt: string
+  runnerStatus: CiRunnerStatus | null
+  toolchain: CiToolchainProfile | null
+}
+
+/**
+ * The CI view of one stack: whether its repository is on github.com (only those can get Actions
+ * runners) and the linked CI repo when enabled. Stacks deploying the same repository share one
+ * CI repo — one runner pool, one toolcache.
+ */
+export interface StackCi {
+  isGitHub: boolean
+  owner: string | null
+  name: string | null
+  repo: CiRepo | null
+}
