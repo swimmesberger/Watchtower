@@ -615,6 +615,22 @@ export interface CloudflareForeignRoute {
   suggestedContainerPort?: number | null
 }
 
+/** One entry of the general audit trail (`audit.listEvents`) — what Watchtower changed, where. */
+export interface AuditEvent {
+  id: number
+  at: string
+  /** The plane the event belongs to, e.g. `proxy.cloudflare`. */
+  category: string
+  /** What happened, e.g. `tunnel.config.push`, `dns.create`, `access.app.delete`. */
+  action: string
+  target: string
+  detail?: string | null
+  /** Null for background reconciles — rendered as "system". */
+  actor?: string | null
+  success: boolean
+  error?: string | null
+}
+
 export interface ProxyStatus {
   enabled: boolean
   /** Whether the active provider's data plane is running (name kept for wire compatibility). */

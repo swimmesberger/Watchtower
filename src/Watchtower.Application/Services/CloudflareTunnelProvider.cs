@@ -32,10 +32,14 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     private const string CloudflaredContainerName = "watchtower-cloudflared";
     private const string ManagedLabelKey = ProxyIngressNetworks.ManagedLabelKey;
 
+    /// <summary>Audit-trail category for every external write this provider performs.</summary>
+    internal const string AuditCategory = "proxy.cloudflare";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
     private readonly ProxyIngressNetworks _networks;
     private readonly CloudflareApiClient _api;
+    private readonly AuditLog _audit;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<CloudflareTunnelProvider> _logger;
     private readonly CancellationTokenSource _cts = new();
@@ -50,12 +54,14 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         DockerEngineClient docker,
         ProxyIngressNetworks networks,
         CloudflareApiClient api,
+        AuditLog audit,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<CloudflareTunnelProvider> logger) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _networks = networks;
         _api = api;
+        _audit = audit;
         _options = options;
         _logger = logger;
         _applied = options.CurrentValue.Proxy;
@@ -143,16 +149,36 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             // would wipe every public hostname it didn't create. Foreign rules can be adopted from
             // the Routes page (proxy.listCloudflareForeignRoutes), which moves them under the table.
             var existing = await _api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct);
+            var foreign = ForeignIngressRules(existing, routes.Select(r => r.Domain));
             var ingress = MergeIngress(existing, ProjectIngress(routes), routes.Select(r => r.Domain));
-            await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, ingress, cf.ApiToken!, ct);
-            _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
+            // Skip the PUT (and its audit row) when the remote configuration already matches — a
+            // reconcile that changed nothing is not a write.
+            if (!ingress.SequenceEqual(existing)) {
+                var detail = $"{ingress.Count - 1} hostname rule(s), {foreign.Count} foreign preserved";
+                try {
+                    await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, ingress, cf.ApiToken!, ct);
+                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail, ct: ct);
+                } catch (Exception ex) {
+                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail,
+                        success: false, error: ex.Message, ct: ct);
+                    throw;
+                }
+                _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
+            }
 
             var target = $"{tunnel.Id}.cfargotunnel.com";
             foreach (var domain in routes.Select(r => r.Domain).Distinct(StringComparer.OrdinalIgnoreCase)) {
                 try {
-                    await _api.UpsertDnsCnameAsync(cf.ZoneId!, domain, target, cf.ApiToken!, ct);
+                    var upsert = await _api.UpsertDnsCnameAsync(cf.ZoneId!, domain, target, cf.ApiToken!, ct);
+                    if (upsert != CloudflareDnsUpsert.Unchanged) {
+                        await _audit.RecordAsync(AuditCategory,
+                            upsert == CloudflareDnsUpsert.Created ? "dns.create" : "dns.update",
+                            domain, $"proxied CNAME → {target}", ct: ct);
+                    }
                 } catch (Exception ex) {
                     // Per-domain best effort: one domain outside the configured zone must not stop the rest.
+                    await _audit.RecordAsync(AuditCategory, "dns.upsert", domain, $"proxied CNAME → {target}",
+                        success: false, error: ex.Message, ct: ct);
                     _logger.LogWarning(ex, "Failed to upsert the CNAME for {Domain}.", domain);
                 }
             }
@@ -251,7 +277,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             return null;
         }
         _logger.LogInformation("Creating Cloudflare tunnel '{Tunnel}'.", cf.TunnelName);
-        return await _api.CreateTunnelAsync(cf.AccountId!, cf.TunnelName, cf.ApiToken!, ct);
+        try {
+            var created = await _api.CreateTunnelAsync(cf.AccountId!, cf.TunnelName, cf.ApiToken!, ct);
+            await _audit.RecordAsync(AuditCategory, "tunnel.create", cf.TunnelName, "remotely-managed tunnel", ct: ct);
+            return created;
+        } catch (Exception ex) {
+            await _audit.RecordAsync(AuditCategory, "tunnel.create", cf.TunnelName, "remotely-managed tunnel",
+                success: false, error: ex.Message, ct: ct);
+            throw;
+        }
     }
 
     private async Task EnsureCloudflaredContainerAsync(
@@ -454,10 +488,10 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     // the app itself; null leaves any existing attachments alone when none are configured.
                     Policies = spec.ReusablePolicyIds.Length > 0 ? spec.ReusablePolicyIds : null,
                 };
-                var app = existing.FirstOrDefault(a => string.Equals(a.Domain, spec.Domain, StringComparison.OrdinalIgnoreCase));
-                app = app is null
+                var found = existing.FirstOrDefault(a => string.Equals(a.Domain, spec.Domain, StringComparison.OrdinalIgnoreCase));
+                var app = found is null
                     ? await _api.CreateAccessAppAsync(cf.AccountId!, request, cf.ApiToken!, ct)
-                    : await _api.UpdateAccessAppAsync(cf.AccountId!, app.Id, request, cf.ApiToken!, ct);
+                    : await _api.UpdateAccessAppAsync(cf.AccountId!, found.Id, request, cf.ApiToken!, ct);
 
                 // The Watchtower-generated app-scoped policy carries the inline rules (emails, email
                 // domains, Access groups). When only reusable policies are configured it is removed
@@ -481,10 +515,16 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 } else if (mine is not null) {
                     await _api.DeleteAccessPolicyAsync(cf.AccountId!, app.Id, mine.Id, cf.ApiToken!, ct);
                 }
+                await _audit.RecordAsync(AuditCategory,
+                    found is null ? "access.app.create" : "access.app.sync",
+                    spec.Domain,
+                    $"{ruleCount} inline rule(s), {spec.ReusablePolicyIds.Length} reusable policy(ies)", ct: ct);
                 _logger.LogInformation(
                     "Access application reconciled for {Domain} ({Rules} inline rule(s), {Reusable} reusable policy(ies)).",
                     spec.Domain, ruleCount, spec.ReusablePolicyIds.Length);
             } catch (Exception ex) {
+                await _audit.RecordAsync(AuditCategory, "access.app.sync", spec.Domain, detail: null,
+                    success: false, error: ex.Message, ct: ct);
                 _logger.LogWarning(ex, "Failed to reconcile the Access application for {Domain}.", spec.Domain);
             }
         }
@@ -501,8 +541,12 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                      && !protectedDomains.Contains(a.Domain))) {
             try {
                 await _api.DeleteAccessAppAsync(cf.AccountId!, stale.Id, cf.ApiToken!, ct);
+                await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
+                    "route no longer protected", ct: ct);
                 _logger.LogInformation("Removed the Access application for {Domain} (route no longer protected).", stale.Domain);
             } catch (Exception ex) {
+                await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
+                    "route no longer protected", success: false, error: ex.Message, ct: ct);
                 _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", stale.Domain);
             }
         }

@@ -82,8 +82,11 @@ public sealed class CloudflareApiClient : IDisposable {
             CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareDnsRecord, ct);
     }
 
-    /// <summary>Creates or updates the proxied CNAME <paramref name="name"/> → <paramref name="target"/>.</summary>
-    public async Task UpsertDnsCnameAsync(string zoneId, string name, string target, string token, CancellationToken ct = default) {
+    /// <summary>
+    /// Creates or updates the proxied CNAME <paramref name="name"/> → <paramref name="target"/>.
+    /// Reports what actually happened so the caller's audit trail records writes, not intentions.
+    /// </summary>
+    public async Task<CloudflareDnsUpsert> UpsertDnsCnameAsync(string zoneId, string name, string target, string token, CancellationToken ct = default) {
         var existing = (await ListDnsRecordsAsync(zoneId, name, token, ct))
             .FirstOrDefault(r => string.Equals(r.Type, "CNAME", StringComparison.OrdinalIgnoreCase));
         var record = JsonSerializer.Serialize(
@@ -92,10 +95,14 @@ public sealed class CloudflareApiClient : IDisposable {
         if (existing is null) {
             await SendAsync(HttpMethod.Post, $"zones/{zoneId}/dns_records", token, record,
                 CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
-        } else if (!string.Equals(existing.Content, target, StringComparison.OrdinalIgnoreCase) || existing.Proxied != true) {
+            return CloudflareDnsUpsert.Created;
+        }
+        if (!string.Equals(existing.Content, target, StringComparison.OrdinalIgnoreCase) || existing.Proxied != true) {
             await SendAsync(HttpMethod.Put, $"zones/{zoneId}/dns_records/{existing.Id}", token, record,
                 CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+            return CloudflareDnsUpsert.Updated;
         }
+        return CloudflareDnsUpsert.Unchanged;
     }
 
     // ── Zero Trust Access (phase 3 of ADR-0015) ──────────────────────────────
@@ -204,6 +211,13 @@ public sealed class CloudflareApiClient : IDisposable {
     }
 
     public void Dispose() => _client.Dispose();
+}
+
+/// <summary>What a DNS upsert actually did — the audit trail records writes, not intentions.</summary>
+public enum CloudflareDnsUpsert {
+    Created,
+    Updated,
+    Unchanged,
 }
 
 // ── Wire types (Cloudflare API v4) ───────────────────────────────────────────

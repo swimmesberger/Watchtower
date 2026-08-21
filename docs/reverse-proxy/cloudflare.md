@@ -70,6 +70,17 @@ a stack service by hand. Once imported, the hostname is owned by the route table
 control, per-stack networking, and cleanup on stack removal, and the route row's target replaces the
 dashboard rule on the next push.
 
+## Audit trail
+
+Every write the provider performs against your Cloudflare account is recorded in Watchtower's
+general audit trail (category `proxy.cloudflare`) and shown on **Routes → Audit**: tunnel creation,
+ingress configuration pushes (with rule counts and how many foreign rules were preserved), DNS
+record creates/updates, and Access app/policy changes — success or failure, with Cloudflare's error
+message on failure. Reads are not logged, and no-op reconciles (nothing changed) produce no entries.
+Retention is bounded (newest 2000 events kept). The trail is admin-only and survives the deletion of
+the routes/stacks it mentions. The same `audit.listEvents` surface is category-filterable, so future
+planes (deploys, settings changes) land in the same log.
+
 ## Limitations
 
 - **Single zone:** all route domains must live under the configured zone id. A domain outside it

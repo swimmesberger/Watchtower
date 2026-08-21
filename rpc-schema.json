@@ -2,6 +2,91 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "JSON-RPC 2.0 Schema",
   "methods": {
+    "audit.listEvents": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "actor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "success": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "at",
+                "category",
+                "action",
+                "target",
+                "detail",
+                "actor",
+                "success",
+                "error"
+              ]
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      }
+    },
     "ci.addRepo": {
       "params": {
         "type": "object",
@@ -6782,6 +6867,9 @@
   },
   "capabilities": {
     "modules": {
+      "Audit": {
+        "features": []
+      },
       "Ci": {
         "features": []
       },

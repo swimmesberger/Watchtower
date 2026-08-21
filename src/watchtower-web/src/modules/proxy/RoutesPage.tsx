@@ -41,6 +41,7 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { routesRoute } from './module'
@@ -187,6 +188,8 @@ export function RoutesPage() {
   // admin operation, so the affordance is shown only to an administrator on an auth-enabled deployment. The
   // implicit local administrator (Auth:Enabled=false) reports the reserved `local` id — see auth.ts.
   const canManageAccess = caps.hasRole('Admin') && caps.user.id !== LOCAL_USER_ID
+  // The audit trail is admin-gated server-side; the implicit local administrator qualifies too.
+  const canViewAudit = caps.hasRole('Admin')
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...emptyForm })
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
@@ -466,6 +469,15 @@ export function RoutesPage() {
         </Banner>
       )}
 
+      <Tabs defaultValue="routes">
+        {canViewAudit && (
+          <TabsList>
+            <TabsTrigger value="routes">Routes</TabsTrigger>
+            <TabsTrigger value="audit">Audit</TabsTrigger>
+          </TabsList>
+        )}
+        <TabsContent value="routes" className="space-y-6">
+
       {foreignRoutes.length > 0 && (
         <Card>
           <CardContent className="pt-5">
@@ -694,6 +706,14 @@ export function RoutesPage() {
           aria-label="Routes"
         />
       )}
+        </TabsContent>
+
+        {canViewAudit && (
+          <TabsContent value="audit">
+            <AuditTrail />
+          </TabsContent>
+        )}
+      </Tabs>
 
       <ConfirmDialog
         open={pendingDelete != null}
@@ -714,6 +734,88 @@ export function RoutesPage() {
         <AccessDialog route={accessRoute} onClose={() => setAccessRoute(null)} />
       )}
     </div>
+  )
+}
+
+/**
+ * The proxy plane's slice of the general audit trail (`audit.listEvents`, category prefix `proxy`):
+ * every write Watchtower performed against the external control plane — tunnel configuration
+ * pushes, DNS record changes, Access app/policy changes — newest first, failures highlighted.
+ */
+function AuditTrail() {
+  const { data: events = [], isLoading, isError, refetch, isFetching } = useQuery({
+    queryKey: ['audit', 'proxy'],
+    queryFn: () => api.audit.listEvents('proxy'),
+    staleTime: 30_000,
+  })
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col gap-3 p-5">
+          <Skeleton variant="line" className="w-2/3" />
+          <Skeleton variant="line" className="w-1/2" />
+          <Skeleton variant="line" className="w-3/5" />
+        </CardContent>
+      </Card>
+    )
+  }
+  if (isError) {
+    return (
+      <Banner
+        tone="danger"
+        title="Couldn’t load the audit trail"
+        action={
+          <Button variant="link" onClick={() => refetch()}>
+            Retry
+          </Button>
+        }
+      >
+        The audit log is unavailable.
+      </Banner>
+    )
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <SectionHeader
+            title="Cloudflare writes"
+            description="Every change Watchtower made in your Cloudflare account — tunnel configuration, DNS records, Access applications — newest first. Reads are not logged."
+          />
+          <Button size="sm" variant="secondary" onClick={() => refetch()} loading={isFetching}>
+            Refresh
+          </Button>
+        </div>
+        {events.length === 0 ? (
+          <p className="py-6 text-center text-[13px] text-text-2">
+            No writes recorded yet. Entries appear when a reconcile changes something — enabling the
+            provider, creating routes, or protecting them.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {events.map((e) => (
+              <li key={e.id} className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={e.success ? 'neutral' : 'danger'} size="sm">
+                      <span className="font-mono">{e.action}</span>
+                    </Badge>
+                    <span className="truncate font-medium text-text">{e.target}</span>
+                  </div>
+                  {e.detail && <p className="mt-0.5 text-[13px] text-text-2">{e.detail}</p>}
+                  {e.error && <p className="mt-0.5 text-[13px] text-danger">{e.error}</p>}
+                </div>
+                <span className="shrink-0 text-xs text-text-3" title={e.at}>
+                  {timeAgo(e.at)} · {e.actor ?? 'system'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
