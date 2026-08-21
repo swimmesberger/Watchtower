@@ -233,8 +233,12 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     /// Fetches the remote manifest digest of the detected image, compares it with the local
     /// image's digest, caches the result, and returns the updated status.
     /// </summary>
+    /// <param name="acknowledgeApplyError">
+    /// True for user-initiated checks, false for background ones — see
+    /// <see cref="ApplyCheckResult"/> for why the two must differ.
+    /// </param>
     /// <exception cref="InvalidOperationException">Thrown when no image name is available or the digest cannot be retrieved.</exception>
-    public async Task<SelfUpdateStatus> CheckForUpdateAsync(CancellationToken ct = default) {
+    public async Task<SelfUpdateStatus> CheckForUpdateAsync(bool acknowledgeApplyError, CancellationToken ct = default) {
         var detected = await TryInspectSelfAsync(ct);
         var config = await LoadConfigAsync(ct);
         var imageName = detected.ImageName;
@@ -266,18 +270,37 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
         var isOutdated = currentDigest is not null && currentDigest != latestDigest;
 
-        var runtime = await UpdateRuntimeAsync(r => r with {
-            CurrentImageId = currentDigest,
-            LatestImageId = latestDigest,
-            IsOutdated = isOutdated,
-            LastCheckedAt = DateTimeOffset.UtcNow,
-        }, ct);
+        var runtime = await UpdateRuntimeAsync(
+            r => ApplyCheckResult(r, currentDigest, latestDigest, isOutdated, acknowledgeApplyError, DateTimeOffset.UtcNow),
+            ct);
 
         _logger.LogInformation(
             "Self-update check complete. CurrentDigest={Current}, LatestDigest={Latest}, IsOutdated={Outdated}",
             currentDigest, latestDigest, isOutdated);
 
         return BuildResponse(detected, config, runtime, liveCurrentDigest: currentDigest);
+    }
+
+    /// <summary>
+    /// Folds a completed check into the runtime record. A user-initiated check
+    /// (<paramref name="acknowledgeApplyError"/> true) also clears a lingering "error" apply stage:
+    /// like a config change (see <see cref="SaveConfigAsync"/>), re-checking is how a user moves on
+    /// from a failed apply, and without it the failure banner has no way to go away short of a
+    /// successful update. Background checks pass false — they would wipe the banner on their next
+    /// tick, before anyone had seen it. An in-flight "pulling"/"restarting" stage is never touched.
+    /// </summary>
+    internal static SelfUpdateRuntime ApplyCheckResult(
+        SelfUpdateRuntime runtime, string? currentDigest, string? latestDigest, bool isOutdated,
+        bool acknowledgeApplyError, DateTimeOffset checkedAt) {
+        var clearError = acknowledgeApplyError && runtime.ApplyStage == "error";
+        return runtime with {
+            CurrentImageId = currentDigest,
+            LatestImageId = latestDigest,
+            IsOutdated = isOutdated,
+            LastCheckedAt = checkedAt,
+            ApplyStage = clearError ? "idle" : runtime.ApplyStage,
+            ApplyError = clearError ? null : runtime.ApplyError,
+        };
     }
 
     /// <summary>

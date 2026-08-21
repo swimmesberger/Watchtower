@@ -46,7 +46,9 @@ public sealed class SelfUpdateBackgroundService(
     private async Task RunCheckAsync(TimeSpan interval, CancellationToken ct) {
         try {
             logger.LogInformation("Background self-update check starting");
-            await selfUpdate.CheckForUpdateAsync(ct);
+            // Never acknowledges an apply error: a background tick must not clear the failure
+            // banner before the user has seen it — only a user-initiated check may do that.
+            await selfUpdate.CheckForUpdateAsync(acknowledgeApplyError: false, ct);
             logger.LogInformation("Background self-update check complete");
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             // Normal shutdown — don't log as an error. Guarded on the token: an HttpClient timeout
