@@ -151,3 +151,12 @@ picker lists the old instance's archives as long as the instance name matches it
 
 Failures (including "process restarted mid-run") land in the history as `failed` with the log
 attached; the next scheduled window simply tries again.
+
+## The audit trail
+
+Every run, restore, retention prune, storage test and configuration change is also recorded in the
+global **Audit** page under the `backups` category — success or failure with the error message. The
+run rows carry the settings in effect at the time (trigger, provider, encryption, stop-containers,
+retention), so "did last night's backup run, and was it encrypted back then?" is answered by the
+trail even after the configuration has changed since. Retention there is bounded (newest 2000 audit
+events overall); the per-stack Backups tab keeps the detailed per-run logs.

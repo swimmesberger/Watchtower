@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Elarion.Settings;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
@@ -16,7 +17,9 @@ namespace Watchtower.Application.Modules.Backups.Handlers;
 public sealed class UpdateBackupConfig(
     ISettingsManager settings,
     IOptionsMonitor<WatchtowerOptions> options,
-    EnvironmentSettingPins pins)
+    EnvironmentSettingPins pins,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<UpdateBackupConfig.Command, Result<UpdateBackupConfig.Response>> {
     public sealed record Command(
         bool Enabled,
@@ -136,6 +139,27 @@ public sealed class UpdateBackupConfig(
                 BasePath = Coalesce(command.LocalBasePath, backup.Local.BasePath) ?? "",
             },
         };
+
+        // Recorded post-write so the trail answers "what was the configuration at that time" —
+        // effective values only, secrets reduced to which of them were replaced or cleared.
+        var updatedSecrets = new[] {
+                (command.EncryptionPassphrase, "encryption passphrase"),
+                (command.SftpPassword, "SFTP password"),
+                (command.SftpPrivateKey, "SFTP private key"),
+                (command.SftpPrivateKeyPassphrase, "SFTP key passphrase"),
+            }
+            .Where(s => s.Item1 is not null)
+            .Select(s => s.Item2)
+            .ToList();
+        var detail =
+            $"schedule {(echoed.Enabled ? $"on, daily {echoed.Time}" : "off")}"
+            + $" · provider {provider}"
+            + $" · {BackupService.RetentionSummary(echoed)}"
+            + (string.IsNullOrEmpty(echoed.EncryptionPassphrase) ? "" : " · encrypted")
+            + (updatedSecrets.Count > 0 ? $" · secrets updated: {string.Join(", ", updatedSecrets)}" : "");
+        await audit.RecordAsync(BackupService.AuditCategory, "config.update", "backup settings", detail,
+            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+
         return new Response(BackupConfigDto.From(echoed, pins));
     }
 

@@ -11,14 +11,14 @@ export function AuditPage() {
       <header>
         <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Audit</h1>
         <p className="mt-1 text-[13px] text-text-2">
-          What Watchtower changed — external control planes first (Cloudflare today), more planes as
-          they start recording. Reads are never logged.
+          What Watchtower changed — writes against external control planes (Cloudflare), backup runs,
+          restores and retention prunes, more planes as they start recording. Reads are never logged.
         </p>
       </header>
       <AuditTrailCard
         title="All events"
         description="Every recorded write across all categories, newest first."
-        emptyText="Nothing recorded yet. Entries appear when Watchtower changes something — e.g. pushing tunnel configuration, DNS records or Access applications on the Cloudflare provider."
+        emptyText="Nothing recorded yet. Entries appear when Watchtower changes something — e.g. pushing tunnel configuration, DNS records or Access applications on the Cloudflare provider, or running a stack backup."
         showCategory
       />
     </div>
