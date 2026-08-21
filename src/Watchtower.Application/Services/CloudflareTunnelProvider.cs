@@ -228,6 +228,8 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             if (tunnel is null) return;
             if (cf.Managed)
                 await EnsureCloudflaredContainerAsync(cf, tunnel, ct);
+            else
+                await RemoveStaleManagedCloudflaredAsync(ct);
             var member = IngressMemberContainer(cf);
             if (member is not null)
                 await _networks.ConnectAllRoutedContainersAsync(member, ct);
@@ -286,6 +288,36 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 success: false, error: ex.Message, ct: ct);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Unmanaged mode must not leave a previously-managed cloudflared behind: flipping the switch
+    /// off while the provider stays enabled is a Refresh transition, and without this the container
+    /// created under managed mode would keep serving its tunnel forever (restart policy
+    /// unless-stopped). Only a container carrying Watchtower's managed label is removed — an
+    /// operator-run container that happens to share the name is never touched.
+    /// </summary>
+    private async Task RemoveStaleManagedCloudflaredAsync(CancellationToken ct) {
+        DockerContainerDetails details;
+        try {
+            details = await _docker.InspectContainerAsync(CloudflaredContainerName, ct);
+        } catch {
+            return; // Not present — nothing to converge.
+        }
+        if (details.Config.Labels is not { } labels || !labels.ContainsKey(ManagedLabelKey)) {
+            _logger.LogWarning(
+                "A container named {Name} exists but does not carry Watchtower's managed label — leaving it alone.",
+                CloudflaredContainerName);
+            return;
+        }
+        try {
+            await _docker.StopContainerAsync(CloudflaredContainerName, ct);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "Stopping the stale managed cloudflared failed (it may already be stopped).");
+        }
+        await _docker.RemoveContainerAsync(CloudflaredContainerName, ct);
+        _logger.LogInformation(
+            "Removed the managed cloudflared container — the managed switch is off. The tunnel it served is kept.");
     }
 
     private async Task EnsureCloudflaredContainerAsync(
