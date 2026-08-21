@@ -877,12 +877,16 @@ function ProxyCard() {
                   <span className="font-mono">DNS:Edit</span> permissions.
                 </p>
                 <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Account ID" hint="Zero Trust → your account; shown on the dashboard overview.">
+                  <Field
+                    label="Account ID"
+                    hint="32 hex characters. In the Cloudflare dashboard, open any domain — it's in the “API” panel on the Overview page (and in the dash.cloudflare.com URL)."
+                  >
                     {({ id }) => (
                       <>
                         <Input
                           id={id}
                           mono
+                          placeholder="e.g. 372e67954025e0ba6aaa6d586b9e0b59"
                           value={form.cfAccountId}
                           onChange={e => set('cfAccountId', e.target.value)}
                           disabled={isPinned('Watchtower:Proxy:Cloudflare:AccountId')}
@@ -893,12 +897,16 @@ function ProxyCard() {
                       </>
                     )}
                   </Field>
-                  <Field label="Zone ID" hint="The zone your route domains live under.">
+                  <Field
+                    label="Zone ID"
+                    hint="32 hex characters, in the same “API” panel — open the domain your routes live under, since every domain (zone) has its own ID."
+                  >
                     {({ id }) => (
                       <>
                         <Input
                           id={id}
                           mono
+                          placeholder="e.g. 023e105f4ecef8ad9ca31a8372d0c353"
                           value={form.cfZoneId}
                           onChange={e => set('cfZoneId', e.target.value)}
                           disabled={isPinned('Watchtower:Proxy:Cloudflare:ZoneId')}
