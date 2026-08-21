@@ -249,6 +249,24 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
 }
 
 [EntityConfiguration]
+public sealed class UserRecoveryCodeConfiguration : IEntityTypeConfiguration<UserRecoveryCode> {
+    public void Configure(EntityTypeBuilder<UserRecoveryCode> b) {
+        b.ToTable("user_recovery_codes");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.CodeHash).IsRequired();
+        // Redemption is a point-read on (owner, hash) and generation replaces the whole set for one owner,
+        // so the account comes first. Unique because a code is a credential: two rows with the same hash
+        // for one account would make a single code redeemable twice, which is the one thing it must not be.
+        b.HasIndex(x => new { x.UserId, x.CodeHash }).IsUnique();
+        // The codes are part of the account, not a record of it: deleting the account deletes them.
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class AuthSessionConfiguration : IEntityTypeConfiguration<AuthSession> {
     public void Configure(EntityTypeBuilder<AuthSession> b) {
         b.ToTable("auth_sessions");
@@ -398,26 +416,6 @@ public sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEven
         // The audit view reads newest-first, optionally narrowed by category prefix.
         b.HasIndex(x => x.CreatedAt);
         b.HasIndex(x => x.Category);
-    }
-}
-
-[EntityConfiguration]
-public sealed class AuthEventConfiguration : IEntityTypeConfiguration<AuthEvent> {
-    public void Configure(EntityTypeBuilder<AuthEvent> b) {
-        b.ToTable("auth_events");
-        b.HasKey(x => x.Id);
-        b.Property(x => x.Kind).IsRequired();
-        // The audit view reads newest-first.
-        b.HasIndex(x => x.CreatedAt);
-        // The trail survives the subjects it mentions: detach instead of cascading.
-        b.HasOne(x => x.User)
-            .WithMany()
-            .HasForeignKey(x => x.UserId)
-            .OnDelete(DeleteBehavior.SetNull);
-        b.HasOne(x => x.Route)
-            .WithMany()
-            .HasForeignKey(x => x.RouteId)
-            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

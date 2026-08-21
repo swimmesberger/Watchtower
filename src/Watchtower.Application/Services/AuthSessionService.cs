@@ -44,6 +44,13 @@ public sealed class AuthSessionService(
     public static readonly TimeSpan LoginCodeLifetime = TimeSpan.FromSeconds(60);
 
     /// <summary>
+    /// How long a pending-MFA record stays finishable. Long enough to unlock a phone and read a code off
+    /// an authenticator app — or to find the printed recovery codes — and short enough that a token
+    /// captured from a response body is worthless by the time anyone gets to it.
+    /// </summary>
+    public static readonly TimeSpan MfaPendingLifetime = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// Idle lifetime a session is extended to. Clamped to a sane range so a mistyped configuration value
     /// cannot produce a session that expires instantly (or effectively never).
     /// </summary>
@@ -67,7 +74,7 @@ public sealed class AuthSessionService(
     /// time it exists outside the caller's browser, since only its hash is stored.
     /// </summary>
     public Task<string> CreateSsoSessionAsync(User user, CancellationToken ct = default) =>
-        CreateSessionAsync(user, SessionKind.Sso, routeId: null, ct);
+        CreateSessionAsync(user, SessionKind.Sso, routeId: null, lifetime: null, ct);
 
     /// <summary>
     /// Creates a session for one protected app — the row behind its <c>__wt_access</c> cookie — and returns
@@ -79,9 +86,10 @@ public sealed class AuthSessionService(
     /// different hosts, but the binding does not rely on the browser getting the scoping right).
     /// </remarks>
     public Task<string> CreateAppSessionAsync(User user, int routeId, CancellationToken ct = default) =>
-        CreateSessionAsync(user, SessionKind.App, routeId, ct);
+        CreateSessionAsync(user, SessionKind.App, routeId, lifetime: null, ct);
 
-    private async Task<string> CreateSessionAsync(User user, SessionKind kind, int? routeId, CancellationToken ct) {
+    private async Task<string> CreateSessionAsync(
+        User user, SessionKind kind, int? routeId, TimeSpan? lifetime, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(user);
 
         var now = time.GetUtcNow();
@@ -95,10 +103,68 @@ public sealed class AuthSessionService(
             RouteId = routeId,
             CreatedAt = now,
             // SlidingLifetime <= AbsoluteLifetime by construction, so the initial expiry is already within the cap.
-            ExpiresAt = now + SlidingLifetime,
+            ExpiresAt = now + (lifetime ?? SlidingLifetime),
         });
         await db.SaveChangesAsync(ct);
         return token;
+    }
+
+    // ── Pending MFA: the half of a login that the password alone does not finish ──────────
+
+    /// <summary>
+    /// Records that <paramref name="user"/> passed the password check but still owes a second factor, and
+    /// returns the raw token the login page hands back to <c>POST /api/auth/login/mfa</c>.
+    /// </summary>
+    /// <remarks>
+    /// Hashed at rest and swept on expiry like every other row here, but it is <em>not</em> a session: it
+    /// is never set as a cookie, and <see cref="SessionKind.MfaPending"/> is excluded from every path that
+    /// turns a token into an authenticated principal. What it carries is a single fact — which account the
+    /// next request may finish signing in — for <see cref="MfaPendingLifetime"/>.
+    /// </remarks>
+    public Task<string> CreateMfaPendingAsync(User user, CancellationToken ct = default) =>
+        CreateSessionAsync(user, SessionKind.MfaPending, routeId: null, MfaPendingLifetime, ct);
+
+    /// <summary>
+    /// Resolves a pending-MFA token to its record (with <see cref="AuthSession.User"/> and the user's realm
+    /// loaded), or <see langword="null"/> when it is unknown, expired, or belongs to a disabled account.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a peek, not a consume: a wrong code must not burn the challenge, or one mistyped digit
+    /// would send the visitor back to the password form. The record survives until
+    /// <see cref="ConsumeMfaPendingAsync"/> accepts it or it expires; brute force is bounded by the account
+    /// lockout the failing endpoint drives and by the five-minute window, not by this lookup.
+    /// </remarks>
+    public async Task<AuthSession?> FindMfaPendingAsync(string? rawToken, CancellationToken ct = default) {
+        if (string.IsNullOrEmpty(rawToken)) return null;
+
+        var hash = HashToken(rawToken);
+        var pending = await db.AuthSessions
+            .Include(s => s.User)
+            .ThenInclude(u => u!.Realm)
+            .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == SessionKind.MfaPending, ct);
+        if (pending is null) return null;
+
+        if (pending.ExpiresAt <= time.GetUtcNow()) {
+            db.AuthSessions.Remove(pending);
+            await db.SaveChangesAsync(ct);
+            return null;
+        }
+
+        return pending.User is null || pending.User.Disabled ? null : pending;
+    }
+
+    /// <summary>
+    /// Spends the pending-MFA record, reporting whether this call is the one that got it.
+    /// </summary>
+    /// <remarks>
+    /// The delete is the claim, exactly as in <see cref="RedeemLoginCodeAsync"/>: two requests that both
+    /// present a correct code for the same challenge produce one session, not two.
+    /// </remarks>
+    public async Task<bool> ConsumeMfaPendingAsync(int pendingId, CancellationToken ct = default) {
+        var claimed = await db.AuthSessions
+            .Where(s => s.Id == pendingId && s.Kind == SessionKind.MfaPending)
+            .ExecuteDeleteAsync(ct);
+        return claimed == 1;
     }
 
     /// <summary>
@@ -134,6 +200,13 @@ public sealed class AuthSessionService(
     /// <c>__wt_access</c> cookie, where identifying the account is the whole job and there is no route to
     /// bind against. Deliberately does <em>not</em> renew the sliding window: UserInfo is a read, not a page
     /// visit, and must not silently extend a session's life.
+    /// <para>
+    /// "Any kind" means any kind of <em>session</em>, and the filter names those two rather than excluding
+    /// what is not one. An allow-list is the difference between a rule and a habit here: a deny-list would
+    /// silently admit the next <see cref="SessionKind"/> anybody adds, and the kind most likely to be added
+    /// is another half-authenticated state like <see cref="SessionKind.MfaPending"/>. Adding a kind must
+    /// mean deciding, in this line, whether it is an identity.
+    /// </para>
     /// </summary>
     public async Task<AuthSession?> ValidateAnyAsync(string? rawToken, CancellationToken ct = default) {
         if (string.IsNullOrEmpty(rawToken)) return null;
@@ -142,7 +215,8 @@ public sealed class AuthSessionService(
         var session = await db.AuthSessions
             .Include(s => s.User)
             .ThenInclude(u => u!.Realm)
-            .FirstOrDefaultAsync(s => s.TokenHash == hash, ct);
+            .FirstOrDefaultAsync(
+                s => s.TokenHash == hash && (s.Kind == SessionKind.Sso || s.Kind == SessionKind.App), ct);
         if (session is null) return null;
 
         var now = time.GetUtcNow();

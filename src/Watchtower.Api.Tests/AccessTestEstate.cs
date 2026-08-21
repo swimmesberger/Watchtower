@@ -284,11 +284,11 @@ internal static class AccessTestEstate {
     }
 
     /// <summary>The audit rows written so far, oldest first.</summary>
-    public static async Task<IReadOnlyList<AuthEvent>> AuthEventsAsync(this WatchtowerApiFactory factory) {
-        IReadOnlyList<AuthEvent> events = [];
+    public static async Task<IReadOnlyList<AuditEvent>> AuditEventsAsync(this WatchtowerApiFactory factory) {
+        IReadOnlyList<AuditEvent> events = [];
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
-            events = await db.AuthEvents.AsNoTracking().OrderBy(e => e.Id)
+            events = await db.AuditEvents.AsNoTracking().OrderBy(e => e.Id)
                 .ToListAsync(TestContext.Current.CancellationToken);
         });
         return events;

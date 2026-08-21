@@ -26,7 +26,7 @@ public sealed class TestBackupStorage(
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var backup = options.CurrentValue.Backup;
-        var actor = string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId;
+        var actor = await audit.ActorAsync(currentUser, ct);
         try {
             using var storage = storageFactory.Create(backup);
             var probePath = $"{BackupNaming.Sanitize(backup.ResolveInstanceName())}/.watchtower-storage-probe";

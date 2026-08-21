@@ -18,7 +18,7 @@ public sealed class UpdateSelfConfiguration(SelfUpdateService selfUpdate, AuditL
         await selfUpdate.SaveConfigAsync(new UpdateSelfConfig { CredentialId = command.CredentialId }, ct);
         await audit.RecordAsync("system", "self-update.config.update", "self-update settings",
             command.CredentialId is { } id ? $"registry credential #{id}" : "registry credential cleared",
-            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
         return new Response(await selfUpdate.GetStatusAsync(ct));
     }
 }

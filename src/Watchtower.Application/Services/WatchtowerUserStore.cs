@@ -32,7 +32,10 @@ public sealed class WatchtowerUserStore(
     IUserStore<User>,
     IUserPasswordStore<User>,
     IUserSecurityStampStore<User>,
-    IUserLockoutStore<User> {
+    IUserLockoutStore<User>,
+    IUserTwoFactorStore<User>,
+    IUserAuthenticatorKeyStore<User>,
+    IUserTwoFactorRecoveryCodeStore<User> {
 
     /// <summary>SQLite extended result code <c>SQLITE_CONSTRAINT_UNIQUE</c>.</summary>
     private const int SqliteConstraintUnique = 2067;
@@ -216,6 +219,111 @@ public sealed class WatchtowerUserStore(
     /// <inheritdoc cref="GetLockoutEnabledAsync"/>
     public Task SetLockoutEnabledAsync(User user, bool enabled, CancellationToken cancellationToken) =>
         Task.CompletedTask;
+
+    // -- Two-factor ------------------------------------------------------------------------------
+
+    public Task<bool> GetTwoFactorEnabledAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(user.TwoFactorEnabled);
+    }
+
+    /// <summary>
+    /// Flips the flag on the tracked entity only; <c>UserManager.SetTwoFactorEnabledAsync</c> rotates the
+    /// security stamp and calls <see cref="UpdateAsync"/>, which is what persists both.
+    /// </summary>
+    public Task SetTwoFactorEnabledAsync(User user, bool enabled, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.TwoFactorEnabled = enabled;
+        return Task.CompletedTask;
+    }
+
+    // -- Authenticator key -----------------------------------------------------------------------
+
+    /// <inheritdoc cref="SetTwoFactorEnabledAsync"/>
+    public Task SetAuthenticatorKeyAsync(User user, string key, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        user.AuthenticatorKey = key;
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> GetAuthenticatorKeyAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return Task.FromResult(user.AuthenticatorKey);
+    }
+
+    // -- Recovery codes --------------------------------------------------------------------------
+
+    /// <summary>
+    /// Replaces the account's whole set of unused recovery codes, storing only their hashes.
+    /// </summary>
+    /// <remarks>
+    /// The old rows are removed and the new ones added through the change tracker rather than by an
+    /// immediate <c>ExecuteDelete</c>, so the swap lands in the same <c>SaveChanges</c> as the user write
+    /// that <c>UserManager.GenerateNewTwoFactorRecoveryCodesAsync</c> performs straight afterwards. An
+    /// eager delete would leave an account with no codes at all if that write then failed.
+    /// <para>
+    /// That batching leans on EF Core ordering deletes before inserts within one <c>SaveChanges</c>, which
+    /// matters because of the unique index on <c>(user_id, code_hash)</c>: were an insert to run first and
+    /// a new code collide with an old one, the constraint would reject the whole batch. The collision is
+    /// vanishingly unlikely — Identity's codes are random over a 26-character alphabet — so this is a
+    /// correctness note rather than a live hazard, and it is the reason not to "simplify" the removal into
+    /// a post-insert cleanup. Should EF's ordering ever stop holding, the fix is an explicit
+    /// <c>SaveChanges</c> after the removal inside a transaction, not a reordering here.
+    /// </para>
+    /// </remarks>
+    public async Task ReplaceCodesAsync(
+        User user, IEnumerable<string> recoveryCodes, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentNullException.ThrowIfNull(recoveryCodes);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var existing = await db.UserRecoveryCodes
+            .Where(c => c.UserId == user.Id)
+            .ToListAsync(cancellationToken);
+        db.UserRecoveryCodes.RemoveRange(existing);
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var code in recoveryCodes) {
+            db.UserRecoveryCodes.Add(new UserRecoveryCode {
+                UserId = user.Id,
+                CodeHash = AuthSessionService.HashToken(code),
+                CreatedAt = now,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Spends <paramref name="code"/> if the account still holds it, reporting whether it did.
+    /// </summary>
+    /// <remarks>
+    /// The delete <em>is</em> the redemption, not a follow-up to it: a single statement's affected-row
+    /// count decides the outcome, so two concurrent logins presenting the same code produce one success
+    /// and one failure rather than two. Same reasoning as
+    /// <see cref="AuthSessionService.RedeemLoginCodeAsync"/> — and unlike
+    /// <see cref="ReplaceCodesAsync"/>, this deliberately does not wait for the caller's
+    /// <c>SaveChanges</c>: a code must be gone the instant it is accepted.
+    /// <para>
+    /// The lookup is by hash, so there is no secret-dependent comparison to time, and an unknown code
+    /// costs exactly the same indexed point-read as a real one.
+    /// </para>
+    /// </remarks>
+    public async Task<bool> RedeemCodeAsync(User user, string code, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        if (string.IsNullOrEmpty(code)) return false;
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var hash = AuthSessionService.HashToken(code);
+        var redeemed = await db.UserRecoveryCodes
+            .Where(c => c.UserId == user.Id && c.CodeHash == hash)
+            .ExecuteDeleteAsync(cancellationToken);
+        return redeemed > 0;
+    }
+
+    /// <summary>How many unused codes remain — a spent code leaves no row, so this is a plain count.</summary>
+    public Task<int> CountCodesAsync(User user, CancellationToken cancellationToken) {
+        ArgumentNullException.ThrowIfNull(user);
+        return db.UserRecoveryCodes.CountAsync(c => c.UserId == user.Id, cancellationToken);
+    }
 
     /// <summary>No-op: the <see cref="WatchtowerDbContext"/> is owned by the DI scope, not by this store.</summary>
     public void Dispose() { }

@@ -18,4 +18,12 @@
     <ProjectReference Include="..\Watchtower.Api\Watchtower.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Linked rather than duplicated: the TOTP generator stands in for an authenticator app in both test
+         projects, and a second copy of RFC 6238 arithmetic is a second thing to get subtly wrong. A project
+         reference is not the alternative — one test assembly referencing another drags its whole test
+         collection into this runner. -->
+    <Compile Include="..\Watchtower.Application.Tests\TotpCodes.cs" Link="TotpCodes.cs" />
+  </ItemGroup>
+
 </Project>

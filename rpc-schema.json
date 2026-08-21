@@ -13,6 +13,27 @@
             ],
             "default": null
           },
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "beforeId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
           "limit": {
             "type": [
               "integer",
@@ -80,10 +101,50 @@
                 "error"
               ]
             }
+          },
+          "nextBeforeId": {
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
-          "events"
+          "events",
+          "nextBeforeId"
+        ]
+      }
+    },
+    "audit.listFacets": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "actors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "categories",
+          "actions",
+          "actors"
         ]
       }
     },
@@ -7594,6 +7655,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "twoFactorEnabled": {
+                "type": "boolean"
+              },
               "realmId": {
                 "type": "integer"
               },
@@ -7609,6 +7673,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "twoFactorEnabled",
               "realmId",
               "createdAt"
             ]
@@ -7685,6 +7750,9 @@
                 "lockedOut": {
                   "type": "boolean"
                 },
+                "twoFactorEnabled": {
+                  "type": "boolean"
+                },
                 "realmId": {
                   "type": "integer"
                 },
@@ -7700,6 +7768,7 @@
                 "isAdmin",
                 "disabled",
                 "lockedOut",
+                "twoFactorEnabled",
                 "realmId",
                 "createdAt"
               ]
@@ -7708,6 +7777,34 @@
         },
         "required": [
           "users"
+        ]
+      }
+    },
+    "users.resetMfa": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "wasEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "wasEnabled"
         ]
       }
     },
@@ -7782,6 +7879,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "twoFactorEnabled": {
+                "type": "boolean"
+              },
               "realmId": {
                 "type": "integer"
               },
@@ -7797,6 +7897,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "twoFactorEnabled",
               "realmId",
               "createdAt"
             ]
@@ -7861,6 +7962,9 @@
               "lockedOut": {
                 "type": "boolean"
               },
+              "twoFactorEnabled": {
+                "type": "boolean"
+              },
               "realmId": {
                 "type": "integer"
               },
@@ -7876,6 +7980,7 @@
               "isAdmin",
               "disabled",
               "lockedOut",
+              "twoFactorEnabled",
               "realmId",
               "createdAt"
             ]

@@ -2,6 +2,7 @@ using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Groups;
 
@@ -121,12 +122,13 @@ public static class GroupMapping {
         var detail = $"actor={actorId}; group={groupName}#{groupId}";
         if (!string.IsNullOrEmpty(details)) detail = $"{detail}; {details}";
 
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = kind,
-            // Group administration is neither account- nor route-scoped; stated rather than defaulted.
-            UserId = null,
-            RouteId = null,
+        db.AuditEvents.Add(new AuditEvent {
+            Category = AuthEventKinds.CategoryOf(kind),
+            Action = kind,
+            Target = groupName,
             Detail = detail,
+            Actor = await AuditLog.ResolveActorAsync(db, actor.UserId),
+            Success = true,
             CreatedAt = time.GetUtcNow(),
         });
         await db.SaveChangesAsync(CancellationToken.None);

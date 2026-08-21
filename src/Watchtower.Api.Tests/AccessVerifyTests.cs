@@ -216,9 +216,9 @@ public sealed class AccessVerifyTests {
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.Contains(AppDomain, body, StringComparison.Ordinal);
 
-        var denial = Assert.Single(await factory.AuthEventsAsync(), e => e.Kind == "access.denied");
-        Assert.Equal(userId, denial.UserId);
-        Assert.Equal(routeId, denial.RouteId);
+        var denial = Assert.Single(await factory.AuditEventsAsync(), e => e.Action == "access.denied");
+        Assert.False(denial.Success);
+        Assert.Equal(AppDomain, denial.Target);
     }
 
     [Fact]

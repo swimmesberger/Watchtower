@@ -2,10 +2,10 @@
 // module. Adding a destination is a contribution in the owning module; the shell doesn't change.
 import { lazy, Suspense } from 'react'
 import { Link, Outlet, useRouteContext, useRouterState } from '@tanstack/react-router'
-import { Eye, LogOut } from 'lucide-react'
+import { Eye, LogOut, ShieldCheck } from 'lucide-react'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
 import { cn } from '@/lib/utils'
-import { goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } from '@/lib/auth'
+import { ACCOUNT_SECURITY_PATH, goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } from '@/lib/auth'
 import { Toaster } from '@/components/ui/toast'
 import { ThemeToggle } from '@/components/ui/theme-toggle'
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
@@ -60,6 +60,33 @@ function SignOutButton({ className }: { className?: string }) {
   )
 }
 
+/**
+ * Link to the account's own security settings. Rendered under the same rule as {@link SignOutButton}: with
+ * `Auth:Enabled` off there is no account to protect, and the MFA endpoints answer 404 in that mode, so an
+ * entry point would lead nowhere.
+ */
+export function SecurityLink({ className }: { className?: string }) {
+  const { caps } = useRouteContext({ from: '__root__' })
+  const user = caps.user
+  if (!user.isAuthenticated || user.id === LOCAL_USER_ID) return null
+
+  return (
+    <Tooltip label="Account security">
+      <Link
+        to={ACCOUNT_SECURITY_PATH}
+        aria-label="Account security"
+        className={cn(
+          'touch-target inline-flex size-9 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text',
+          'focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+          className,
+        )}
+      >
+        <ShieldCheck className="size-[18px]" />
+      </Link>
+    </Tooltip>
+  )
+}
+
 function Wordmark() {
   return (
     <Link to="/" className="flex items-center gap-2.5">
@@ -109,7 +136,11 @@ export function AppShell() {
   // The `apps-portal` flag is the backend's answer (ADR-0030, resolved from the realm claim), so this
   // never has to derive the realm client-side. It is false for the operator realm, for an unauthenticated
   // boot, and when authentication is switched off — every one of which keeps today's UI exactly.
-  if (caps.isFlagEnabled('apps-portal')) {
+  //
+  // Account security is the one exception, and it has to be: protecting your own credentials is not
+  // management, so the page is reachable in every realm — and swallowing it here would make it reachable
+  // only by the operator population, which is the opposite of the point.
+  if (caps.isFlagEnabled('apps-portal') && currentPath !== ACCOUNT_SECURITY_PATH) {
     return (
       <TooltipProvider delayDuration={200}>
         {/* No fallback: the page's own skeletons are the loading state, and a spinner for the chunk
@@ -117,6 +148,19 @@ export function AppShell() {
         <Suspense fallback={null}>
           <AppsPage caps={caps} />
         </Suspense>
+        <Toaster />
+      </TooltipProvider>
+    )
+  }
+
+  // …and when a realm account does reach it, it gets the page on its own: every destination the sidebar
+  // would offer is a management screen whose handlers would answer Forbidden.
+  if (caps.isFlagEnabled('apps-portal')) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        <div className="mx-auto w-full max-w-[720px] px-4 py-6 md:px-6">
+          <Outlet />
+        </div>
         <Toaster />
       </TooltipProvider>
     )
@@ -165,6 +209,7 @@ export function AppShell() {
           </nav>
           <div className="flex items-center gap-1 border-t border-border px-3 py-3">
             <ThemeToggle />
+            <SecurityLink />
             <SignOutButton />
           </div>
         </aside>
@@ -174,6 +219,7 @@ export function AppShell() {
           <Wordmark />
           <div className="flex items-center gap-1">
             <ThemeToggle />
+            <SecurityLink />
             <SignOutButton />
           </div>
         </header>

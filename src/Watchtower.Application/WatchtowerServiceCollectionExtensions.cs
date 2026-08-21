@@ -147,14 +147,22 @@ public static class WatchtowerServiceCollectionExtensions {
             o.User.RequireUniqueEmail = false;
         })
         .AddUserStore<WatchtowerUserStore>()
-        // Only the data-protector provider: password resets (including the break-glass hook) go
-        // through a token so the validators run before the stored hash is touched. The phone/email/
-        // authenticator providers AddDefaultTokenProviders would bring have nothing to drive them.
-        .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider);
+        // Two of the providers AddDefaultTokenProviders would bring, and deliberately only those two.
+        // The data protector backs password resets (including the break-glass hook), which go through a
+        // token so the validators run before the stored hash is touched; the authenticator provider is
+        // Identity's own RFC 6238 TOTP implementation, which is what verifies the codes an authenticator
+        // app produces — no third-party TOTP package is involved. The phone and email providers have
+        // nothing to drive them (Watchtower sends neither), so they stay out.
+        .AddTokenProvider<DataProtectorTokenProvider<User>>(TokenOptions.DefaultProvider)
+        .AddTokenProvider<AuthenticatorTokenProvider<User>>(TokenOptions.DefaultAuthenticatorProvider);
 
         // Login sessions (design.md §4): revocable database rows behind the __wt_sso cookie. Scoped, like
         // the context it writes through. Registered unconditionally — it is inert until something logs in.
         services.AddScoped<AuthSessionService>();
+
+        // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it
+        // writes through. Registered unconditionally and inert until an account enrols.
+        services.AddScoped<UserMfaService>();
 
         // The ES256 signer behind X-Watchtower-Jwt and the JWKS endpoint (design.md §2.3). Singleton
         // because the key pair is process-wide state: loading it per request would re-read the PEM on

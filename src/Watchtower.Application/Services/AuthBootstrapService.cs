@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -45,10 +45,11 @@ public sealed class AuthBootstrapService(
             var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var sessions = scope.ServiceProvider.GetRequiredService<AuthSessionService>();
+            var mfa = scope.ServiceProvider.GetRequiredService<UserMfaService>();
 
             // Break-glass runs first: on an instance that has no administrator it creates one, which
             // then makes the ordinary first-run bootstrap a no-op instead of a competing account.
-            await ApplyBreakGlassResetAsync(users, sessions, db, auth, cancellationToken);
+            await ApplyBreakGlassResetAsync(users, sessions, mfa, db, auth, cancellationToken);
             await EnsureAdminAsync(users, db, auth, cancellationToken);
         } catch (Exception ex) {
             // Never take the host down: a transient database problem here must not turn into a boot
@@ -113,10 +114,20 @@ public sealed class AuthBootstrapService(
     /// the account is in doubt, and a session issued before the reset would otherwise keep working for up to
     /// the absolute lifetime — changing the password would not have taken the intruder's access away.
     /// </para>
+    /// <para>
+    /// <strong>It clears the second factor as well</strong>, and that is not a convenience: this hook exists
+    /// precisely because nobody can get in, and the most ordinary reason for that is a lost authenticator.
+    /// A break-glass that restored the password but left two-factor demanding a code from a phone that is
+    /// gone would restore nothing at all — the operator would be locked out by the very mechanism they set
+    /// the environment variable to escape. The trade is stated plainly rather than hidden: whoever can set
+    /// <c>WATCHTOWER__AUTH__RESETPASSWORD</c> and restart the process already owns the deployment, so the
+    /// second factor was never a barrier to them; it is only a barrier to the account's legitimate owner.
+    /// The audit row and the warning log both say the factor was removed, so the recovery is never silent.
+    /// </para>
     /// </remarks>
     private async Task ApplyBreakGlassResetAsync(
-        UserManager<User> users, AuthSessionService sessions, WatchtowerDbContext db, AuthOptions auth,
-        CancellationToken ct) {
+        UserManager<User> users, AuthSessionService sessions, UserMfaService mfa, WatchtowerDbContext db,
+        AuthOptions auth, CancellationToken ct) {
         if (string.IsNullOrWhiteSpace(auth.ResetPassword)) return;
         ct.ThrowIfCancellationRequested();
 
@@ -152,16 +163,31 @@ public sealed class AuthBootstrapService(
         await users.SetLockoutEndDateAsync(admin, null);
         await users.ResetAccessFailedCountAsync(admin);
 
+        // The second factor goes too — see the note above. Recorded as what it was before the clear, so the
+        // trail distinguishes "there was a factor and we removed it" from "there was nothing to remove".
+        var hadSecondFactor = admin.TwoFactorEnabled || admin.AuthenticatorKey is not null;
+        var mfaCleared = await mfa.DisableAsync(admin, ct);
+        if (!mfaCleared) {
+            logger.LogError(
+                "Break-glass reset the '{UserName}' password but could NOT clear its two-factor enrolment. " +
+                "Sign-in will still demand an authenticator code. Restart to retry.",
+                AdminUserName);
+        }
+
         // Recovery is only recovery if it also ends whatever sessions are already out there.
         var revoked = await sessions.RevokeAllForUserAsync(admin.Id, ct);
 
+        var mfaDetail = !mfaCleared
+            ? "two-factor clear FAILED"
+            : hadSecondFactor ? "cleared two-factor enrolment" : "no two-factor enrolment to clear";
         await RecordBreakGlassAsync(
-            db, admin.Id, $"reset admin password, cleared lockout, revoked {revoked} session(s)", ct);
+            db, admin.Id,
+            $"reset admin password, cleared lockout, {mfaDetail}, revoked {revoked} session(s)", ct);
         logger.LogWarning(
             "Break-glass reset applied: the '{UserName}' password was reset from configuration, its lockout " +
-            "cleared, and {Revoked} existing session(s) revoked. Remove WATCHTOWER__AUTH__RESETPASSWORD once " +
-            "you are signed in.",
-            AdminUserName, revoked);
+            "cleared, {MfaDetail}, and {Revoked} existing session(s) revoked. Remove " +
+            "WATCHTOWER__AUTH__RESETPASSWORD once you are signed in.",
+            AdminUserName, mfaDetail, revoked);
     }
 
     /// <summary>
@@ -171,10 +197,14 @@ public sealed class AuthBootstrapService(
     /// </summary>
     private async Task RecordBreakGlassAsync(WatchtowerDbContext db, int adminId, string detail, CancellationToken ct) {
         ct.ThrowIfCancellationRequested();
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = AuthEventKinds.BreakGlass,
-            UserId = adminId,
-            Detail = detail,
+        // No actor: the startup hook acts from configuration, which the UI renders as "system". The
+        // account is the target, by name, so the row outlives it.
+        db.AuditEvents.Add(new AuditEvent {
+            Category = AuthEventKinds.CategoryOf(AuthEventKinds.BreakGlass),
+            Action = AuthEventKinds.BreakGlass,
+            Target = AdminUserName,
+            Detail = $"{detail}; admin#{adminId}",
+            Success = true,
             CreatedAt = time.GetUtcNow(),
         });
         await db.SaveChangesAsync(CancellationToken.None);

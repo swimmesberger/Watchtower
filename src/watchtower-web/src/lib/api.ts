@@ -4,9 +4,11 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
-  AuditEvent,
   CloudflareForeignRoute,
   ActiveDeployment,
+  AuditQuery,
+  AuditFacets,
+  AuditEventPage,
   AuthConfig,
   AutomationConfig,
   BackupConfig,
@@ -426,6 +428,11 @@ export const api = {
     },
     setDisabled: async (id: number, disabled: boolean) =>
       (await rpc('users.setDisabled', { id, disabled })).user as User,
+    // Clears the account's two-factor enrolment: the flag, the authenticator key and every unused recovery
+    // code. One-directional by design — there is no call that turns a second factor *on* for someone else.
+    // `wasEnabled` reports what was actually undone, so the UI can say "cleared" rather than "done".
+    resetMfa: async (id: number) =>
+      (await rpc('users.resetMfa', { id })).wasEnabled as boolean,
     delete: async (id: number) => {
       await rpc('users.delete', { id })
     },
@@ -473,9 +480,20 @@ export const api = {
   },
 
   audit: {
-    listEvents: async (category?: string | null, limit?: number | null) =>
-      (await rpc('audit.listEvents', { category: category ?? null, limit: limit ?? null }))
-        .events as AuditEvent[],
+    // Read-only, and deliberately the whole surface: the trail is written by the planes whose acts it
+    // records, never from here. A page is a keyset cursor rather than an offset — the trail is being
+    // appended to while it is read, so an offset would shift under the reader between "load more" clicks.
+    listEvents: async (query: AuditQuery = {}) =>
+      (await rpc('audit.listEvents', {
+        category: query.category ?? null,
+        action: query.action ?? null,
+        actor: query.actor ?? null,
+        beforeId: query.beforeId ?? null,
+        limit: query.limit ?? null,
+      })) as AuditEventPage,
+    // The values actually present, so the filters offer what is there rather than a frontend constant
+    // that drifts the moment a new writer lands.
+    facets: async () => (await rpc('audit.listFacets', {})) as AuditFacets,
   },
 
   system: {

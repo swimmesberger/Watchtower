@@ -21,7 +21,7 @@ namespace Watchtower.Api.Endpoints;
 /// follows to the app's own callback; <c>/api/auth/continue</c> is the same step for a visitor who is
 /// already signed in centrally, which is what makes the second and third app silent.
 /// </remarks>
-public static class WatchtowerAuthEndpoints {
+public static partial class WatchtowerAuthEndpoints {
     /// <summary>
     /// Credentials posted by the login form. <paramref name="RedirectUri"/> is present only when the login
     /// page was reached from a protected app, and is the URL the visitor was originally going to.
@@ -33,6 +33,13 @@ public static class WatchtowerAuthEndpoints {
     /// only for the cross-domain dance and is an opaque target to navigate to — the SPA never renders it.
     /// </summary>
     public sealed record LoginResponse(string UserName, bool IsAdmin, string? ContinueUrl = null);
+
+    /// <summary>
+    /// What a correct password gets an account that also demands a second factor: no cookie, no session,
+    /// just the single-use token that names the challenge. <paramref name="MfaRequired"/> is always true —
+    /// it exists so the SPA can tell the two shapes apart by a field rather than by their absence.
+    /// </summary>
+    public sealed record MfaChallengeResponse(bool MfaRequired, string MfaToken);
 
     /// <summary>The app the caller wants to be handed over to.</summary>
     public sealed record ContinueRequest(string? RedirectUri);
@@ -76,14 +83,18 @@ public static class WatchtowerAuthEndpoints {
     public static WebApplication MapWatchtowerAuthEndpoints(this WebApplication app, bool authEnabled) {
         if (!authEnabled) {
             app.MapPost("/api/auth/login", () => Results.NotFound());
+            app.MapPost("/api/auth/login/mfa", () => Results.NotFound());
             app.MapPost("/api/auth/logout", () => Results.NotFound());
             app.MapPost("/api/auth/continue", () => Results.NotFound());
+            MapMfaNotFound(app);
             return app;
         }
 
         MapLogin(app);
+        MapMfaLogin(app);
         MapLogout(app);
         MapContinue(app);
+        MapMfaSelfService(app);
         return app;
     }
 
@@ -167,6 +178,21 @@ public static class WatchtowerAuthEndpoints {
             if (user.Disabled)
                 return await RejectAsync(db, time, user.Id, "account disabled", http);
 
+            // The password was right, which for a two-factor account is half an answer. No cookie is set
+            // and no session exists yet: what comes back is a pending-MFA token in the body, redeemable
+            // once at /api/auth/login/mfa within five minutes and worth nothing anywhere else. The
+            // redirect_uri is not resolved here either — the access check belongs with the session that
+            // is actually minted, which is the one the second factor produces.
+            //
+            // Deliberately *before* the failed-count reset. Clearing the counter here would let anyone
+            // holding the password top the lockout budget back up between code guesses simply by
+            // re-posting it, which would make the five-attempt limit on the second factor unreachable.
+            // Only a completed login resets the counter, and /api/auth/login/mfa does that on success.
+            if (user.TwoFactorEnabled) {
+                var pending = await sessions.CreateMfaPendingAsync(user, ct);
+                return Results.Ok(new MfaChallengeResponse(true, pending));
+            }
+
             if (await users.GetAccessFailedCountAsync(user) > 0)
                 await users.ResetAccessFailedCountAsync(user);
 
@@ -175,7 +201,7 @@ public static class WatchtowerAuthEndpoints {
                 http, AuthSessionService.SsoCookieName, token,
                 sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
 
-            Record(db, time, LoginOk, user.Id, Describe(http, reason: null));
+            await AuthAudit.QueueAsync(db, time, LoginOk, user.Id, null, Describe(http, reason: null));
             // Same reasoning as the failure path: the session now exists, so the row recording that it was
             // handed out must not depend on the client staying connected.
             await db.SaveChangesAsync(CancellationToken.None);
@@ -257,7 +283,8 @@ public static class WatchtowerAuthEndpoints {
 
         var target = await RouteAccessPolicy.ResolveRedirectTargetAsync(db, redirectUri, ct);
         if (target is null || !await RouteAccessPolicy.IsAuthorizedAsync(db, target.Value.Route, userId, ct)) {
-            Record(db, time, AccessDenied, userId, Describe(http, "redirect_uri refused"), target?.Route.Id);
+            await AuthAudit.QueueAsync(db, time, AccessDenied, userId, target?.Route.Id,
+                Describe(http, "redirect_uri refused"), success: false);
             await db.SaveChangesAsync(CancellationToken.None);
             return null;
         }
@@ -287,7 +314,7 @@ public static class WatchtowerAuthEndpoints {
             }
 
             await sessions.RevokeAllForUserAsync(session.UserId, CancellationToken.None);
-            Record(db, time, Logout, session.UserId, Describe(http, reason: null));
+            await AuthAudit.QueueAsync(db, time, Logout, session.UserId, null, Describe(http, reason: null));
             // The sessions are already gone; the row saying who ended them must not be lost to a disconnect.
             await db.SaveChangesAsync(CancellationToken.None);
 
@@ -303,21 +330,10 @@ public static class WatchtowerAuthEndpoints {
     /// </summary>
     private static async Task<IResult> RejectAsync(
         WatchtowerDbContext db, TimeProvider time, int? userId, string reason, HttpContext http) {
-        Record(db, time, LoginFailed, userId, Describe(http, reason));
+        await AuthAudit.QueueAsync(db, time, LoginFailed, userId, null, Describe(http, reason), success: false);
         await db.SaveChangesAsync(CancellationToken.None);
         return Results.Json(InvalidCredentials, statusCode: StatusCodes.Status401Unauthorized);
     }
-
-    /// <summary>Queues an audit row; the caller decides when to commit it alongside its other writes.</summary>
-    private static void Record(
-        WatchtowerDbContext db, TimeProvider time, string kind, int? userId, string? detail, int? routeId = null) =>
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = kind,
-            UserId = userId,
-            RouteId = routeId,
-            Detail = detail,
-            CreatedAt = time.GetUtcNow(),
-        });
 
     /// <summary>Audit detail: the reason (when there is one) plus the remote address, never the credentials.</summary>
     private static string Describe(HttpContext http, string? reason) {

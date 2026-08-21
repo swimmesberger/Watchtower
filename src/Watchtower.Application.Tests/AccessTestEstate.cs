@@ -177,8 +177,8 @@ internal static class AccessTestEstate {
     public static async Task<IReadOnlyList<string>> AuditKindsAsync(this AuthTestHost host) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return await db.AuthEvents.OrderBy(e => e.Id)
-            .Select(e => e.Kind)
+        return await db.AuditEvents.OrderBy(e => e.Id)
+            .Select(e => e.Action)
             .ToListAsync(TestContext.Current.CancellationToken);
     }
 }

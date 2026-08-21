@@ -21,10 +21,14 @@ client generated from the exported schema.
 > Authelia, oauth2-proxy, …). Set `WATCHTOWER__AUTH__ENABLED=true` to use built-in local accounts
 > instead: the first start creates an `admin` user from `WATCHTOWER__AUTH__BOOTSTRAPPASSWORD` (or logs a
 > generated one), the UI gains a login page, and every handler and log stream requires a session.
+> Any signed-in account can add **two-factor authentication** to itself from *Security* — a TOTP
+> authenticator app plus ten single-use recovery codes.
 > Enabling it also lets you protect **other proxied apps** centrally (per-app Public / Authenticated /
 > Restricted access, with signed identity forwarded upstream) — see the operator guide,
 > [docs/central-auth/README.md](docs/central-auth/README.md).
-> `WATCHTOWER__AUTH__RESETPASSWORD` is the break-glass hook if you lock yourself out.
+> `WATCHTOWER__AUTH__RESETPASSWORD` is the break-glass hook if you lock yourself out — it resets the
+> `admin` password *and clears that account's second factor*, since a lost authenticator is the usual
+> reason to need it.
 > Either way, only the `/api/webhooks/*`, `/api/app/*` and `/api/mgmt/*` routes are designed to be
 > reachable by unauthenticated external callers, and each is protected by a per-stack (or
 > per-application) bearer token.

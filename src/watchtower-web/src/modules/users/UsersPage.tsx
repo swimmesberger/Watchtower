@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  ShieldOff,
   Trash2,
   Users as UsersIcon,
 } from 'lucide-react'
@@ -83,6 +84,7 @@ export function UsersPage() {
   const [resetting, setResetting] = useState<User | null>(null)
   const [pendingToggle, setPendingToggle] = useState<User | null>(null)
   const [pendingDelete, setPendingDelete] = useState<User | null>(null)
+  const [pendingMfaReset, setPendingMfaReset] = useState<User | null>(null)
 
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['users'] })
@@ -140,6 +142,27 @@ export function UsersPage() {
     },
   })
 
+  // One-directional: this can take a second factor away and there is no call that adds one, because
+  // enrolling needs a code only the account's owner can produce. It exists for the mishap recovery codes
+  // do not cover — a phone lost along with the printed list.
+  const resetMfa = useMutation({
+    mutationFn: (id: number) => api.users.resetMfa(id),
+    onSuccess: (wasEnabled) => {
+      invalidate()
+      toast.success(
+        wasEnabled
+          ? `Two-factor authentication cleared for ${pendingMfaReset?.userName ?? 'the account'}.`
+          : `${pendingMfaReset?.userName ?? 'The account'} had no two-factor enrolment.`,
+        wasEnabled ? 'They can sign in with their password alone and enrol again.' : undefined,
+      )
+      setPendingMfaReset(null)
+    },
+    onError: (err: Error) => {
+      toast.error(messageOf(err, 'Failed to reset two-factor authentication.'))
+      setPendingMfaReset(null)
+    },
+  })
+
   const remove = useMutation({
     mutationFn: (id: number) => api.users.delete(id),
     onSuccess: () => {
@@ -188,6 +211,11 @@ export function UsersPage() {
       cell: (u) => <StatusBadge user={u} />,
     },
     {
+      key: 'mfa',
+      header: '2FA',
+      cell: (u) => <MfaBadge user={u} />,
+    },
+    {
       key: 'created',
       header: 'Created',
       cell: (u) => (
@@ -206,6 +234,7 @@ export function UsersPage() {
           user={u}
           onEdit={() => setEditing(u)}
           onResetPassword={() => setResetting(u)}
+          onResetMfa={() => setPendingMfaReset(u)}
           onToggleDisabled={() => setPendingToggle(u)}
           onDelete={() => setPendingDelete(u)}
         />
@@ -272,6 +301,7 @@ export function UsersPage() {
               realmName={showRealm ? nameOf(u.realmId) : null}
               onEdit={() => setEditing(u)}
               onResetPassword={() => setResetting(u)}
+              onResetMfa={() => setPendingMfaReset(u)}
               onToggleDisabled={() => setPendingToggle(u)}
               onDelete={() => setPendingDelete(u)}
             />
@@ -385,6 +415,25 @@ export function UsersPage() {
       />
 
       <ConfirmDialog
+        open={pendingMfaReset != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingMfaReset(null)
+        }}
+        title={
+          pendingMfaReset
+            ? `Reset two-factor authentication for ${pendingMfaReset.userName}?`
+            : 'Reset two-factor authentication?'
+        }
+        description="Their authenticator and every unused recovery code stop working, and they sign in with their password alone until they enrol again. Their sessions are left alone — this exists because someone cannot get in."
+        confirmLabel="Reset"
+        tone="danger"
+        loading={resetMfa.isPending}
+        onConfirm={() => {
+          if (pendingMfaReset) resetMfa.mutate(pendingMfaReset.id)
+        }}
+      />
+
+      <ConfirmDialog
         open={pendingDelete != null}
         onOpenChange={(open) => {
           if (!open) setPendingDelete(null)
@@ -402,6 +451,19 @@ export function UsersPage() {
   )
 }
 
+/**
+ * Whether the account carries a second factor. Worth a column of its own: it is what tells an
+ * administrator whether "reset two-factor" has anything to do, and — read down the roster — how far the
+ * instance actually is from having its accounts protected.
+ */
+function MfaBadge({ user }: { user: User }) {
+  return user.twoFactorEnabled ? (
+    <Badge tone="ok">On</Badge>
+  ) : (
+    <span className="text-sm text-text-3">Off</span>
+  )
+}
+
 function StatusBadge({ user }: { user: User }) {
   if (user.disabled) return <Badge tone="danger">Disabled</Badge>
   if (user.lockedOut) return <Badge tone="warn">Locked out</Badge>
@@ -412,12 +474,14 @@ function RowActions({
   user,
   onEdit,
   onResetPassword,
+  onResetMfa,
   onToggleDisabled,
   onDelete,
 }: {
   user: User
   onEdit: () => void
   onResetPassword: () => void
+  onResetMfa: () => void
   onToggleDisabled: () => void
   onDelete: () => void
 }) {
@@ -435,6 +499,13 @@ function RowActions({
         <DropdownMenuItem onSelect={onResetPassword}>
           <KeyRound /> Set password
         </DropdownMenuItem>
+        {/* Offered only when there is something to clear — on an account with no enrolment it would be an
+            action whose whole effect is an audit row. */}
+        {user.twoFactorEnabled && (
+          <DropdownMenuItem onSelect={onResetMfa}>
+            <ShieldOff /> Reset two-factor
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onSelect={onToggleDisabled}>
           {user.disabled ? (
             <>
@@ -459,6 +530,7 @@ function UserCard({
   realmName,
   onEdit,
   onResetPassword,
+  onResetMfa,
   onToggleDisabled,
   onDelete,
 }: {
@@ -467,6 +539,7 @@ function UserCard({
   realmName: string | null
   onEdit: () => void
   onResetPassword: () => void
+  onResetMfa: () => void
   onToggleDisabled: () => void
   onDelete: () => void
 }) {
@@ -484,6 +557,7 @@ function UserCard({
         <div className="mt-1 truncate text-sm text-text-2">{user.email ?? '—'}</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-3">
           <StatusBadge user={user} />
+          {user.twoFactorEnabled && <Badge tone="ok" size="sm">2FA</Badge>}
           {realmName && <span>{realmName}</span>}
           <span className="tnum" title={absoluteTitle(user.createdAt)}>
             Created {timeAgo(user.createdAt)}
@@ -494,6 +568,7 @@ function UserCard({
         user={user}
         onEdit={onEdit}
         onResetPassword={onResetPassword}
+        onResetMfa={onResetMfa}
         onToggleDisabled={onToggleDisabled}
         onDelete={onDelete}
       />

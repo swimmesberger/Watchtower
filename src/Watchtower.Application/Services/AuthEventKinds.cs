@@ -1,16 +1,52 @@
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// The <see cref="Entities.AuthEvent.Kind"/> vocabulary of the access-control plane
-/// (docs/central-auth/design.md §9) — dotted identifiers, shared by the two ends that write the trail:
-/// the login endpoints in <c>Watchtower.Api</c> and the Users module in the application layer.
+/// The access-control plane's vocabulary in the audit trail (docs/central-auth/design.md §9): each
+/// constant is the <see cref="Entities.AuditEvent.Action"/> of a row, and <see cref="CategoryOf"/>
+/// places it in one of the plane's categories (<see cref="Auth"/>, <see cref="Access"/>,
+/// <see cref="Users"/>, <see cref="Groups"/>, <see cref="Realms"/>). Shared by the two ends that write
+/// the trail: the login endpoints in <c>Watchtower.Api</c> and the Users/Groups/Realms/Proxy modules in
+/// the application layer.
 /// </summary>
 /// <remarks>
-/// Constants rather than literals because the trail is queried by kind: a typo on the writing side would
+/// Constants rather than literals because the trail is queried by action: a typo on the writing side would
 /// not fail anything, it would quietly produce a row that no audit view ever selects. Same reasoning as
 /// <see cref="WatchtowerClaims"/>.
 /// </remarks>
 public static class AuthEventKinds {
+    /// <summary>Logins, sign-outs, second-factor events and break-glass recoveries.</summary>
+    public const string Auth = "auth";
+
+    /// <summary>Access decisions at the edge and route policy changes.</summary>
+    public const string Access = "access";
+
+    /// <summary>Account administration.</summary>
+    public const string Users = "users";
+
+    /// <summary>Group administration.</summary>
+    public const string Groups = "groups";
+
+    /// <summary>Realm administration.</summary>
+    public const string Realms = "realms";
+
+    /// <summary>
+    /// The category a kind records under — by the leading segment of the dotted identifier, so a kind
+    /// added to the vocabulary lands in the right category without a second table to maintain.
+    /// </summary>
+    public static string CategoryOf(string kind) {
+        ArgumentException.ThrowIfNullOrEmpty(kind);
+        var head = kind.AsSpan();
+        var dot = head.IndexOf('.');
+        if (dot >= 0) head = head[..dot];
+        return head switch {
+            "user" => Users,
+            "group" => Groups,
+            "realm" => Realms,
+            "access" or "route" => Access,
+            _ => Auth,
+        };
+    }
+
     /// <summary>A successful password login.</summary>
     public const string LoginOk = "login.ok";
 
@@ -19,6 +55,42 @@ public static class AuthEventKinds {
 
     /// <summary>A global sign-out.</summary>
     public const string Logout = "logout";
+
+    /// <summary>
+    /// A login was completed by a correct second factor. Always preceded by no <see cref="LoginOk"/> row:
+    /// a two-factor login is one event, and this is it, so the trail never suggests that the password alone
+    /// let anyone in.
+    /// </summary>
+    public const string LoginMfaOk = "login.mfa.ok";
+
+    /// <summary>
+    /// A second factor was rejected — wrong code, unusable recovery code, unknown or expired challenge
+    /// alike. The password was already correct at this point, which is exactly why a burst of these matters
+    /// more than a burst of <see cref="LoginFailed"/>.
+    /// </summary>
+    public const string LoginMfaFailed = "login.mfa.failed";
+
+    /// <summary>An account's owner finished enrolling an authenticator and turned two-factor on.</summary>
+    public const string MfaTotpEnabled = "mfa.totp.enabled";
+
+    /// <summary>An account's owner turned two-factor off, clearing the authenticator key and the codes.</summary>
+    public const string MfaTotpDisabled = "mfa.totp.disabled";
+
+    /// <summary>
+    /// An administrator cleared someone else's two-factor enrolment (<c>users.resetMfa</c>) — the locked-out
+    /// -of-their-authenticator recovery path. Distinct from <see cref="MfaTotpDisabled"/> because the actor
+    /// is not the account's owner, which is the whole reason it is worth a row.
+    /// </summary>
+    public const string MfaTotpReset = "mfa.totp.reset";
+
+    /// <summary>A fresh set of recovery codes was issued, replacing whatever was left of the old set.</summary>
+    public const string MfaRecoveryGenerated = "mfa.recovery.generated";
+
+    /// <summary>
+    /// A recovery code was spent to get in. Worth its own kind: it means the authenticator was unavailable,
+    /// and one of a finite set of one-shot credentials is now gone.
+    /// </summary>
+    public const string MfaRecoveryRedeemed = "mfa.recovery.redeemed";
 
     /// <summary>A signed-in visitor was refused an app they hold no grant for (and refused <c>redirect_uri</c> handovers).</summary>
     public const string AccessDenied = "access.denied";
@@ -40,7 +112,7 @@ public static class AuthEventKinds {
 
     /// <summary>
     /// A group was deleted, taking its memberships and every route grant that named it. The row survives
-    /// it, so the name lives in <see cref="Entities.AuthEvent.Detail"/>.
+    /// it, so the name lives in <see cref="Entities.AuditEvent.Detail"/>.
     /// </summary>
     public const string GroupDeleted = "group.deleted";
 
@@ -62,7 +134,7 @@ public static class AuthEventKinds {
 
     /// <summary>
     /// A realm was deleted. Only ever possible while nothing referenced it, so this row records the end of
-    /// an empty population; the slug lives in <see cref="Entities.AuthEvent.Detail"/> so the row survives it.
+    /// an empty population; the slug lives in <see cref="Entities.AuditEvent.Detail"/> so the row survives it.
     /// </summary>
     public const string RealmDeleted = "realm.deleted";
 
@@ -72,7 +144,7 @@ public static class AuthEventKinds {
     /// <summary>An account was renamed, had its address changed, or gained/lost the Admin role.</summary>
     public const string UserUpdated = "user.updated";
 
-    /// <summary>An account was deleted. The row survives it, so the name lives in <see cref="Entities.AuthEvent.Detail"/>.</summary>
+    /// <summary>An account was deleted. The row survives it, so the name lives in <see cref="Entities.AuditEvent.Detail"/>.</summary>
     public const string UserDeleted = "user.deleted";
 
     /// <summary>An administrator set a new password, which also signs the account out everywhere.</summary>

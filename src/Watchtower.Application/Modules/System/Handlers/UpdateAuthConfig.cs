@@ -96,7 +96,7 @@ public sealed class UpdateAuthConfig(
             + (host.Length > 0 ? $" · host {host}" : "")
             + $" · session {command.SessionLifetimeHours}h / absolute {command.AbsoluteSessionLifetimeDays}d"
             + (command.Enabled != startup.Enabled ? " · restart required" : ""),
-            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.

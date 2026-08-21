@@ -107,49 +107,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("audit_events", (string)null);
                 });
 
-            modelBuilder.Entity("Watchtower.Application.Entities.AuthEvent", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("Detail")
-                        .HasColumnType("TEXT")
-                        .HasColumnName("detail");
-
-                    b.Property<string>("Kind")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("kind");
-
-                    b.Property<int?>("RouteId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("route_id");
-
-                    b.Property<int?>("UserId")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("user_id");
-
-                    b.HasKey("Id")
-                        .HasName("pk_auth_events");
-
-                    b.HasIndex("CreatedAt")
-                        .HasDatabaseName("ix_auth_events_created_at");
-
-                    b.HasIndex("RouteId")
-                        .HasDatabaseName("ix_auth_events_route_id");
-
-                    b.HasIndex("UserId")
-                        .HasDatabaseName("ix_auth_events_user_id");
-
-                    b.ToTable("auth_events", (string)null);
-                });
-
             modelBuilder.Entity("Watchtower.Application.Entities.AuthSession", b =>
                 {
                     b.Property<int>("Id")
@@ -1152,6 +1109,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("access_failed_count");
 
+                    b.Property<string>("AuthenticatorKey")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("authenticator_key");
+
                     b.Property<string>("ConcurrencyStamp")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -1197,6 +1158,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("security_stamp");
 
+                    b.Property<bool>("TwoFactorEnabled")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("two_factor_enabled");
+
                     b.Property<string>("UserName")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -1212,23 +1177,34 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("users", (string)null);
                 });
 
-            modelBuilder.Entity("Watchtower.Application.Entities.AuthEvent", b =>
+            modelBuilder.Entity("Watchtower.Application.Entities.UserRecoveryCode", b =>
                 {
-                    b.HasOne("Watchtower.Application.Entities.Route", "Route")
-                        .WithMany()
-                        .HasForeignKey("RouteId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_auth_events_routes_route_id");
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
 
-                    b.HasOne("Watchtower.Application.Entities.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_auth_events_users_user_id");
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("code_hash");
 
-                    b.Navigation("Route");
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
 
-                    b.Navigation("User");
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_user_recovery_codes");
+
+                    b.HasIndex("UserId", "CodeHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_user_recovery_codes_user_id_code_hash");
+
+                    b.ToTable("user_recovery_codes", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.AuthSession", b =>
@@ -1498,6 +1474,18 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_users_realms_realm_id");
 
                     b.Navigation("Realm");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.UserRecoveryCode", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_recovery_codes_users_user_id");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
