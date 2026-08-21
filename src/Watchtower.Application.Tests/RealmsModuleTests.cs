@@ -183,7 +183,7 @@ public sealed class RealmsModuleTests {
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            var row = await db.AuthEvents.SingleAsync(e => e.Kind == AuthEventKinds.RealmUpdated, Ct);
+            var row = await db.AuditEvents.SingleAsync(e => e.Action == AuthEventKinds.RealmUpdated, Ct);
             // Moving the host orphans every session on the old one, so the old one is what an operator
             // reading the trail after "everyone was signed out" needs to see.
             Assert.Contains("authHost=login.acme.invalid->sso.acme.invalid", row.Detail);
@@ -256,7 +256,7 @@ public sealed class RealmsModuleTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.Realms.AnyAsync(r => r.Id == id, Ct));
-            var row = await db.AuthEvents.SingleAsync(e => e.Kind == AuthEventKinds.RealmDeleted, Ct);
+            var row = await db.AuditEvents.SingleAsync(e => e.Action == AuthEventKinds.RealmDeleted, Ct);
             Assert.Contains($"realm=acme#{id}", row.Detail);
         }
     }

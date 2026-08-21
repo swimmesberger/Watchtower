@@ -201,7 +201,7 @@ public static partial class WatchtowerAuthEndpoints {
                 http, AuthSessionService.SsoCookieName, token,
                 sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
 
-            Record(db, time, LoginOk, user.Id, Describe(http, reason: null));
+            await AuthAudit.QueueAsync(db, time, LoginOk, user.Id, null, Describe(http, reason: null));
             // Same reasoning as the failure path: the session now exists, so the row recording that it was
             // handed out must not depend on the client staying connected.
             await db.SaveChangesAsync(CancellationToken.None);
@@ -283,7 +283,8 @@ public static partial class WatchtowerAuthEndpoints {
 
         var target = await RouteAccessPolicy.ResolveRedirectTargetAsync(db, redirectUri, ct);
         if (target is null || !await RouteAccessPolicy.IsAuthorizedAsync(db, target.Value.Route, userId, ct)) {
-            Record(db, time, AccessDenied, userId, Describe(http, "redirect_uri refused"), target?.Route.Id);
+            await AuthAudit.QueueAsync(db, time, AccessDenied, userId, target?.Route.Id,
+                Describe(http, "redirect_uri refused"), success: false);
             await db.SaveChangesAsync(CancellationToken.None);
             return null;
         }
@@ -313,7 +314,7 @@ public static partial class WatchtowerAuthEndpoints {
             }
 
             await sessions.RevokeAllForUserAsync(session.UserId, CancellationToken.None);
-            Record(db, time, Logout, session.UserId, Describe(http, reason: null));
+            await AuthAudit.QueueAsync(db, time, Logout, session.UserId, null, Describe(http, reason: null));
             // The sessions are already gone; the row saying who ended them must not be lost to a disconnect.
             await db.SaveChangesAsync(CancellationToken.None);
 
@@ -329,21 +330,10 @@ public static partial class WatchtowerAuthEndpoints {
     /// </summary>
     private static async Task<IResult> RejectAsync(
         WatchtowerDbContext db, TimeProvider time, int? userId, string reason, HttpContext http) {
-        Record(db, time, LoginFailed, userId, Describe(http, reason));
+        await AuthAudit.QueueAsync(db, time, LoginFailed, userId, null, Describe(http, reason), success: false);
         await db.SaveChangesAsync(CancellationToken.None);
         return Results.Json(InvalidCredentials, statusCode: StatusCodes.Status401Unauthorized);
     }
-
-    /// <summary>Queues an audit row; the caller decides when to commit it alongside its other writes.</summary>
-    private static void Record(
-        WatchtowerDbContext db, TimeProvider time, string kind, int? userId, string? detail, int? routeId = null) =>
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = kind,
-            UserId = userId,
-            RouteId = routeId,
-            Detail = detail,
-            CreatedAt = time.GetUtcNow(),
-        });
 
     /// <summary>Audit detail: the reason (when there is one) plus the remote address, never the credentials.</summary>
     private static string Describe(HttpContext http, string? reason) {

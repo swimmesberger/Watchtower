@@ -148,7 +148,7 @@ public sealed class AuthBootstrapServiceTests {
             Assert.False(await db.UserRecoveryCodes.AnyAsync(c => c.UserId == admin.Id, ct));
 
             // The trail says so rather than leaving the removal to be inferred from the account's state.
-            var row = await db.AuthEvents.SingleAsync(e => e.Kind == "auth.breakglass", ct);
+            var row = await db.AuditEvents.SingleAsync(e => e.Action == "auth.breakglass", ct);
             Assert.Contains("cleared two-factor enrolment", row.Detail);
         }
 
@@ -174,7 +174,7 @@ public sealed class AuthBootstrapServiceTests {
 
         await using var scope = recovered.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var row = await db.AuthEvents.SingleAsync(e => e.Kind == "auth.breakglass", ct);
+        var row = await db.AuditEvents.SingleAsync(e => e.Action == "auth.breakglass", ct);
         Assert.Contains("no two-factor enrolment to clear", row.Detail);
     }
 
@@ -236,8 +236,8 @@ public sealed class AuthBootstrapServiceTests {
         // First run created the admin, but touched no break-glass hook — so no such row yet.
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            Assert.False(await db.AuthEvents
-                .AnyAsync(e => e.Kind == AuthEventKinds.BreakGlass, TestContext.Current.CancellationToken));
+            Assert.False(await db.AuditEvents
+                .AnyAsync(e => e.Action == AuthEventKinds.BreakGlass, TestContext.Current.CancellationToken));
         }
 
         using var recovered = host.Restart(Enabled, Bootstrap, ("Watchtower:Auth:ResetPassword", "break-glass-recovery"));
@@ -248,9 +248,9 @@ public sealed class AuthBootstrapServiceTests {
             var users = scope.ServiceProvider.GetRequiredService<UserManager<User>>();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var admin = await users.FindByNameAsync(AuthBootstrapService.AdminUserName);
-            var row = await db.AuthEvents
-                .SingleAsync(e => e.Kind == AuthEventKinds.BreakGlass, TestContext.Current.CancellationToken);
-            Assert.Equal(admin!.Id, row.UserId);
+            var row = await db.AuditEvents
+                .SingleAsync(e => e.Action == AuthEventKinds.BreakGlass, TestContext.Current.CancellationToken);
+            Assert.Equal(admin!.UserName, row.Target);
             Assert.False(string.IsNullOrWhiteSpace(row.Detail));
         }
     }

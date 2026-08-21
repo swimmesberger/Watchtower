@@ -69,7 +69,7 @@ public sealed class UpdateAutomation(
                 Toggle("self-update check", command.AutoCheckEnabled, command.AutoCheckIntervalMinutes),
                 Toggle("stack check", command.StackCheckEnabled, command.StackCheckIntervalMinutes),
                 Toggle("image prune", command.ImagePruneEnabled, command.ImagePruneIntervalMinutes)),
-            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         // Echo back exactly what was persisted (pinned values are unchanged by construction). The config
         // provider reloads asynchronously, so IOptionsMonitor.CurrentValue may lag by a moment; returning

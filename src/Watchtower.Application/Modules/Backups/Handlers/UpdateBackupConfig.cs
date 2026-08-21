@@ -158,7 +158,7 @@ public sealed class UpdateBackupConfig(
             + (string.IsNullOrEmpty(echoed.EncryptionPassphrase) ? "" : " · encrypted")
             + (updatedSecrets.Count > 0 ? $" · secrets updated: {string.Join(", ", updatedSecrets)}" : "");
         await audit.RecordAsync(BackupService.AuditCategory, "config.update", "backup settings", detail,
-            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         return new Response(BackupConfigDto.From(echoed, pins));
     }

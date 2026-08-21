@@ -197,10 +197,14 @@ public sealed class AuthBootstrapService(
     /// </summary>
     private async Task RecordBreakGlassAsync(WatchtowerDbContext db, int adminId, string detail, CancellationToken ct) {
         ct.ThrowIfCancellationRequested();
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = AuthEventKinds.BreakGlass,
-            UserId = adminId,
-            Detail = detail,
+        // No actor: the startup hook acts from configuration, which the UI renders as "system". The
+        // account is the target, by name, so the row outlives it.
+        db.AuditEvents.Add(new AuditEvent {
+            Category = AuthEventKinds.CategoryOf(AuthEventKinds.BreakGlass),
+            Action = AuthEventKinds.BreakGlass,
+            Target = AdminUserName,
+            Detail = $"{detail}; admin#{adminId}",
+            Success = true,
             CreatedAt = time.GetUtcNow(),
         });
         await db.SaveChangesAsync(CancellationToken.None);

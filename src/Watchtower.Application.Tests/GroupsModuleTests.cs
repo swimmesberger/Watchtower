@@ -157,7 +157,7 @@ public sealed class GroupsModuleTests {
         // not explain why an application stopped recognising a group.
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            var renamed = await db.AuthEvents.SingleAsync(e => e.Kind == AuthEventKinds.GroupRenamed, Ct);
+            var renamed = await db.AuditEvents.SingleAsync(e => e.Action == AuthEventKinds.GroupRenamed, Ct);
             Assert.Contains("from=staff", renamed.Detail);
             Assert.Contains($"group=employees#{id}", renamed.Detail);
         }
@@ -255,8 +255,8 @@ public sealed class GroupsModuleTests {
 
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var rows = await db.AuthEvents
-            .Where(e => e.Kind == AuthEventKinds.GroupMembersChanged)
+        var rows = await db.AuditEvents
+            .Where(e => e.Action == AuthEventKinds.GroupMembersChanged)
             .OrderBy(e => e.Id)
             .ToListAsync(Ct);
 
@@ -377,7 +377,7 @@ public sealed class GroupsModuleTests {
             Assert.True(await db.Users.AnyAsync(u => u.Id == alice, Ct));
 
             // The trail outlives its subject, so the name and the scale of the revocation live in Detail.
-            var deleted = await db.AuthEvents.SingleAsync(e => e.Kind == AuthEventKinds.GroupDeleted, Ct);
+            var deleted = await db.AuditEvents.SingleAsync(e => e.Action == AuthEventKinds.GroupDeleted, Ct);
             Assert.Contains($"group=staff#{id}", deleted.Detail);
             Assert.Contains("members=1; grantsCascaded=1", deleted.Detail);
         }

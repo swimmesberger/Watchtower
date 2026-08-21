@@ -148,11 +148,13 @@ public static partial class RealmMapping {
         var detail = $"actor={actorId}; realm={slug}#{realmId}";
         if (!string.IsNullOrEmpty(details)) detail = $"{detail}; {details}";
 
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = kind,
-            UserId = null,
-            RouteId = null,
+        db.AuditEvents.Add(new AuditEvent {
+            Category = AuthEventKinds.CategoryOf(kind),
+            Action = kind,
+            Target = slug,
             Detail = detail,
+            Actor = await AuditLog.ResolveActorAsync(db, actor.UserId),
+            Success = true,
             CreatedAt = time.GetUtcNow(),
         });
         await db.SaveChangesAsync(CancellationToken.None);

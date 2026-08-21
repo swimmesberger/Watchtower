@@ -406,9 +406,9 @@ public sealed class UsersModuleTests {
             Assert.False(await db.Users.AnyAsync(u => u.Id == id, TestContext.Current.CancellationToken));
 
             // The trail outlives its subject, so the name lives in Detail rather than in the FK.
-            var deleted = await db.AuthEvents
-                .SingleAsync(e => e.Kind == "user.deleted", TestContext.Current.CancellationToken);
-            Assert.Null(deleted.UserId);
+            var deleted = await db.AuditEvents
+                .SingleAsync(e => e.Action == "user.deleted", TestContext.Current.CancellationToken);
+            Assert.Equal("bob", deleted.Target);
             Assert.Contains($"target=bob#{id}", deleted.Detail);
         }
     }
@@ -506,9 +506,9 @@ public sealed class UsersModuleTests {
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            var row = await db.AuthEvents.SingleAsync(
-                e => e.Kind == "mfa.totp.reset", TestContext.Current.CancellationToken);
-            Assert.Equal(id, row.UserId);
+            var row = await db.AuditEvents.SingleAsync(
+                e => e.Action == "mfa.totp.reset", TestContext.Current.CancellationToken);
+            Assert.Equal("alice", row.Target);
             Assert.Contains($"target=alice#{id}", row.Detail);
             Assert.Contains("wasEnabled=True", row.Detail);
             Assert.Contains($"recoveryCodesDropped={UserMfaService.RecoveryCodeCount}", row.Detail);
@@ -533,8 +533,8 @@ public sealed class UsersModuleTests {
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            var row = await db.AuthEvents.SingleAsync(
-                e => e.Kind == "mfa.totp.reset", TestContext.Current.CancellationToken);
+            var row = await db.AuditEvents.SingleAsync(
+                e => e.Action == "mfa.totp.reset", TestContext.Current.CancellationToken);
             Assert.Contains("wasEnabled=False", row.Detail);
         }
     }
@@ -657,8 +657,8 @@ public sealed class UsersModuleTests {
     private static async Task<IReadOnlyList<string>> AuditKindsAsync(AuthTestHost host) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return await db.AuthEvents.OrderBy(e => e.Id)
-            .Select(e => e.Kind)
+        return await db.AuditEvents.OrderBy(e => e.Id)
+            .Select(e => e.Action)
             .ToListAsync(TestContext.Current.CancellationToken);
     }
 

@@ -201,11 +201,11 @@ public static partial class WatchtowerAuthEndpoints {
 
             // One row for the login, not a login.ok plus this: a two-factor sign-in is a single event, and
             // a trail that also claimed a password-only success would misdescribe it.
-            Record(db, time, AuthEventKinds.LoginMfaOk, user.Id, Describe(http, reason: null));
+            await AuthAudit.QueueAsync(db, time, AuthEventKinds.LoginMfaOk, user.Id, null, Describe(http, reason: null));
             if (usingRecoveryCode) {
                 var remaining = await users.CountRecoveryCodesAsync(user);
-                Record(
-                    db, time, AuthEventKinds.MfaRecoveryRedeemed, user.Id,
+                await AuthAudit.QueueAsync(
+                    db, time, AuthEventKinds.MfaRecoveryRedeemed, user.Id, null,
                     Describe(http, $"remaining={remaining}"));
             }
             // The session exists; the rows recording it must not depend on the client staying connected.
@@ -334,9 +334,9 @@ public static partial class WatchtowerAuthEndpoints {
             if (await users.GetAccessFailedCountAsync(user) > 0)
                 await users.ResetAccessFailedCountAsync(user);
 
-            Record(db, time, AuthEventKinds.MfaTotpEnabled, user.Id, Describe(http, reason: null));
-            Record(
-                db, time, AuthEventKinds.MfaRecoveryGenerated, user.Id,
+            await AuthAudit.QueueAsync(db, time, AuthEventKinds.MfaTotpEnabled, user.Id, null, Describe(http, reason: null));
+            await AuthAudit.QueueAsync(
+                db, time, AuthEventKinds.MfaRecoveryGenerated, user.Id, null,
                 Describe(http, $"count={codes.Count}"));
             await db.SaveChangesAsync(CancellationToken.None);
 
@@ -387,8 +387,8 @@ public static partial class WatchtowerAuthEndpoints {
             if (await users.GetAccessFailedCountAsync(user) > 0)
                 await users.ResetAccessFailedCountAsync(user);
 
-            Record(
-                db, time, AuthEventKinds.MfaTotpDisabled, user.Id,
+            await AuthAudit.QueueAsync(
+                db, time, AuthEventKinds.MfaTotpDisabled, user.Id, null,
                 Describe(http, byRecoveryCode ? "authorised by recovery code" : null));
             await db.SaveChangesAsync(CancellationToken.None);
 
@@ -432,8 +432,8 @@ public static partial class WatchtowerAuthEndpoints {
             if (await users.GetAccessFailedCountAsync(user) > 0)
                 await users.ResetAccessFailedCountAsync(user);
 
-            Record(
-                db, time, AuthEventKinds.MfaRecoveryGenerated, user.Id,
+            await AuthAudit.QueueAsync(
+                db, time, AuthEventKinds.MfaRecoveryGenerated, user.Id, null,
                 Describe(http, $"count={codes.Count}; replaced"));
             await db.SaveChangesAsync(CancellationToken.None);
 
@@ -509,7 +509,7 @@ public static partial class WatchtowerAuthEndpoints {
     /// </summary>
     private static async Task<IResult> RejectSecondFactorAsync(
         WatchtowerDbContext db, TimeProvider time, int? userId, string reason, HttpContext http) {
-        Record(db, time, AuthEventKinds.LoginMfaFailed, userId, Describe(http, reason));
+        await AuthAudit.QueueAsync(db, time, AuthEventKinds.LoginMfaFailed, userId, null, Describe(http, reason), success: false);
         await db.SaveChangesAsync(CancellationToken.None);
         return Results.Json(InvalidSecondFactor, statusCode: StatusCodes.Status401Unauthorized);
     }

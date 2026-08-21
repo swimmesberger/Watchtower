@@ -159,4 +159,4 @@ global **Audit** page under the `backups` category — success or failure with t
 run rows carry the settings in effect at the time (trigger, provider, encryption, stop-containers,
 retention), so "did last night's backup run, and was it encrypted back then?" is answered by the
 trail even after the configuration has changed since. Retention there is bounded (newest 2000 audit
-events overall); the per-stack Backups tab keeps the detailed per-run logs.
+events per category); the per-stack Backups tab keeps the detailed per-run logs.

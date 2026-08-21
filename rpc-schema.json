@@ -2,140 +2,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "JSON-RPC 2.0 Schema",
   "methods": {
-    "audit.kinds": {
-      "params": {
-        "type": "object"
-      },
-      "result": {
-        "type": "object",
-        "properties": {
-          "kinds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": [
-          "kinds"
-        ]
-      }
-    },
-    "audit.list": {
-      "params": {
-        "type": "object",
-        "properties": {
-          "beforeId": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "default": null
-          },
-          "limit": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "default": null
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "default": null
-          },
-          "userId": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "default": null
-          },
-          "routeId": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "default": null
-          }
-        }
-      },
-      "result": {
-        "type": "object",
-        "properties": {
-          "events": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "integer"
-                },
-                "kind": {
-                  "type": "string"
-                },
-                "userId": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
-                },
-                "userName": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "routeId": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
-                },
-                "routeDomain": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "detail": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "format": "date-time"
-                }
-              },
-              "required": [
-                "id",
-                "kind",
-                "userId",
-                "userName",
-                "routeId",
-                "routeDomain",
-                "detail",
-                "createdAt"
-              ]
-            }
-          },
-          "nextBeforeId": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "events",
-          "nextBeforeId"
-        ]
-      }
-    },
     "audit.listEvents": {
       "params": {
         "type": "object",
@@ -143,6 +9,27 @@
           "category": {
             "type": [
               "string",
+              "null"
+            ],
+            "default": null
+          },
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "beforeId": {
+            "type": [
+              "integer",
               "null"
             ],
             "default": null
@@ -214,10 +101,50 @@
                 "error"
               ]
             }
+          },
+          "nextBeforeId": {
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
-          "events"
+          "events",
+          "nextBeforeId"
+        ]
+      }
+    },
+    "audit.listFacets": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "actors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "categories",
+          "actions",
+          "actors"
         ]
       }
     },

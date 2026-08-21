@@ -145,7 +145,7 @@ public sealed class UpdateProxyConfig(
                 ? $" · tunnel {tunnelName}" + (managed ? " · managed cloudflared" : "")
                 : $" · image {image}")
             + (command.CloudflareApiToken is not null ? " · secrets updated: Cloudflare API token" : ""),
-            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.

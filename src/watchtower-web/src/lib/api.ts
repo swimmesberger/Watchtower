@@ -4,12 +4,12 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
-  AuditEvent,
   CloudflareForeignRoute,
   ActiveDeployment,
   AuditQuery,
+  AuditFacets,
+  AuditEventPage,
   AuthConfig,
-  AuthEventPage,
   AutomationConfig,
   BackupConfig,
   BackupEvent,
@@ -480,24 +480,20 @@ export const api = {
   },
 
   audit: {
-    // Read-only, and deliberately the whole surface: both trails are written by the modules whose acts
-    // they record, never from here. A page is a keyset cursor rather than an offset — the trail is being
+    // Read-only, and deliberately the whole surface: the trail is written by the planes whose acts it
+    // records, never from here. A page is a keyset cursor rather than an offset — the trail is being
     // appended to while it is read, so an offset would shift under the reader between "load more" clicks.
-    list: async (query: AuditQuery = {}) =>
-      (await rpc('audit.list', {
+    listEvents: async (query: AuditQuery = {}) =>
+      (await rpc('audit.listEvents', {
+        category: query.category ?? null,
+        action: query.action ?? null,
+        actor: query.actor ?? null,
         beforeId: query.beforeId ?? null,
         limit: query.limit ?? null,
-        kind: query.kind ?? null,
-        userId: query.userId ?? null,
-        routeId: query.routeId ?? null,
-      })) as AuthEventPage,
-    // The kinds actually present, so the filter offers what is there rather than a frontend constant that
-    // drifts the moment a new writer lands.
-    kinds: async () => (await rpc('audit.kinds', {})).kinds as string[],
-    // The general trail: what Watchtower changed (external control planes, backups, settings).
-    listEvents: async (category?: string | null, limit?: number | null) =>
-      (await rpc('audit.listEvents', { category: category ?? null, limit: limit ?? null }))
-        .events as AuditEvent[],
+      })) as AuditEventPage,
+    // The values actually present, so the filters offer what is there rather than a frontend constant
+    // that drifts the moment a new writer lands.
+    facets: async () => (await rpc('audit.listFacets', {})) as AuditFacets,
   },
 
   system: {

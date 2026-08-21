@@ -28,7 +28,7 @@ public sealed class SetStackBackupConfig(WatchtowerDbContext db, AuditLog audit,
         await audit.RecordAsync(BackupService.AuditCategory, "stack.config.update", stack.Name,
             (command.Enabled ? "backups on" : "backups off")
             + (command.StopContainers ? " · stop containers for snapshot" : " · keep containers running"),
-            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         return new Response(new BackupStackConfigDto(stack.Id, stack.BackupEnabled, stack.BackupStopContainers));
     }

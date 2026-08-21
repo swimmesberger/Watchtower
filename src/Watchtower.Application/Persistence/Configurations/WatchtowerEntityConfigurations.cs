@@ -420,26 +420,6 @@ public sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEven
 }
 
 [EntityConfiguration]
-public sealed class AuthEventConfiguration : IEntityTypeConfiguration<AuthEvent> {
-    public void Configure(EntityTypeBuilder<AuthEvent> b) {
-        b.ToTable("auth_events");
-        b.HasKey(x => x.Id);
-        b.Property(x => x.Kind).IsRequired();
-        // The audit view reads newest-first.
-        b.HasIndex(x => x.CreatedAt);
-        // The trail survives the subjects it mentions: detach instead of cascading.
-        b.HasOne(x => x.User)
-            .WithMany()
-            .HasForeignKey(x => x.UserId)
-            .OnDelete(DeleteBehavior.SetNull);
-        b.HasOne(x => x.Route)
-            .WithMany()
-            .HasForeignKey(x => x.RouteId)
-            .OnDelete(DeleteBehavior.SetNull);
-    }
-}
-
-[EntityConfiguration]
 public sealed class MetricHostSampleConfiguration : IEntityTypeConfiguration<MetricHostSample> {
     public void Configure(EntityTypeBuilder<MetricHostSample> b) {
         b.ToTable("metric_host_samples");

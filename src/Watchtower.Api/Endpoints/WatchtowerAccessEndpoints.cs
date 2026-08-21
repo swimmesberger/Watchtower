@@ -248,13 +248,8 @@ public static class WatchtowerAccessEndpoints {
     /// </summary>
     private static async Task<IResult> DenyAsync(
         WatchtowerDbContext db, TimeProvider time, Route route, int userId, HttpContext http) {
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = AccessDenied,
-            UserId = userId,
-            RouteId = route.Id,
-            Detail = Describe(http),
-            CreatedAt = time.GetUtcNow(),
-        });
+        await AuthAudit.QueueAsync(db, time, AccessDenied, userId, route.Id, Describe(http),
+            success: false, target: route.Domain);
         // Not RequestAborted: a caller that disconnects must not be able to keep denials out of the trail.
         await db.SaveChangesAsync(CancellationToken.None);
 
@@ -383,13 +378,7 @@ public static class WatchtowerAccessEndpoints {
                 http, AuthSessionService.AccessCookieName, token,
                 sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
 
-            db.AuthEvents.Add(new AuthEvent {
-                Kind = CodeRedeemed,
-                UserId = user.Id,
-                RouteId = route.Id,
-                Detail = Describe(http),
-                CreatedAt = time.GetUtcNow(),
-            });
+            await AuthAudit.QueueAsync(db, time, CodeRedeemed, user.Id, route.Id, Describe(http), target: route.Domain);
             await db.SaveChangesAsync(CancellationToken.None);
 
             // Re-parse rather than trusting the stored string: the redirect target is re-derived from a

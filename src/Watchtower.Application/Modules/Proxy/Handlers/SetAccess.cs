@@ -206,17 +206,18 @@ public sealed class SetAccess(
     }
 
     /// <summary>
-    /// Appends the audit row for a policy change. The acting administrator lives in the detail rather than in
-    /// <see cref="AuthEvent.UserId"/> — the actor may be the implicit local administrator, which is no real
-    /// row (design.md §2.6); the route is the subject, so it is the foreign key that is set.
+    /// Appends the audit row for a policy change: the route is the target, the acting administrator the
+    /// actor (resolved to a name; the implicit local administrator records as <c>local</c>, design.md §2.6).
     /// </summary>
     private async Task RecordAsync(Route route, AccessMode mode) {
         var actorId = string.IsNullOrEmpty(currentUser.UserId) ? "unknown" : currentUser.UserId;
-        db.AuthEvents.Add(new AuthEvent {
-            Kind = AuthEventKinds.RouteAccessChanged,
-            UserId = null,
-            RouteId = route.Id,
+        db.AuditEvents.Add(new AuditEvent {
+            Category = AuthEventKinds.CategoryOf(AuthEventKinds.RouteAccessChanged),
+            Action = AuthEventKinds.RouteAccessChanged,
+            Target = route.Domain,
             Detail = $"actor={actorId}; route={route.Domain}#{route.Id}; mode={mode}",
+            Actor = await AuditLog.ResolveActorAsync(db, currentUser.UserId),
+            Success = true,
             CreatedAt = time.GetUtcNow(),
         });
         await db.SaveChangesAsync(CancellationToken.None);

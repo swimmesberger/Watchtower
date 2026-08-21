@@ -151,7 +151,7 @@ public sealed class AuthEndpointTests {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             Assert.False(await db.AuthSessions.AnyAsync(ct));
             // The trail records both ends of the session.
-            var kinds = await db.AuthEvents.OrderBy(e => e.Id).Select(e => e.Kind).ToListAsync(ct);
+            var kinds = await db.AuditEvents.OrderBy(e => e.Id).Select(e => e.Action).ToListAsync(ct);
             Assert.Equal(["login.ok", "logout"], kinds);
         });
     }

@@ -195,7 +195,7 @@ public sealed class MfaEndpointTests {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             // Nine left of ten, and the row for the spent one is gone rather than flagged.
             Assert.Equal(9, await db.UserRecoveryCodes.CountAsync(ct));
-            var redeemed = await db.AuthEvents.SingleAsync(e => e.Kind == "mfa.recovery.redeemed", ct);
+            var redeemed = await db.AuditEvents.SingleAsync(e => e.Action == "mfa.recovery.redeemed", ct);
             Assert.Contains("remaining=9", redeemed.Detail);
         });
 
@@ -433,7 +433,7 @@ public sealed class MfaEndpointTests {
             // The remaining nine go with it: codes on an account with no second factor are credentials
             // nothing checks the state of.
             Assert.False(await db.UserRecoveryCodes.AnyAsync(ct));
-            var row = await db.AuthEvents.SingleAsync(e => e.Kind == "mfa.totp.disabled", ct);
+            var row = await db.AuditEvents.SingleAsync(e => e.Action == "mfa.totp.disabled", ct);
             Assert.Contains("authorised by recovery code", row.Detail);
         });
     }
@@ -708,8 +708,8 @@ public sealed class MfaEndpointTests {
         List<string> kinds = [];
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
-            kinds = await db.AuthEvents.OrderBy(e => e.Id)
-                .Select(e => e.Kind)
+            kinds = await db.AuditEvents.OrderBy(e => e.Id)
+                .Select(e => e.Action)
                 .ToListAsync(TestContext.Current.CancellationToken);
         });
         return kinds;

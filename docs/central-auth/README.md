@@ -28,8 +28,9 @@ Watchtower is unauthenticated and belongs behind an authenticating reverse proxy
   forwarded to apps so they can map them onto their own roles.
 - Per-route **bypass paths** for webhooks/health endpoints, a first-run admin bootstrap, and a
   break-glass recovery hook.
-- An **Audit** screen over the trail — every login, denial, policy change and break-glass recovery,
-  newest first, filterable by event kind, account and app.
+- An **Audit** screen over the instance's one trail — every login, denial, policy change and break-glass
+  recovery, next to what Watchtower itself did (proxy writes, backups, settings changes) — newest first,
+  filterable by category, action and actor.
 - **Two-factor authentication (TOTP)** — self-service per account, in any realm: an authenticator app
   plus ten single-use recovery codes, with an administrative reset for the account that loses both.
 
@@ -373,10 +374,11 @@ detail. The one exception is the enrolment response itself, which hands the key 
 - **Groups are not inherited by tenant routes.** A stack template carries no access policy yet, so a
   route auto-created for a new tenant starts at the default and has to be granted explicitly. Also
   Phase 2 ([design.md §2.8](design.md)).
-- **The audit trail is kept forever, and only viewable.** Every login, denial, policy change and
-  break-glass recovery is an `AuthEvent` row, readable from the **Audit** screen (or `audit.list` /
-  `audit.kinds`) — but there is no retention policy, no export, and no way to delete a row from the
-  product. On a busy instance the table grows without bound; prune it out of band if that matters.
+- **The audit trail is bounded, and only viewable.** Every login, denial, policy change and break-glass
+  recovery is an `AuditEvent` row in the instance's one trail, readable from the **Audit** screen (or
+  `audit.listEvents` / `audit.listFacets`). Retention keeps the newest 2000 rows **per category** (so
+  login volume never evicts the `users` or `backups` history), there is no export, and no way to delete
+  a row from the product.
 - **Login policy is instance-wide, not per realm.** Password rules, lockout and rate limiting are the
   `Auth:*` settings above and apply to every realm alike; a realm cannot yet have its own. Per-realm
   policy (and per-realm federation to an external IdP) is where realms grow next — see

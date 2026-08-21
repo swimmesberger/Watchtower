@@ -54,11 +54,11 @@ public sealed class AuditLogTests {
         await using var scope = host.Services.CreateAsyncScope();
         var handler = ActivatorUtilities.CreateInstance<ListAuditEvents>(scope.ServiceProvider);
 
-        var proxyOnly = await handler.HandleAsync(new ListAuditEvents.Query("proxy"), Ct);
+        var proxyOnly = await handler.HandleAsync(new ListAuditEvents.Query(Category: "proxy"), Ct);
         var e = Assert.Single(proxyOnly.Value.Events);
         Assert.Equal("proxy.cloudflare", e.Category);
 
-        var exact = await handler.HandleAsync(new ListAuditEvents.Query("proxy.cloudflare"), Ct);
+        var exact = await handler.HandleAsync(new ListAuditEvents.Query(Category: "proxy.cloudflare"), Ct);
         Assert.Single(exact.Value.Events);
 
         var all = await handler.HandleAsync(new ListAuditEvents.Query(), Ct);
@@ -66,27 +66,32 @@ public sealed class AuditLogTests {
     }
 
     [Fact]
-    public async Task Retention_KeepsOnlyTheNewestRows() {
+    public async Task Retention_KeepsOnlyTheNewestRows_PerCategory() {
         using var host = AuthTestHost.Start();
         await using (var seed = host.Services.CreateAsyncScope()) {
             var db = seed.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            for (var i = 0; i < AuditLog.MaxRows + 100; i++) {
+            for (var i = 0; i < AuditLog.MaxRowsPerCategory + 100; i++) {
                 db.AuditEvents.Add(new AuditEvent {
-                    Category = "proxy.cloudflare", Action = "dns.create", Target = $"h{i}", Success = true,
+                    Category = "auth", Action = "login.ok", Target = $"u{i}", Success = true,
                 });
             }
+            // A quiet category must not be evicted by a chatty one.
+            db.AuditEvents.Add(new AuditEvent {
+                Category = "backups", Action = "run", Target = "shop", Success = true,
+            });
             await db.SaveChangesAsync(Ct);
         }
 
-        // One recorded event triggers the opportunistic trim.
+        // One recorded event — in any category — triggers the opportunistic trim of every category over cap.
         await Recorder(host).RecordAsync("proxy.cloudflare", "dns.create", "newest", null, ct: Ct);
 
         await using var scope = host.Services.CreateAsyncScope();
         var db2 = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        Assert.Equal(AuditLog.MaxRows, await db2.AuditEvents.CountAsync(Ct));
-        // The newest row survived; the trimmed ones are the oldest.
+        Assert.Equal(AuditLog.MaxRowsPerCategory, await db2.AuditEvents.CountAsync(e => e.Category == "auth", Ct));
+        // The trimmed rows are the oldest of their category; other categories are untouched.
+        Assert.False(await db2.AuditEvents.AnyAsync(e => e.Target == "u0", Ct));
+        Assert.True(await db2.AuditEvents.AnyAsync(e => e.Target == "shop", Ct));
         Assert.True(await db2.AuditEvents.AnyAsync(e => e.Target == "newest", Ct));
-        Assert.False(await db2.AuditEvents.AnyAsync(e => e.Target == "h0", Ct));
     }
 
     [Fact]
