@@ -10,8 +10,8 @@
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "src/watchtower-web", "--", "--port", "5199", "--strictPort"],
-      "port": 5199
+      "runtimeArgs": ["run", "dev", "--prefix", "src/watchtower-web", "--", "--port", "5201", "--strictPort"],
+      "port": 5201
     },
     {
       "name": "api",

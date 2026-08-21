@@ -55,6 +55,33 @@ Disabling the proxy — or switching back to Caddy — stops and removes only th
 container. **The tunnel and the DNS records are kept**: deleting public DNS you may still want is not
 a toggle's job, and re-enabling reuses both.
 
+## Pre-existing tunnel hostnames (merge & import)
+
+The configuration push **merges, never replaces**: public hostnames you configured in the Cloudflare
+dashboard (before or beside Watchtower) whose hostname is not in Watchtower's route table are
+preserved verbatim — original order and `path` filters included — on every reconcile. Pointing
+Watchtower at a tunnel you already use is therefore non-destructive.
+
+The Routes page surfaces those dashboard-made hostnames in a **"Found in Cloudflare"** card when the
+cloudflare provider is active. *Import* prefills the new-route form — with a heuristic
+stack/service/port suggestion when the service URL follows Watchtower's own
+`http://{project}-{service}:{port}` alias convention; anything else (IPs, localhost ports) you map to
+a stack service by hand. Once imported, the hostname is owned by the route table: it gains access
+control, per-stack networking, and cleanup on stack removal, and the route row's target replaces the
+dashboard rule on the next push.
+
+## Audit trail
+
+Every write the provider performs against your Cloudflare account is recorded in Watchtower's
+general audit trail (category `proxy.cloudflare`). The global **Audit** page (sidebar, admin-only)
+shows every category; **Routes → Audit** embeds the proxy-scoped slice of the same trail: tunnel creation,
+ingress configuration pushes (with rule counts and how many foreign rules were preserved), DNS
+record creates/updates, and Access app/policy changes — success or failure, with Cloudflare's error
+message on failure. Reads are not logged, and no-op reconciles (nothing changed) produce no entries.
+Retention is bounded (newest 2000 events kept). The trail is admin-only and survives the deletion of
+the routes/stacks it mentions. The same `audit.listEvents` surface is category-filterable, so future
+planes (deploys, settings changes) land in the same log.
+
 ## Limitations
 
 - **Single zone:** all route domains must live under the configured zone id. A domain outside it

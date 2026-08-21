@@ -388,6 +388,20 @@ public sealed class TemplateManagementGrantConfiguration : IEntityTypeConfigurat
 }
 
 [EntityConfiguration]
+public sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEvent> {
+    public void Configure(EntityTypeBuilder<AuditEvent> b) {
+        b.ToTable("audit_events");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Category).IsRequired();
+        b.Property(x => x.Action).IsRequired();
+        b.Property(x => x.Target).IsRequired();
+        // The audit view reads newest-first, optionally narrowed by category prefix.
+        b.HasIndex(x => x.CreatedAt);
+        b.HasIndex(x => x.Category);
+    }
+}
+
+[EntityConfiguration]
 public sealed class AuthEventConfiguration : IEntityTypeConfiguration<AuthEvent> {
     public void Configure(EntityTypeBuilder<AuthEvent> b) {
         b.ToTable("auth_events");

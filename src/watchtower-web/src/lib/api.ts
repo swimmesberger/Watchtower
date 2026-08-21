@@ -4,6 +4,8 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
+  AuditEvent,
+  CloudflareForeignRoute,
   ActiveDeployment,
   AuthConfig,
   AutomationConfig,
@@ -246,6 +248,8 @@ export const api = {
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
+    listCloudflareForeignRoutes: async () =>
+      (await rpc('proxy.listCloudflareForeignRoutes', {})).routes as CloudflareForeignRoute[],
     getConfig: async () => (await rpc('proxy.getConfig', {})).config as ProxyConfig,
     updateConfig: async (data: UpdateProxyConfigRequest) =>
       (await rpc('proxy.updateConfig', {
@@ -463,6 +467,12 @@ export const api = {
     remove: async (id: number) => {
       await rpc('realms.delete', { id })
     },
+  },
+
+  audit: {
+    listEvents: async (category?: string | null, limit?: number | null) =>
+      (await rpc('audit.listEvents', { category: category ?? null, limit: limit ?? null }))
+        .events as AuditEvent[],
   },
 
   system: {

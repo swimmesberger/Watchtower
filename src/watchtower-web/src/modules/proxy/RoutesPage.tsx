@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
+import { CloudDownload, ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
   AccessMode,
+  CloudflareForeignRoute,
   CreateRouteRequest,
   IdentityHeaderMode,
   Route,
@@ -13,6 +14,7 @@ import type {
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { timeAgo } from '@/lib/format'
 import { useRealms } from '@/hooks/use-realms'
+import { AuditTrailCard } from '@/components/audit-trail'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -40,6 +42,7 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { routesRoute } from './module'
@@ -186,12 +189,23 @@ export function RoutesPage() {
   // admin operation, so the affordance is shown only to an administrator on an auth-enabled deployment. The
   // implicit local administrator (Auth:Enabled=false) reports the reserved `local` id — see auth.ts.
   const canManageAccess = caps.hasRole('Admin') && caps.user.id !== LOCAL_USER_ID
+  // The audit trail is admin-gated server-side; the implicit local administrator qualifies too.
+  const canViewAudit = caps.hasRole('Admin')
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...emptyForm })
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
   const [accessRoute, setAccessRoute] = useState<Route | null>(null)
 
   const { data: status } = useQuery({ queryKey: ['proxy-status'], queryFn: api.proxy.getStatus })
+
+  // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
+  // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption.
+  const { data: foreignRoutes = [] } = useQuery({
+    queryKey: ['cloudflare-foreign-routes'],
+    queryFn: api.proxy.listCloudflareForeignRoutes,
+    enabled: status?.enabled === true && status.provider === 'cloudflare',
+    staleTime: 60_000,
+  })
 
   const {
     data: routes = [],
@@ -247,12 +261,31 @@ export function RoutesPage() {
     onSuccess: (route) => {
       toast.success(`Route ${route.domain} created.`)
       qc.invalidateQueries({ queryKey: ['routes'] })
+      // An imported hostname stops being foreign the moment its route row exists.
+      qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
       setForm({ ...emptyForm })
       dns.reset()
       setShowForm(false)
     },
     onError: (err: Error) => toast.error(err.message),
   })
+
+  /** Prefills the new-route form from a dashboard-made tunnel hostname and opens it. */
+  function startImport(foreign: CloudflareForeignRoute) {
+    setForm({
+      ...emptyForm,
+      domain: foreign.hostname,
+      stackId: foreign.suggestedStackId != null ? String(foreign.suggestedStackId) : '',
+      serviceName: foreign.suggestedServiceName ?? '',
+      containerPort: foreign.suggestedContainerPort != null ? String(foreign.suggestedContainerPort) : '',
+      // Manual mode keeps the prefilled values editable as text even before container discovery
+      // resolves (the suggestion may name a service that isn't running right now).
+      serviceManual: true,
+      portManual: true,
+    })
+    setShowForm(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
 
   const remove = useMutation({
     mutationFn: (route: Route) => api.proxy.deleteRoute(route.id),
@@ -431,11 +464,52 @@ export function RoutesPage() {
 
       {status && !status.enabled && (
         <Banner tone="warn" title="Reverse proxy is disabled">
-          Routes are saved but not served until the proxy is enabled. Set{' '}
-          <code className="font-mono">WATCHTOWER__PROXY__ENABLED=true</code> (and optionally{' '}
-          <code className="font-mono">WATCHTOWER__PROXY__ADMINEMAIL</code>) and restart Watchtower. Host
-          ports 80 and 443 must be free.
+          Routes are saved but not served until the proxy is enabled — flip it under Settings →
+          Reverse proxy (applies immediately). The Caddy provider needs host ports 80 and 443 free;
+          the Cloudflare Tunnel provider needs no open ports.
         </Banner>
+      )}
+
+      <Tabs defaultValue="routes">
+        {canViewAudit && (
+          <TabsList>
+            <TabsTrigger value="routes">Routes</TabsTrigger>
+            <TabsTrigger value="audit">Audit</TabsTrigger>
+          </TabsList>
+        )}
+        <TabsContent value="routes" className="space-y-6">
+
+      {foreignRoutes.length > 0 && (
+        <Card>
+          <CardContent className="pt-5">
+            <SectionHeader
+              title={`Found in Cloudflare (${foreignRoutes.length})`}
+              description="Public hostnames configured on the tunnel in the Cloudflare dashboard. Watchtower keeps serving them untouched — import one to manage it as a route (access control, per-stack networking, cleanup on stack removal)."
+            />
+            <ul className="divide-y divide-border">
+              {foreignRoutes.map((f) => (
+                <li key={f.hostname} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                  <div className="min-w-0">
+                    <span className="block truncate font-medium text-text">{f.hostname}</span>
+                    <span className="block truncate font-mono text-[13px] text-text-2">
+                      → {f.service}
+                      {f.path ? ` (path ${f.path})` : ''}
+                    </span>
+                    {f.suggestedStackName && (
+                      <span className="block text-xs text-text-3">
+                        looks like stack “{f.suggestedStackName}”, service{' '}
+                        <span className="font-mono">{f.suggestedServiceName}:{f.suggestedContainerPort}</span>
+                      </span>
+                    )}
+                  </div>
+                  <Button size="sm" variant="secondary" onClick={() => startImport(f)}>
+                    <CloudDownload /> Import
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
       )}
 
       {showForm && (
@@ -633,6 +707,19 @@ export function RoutesPage() {
           aria-label="Routes"
         />
       )}
+        </TabsContent>
+
+        {canViewAudit && (
+          <TabsContent value="audit">
+            <AuditTrailCard
+              category="proxy"
+              title="Cloudflare writes"
+              description="Every change Watchtower made in your Cloudflare account — tunnel configuration, DNS records, Access applications — newest first. Reads are not logged. The Audit page shows all categories."
+              emptyText="No writes recorded yet. Entries appear when a reconcile changes something — enabling the provider, creating routes, or protecting them."
+            />
+          </TabsContent>
+        )}
+      </Tabs>
 
       <ConfirmDialog
         open={pendingDelete != null}

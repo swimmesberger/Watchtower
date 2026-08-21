@@ -9,7 +9,7 @@ export const credentialsManifest = defineModule({
   when: { module: 'Credentials' },
   contributes: [
     contribute(sidebarItems, [
-      { id: 'credentials', label: 'Credentials', icon: Key, to: '/credentials', exact: true, order: 50 },
+      { id: 'credentials', label: 'Credentials', icon: Key, to: '/credentials', group: 'infra', exact: true, order: 50 },
     ]),
   ],
 })

@@ -1,4 +1,5 @@
 using Elarion.Abstractions.Authorization;
+using Elarion.Abstractions.Identity;
 using Elarion.Settings;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -32,7 +33,9 @@ public sealed class UpdateAuthConfig(
     ISettingsManager settings,
     IOptionsMonitor<WatchtowerOptions> options,
     AuthStartupState startup,
-    EnvironmentSettingPins pins)
+    EnvironmentSettingPins pins,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<UpdateAuthConfig.Command, Result<UpdateAuthConfig.Response>> {
     public sealed record Command(
         bool Enabled,
@@ -85,6 +88,15 @@ public sealed class UpdateAuthConfig(
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.AuthHost, host, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.AuthSessionLifetimeHours, command.SessionLifetimeHours.ToString(), ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.AuthAbsoluteSessionLifetimeDays, command.AbsoluteSessionLifetimeDays.ToString(), ct);
+
+        // Recorded post-write with the new effective values — turning auth on or off is exactly the
+        // kind of change the trail exists for.
+        await audit.RecordAsync("system", "auth.config.update", "auth settings",
+            $"auth {(command.Enabled ? "on" : "off")}"
+            + (host.Length > 0 ? $" · host {host}" : "")
+            + $" · session {command.SessionLifetimeHours}h / absolute {command.AbsoluteSessionLifetimeDays}d"
+            + (command.Enabled != startup.Enabled ? " · restart required" : ""),
+            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.

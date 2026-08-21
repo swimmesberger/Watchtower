@@ -1528,11 +1528,12 @@ function BackupsCard() {
                   </Field>
                 </div>
                 <Field
-                  label="Private key (PEM)"
+                  label="Private key"
                   hint={
-                    data?.sftp.hasPrivateKey
-                      ? 'A key is stored. Leave blank to keep it; paste a new one to replace it.'
-                      : 'Optional alternative to the password: paste the full -----BEGIN … KEY----- block. Register the matching public key with the storage.'
+                    (data?.sftp.hasPrivateKey
+                      ? 'A key is stored. Leave blank to keep it; paste a new one to replace it. '
+                      : 'Optional alternative to the password: paste the full -----BEGIN … KEY----- block and register the matching public key with the storage. ') +
+                    'Ed25519, ECDSA, and RSA keys in OpenSSH, PEM, or PuTTY (.ppk) format are supported — Ed448 is not.'
                   }
                 >
                   {({ id }) => (

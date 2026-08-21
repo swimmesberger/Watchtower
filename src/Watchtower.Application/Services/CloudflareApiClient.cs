@@ -63,6 +63,17 @@ public sealed class CloudflareApiClient : IDisposable {
             CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
     }
 
+    /// <summary>
+    /// The tunnel's current remote configuration. Returns an empty rule list for a tunnel that has no
+    /// configuration yet (fresh tunnel, or one still locally managed by a config file).
+    /// </summary>
+    public async Task<IReadOnlyList<CloudflareIngressRule>> GetTunnelConfigurationAsync(
+        string accountId, string tunnelId, string token, CancellationToken ct = default) {
+        var result = await SendAsync(HttpMethod.Get, $"accounts/{accountId}/cfd_tunnel/{tunnelId}/configurations",
+            token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeCloudflareTunnelConfigurationResult, ct);
+        return result.Config?.Ingress ?? [];
+    }
+
     /// <summary>DNS records in the zone with this exact name (any type), for the CNAME upsert.</summary>
     public async Task<IReadOnlyList<CloudflareDnsRecord>> ListDnsRecordsAsync(
         string zoneId, string name, string token, CancellationToken ct = default) {
@@ -71,8 +82,11 @@ public sealed class CloudflareApiClient : IDisposable {
             CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareDnsRecord, ct);
     }
 
-    /// <summary>Creates or updates the proxied CNAME <paramref name="name"/> → <paramref name="target"/>.</summary>
-    public async Task UpsertDnsCnameAsync(string zoneId, string name, string target, string token, CancellationToken ct = default) {
+    /// <summary>
+    /// Creates or updates the proxied CNAME <paramref name="name"/> → <paramref name="target"/>.
+    /// Reports what actually happened so the caller's audit trail records writes, not intentions.
+    /// </summary>
+    public async Task<CloudflareDnsUpsert> UpsertDnsCnameAsync(string zoneId, string name, string target, string token, CancellationToken ct = default) {
         var existing = (await ListDnsRecordsAsync(zoneId, name, token, ct))
             .FirstOrDefault(r => string.Equals(r.Type, "CNAME", StringComparison.OrdinalIgnoreCase));
         var record = JsonSerializer.Serialize(
@@ -81,10 +95,14 @@ public sealed class CloudflareApiClient : IDisposable {
         if (existing is null) {
             await SendAsync(HttpMethod.Post, $"zones/{zoneId}/dns_records", token, record,
                 CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
-        } else if (!string.Equals(existing.Content, target, StringComparison.OrdinalIgnoreCase) || existing.Proxied != true) {
+            return CloudflareDnsUpsert.Created;
+        }
+        if (!string.Equals(existing.Content, target, StringComparison.OrdinalIgnoreCase) || existing.Proxied != true) {
             await SendAsync(HttpMethod.Put, $"zones/{zoneId}/dns_records/{existing.Id}", token, record,
                 CloudflareJsonContext.Default.CloudflareEnvelopeJsonElement, ct);
+            return CloudflareDnsUpsert.Updated;
         }
+        return CloudflareDnsUpsert.Unchanged;
     }
 
     // ── Zero Trust Access (phase 3 of ADR-0015) ──────────────────────────────
@@ -195,6 +213,13 @@ public sealed class CloudflareApiClient : IDisposable {
     public void Dispose() => _client.Dispose();
 }
 
+/// <summary>What a DNS upsert actually did — the audit trail records writes, not intentions.</summary>
+public enum CloudflareDnsUpsert {
+    Created,
+    Updated,
+    Unchanged,
+}
+
 // ── Wire types (Cloudflare API v4) ───────────────────────────────────────────
 
 /// <summary>The standard Cloudflare v4 response envelope.</summary>
@@ -219,14 +244,21 @@ public sealed record CloudflareCreateTunnelRequest {
     [JsonPropertyName("config_src")] public required string ConfigSrc { get; init; }
 }
 
-/// <summary>One tunnel ingress rule: requests for <see cref="Hostname"/> go to <see cref="Service"/>.
-/// The final rule must be a catch-all (<c>Hostname</c> null, e.g. <c>http_status:404</c>).</summary>
+/// <summary>One tunnel ingress rule: requests for <see cref="Hostname"/> (optionally narrowed by
+/// <see cref="Path"/>) go to <see cref="Service"/>. The final rule must be a catch-all
+/// (<c>Hostname</c> null, e.g. <c>http_status:404</c>).</summary>
 public sealed record CloudflareIngressRule {
     [JsonPropertyName("hostname")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Hostname { get; init; }
 
     [JsonPropertyName("service")] public required string Service { get; init; }
+
+    /// <summary>Optional path filter. Watchtower never writes one, but foreign (dashboard-made) rules
+    /// may carry it, and the merge must round-trip it untouched.</summary>
+    [JsonPropertyName("path")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Path { get; init; }
 }
 
 public sealed record CloudflareTunnelConfig {
@@ -235,6 +267,16 @@ public sealed record CloudflareTunnelConfig {
 
 public sealed record CloudflarePutConfigurationRequest {
     [JsonPropertyName("config")] public required CloudflareTunnelConfig Config { get; init; }
+}
+
+/// <summary>Read side of the configurations endpoint — everything optional, because a fresh tunnel
+/// (or one still driven by a local config file) reports no remote configuration at all.</summary>
+public sealed record CloudflareTunnelConfigurationResult {
+    [JsonPropertyName("config")] public CloudflareTunnelConfigRead? Config { get; init; }
+}
+
+public sealed record CloudflareTunnelConfigRead {
+    [JsonPropertyName("ingress")] public CloudflareIngressRule[]? Ingress { get; init; }
 }
 
 public sealed record CloudflareDnsRecord {
@@ -322,6 +364,7 @@ public sealed record CloudflareGroupRule {
 [JsonSerializable(typeof(CloudflareEnvelope<string>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareDnsRecord>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<JsonElement>))]
+[JsonSerializable(typeof(CloudflareEnvelope<CloudflareTunnelConfigurationResult>))]
 [JsonSerializable(typeof(CloudflareEnvelope<CloudflareAccessApp>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareAccessApp>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareAccessPolicy>>))]

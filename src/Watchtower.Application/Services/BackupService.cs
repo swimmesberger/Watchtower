@@ -29,7 +29,11 @@ public sealed class BackupService(
     BackupStorageFactory storageFactory,
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<WatchtowerOptions> options,
+    AuditLog audit,
     ILogger<BackupService> logger) {
+
+    /// <summary>The category the backup plane records under in the general audit trail.</summary>
+    internal const string AuditCategory = "backups";
 
     /// <summary>The compose label a stack's volumes carry.</summary>
     private const string ComposeProjectLabel = "com.docker.compose.project";
@@ -40,12 +44,14 @@ public sealed class BackupService(
         void Log(string line) => output.AppendLine(line);
 
         int stackId;
+        string triggeredBy;
         Stack? stack;
         using (var scope = scopeFactory.CreateScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var evt = await db.BackupEvents.FirstOrDefaultAsync(e => e.Id == backupEventId, ct);
             if (evt is null) return; // stack (and its events) deleted while queued
             stackId = evt.StackId;
+            triggeredBy = evt.TriggeredBy;
             stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == stackId, ct);
             evt.Status = "running";
             evt.StartedAt = DateTimeOffset.UtcNow;
@@ -57,19 +63,44 @@ public sealed class BackupService(
             return;
         }
 
+        var backup = options.CurrentValue.Backup;
         try {
-            var backup = options.CurrentValue.Backup;
             var result = await RunAsync(stack, backup, Log, ct);
             await FinishAsync(backupEventId, success: true, output.ToString(), result.RemotePath, result.SizeBytes, ct);
+            // The audit row carries the settings the run operated under, so "was it encrypted back
+            // then?" is answered by the trail, not by today's configuration.
+            await audit.RecordAsync(AuditCategory, "run", stack.Name,
+                $"{RunSummary(triggeredBy, stack, backup)} · {result.VolumeCount} volume(s), {result.SizeBytes} bytes → {result.RemotePath}",
+                ct: CancellationToken.None);
             logger.LogInformation(
                 "Backup of stack {StackName} completed: {RemotePath} ({SizeBytes} bytes)",
                 stack.Name, result.RemotePath, result.SizeBytes);
         } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
             Log($"FAILED: {ex.Message}");
             await FinishAsync(backupEventId, success: false, output.ToString(), null, null, ct);
+            await audit.RecordAsync(AuditCategory, "run", stack.Name, RunSummary(triggeredBy, stack, backup),
+                success: false, error: ex.Message, ct: CancellationToken.None);
             logger.LogWarning(ex, "Backup of stack {StackName} failed", stack.Name);
         }
     }
+
+    /// <summary>The effective settings a run operated under, for its audit row. Never includes secrets.</summary>
+    private static string RunSummary(string trigger, Stack stack, BackupOptions backup) {
+        var provider = backup.ResolveProvider() == BackupProviderKind.Local ? "local" : "sftp";
+        return $"{trigger} · {provider}"
+            + (string.IsNullOrEmpty(backup.EncryptionPassphrase) ? "" : " · encrypted")
+            + (stack.BackupStopContainers ? " · containers stopped" : "")
+            + $" · {RetentionSummary(backup)}";
+    }
+
+    /// <summary>Human-readable retention policy, matching the Settings card's two knobs.</summary>
+    internal static string RetentionSummary(BackupOptions backup) =>
+        (backup.RetentionDays, backup.RetentionMaxCount) switch {
+            (0, 0) => "keep forever",
+            (var days, 0) => $"retention {days}d",
+            (0, var count) => $"keep {count}",
+            var (days, count) => $"retention {days}d, keep {count}",
+        };
 
     /// <summary>
     /// Runs a restore enqueued by <see cref="BackupQueueService.TryEnqueueRestore"/>: download the
@@ -101,10 +132,14 @@ public sealed class BackupService(
             var backup = options.CurrentValue.Backup;
             var result = await RunRestoreAsync(stack, fileName, backup, Log, ct);
             await FinishAsync(backupEventId, success: true, output.ToString(), result.RemotePath, result.SizeBytes, ct);
+            await audit.RecordAsync(AuditCategory, "restore", stack.Name,
+                $"{result.RemotePath} · {result.VolumeCount} volume(s) restored", ct: CancellationToken.None);
             logger.LogInformation("Restore of {RemotePath} into stack {StackName} completed", result.RemotePath, stack.Name);
         } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
             Log($"FAILED: {ex.Message}");
             await FinishAsync(backupEventId, success: false, output.ToString(), null, null, ct);
+            await audit.RecordAsync(AuditCategory, "restore", stack.Name, fileName,
+                success: false, error: ex.Message, ct: CancellationToken.None);
             logger.LogWarning(ex, "Restore into stack {StackName} failed", stack.Name);
         }
     }
@@ -166,7 +201,7 @@ public sealed class BackupService(
                 await RestartContainersAsync(stopped, log);
             }
 
-            return new RunResult(relativePath, sizeBytes);
+            return new RunResult(relativePath, sizeBytes, targets.Count);
         } finally {
             try {
                 if (File.Exists(spoolPath)) File.Delete(spoolPath);
@@ -207,7 +242,7 @@ public sealed class BackupService(
         }
     }
 
-    private sealed record RunResult(string RemotePath, long SizeBytes);
+    private sealed record RunResult(string RemotePath, long SizeBytes, int VolumeCount);
 
     private async Task<RunResult> RunAsync(
         Stack stack, BackupOptions backup, Action<string> log, CancellationToken ct) {
@@ -265,7 +300,7 @@ public sealed class BackupService(
             }, ct);
 
             await ApplyRetentionAsync(storage, directory, backup, log, ct);
-            return new RunResult(relativePath, sizeBytes);
+            return new RunResult(relativePath, sizeBytes, volumes.Count);
         } finally {
             try {
                 if (File.Exists(spoolPath)) File.Delete(spoolPath);
@@ -316,9 +351,20 @@ public sealed class BackupService(
                 await storage.DeleteFileAsync($"{directory}/{name}", ct);
                 log($"Retention: deleted {name}");
             }
+            if (deletions.Count > 0) {
+                // A retention change can prune a large backlog at once — cap the listing so one
+                // pathological pass cannot bloat the audit row.
+                var listed = string.Join(", ", deletions.Take(10));
+                await audit.RecordAsync(AuditCategory, "retention.prune", directory,
+                    $"{RetentionSummary(backup)} · deleted {deletions.Count} archive(s): {listed}"
+                    + (deletions.Count > 10 ? ", …" : ""),
+                    ct: CancellationToken.None);
+            }
         } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
             // The backup itself succeeded — an unreachable prune retries on the next run.
             log($"WARNING: retention pruning failed: {ex.Message}");
+            await audit.RecordAsync(AuditCategory, "retention.prune", directory, RetentionSummary(backup),
+                success: false, error: ex.Message, ct: CancellationToken.None);
             logger.LogWarning(ex, "Retention pruning failed for {Directory}", directory);
         }
     }

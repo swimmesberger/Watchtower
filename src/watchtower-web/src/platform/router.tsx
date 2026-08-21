@@ -8,6 +8,7 @@ import { createRouter } from '@tanstack/react-router'
 import { rootRoute } from './root-route'
 import { loginRoute } from './login-route'
 import type { AppModule } from './app-module'
+import audit from '@/modules/audit'
 import credentials from '@/modules/credentials'
 import dashboard from '@/modules/dashboard'
 import groups from '@/modules/groups'
@@ -42,6 +43,7 @@ export const appManifests = appModules.map((m) => m.manifest)
 const routeTree = rootRoute.addChildren([
   // Platform-owned and deliberately ungated: it is the page an unauthenticated visitor is sent to.
   loginRoute,
+  ...audit.routes,
   ...credentials.routes,
   ...dashboard.routes,
   ...groups.routes,

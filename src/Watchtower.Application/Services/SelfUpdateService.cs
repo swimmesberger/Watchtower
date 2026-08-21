@@ -310,7 +310,7 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     /// coordinator recreates this container by cloning it via the Docker API.
     /// </summary>
     /// <exception cref="InvalidOperationException">Thrown when not running in a container or an apply is already in progress.</exception>
-    public async Task ApplyUpdateAsync(CancellationToken ct = default) {
+    public async Task ApplyUpdateAsync(string? actor = null, CancellationToken ct = default) {
         var detected = await TryInspectSelfAsync(ct);
         var config = await LoadConfigAsync(ct);
 
@@ -326,12 +326,27 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         lock (_applyLock) {
             if (_applyTask is not null && !_applyTask.IsCompleted)
                 throw new InvalidOperationException("A self-update is already in progress. Wait for the current pull to finish.");
-            _applyTask = PullAndSpawnAsync(detected.ImageName, detected.ContainerId, username, token, _cts.Token);
+            _applyTask = PullAndSpawnAsync(detected.ImageName, detected.ContainerId, username, token, actor, _cts.Token);
         }
+
+        // The start is the only success this process can record — on a successful apply the
+        // coordinator replaces the container before an outcome exists to write.
+        await RecordAuditAsync("self-update.apply", detected.ImageName, "pull + container recreate started", actor: actor);
+    }
+
+    /// <summary>
+    /// Records into the general audit trail. Resolved per call rather than injected: the audit
+    /// recorder is DI-owned and this class has a hand-built test seam constructor.
+    /// </summary>
+    private async Task RecordAuditAsync(
+        string action, string target, string? detail, bool success = true, string? error = null, string? actor = null) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        await scope.ServiceProvider.GetRequiredService<AuditLog>()
+            .RecordAsync("system", action, target, detail, success, error, actor);
     }
 
     private async Task PullAndSpawnAsync(
-        string imageName, string containerId, string? username, string? token, CancellationToken ct) {
+        string imageName, string containerId, string? username, string? token, string? actor, CancellationToken ct) {
         try {
             await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
 
@@ -385,6 +400,7 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         } catch (Exception ex) {
             _logger.LogError(ex, "Self-update background task failed");
             await SetStageAsync(SelfUpdateApplyStage.Error, ex.Message, CancellationToken.None);
+            await RecordAuditAsync("self-update.apply", imageName, null, success: false, error: ex.Message, actor: actor);
         }
     }
 
