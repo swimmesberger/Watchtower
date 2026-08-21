@@ -33,4 +33,7 @@ namespace Watchtower.Application.Modules.Proxy;
 [JsonSerializable(typeof(GetProxyConfig.Response), TypeInfoPropertyName = "GetProxyConfigResponse")]
 [JsonSerializable(typeof(UpdateProxyConfig.Command), TypeInfoPropertyName = "UpdateProxyConfigCommand")]
 [JsonSerializable(typeof(UpdateProxyConfig.Response), TypeInfoPropertyName = "UpdateProxyConfigResponse")]
+[JsonSerializable(typeof(ListCloudflareForeignRoutes.ForeignRouteDto))]
+[JsonSerializable(typeof(ListCloudflareForeignRoutes.Query), TypeInfoPropertyName = "ListCloudflareForeignRoutesQuery")]
+[JsonSerializable(typeof(ListCloudflareForeignRoutes.Response), TypeInfoPropertyName = "ListCloudflareForeignRoutesResponse")]
 public sealed partial class ProxyJsonContext : JsonSerializerContext;

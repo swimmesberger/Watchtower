@@ -2609,6 +2609,72 @@
         ]
       }
     },
+    "proxy.listCloudflareForeignRoutes": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "hostname": {
+                  "type": "string"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "suggestedStackId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "suggestedStackName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "suggestedServiceName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "suggestedContainerPort": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "hostname",
+                "service",
+                "path",
+                "suggestedStackId",
+                "suggestedStackName",
+                "suggestedServiceName",
+                "suggestedContainerPort"
+              ]
+            }
+          }
+        },
+        "required": [
+          "routes"
+        ]
+      }
+    },
     "proxy.listRoutes": {
       "params": {
         "type": "object"

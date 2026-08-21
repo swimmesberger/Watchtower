@@ -137,7 +137,13 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             if (tunnel is null) return;
 
             var routes = await LoadRoutesAsync(ct);
-            var ingress = ProjectIngress(routes);
+            // Merge, don't replace: rules the operator made in the dashboard (hostnames Watchtower's
+            // route table doesn't know) are preserved verbatim — the configurations endpoint is a
+            // whole-config PUT, so without this a fresh Watchtower pointed at an existing tunnel
+            // would wipe every public hostname it didn't create. Foreign rules can be adopted from
+            // the Routes page (proxy.listCloudflareForeignRoutes), which moves them under the table.
+            var existing = await _api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct);
+            var ingress = MergeIngress(existing, ProjectIngress(routes), routes.Select(r => r.Domain));
             await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, ingress, cf.ApiToken!, ct);
             _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
 
@@ -519,5 +525,35 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             .ToList();
         rules.Add(new CloudflareIngressRule { Service = "http_status:404" });
         return rules;
+    }
+
+    /// <summary>
+    /// The dashboard-made rules of a tunnel configuration: hostname rules whose hostname is not in
+    /// Watchtower's route table. Catch-alls are never foreign (the projection always writes its own),
+    /// and a foreign rule for a hostname the table DOES know is not foreign either — the route row is
+    /// the operator's newer statement about that hostname, so the projection's rule wins.
+    /// </summary>
+    internal static List<CloudflareIngressRule> ForeignIngressRules(
+        IReadOnlyList<CloudflareIngressRule> existing, IEnumerable<string> routeDomains) {
+        var owned = new HashSet<string>(routeDomains, StringComparer.OrdinalIgnoreCase);
+        return existing
+            .Where(r => !string.IsNullOrWhiteSpace(r.Hostname) && !owned.Contains(r.Hostname!))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Merges the projection with a tunnel's current configuration — pure, for tests. Foreign rules
+    /// (see <see cref="ForeignIngressRules"/>) come first, verbatim and in their original order (order
+    /// matters for path-narrowed rules); then Watchtower's hostname rules; then the single catch-all.
+    /// This is what makes pointing Watchtower at a pre-existing tunnel non-destructive: the whole-config
+    /// PUT round-trips everything it does not own.
+    /// </summary>
+    internal static List<CloudflareIngressRule> MergeIngress(
+        IReadOnlyList<CloudflareIngressRule> existing,
+        IReadOnlyList<CloudflareIngressRule> projected,
+        IEnumerable<string> routeDomains) {
+        var merged = ForeignIngressRules(existing, routeDomains);
+        merged.AddRange(projected);
+        return merged;
     }
 }

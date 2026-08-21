@@ -600,6 +600,21 @@ export interface DnsCheckResult {
   addresses: string[]
 }
 
+/**
+ * A public hostname configured on the Cloudflare tunnel (dashboard-made) that Watchtower's route
+ * table doesn't know. Preserved verbatim by the reconcile; importable as a route, with a heuristic
+ * stack/service/port suggestion when the service URL follows Watchtower's own alias convention.
+ */
+export interface CloudflareForeignRoute {
+  hostname: string
+  service: string
+  path?: string | null
+  suggestedStackId?: number | null
+  suggestedStackName?: string | null
+  suggestedServiceName?: string | null
+  suggestedContainerPort?: number | null
+}
+
 export interface ProxyStatus {
   enabled: boolean
   /** Whether the active provider's data plane is running (name kept for wire compatibility). */
