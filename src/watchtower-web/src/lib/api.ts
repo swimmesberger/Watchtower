@@ -244,8 +244,8 @@ export const api = {
         tlsEnabled: data.tlsEnabled,
         isPrimary: data.isPrimary,
       })).route as Route,
-    deleteRoute: async (id: number) => {
-      await rpc('proxy.deleteRoute', { id })
+    deleteRoute: async (id: number, removeFromProvider = false) => {
+      await rpc('proxy.deleteRoute', { id, removeFromProvider })
     },
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,

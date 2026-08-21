@@ -125,4 +125,20 @@ public sealed class CloudflareIngressMergeTests {
     [InlineData("http_status:404")]
     public void AnythingOutsideTheAliasConvention_GetsNoSuggestion(string service) =>
         Assert.Null(ListCloudflareForeignRoutes.Suggest(service, Stacks));
+
+    [Fact]
+    public void WithoutHostname_DropsOnlyThatHostname_AndKeepsTheCatchAll() {
+        var existing = new[] {
+            Rule("keep.example.com", "http://keep:80"),
+            Rule("gone.example.com", "http://gone:80"),
+            Rule("GONE.example.com", "http://gone:81", path: "/api"),
+            Rule(null, "http_status:404"),
+        };
+
+        var remaining = CloudflareTunnelProvider.WithoutHostname(existing, "gone.example.com");
+
+        // Both rules for the hostname go (case-insensitively, path variants included); everything else —
+        // the other hostname and the hostname-less catch-all — stays in place and in order.
+        Assert.Equal(["keep.example.com", null], remaining.Select(r => r.Hostname));
+    }
 }

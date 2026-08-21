@@ -22,6 +22,9 @@ public sealed class ProxyProviderRouter(IServiceProvider services, IOptionsMonit
 
     public Task ApplyAsync(CancellationToken ct = default) => Current.ApplyAsync(ct);
 
+    public Task ForgetDomainAsync(string domain, string? actor, CancellationToken ct = default) =>
+        Current.ForgetDomainAsync(domain, actor, ct);
+
     public Task ConnectStackAsync(int stackId, CancellationToken ct = default) => Current.ConnectStackAsync(stackId, ct);
 
     public Task<bool> IsRunningAsync(CancellationToken ct = default) => Current.IsRunningAsync(ct);

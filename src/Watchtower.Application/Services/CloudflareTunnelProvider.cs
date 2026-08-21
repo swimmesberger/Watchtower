@@ -161,13 +161,19 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 } catch (Exception ex) {
                     await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail,
                         success: false, error: ex.Message, ct: ct);
+                    await SetRouteStatusAsync(routes.Select(r => r.Id), RouteStatus.Error,
+                        $"Tunnel configuration push failed: {ex.Message}", ct);
                     throw;
                 }
                 _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
             }
 
+            // The outcome per hostname is known right here, so the route row says so — Active once its
+            // CNAME points at the tunnel, Error with Cloudflare's own words when it does not — instead of
+            // sitting at Pending with the reason only in the audit trail.
             var target = $"{tunnel.Id}.cfargotunnel.com";
             foreach (var domain in routes.Select(r => r.Domain).Distinct(StringComparer.OrdinalIgnoreCase)) {
+                var routeIds = routes.Where(r => string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).Select(r => r.Id);
                 try {
                     var upsert = await _api.UpsertDnsCnameAsync(cf.ZoneId!, domain, target, cf.ApiToken!, ct);
                     if (upsert != CloudflareDnsUpsert.Unchanged) {
@@ -175,10 +181,12 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                             upsert == CloudflareDnsUpsert.Created ? "dns.create" : "dns.update",
                             domain, $"proxied CNAME → {target}", ct: ct);
                     }
+                    await SetRouteStatusAsync(routeIds, RouteStatus.Active, null, ct);
                 } catch (Exception ex) {
                     // Per-domain best effort: one domain outside the configured zone must not stop the rest.
                     await _audit.RecordAsync(AuditCategory, "dns.upsert", domain, $"proxied CNAME → {target}",
                         success: false, error: ex.Message, ct: ct);
+                    await SetRouteStatusAsync(routeIds, RouteStatus.Error, $"DNS record not written: {ex.Message}", ct);
                     _logger.LogWarning(ex, "Failed to upsert the CNAME for {Domain}.", domain);
                 }
             }
@@ -214,6 +222,53 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             return false;
         }
     }
+
+    /// <inheritdoc />
+    public async Task ForgetDomainAsync(string domain, string? actor, CancellationToken ct = default) {
+        if (!Enabled) return;
+        var cf = _options.CurrentValue.Proxy.Cloudflare;
+        if (Misconfigured(cf, out var why))
+            throw new InvalidOperationException($"Cloudflare tunnel provider is not configured: {why}");
+        var tunnel = await _api.FindTunnelAsync(cf.AccountId!, cf.TunnelName, cf.ApiToken!, ct);
+        if (tunnel is null) return; // Nothing of Watchtower's to remove.
+
+        // 1. The ingress rule(s) for the hostname, from the configured tunnel only.
+        var existing = await _api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct);
+        var remaining = WithoutHostname(existing, domain);
+        if (remaining.Count != existing.Count) {
+            try {
+                await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, remaining, cf.ApiToken!, ct);
+                await _audit.RecordAsync(AuditCategory, "tunnel.rule.remove", domain,
+                    $"{existing.Count - remaining.Count} ingress rule(s) removed from {tunnel.Name}", actor: actor, ct: ct);
+            } catch (Exception ex) {
+                await _audit.RecordAsync(AuditCategory, "tunnel.rule.remove", domain, $"from {tunnel.Name}",
+                    success: false, error: ex.Message, actor: actor, ct: ct);
+                throw;
+            }
+        }
+
+        // 2. The CNAME — but only one that points at THIS tunnel. A record someone else made for the
+        // name is not Watchtower's to delete, even though the route named the same hostname.
+        var target = $"{tunnel.Id}.cfargotunnel.com";
+        var records = await _api.ListDnsRecordsAsync(cf.ZoneId!, domain, cf.ApiToken!, ct);
+        foreach (var record in records.Where(r =>
+                     string.Equals(r.Type, "CNAME", StringComparison.OrdinalIgnoreCase)
+                     && string.Equals(r.Content, target, StringComparison.OrdinalIgnoreCase))) {
+            try {
+                await _api.DeleteDnsRecordAsync(cf.ZoneId!, record.Id, cf.ApiToken!, ct);
+                await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}", actor: actor, ct: ct);
+            } catch (Exception ex) {
+                await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}",
+                    success: false, error: ex.Message, actor: actor, ct: ct);
+                throw;
+            }
+        }
+        _logger.LogInformation("Forgot {Domain}: its ingress rule and tunnel CNAME were removed.", domain);
+    }
+
+    /// <summary>Every rule except those for <paramref name="hostname"/>; the catch-all (no hostname) always stays.</summary>
+    internal static List<CloudflareIngressRule> WithoutHostname(IReadOnlyList<CloudflareIngressRule> rules, string hostname) =>
+        rules.Where(r => !string.Equals(r.Hostname, hostname, StringComparison.OrdinalIgnoreCase)).ToList();
 
     // ── Reconcile ─────────────────────────────────────────────────────────────
 
@@ -377,6 +432,28 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Writes the reconcile outcome onto the route rows. Best-effort and bounded: the status is a
+    /// convenience for the Routes page, the audit trail is the record — so a bookkeeping failure is
+    /// logged, never allowed to fail the reconcile.
+    /// </summary>
+    private async Task SetRouteStatusAsync(IEnumerable<int> routeIds, RouteStatus status, string? detail, CancellationToken ct) {
+        var ids = routeIds.ToList();
+        if (ids.Count == 0) return;
+        var capped = detail is { Length: > 500 } ? detail[..500] : detail;
+        try {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            await db.Routes
+                .Where(r => ids.Contains(r.Id))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, status)
+                    .SetProperty(r => r.StatusDetail, capped), ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            _logger.LogDebug(ex, "Failed to record the route status for {Count} route(s).", ids.Count);
+        }
     }
 
     // ── Zero Trust Access applications (phase 3) ─────────────────────────────
