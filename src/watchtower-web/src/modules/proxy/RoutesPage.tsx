@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CloudDownload, ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, CloudDownload, ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
   AccessMode,
@@ -94,6 +94,9 @@ const emptyForm = {
 }
 
 const MANUAL = '__manual__'
+
+/** localStorage key for the "Found in Cloudflare" card's collapsed state. */
+const FOREIGN_COLLAPSED_KEY = 'watchtower:routes:foreign-collapsed'
 
 /**
  * A select populated from discovered values with a manual-entry escape hatch. Renders a plain text
@@ -193,6 +196,11 @@ export function RoutesPage() {
   const [accessRoute, setAccessRoute] = useState<Route | null>(null)
 
   const { data: status } = useQuery({ queryKey: ['proxy-status'], queryFn: api.proxy.getStatus })
+  // Under the Cloudflare Tunnel provider TLS terminates at Cloudflare's edge: every route is served over
+  // HTTPS and the per-route flag (a Caddy knob — auto-managed certificate vs plain HTTP) controls
+  // nothing, so the form hides it and the list reports what is actually served.
+  const isCloudflare = status?.provider === 'cloudflare'
+  const servesHttps = (r: Route) => isCloudflare || r.tlsEnabled
 
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
   // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
@@ -205,6 +213,17 @@ export function RoutesPage() {
     staleTime: 60_000,
   })
   const foreignRoutes = foreignQuery.data?.routes ?? []
+  // Collapsed state persists across visits: once the operator has imported what they wanted, the
+  // remaining dashboard hostnames are reference, not a to-do, and should not fill the screen each time.
+  const [foreignCollapsed, setForeignCollapsed] = useState(
+    () => localStorage.getItem(FOREIGN_COLLAPSED_KEY) === '1',
+  )
+  function toggleForeign() {
+    setForeignCollapsed((collapsed) => {
+      localStorage.setItem(FOREIGN_COLLAPSED_KEY, collapsed ? '0' : '1')
+      return !collapsed
+    })
+  }
   const foreignWarning = foreignQuery.isError
     ? ((foreignQuery.error as Error)?.message ?? 'Could not read the tunnel configuration from Cloudflare.')
     : (foreignQuery.data?.warning ?? null)
@@ -313,7 +332,7 @@ export function RoutesPage() {
       domain: form.domain.trim(),
       serviceName: form.serviceName.trim(),
       containerPort,
-      tlsEnabled: form.tlsEnabled,
+      tlsEnabled: isCloudflare || form.tlsEnabled,
       isPrimary: false,
     })
   }
@@ -324,7 +343,7 @@ export function RoutesPage() {
       header: 'Domain',
       cell: (r) => (
         <a
-          href={`${r.tlsEnabled ? 'https' : 'http'}://${r.domain}`}
+          href={`${servesHttps(r) ? 'https' : 'http'}://${r.domain}`}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1.5 font-medium text-text hover:text-brand"
@@ -352,7 +371,7 @@ export function RoutesPage() {
       key: 'tls',
       header: 'TLS',
       cell: (r) => (
-        <Badge tone={r.tlsEnabled ? 'ok' : 'neutral'}>{r.tlsEnabled ? 'HTTPS' : 'HTTP'}</Badge>
+        <Badge tone={servesHttps(r) ? 'ok' : 'neutral'}>{servesHttps(r) ? 'HTTPS' : 'HTTP'}</Badge>
       ),
     },
     {
@@ -403,7 +422,7 @@ export function RoutesPage() {
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-3">
         <a
-          href={`${r.tlsEnabled ? 'https' : 'http'}://${r.domain}`}
+          href={`${servesHttps(r) ? 'https' : 'http'}://${r.domain}`}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1.5 font-medium text-text hover:text-brand"
@@ -418,7 +437,7 @@ export function RoutesPage() {
         <span className="font-mono">
           {r.serviceName}:{r.containerPort}
         </span>{' '}
-        · {r.tlsEnabled ? 'HTTPS' : 'HTTP'}
+        · {servesHttps(r) ? 'HTTPS' : 'HTTP'}
       </p>
       <div className="flex items-center justify-between border-t border-border pt-3">
         <span className="text-xs text-text-3">created {timeAgo(r.createdAt)}</span>
@@ -480,11 +499,30 @@ export function RoutesPage() {
 
       {foreignRoutes.length > 0 && (
         <Card>
-          <CardContent className="pt-5">
+          <CardContent className={foreignCollapsed ? 'py-4' : 'pt-5'}>
             <SectionHeader
               title={`Found in Cloudflare (${foreignRoutes.length})`}
-              description="Public hostnames configured in the Cloudflare dashboard, across all of the account's tunnels. Watchtower leaves them untouched — import one to manage it as a route (served from Watchtower's tunnel, with access control, per-stack networking and cleanup on stack removal)."
+              description={
+                foreignCollapsed
+                  ? undefined
+                  : "Public hostnames configured in the Cloudflare dashboard, across all of the account's tunnels. Watchtower leaves them untouched — import one to manage it as a route (served from Watchtower's tunnel, with access control, per-stack networking and cleanup on stack removal)."
+              }
+              className={foreignCollapsed ? 'mb-0 border-b-0 pb-0' : undefined}
+              action={
+                <Button size="sm" variant="ghost" onClick={toggleForeign}>
+                  {foreignCollapsed ? (
+                    <>
+                      <ChevronDown /> Show
+                    </>
+                  ) : (
+                    <>
+                      <ChevronUp /> Hide
+                    </>
+                  )}
+                </Button>
+              }
             />
+            {!foreignCollapsed && (
             <ul className="divide-y divide-border">
               {foreignRoutes.map((f) => (
                 <li key={`${f.tunnelName}/${f.hostname}`} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
@@ -510,6 +548,7 @@ export function RoutesPage() {
                 </li>
               ))}
             </ul>
+            )}
           </CardContent>
         </Card>
       )}
@@ -640,19 +679,26 @@ export function RoutesPage() {
                 </div>
               </div>
 
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <Label htmlFor="route-tls">HTTPS (automatic)</Label>
-                  <p className="mt-1 text-xs text-text-3">
-                    Terminate TLS with an auto-managed certificate. Turn off to serve plain HTTP.
-                  </p>
+              {isCloudflare ? (
+                <p className="text-xs text-text-3">
+                  Served over HTTPS — TLS terminates at Cloudflare's edge, so there is no certificate to
+                  manage here.
+                </p>
+              ) : (
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <Label htmlFor="route-tls">HTTPS (automatic)</Label>
+                    <p className="mt-1 text-xs text-text-3">
+                      Terminate TLS with an auto-managed certificate. Turn off to serve plain HTTP.
+                    </p>
+                  </div>
+                  <Switch
+                    id="route-tls"
+                    checked={form.tlsEnabled}
+                    onCheckedChange={(on) => setForm((f) => ({ ...f, tlsEnabled: on }))}
+                  />
                 </div>
-                <Switch
-                  id="route-tls"
-                  checked={form.tlsEnabled}
-                  onCheckedChange={(on) => setForm((f) => ({ ...f, tlsEnabled: on }))}
-                />
-              </div>
+              )}
 
               <div className="flex justify-end gap-3">
                 <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>

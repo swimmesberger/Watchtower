@@ -161,13 +161,19 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 } catch (Exception ex) {
                     await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail,
                         success: false, error: ex.Message, ct: ct);
+                    await SetRouteStatusAsync(routes.Select(r => r.Id), RouteStatus.Error,
+                        $"Tunnel configuration push failed: {ex.Message}", ct);
                     throw;
                 }
                 _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
             }
 
+            // The outcome per hostname is known right here, so the route row says so — Active once its
+            // CNAME points at the tunnel, Error with Cloudflare's own words when it does not — instead of
+            // sitting at Pending with the reason only in the audit trail.
             var target = $"{tunnel.Id}.cfargotunnel.com";
             foreach (var domain in routes.Select(r => r.Domain).Distinct(StringComparer.OrdinalIgnoreCase)) {
+                var routeIds = routes.Where(r => string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).Select(r => r.Id);
                 try {
                     var upsert = await _api.UpsertDnsCnameAsync(cf.ZoneId!, domain, target, cf.ApiToken!, ct);
                     if (upsert != CloudflareDnsUpsert.Unchanged) {
@@ -175,10 +181,12 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                             upsert == CloudflareDnsUpsert.Created ? "dns.create" : "dns.update",
                             domain, $"proxied CNAME → {target}", ct: ct);
                     }
+                    await SetRouteStatusAsync(routeIds, RouteStatus.Active, null, ct);
                 } catch (Exception ex) {
                     // Per-domain best effort: one domain outside the configured zone must not stop the rest.
                     await _audit.RecordAsync(AuditCategory, "dns.upsert", domain, $"proxied CNAME → {target}",
                         success: false, error: ex.Message, ct: ct);
+                    await SetRouteStatusAsync(routeIds, RouteStatus.Error, $"DNS record not written: {ex.Message}", ct);
                     _logger.LogWarning(ex, "Failed to upsert the CNAME for {Domain}.", domain);
                 }
             }
@@ -377,6 +385,28 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Writes the reconcile outcome onto the route rows. Best-effort and bounded: the status is a
+    /// convenience for the Routes page, the audit trail is the record — so a bookkeeping failure is
+    /// logged, never allowed to fail the reconcile.
+    /// </summary>
+    private async Task SetRouteStatusAsync(IEnumerable<int> routeIds, RouteStatus status, string? detail, CancellationToken ct) {
+        var ids = routeIds.ToList();
+        if (ids.Count == 0) return;
+        var capped = detail is { Length: > 500 } ? detail[..500] : detail;
+        try {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            await db.Routes
+                .Where(r => ids.Contains(r.Id))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, status)
+                    .SetProperty(r => r.StatusDetail, capped), ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            _logger.LogDebug(ex, "Failed to record the route status for {Count} route(s).", ids.Count);
+        }
     }
 
     // ── Zero Trust Access applications (phase 3) ─────────────────────────────

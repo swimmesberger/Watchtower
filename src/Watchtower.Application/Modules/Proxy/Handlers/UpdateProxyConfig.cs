@@ -77,9 +77,15 @@ public sealed class UpdateProxyConfig(
             if (string.IsNullOrWhiteSpace(tunnelName)) return AppError.Validation("The tunnel name is required for the cloudflare provider.");
             if (string.IsNullOrWhiteSpace(cloudflaredImage) && managed) return AppError.Validation("The cloudflared image is required in managed mode.");
             // Probe the credentials before persisting so a typo'd token fails here with Cloudflare's own
-            // words, not later as a background reconcile warning nobody is watching for.
+            // words, not later as a background reconcile warning nobody is watching for. Both scopes:
+            // the account (tunnels) AND the zone (DNS records) — a token that can manage tunnels but not
+            // this zone's DNS leaves every route stuck with a failing CNAME upsert.
             if (await cloudflare.ValidateAccessAsync(accountId!, apiToken!, ct) is { } reason)
                 return AppError.Validation($"Cloudflare rejected the credentials: {reason}");
+            if (await cloudflare.ValidateZoneAccessAsync(zoneId!, apiToken!, ct) is { } zoneReason)
+                return AppError.Validation(
+                    $"Cloudflare rejected the token for zone {zoneId}: {zoneReason}. The token needs "
+                    + "Zone → DNS → Edit on the zone your route domains live under, and the Zone ID must be that zone's.");
         }
 
         // Reject changes to env-pinned paths (env wins — a stored row would silently not take effect).

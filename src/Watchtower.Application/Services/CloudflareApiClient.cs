@@ -179,14 +179,26 @@ public sealed class CloudflareApiClient : IDisposable {
     /// Cheap credential probe for the settings surface: verifies the token can read the account's
     /// tunnels. Returns null on success, else a human-readable reason.
     /// </summary>
-    public async Task<string?> ValidateAccessAsync(string accountId, string token, CancellationToken ct = default) {
+    public async Task<string?> ValidateAccessAsync(string accountId, string token, CancellationToken ct = default) =>
+        await ProbeAsync($"accounts/{accountId}/cfd_tunnel?per_page=1", token, ct);
+
+    /// <summary>
+    /// Probes the zone the routes' DNS records live in. A token with tunnel permissions but without
+    /// <c>Zone → DNS → Edit</c> on this zone passes <see cref="ValidateAccessAsync"/> and then fails every
+    /// CNAME upsert with <c>10000: Authentication error</c> in a reconcile nobody is watching — this is
+    /// the same failure surfaced at save time, with Cloudflare's own words. Null when readable.
+    /// </summary>
+    public async Task<string?> ValidateZoneAccessAsync(string zoneId, string token, CancellationToken ct = default) =>
+        await ProbeAsync($"zones/{zoneId}/dns_records?per_page=1", token, ct);
+
+    private async Task<string?> ProbeAsync(string url, string token, CancellationToken ct) {
         try {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"accounts/{accountId}/cfd_tunnel?per_page=1");
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             var response = await _client.SendAsync(request, ct);
             if (response.IsSuccessStatusCode) return null;
             var text = await response.Content.ReadAsStringAsync(ct);
-            return $"Cloudflare API {(int)response.StatusCode}: {(text.Length > 200 ? text[..200] : text)}";
+            return $"Cloudflare API {(int)response.StatusCode} on GET {url}: {(text.Length > 200 ? text[..200] : text)}";
         } catch (Exception ex) {
             return $"Cloudflare API unreachable: {ex.Message}";
         }
