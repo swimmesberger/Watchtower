@@ -122,10 +122,10 @@ public sealed class SelfUpdateReconcileCeilingTests {
         var previousHostname = Environment.GetEnvironmentVariable("HOSTNAME");
         Environment.SetEnvironmentVariable("HOSTNAME", "watchtower-self");
         try {
-            await service.ApplyUpdateAsync(Ct);
+            await service.ApplyUpdateAsync(ct: Ct);
 
             // While the watch is in flight the apply is the exclusive one.
-            var busy = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ApplyUpdateAsync(Ct));
+            var busy = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ApplyUpdateAsync(ct: Ct));
             Assert.Contains("already in progress", busy.Message);
 
             // Once the watch hits its ceiling the task completes and a retry is accepted again —
@@ -133,7 +133,7 @@ public sealed class SelfUpdateReconcileCeilingTests {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
             while (true) {
                 try {
-                    await service.ApplyUpdateAsync(Ct);
+                    await service.ApplyUpdateAsync(ct: Ct);
                     break;
                 } catch (InvalidOperationException ex) when (ex.Message.Contains("already in progress")) {
                     Assert.True(DateTime.UtcNow < deadline, "the wedged coordinator never released the apply gate");

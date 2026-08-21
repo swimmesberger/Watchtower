@@ -100,6 +100,9 @@ public static class WatchtowerServiceCollectionExtensions {
         // active one reconciles on startup (each self-gates on Proxy:Enabled + Proxy:Provider);
         // consumers inject IProxyProvider and the router resolves the selected backend per call, which
         // is what makes the provider switchable from the Settings page without a restart.
+        // The general audit trail (audit.listEvents). Singleton — its writers are the singleton
+        // providers; TryAdd so tests can substitute a recording double.
+        services.TryAddSingleton<AuditLog>();
         services.AddSingleton<ProxyIngressNetworks>();
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());

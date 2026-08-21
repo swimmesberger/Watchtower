@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Elarion.Settings;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
@@ -19,7 +20,9 @@ public sealed class UpdateProxyConfig(
     ISettingsManager settings,
     IOptionsMonitor<WatchtowerOptions> options,
     CloudflareApiClient cloudflare,
-    EnvironmentSettingPins pins)
+    EnvironmentSettingPins pins,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<UpdateProxyConfig.Command, Result<UpdateProxyConfig.Response>> {
     public sealed record Command(
         bool Enabled,
@@ -132,6 +135,17 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds, command.CloudflareAccessGroupIds.Trim(), ct);
         if (command.CloudflareAccessReusablePolicyIds is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds, command.CloudflareAccessReusablePolicyIds.Trim(), ct);
+
+        // Recorded post-write with the new effective values — secrets appear only as "updated".
+        // Category "proxy" so the row also lands in the Routes page's proxy-scoped audit slice.
+        await audit.RecordAsync("proxy", "config.update", "proxy settings",
+            (command.Enabled ? "enabled" : "disabled")
+            + $" · provider {provider}"
+            + (provider == "cloudflare"
+                ? $" · tunnel {tunnelName}" + (managed ? " · managed cloudflared" : "")
+                : $" · image {image}")
+            + (command.CloudflareApiToken is not null ? " · secrets updated: Cloudflare API token" : ""),
+            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.

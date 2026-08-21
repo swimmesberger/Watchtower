@@ -9,7 +9,7 @@ export const proxyManifest = defineModule({
   when: { module: 'Proxy' },
   contributes: [
     contribute(sidebarItems, [
-      { id: 'routes', label: 'Routes', icon: Globe, to: '/routes', order: 25 },
+      { id: 'routes', label: 'Routes', icon: Globe, to: '/routes', group: 'deploy', order: 25 },
     ]),
   ],
 })

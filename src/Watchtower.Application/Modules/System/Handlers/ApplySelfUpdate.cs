@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.System.Handlers;
@@ -9,14 +10,15 @@ namespace Watchtower.Application.Modules.System.Handlers;
 /// Returns as soon as those checks pass; the UI polls <c>system.getSelf</c> for apply progress.
 /// </summary>
 [Handler("system.applyUpdate")]
-public sealed class ApplySelfUpdate(SelfUpdateService selfUpdate)
+public sealed class ApplySelfUpdate(SelfUpdateService selfUpdate, ICurrentUser currentUser)
     : IHandler<ApplySelfUpdate.Command, Result<ApplySelfUpdate.Response>> {
     public sealed record Command;
     public sealed record Response(bool Accepted);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         try {
-            await selfUpdate.ApplyUpdateAsync(ct);
+            await selfUpdate.ApplyUpdateAsync(
+                actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
             return new Response(true);
         } catch (InvalidOperationException ex) {
             return AppError.Validation(ex.Message);

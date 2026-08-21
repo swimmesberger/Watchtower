@@ -4,6 +4,7 @@ import { RefreshCw, ScrollText } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { AuthEvent } from '@/lib/types'
 import { timeAgo, absoluteTitle } from '@/lib/format'
+import { AuditTrailCard } from '@/components/audit-trail'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -18,6 +19,7 @@ import {
 } from '@/components/ui/select'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { auditRoute } from './module'
 
 /** Sentinel for "no filter" — Radix's Select cannot hold an empty-string value. */
@@ -27,15 +29,53 @@ const ANY = '__any__'
 const PAGE_SIZE = 100
 
 /**
- * The audit trail: every login, denial, policy change and break-glass recovery the access-control plane
- * has recorded (docs/central-auth/design.md §3).
- *
- * Read-only by construction — this screen has no mutations at all, because the rows are written by the
- * modules whose acts they record. "Load more" walks a keyset cursor rather than an offset: the trail is
- * append-only and is being written while it is read, so an offset page would shift under the reader and
- * silently skip or repeat rows.
+ * The audit surfaces, side by side: what Watchtower changed (the general trail — external control
+ * planes, backup runs, settings changes), and what users did (the access-control trail — logins,
+ * denials, policy changes, break-glass recoveries; docs/central-auth/design.md §3). Two trails, two
+ * tabs — they answer different questions and are written by different planes, but both are the
+ * instance's record of record, so they share the one Audit destination.
  */
 export function AuditPage() {
+  return (
+    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-6 md:px-6">
+      <header>
+        <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Audit</h1>
+        <p className="mt-1 text-[13px] text-text-2">
+          The instance's record of record. <strong>Changes</strong> is what Watchtower did — writes
+          against external control planes (Cloudflare), backup runs, restores and retention prunes,
+          self-updates, and every settings change (secrets reduced to which fields were touched).{' '}
+          <strong>Access</strong> is what users did — logins, denials and policy changes. Reads are
+          never logged, and rows are never edited or removed from here.
+        </p>
+      </header>
+      <Tabs defaultValue="changes">
+        <TabsList>
+          <TabsTrigger value="changes">Changes</TabsTrigger>
+          <TabsTrigger value="access">Access</TabsTrigger>
+        </TabsList>
+        <TabsContent value="changes">
+          <AuditTrailCard
+            title="All events"
+            description="Every recorded write across all categories, newest first."
+            emptyText="Nothing recorded yet. Entries appear when Watchtower changes something — e.g. pushing tunnel configuration, DNS records or Access applications on the Cloudflare provider, or running a stack backup."
+            showCategory
+          />
+        </TabsContent>
+        <TabsContent value="access">
+          <AuthTrailSection />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+/**
+ * The access-control trail. Read-only by construction — this screen has no mutations at all, because
+ * the rows are written by the modules whose acts they record. "Load more" walks a keyset cursor
+ * rather than an offset: the trail is append-only and is being written while it is read, so an
+ * offset page would shift under the reader and silently skip or repeat rows.
+ */
+function AuthTrailSection() {
   const qc = useQueryClient()
   const { caps } = auditRoute.useRouteContext()
 
@@ -155,26 +195,7 @@ export function AuditPage() {
   ]
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-6 md:px-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Audit</h1>
-          <p className="mt-1 text-sm text-text-2">
-            Logins, access denials and policy changes, newest first. Rows are never edited or removed
-            from here.
-          </p>
-        </div>
-        {/* Spins only for a refresh: the first load is already reported by the list's own skeleton rows,
-            and "load more" by the button at the foot of the list. */}
-        <Button
-          variant="secondary"
-          onClick={refresh}
-          loading={isFetching && !isLoading && !isFetchingNextPage}
-        >
-          <RefreshCw /> Refresh
-        </Button>
-      </div>
-
+    <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Event" className="w-full sm:w-56">
           {({ id }) => (
@@ -239,6 +260,17 @@ export function AuditPage() {
             Clear filters
           </Button>
         )}
+
+        {/* Spins only for a refresh: the first load is already reported by the list's own skeleton rows,
+            and "load more" by the button at the foot of the list. */}
+        <Button
+          variant="secondary"
+          className="ml-auto"
+          onClick={refresh}
+          loading={isFetching && !isLoading && !isFetchingNextPage}
+        >
+          <RefreshCw /> Refresh
+        </Button>
       </div>
 
       {isError ? (

@@ -8,11 +8,28 @@ import type { LucideIcon } from 'lucide-react'
 import { defineExtensionPoint } from './contributions'
 import type { Container, Stack } from '@/lib/types'
 
+/**
+ * The sidebar's section vocabulary. The shell owns the groups (label + placement) and modules only name
+ * one, so a module can never invent a stray section: an unknown `group` is a type error here. Entries
+ * without a group render first and header-less (Home). Groups a user's permissions empty out are dropped
+ * by the shell, so a narrow account still gets a tidy sidebar.
+ */
+export const sidebarGroups = [
+  { id: 'deploy', label: 'Deployment' },
+  { id: 'infra', label: 'Infrastructure' },
+  { id: 'access', label: 'Access control' },
+  { id: 'system', label: 'System' },
+] as const
+
+export type SidebarGroupId = (typeof sidebarGroups)[number]['id']
+
 /** Primary navigation. Rendered in the desktop sidebar and (unless `mobile === false`) the mobile tab bar. */
 export interface SidebarItem {
   readonly label: string
   readonly icon: LucideIcon
   readonly to: string
+  /** Sidebar section this entry belongs to; `order` ranks within the group. Ungrouped entries render first. */
+  readonly group?: SidebarGroupId
   /** Exact path match for active state (index route); otherwise prefix match. */
   readonly exact?: boolean
   /** Show in the mobile bottom tab bar. Defaults to true; set false for desktop-only destinations. */

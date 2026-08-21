@@ -15,6 +15,7 @@ export const infrastructureManifest = defineModule({
         label: 'Infrastructure',
         icon: Network,
         to: '/infrastructure',
+        group: 'infra',
         exact: true,
         order: 30,
         mobile: false,

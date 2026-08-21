@@ -13,4 +13,7 @@ namespace Watchtower.Application.Modules.Audit;
 [JsonSerializable(typeof(ListAuthEvents.Response), TypeInfoPropertyName = "ListAuthEventsResponse")]
 [JsonSerializable(typeof(ListAuthEventKinds.Query), TypeInfoPropertyName = "ListAuthEventKindsQuery")]
 [JsonSerializable(typeof(ListAuthEventKinds.Response), TypeInfoPropertyName = "ListAuthEventKindsResponse")]
+[JsonSerializable(typeof(AuditEventDto))]
+[JsonSerializable(typeof(ListAuditEvents.Query), TypeInfoPropertyName = "ListAuditEventsQuery")]
+[JsonSerializable(typeof(ListAuditEvents.Response), TypeInfoPropertyName = "ListAuditEventsResponse")]
 public sealed partial class AuditJsonContext : JsonSerializerContext;

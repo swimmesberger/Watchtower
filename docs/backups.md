@@ -44,9 +44,11 @@ a NAS, another server:
 
 - **Host / port / username** — for a Storage Box: `u123456.your-storagebox.de`, port **23**,
   user `u123456` (or a sub-account limited to its own directory, recommended).
-- **Auth** — password and/or an SSH private key (paste the PEM block; register the matching public
-  key with the storage — for Hetzner Storage Boxes SSH keys must be **RSA or ECDSA** (ed25519 is
-  supported on newer boxes); generate e.g. `ssh-keygen -t ecdsa -b 521 -f storagebox_key`).
+- **Auth** — password and/or an SSH private key (paste the full key block; register the matching
+  public key with the storage). Watchtower accepts **Ed25519, ECDSA and RSA** keys in OpenSSH, PEM
+  or PuTTY (`.ppk`) format — Ed448 is not supported. For Hetzner Storage Boxes SSH keys must be
+  **RSA or ECDSA** (ed25519 is supported on newer boxes); generate e.g.
+  `ssh-keygen -t ecdsa -b 521 -f storagebox_key`.
 - **Base directory** — remote directory the layout is rooted in (default `watchtower-backups`),
   created automatically.
 
@@ -149,3 +151,12 @@ picker lists the old instance's archives as long as the instance name matches it
 
 Failures (including "process restarted mid-run") land in the history as `failed` with the log
 attached; the next scheduled window simply tries again.
+
+## The audit trail
+
+Every run, restore, retention prune, storage test and configuration change is also recorded in the
+global **Audit** page under the `backups` category — success or failure with the error message. The
+run rows carry the settings in effect at the time (trigger, provider, encryption, stop-containers,
+retention), so "did last night's backup run, and was it encrypted back then?" is answered by the
+trail even after the configuration has changed since. Retention there is bounded (newest 2000 audit
+events overall); the per-stack Backups tab keeps the detailed per-run logs.

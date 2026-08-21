@@ -4,6 +4,8 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
+  AuditEvent,
+  CloudflareForeignRoute,
   ActiveDeployment,
   AuditQuery,
   AuthConfig,
@@ -248,6 +250,11 @@ export const api = {
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
+    listCloudflareForeignRoutes: async () =>
+      (await rpc('proxy.listCloudflareForeignRoutes', {})) as {
+        routes: CloudflareForeignRoute[]
+        warning?: string | null
+      },
     getConfig: async () => (await rpc('proxy.getConfig', {})).config as ProxyConfig,
     updateConfig: async (data: UpdateProxyConfigRequest) =>
       (await rpc('proxy.updateConfig', {
@@ -473,8 +480,8 @@ export const api = {
   },
 
   audit: {
-    // Read-only, and deliberately the whole surface: the trail is written by the modules whose acts it
-    // records, never from here. A page is a keyset cursor rather than an offset — the trail is being
+    // Read-only, and deliberately the whole surface: both trails are written by the modules whose acts
+    // they record, never from here. A page is a keyset cursor rather than an offset — the trail is being
     // appended to while it is read, so an offset would shift under the reader between "load more" clicks.
     list: async (query: AuditQuery = {}) =>
       (await rpc('audit.list', {
@@ -487,6 +494,10 @@ export const api = {
     // The kinds actually present, so the filter offers what is there rather than a frontend constant that
     // drifts the moment a new writer lands.
     kinds: async () => (await rpc('audit.kinds', {})).kinds as string[],
+    // The general trail: what Watchtower changed (external control planes, backups, settings).
+    listEvents: async (category?: string | null, limit?: number | null) =>
+      (await rpc('audit.listEvents', { category: category ?? null, limit: limit ?? null }))
+        .events as AuditEvent[],
   },
 
   system: {

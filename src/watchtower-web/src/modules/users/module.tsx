@@ -16,7 +16,7 @@ export const usersManifest = defineModule({
     // Slotted between Credentials (50) and Settings (60): it belongs with the instance-wide
     // administration entries, not with the deployment ones above them.
     contribute(sidebarItems, [
-      { id: 'users', label: 'Users', icon: Users, to: '/users', exact: true, order: 55 },
+      { id: 'users', label: 'Users', icon: Users, to: '/users', group: 'access', exact: true, order: 55 },
     ]),
   ],
 })

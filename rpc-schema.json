@@ -136,6 +136,91 @@
         ]
       }
     },
+    "audit.listEvents": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "actor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "success": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "at",
+                "category",
+                "action",
+                "target",
+                "detail",
+                "actor",
+                "success",
+                "error"
+              ]
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      }
+    },
     "backups.events": {
       "params": {
         "type": "object",
@@ -3983,6 +4068,83 @@
           "caddyRunning",
           "routeCount",
           "provider"
+        ]
+      }
+    },
+    "proxy.listCloudflareForeignRoutes": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "hostname": {
+                  "type": "string"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tunnelName": {
+                  "type": "string"
+                },
+                "suggestedStackId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "suggestedStackName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "suggestedServiceName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "suggestedContainerPort": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "hostname",
+                "service",
+                "path",
+                "tunnelName",
+                "suggestedStackId",
+                "suggestedStackName",
+                "suggestedServiceName",
+                "suggestedContainerPort"
+              ]
+            }
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "routes"
         ]
       }
     },

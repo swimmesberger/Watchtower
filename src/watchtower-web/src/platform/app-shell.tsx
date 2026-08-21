@@ -9,7 +9,7 @@ import { ACCOUNT_SECURITY_PATH, goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } f
 import { Toaster } from '@/components/ui/toast'
 import { ThemeToggle } from '@/components/ui/theme-toggle'
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
-import { sidebarItems, type SidebarItem } from './points'
+import { sidebarGroups, sidebarItems, type SidebarItem } from './points'
 
 // Code-split like every route component is: the operator — who never renders this — should not carry the
 // portal in the main chunk, and the realm user pays one extra request on a page that is fetching its list
@@ -104,6 +104,19 @@ export function AppShell() {
   const items = useContributions(sidebarItems)
   const mobileItems = items.filter((i) => i.mobile !== false)
 
+  // Ungrouped entries first (header-less), then the shell's groups in declared order; `order` on a
+  // contribution ranks it within its group only. Empty groups vanish, so a user whose permissions
+  // leave a single section still gets a tidy sidebar. The mobile tab bar stays flat — grouping is
+  // desktop chrome.
+  const sections = [
+    { id: 'ungrouped', label: null as string | null, items: items.filter((i) => !i.group) },
+    ...sidebarGroups.map((group) => ({
+      id: group.id as string,
+      label: group.label as string | null,
+      items: items.filter((i) => i.group === group.id),
+    })),
+  ].filter((section) => section.items.length > 0)
+
   // The login page is pre-auth: navigation to places the visitor cannot reach yet would be noise, so the
   // shell steps aside and renders the page on its own. (Toasts and tooltips stay — the form uses both.)
   if (currentPath === LOGIN_PATH) {
@@ -161,29 +174,38 @@ export function AppShell() {
           <div className="px-4 py-4">
             <Wordmark />
           </div>
-          <nav className="flex flex-1 flex-col gap-0.5 px-3">
-            {items.map((item) => {
-              const active = isActive(currentPath, item)
-              const Icon = item.icon
-              const Badge = item.badge
-              return (
-                <Link
-                  key={item.id}
-                  to={item.to}
-                  aria-current={active ? 'page' : undefined}
-                  className={cn(
-                    'relative flex h-9 items-center gap-2.5 rounded-md px-3 text-sm font-medium transition-colors',
-                    active
-                      ? 'bg-brand-soft text-brand before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-brand'
-                      : 'text-text-2 hover:bg-surface-2 hover:text-text',
-                  )}
-                >
-                  <Icon className="size-[18px] shrink-0" />
-                  <span className="flex-1">{item.label}</span>
-                  {Badge && <Badge placement="sidebar" />}
-                </Link>
-              )
-            })}
+          <nav className="flex flex-1 flex-col overflow-y-auto px-3">
+            {sections.map((section) => (
+              <div key={section.id} className="flex flex-col gap-0.5 pb-4 last:pb-0">
+                {section.label && (
+                  <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-3">
+                    {section.label}
+                  </p>
+                )}
+                {section.items.map((item) => {
+                  const active = isActive(currentPath, item)
+                  const Icon = item.icon
+                  const Badge = item.badge
+                  return (
+                    <Link
+                      key={item.id}
+                      to={item.to}
+                      aria-current={active ? 'page' : undefined}
+                      className={cn(
+                        'relative flex h-9 items-center gap-2.5 rounded-md px-3 text-sm font-medium transition-colors',
+                        active
+                          ? 'bg-brand-soft text-brand before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-brand'
+                          : 'text-text-2 hover:bg-surface-2 hover:text-text',
+                      )}
+                    >
+                      <Icon className="size-[18px] shrink-0" />
+                      <span className="flex-1">{item.label}</span>
+                      {Badge && <Badge placement="sidebar" />}
+                    </Link>
+                  )
+                })}
+              </div>
+            ))}
           </nav>
           <div className="flex items-center gap-1 border-t border-border px-3 py-3">
             <ThemeToggle />

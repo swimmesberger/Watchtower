@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Elarion.Settings;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
@@ -16,7 +17,11 @@ namespace Watchtower.Application.Modules.Metrics.Handlers;
 /// </summary>
 [Handler("metrics.updateConfig")]
 public sealed class UpdateMetricsConfig(
-    ISettingsManager settings, IOptionsMonitor<WatchtowerOptions> options, EnvironmentSettingPins pins)
+    ISettingsManager settings,
+    IOptionsMonitor<WatchtowerOptions> options,
+    EnvironmentSettingPins pins,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<UpdateMetricsConfig.Command, Result<UpdateMetricsConfig.Response>> {
     public sealed record Command(
         string Backend,
@@ -85,6 +90,13 @@ public sealed class UpdateMetricsConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.MetricsInfluxComposeProjectTag, command.InfluxComposeProjectTag.Trim(), ct);
         if (command.InfluxDiskMountpoint is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.MetricsInfluxDiskMountpoint, command.InfluxDiskMountpoint.Trim(), ct);
+
+        // Recorded post-write with the new effective values — secrets appear only as "updated".
+        await audit.RecordAsync("metrics", "config.update", "metrics settings",
+            $"backend {backend} · retention {command.RetentionDays}d"
+            + (backend == "influxdb" ? $" · {url} org {org} bucket {bucket}" : "")
+            + (command.InfluxToken is not null ? " · secrets updated: InfluxDB token" : ""),
+            actor: string.IsNullOrEmpty(currentUser.UserId) ? null : currentUser.UserId, ct: ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.

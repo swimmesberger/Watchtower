@@ -11,7 +11,7 @@ export const stacksManifest = defineModule({
   when: { module: 'Stacks' },
   contributes: [
     contribute(sidebarItems, [
-      { id: 'stacks', label: 'Stacks', icon: Boxes, to: '/stacks', order: 20 },
+      { id: 'stacks', label: 'Stacks', icon: Boxes, to: '/stacks', group: 'deploy', order: 20 },
     ]),
     contribute(stackDetailTabs, [
       {

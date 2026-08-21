@@ -14,7 +14,8 @@ public sealed class CheckSelfUpdate(SelfUpdateService selfUpdate)
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         try {
-            return new Response(await selfUpdate.CheckForUpdateAsync(ct));
+            // A manual check acknowledges a lingering apply error — the banner clears with it.
+            return new Response(await selfUpdate.CheckForUpdateAsync(acknowledgeApplyError: true, ct));
         } catch (InvalidOperationException ex) {
             return AppError.Validation(ex.Message);
         }
