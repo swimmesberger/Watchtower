@@ -73,7 +73,8 @@ dashboard rule on the next push.
 ## Audit trail
 
 Every write the provider performs against your Cloudflare account is recorded in Watchtower's
-general audit trail (category `proxy.cloudflare`) and shown on **Routes → Audit**: tunnel creation,
+general audit trail (category `proxy.cloudflare`). The global **Audit** page (sidebar, admin-only)
+shows every category; **Routes → Audit** embeds the proxy-scoped slice of the same trail: tunnel creation,
 ingress configuration pushes (with rule counts and how many foreign rules were preserved), DNS
 record creates/updates, and Access app/policy changes — success or failure, with Cloudflare's error
 message on failure. Reads are not logged, and no-op reconciles (nothing changed) produce no entries.
