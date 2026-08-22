@@ -2,7 +2,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Watchtower.Api" />
-    <!-- CaddyManager.ProjectSites: the route-table-to-site-list projection, testable without Docker. -->
+    <!-- Internal seams the unit tests exercise directly without Docker or a database — e.g.
+         CaddyManager.DecideTransition. (The route-table-to-site-list projection moved to the public
+         ProxySiteProjection and no longer needs this.) -->
     <InternalsVisibleTo Include="Watchtower.Application.Tests" />
   </ItemGroup>
 

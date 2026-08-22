@@ -106,7 +106,7 @@ public sealed class RealmResolver(
     /// <summary>
     /// Every non-system realm's non-null <see cref="Realm.AuthHost"/>, lowercased — the extra site blocks
     /// the proxy has to serve so each realm's login page is reachable
-    /// (<see cref="CaddyManager.ProjectSites"/>).
+    /// (<see cref="ProxySiteProjection.Project"/>).
     /// </summary>
     /// <remarks>
     /// The system realm is excluded here exactly as it is in <see cref="ResolveByHostAsync"/>: its login

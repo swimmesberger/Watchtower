@@ -1,25 +1,6 @@
 using System.Text;
-using Watchtower.Application.Entities;
 
 namespace Watchtower.Application.Services;
-
-/// <summary>
-/// A single site the proxy serves: a public <paramref name="Domain"/> forwarded to an internal
-/// upstream. <paramref name="UpstreamHost"/> is the container's DNS alias on the ingress network.
-/// <paramref name="OnDemand"/> requests a certificate lazily on first request (for customer-owned
-/// custom domains), gated by the ask endpoint in <see cref="CaddyGlobals"/>.
-/// <paramref name="Protected"/> puts the site behind Watchtower's access control
-/// (docs/central-auth/design.md §6). <paramref name="Mode"/> selects which plaintext identity headers the
-/// upstream receives on a verified request; it is only consulted for a protected site.
-/// </summary>
-public sealed record CaddySite(
-    string Domain,
-    string UpstreamHost,
-    int UpstreamPort,
-    bool Tls,
-    bool OnDemand = false,
-    bool Protected = false,
-    IdentityHeaderMode Mode = IdentityHeaderMode.None);
 
 /// <summary>
 /// Global Caddy options that apply to every site. When <paramref name="AskUrl"/> is set, on-demand TLS
@@ -40,7 +21,7 @@ public sealed record CaddyGlobals(
 /// reloads remain possible (a config without it would close the very endpoint used to push the next one).
 /// </summary>
 public static class CaddyConfigBuilder {
-    public static string Build(IReadOnlyList<CaddySite> sites, CaddyGlobals globals) {
+    public static string Build(IReadOnlyList<ProxySite> sites, CaddyGlobals globals) {
         var sb = new StringBuilder();
 
         // Global options block — admin must stay reachable on the control network for future reloads.
@@ -98,7 +79,7 @@ public static class CaddyConfigBuilder {
     ///   </description></item>
     /// </list>
     /// </summary>
-    private static void AppendProtectedBody(StringBuilder sb, CaddySite site, CaddyGlobals globals) {
+    private static void AppendProtectedBody(StringBuilder sb, ProxySite site, CaddyGlobals globals) {
         sb.Append("\thandle /.watchtower/* {\n");
         sb.Append($"\t\treverse_proxy {globals.SelfUpstream}\n");
         sb.Append("\t}\n");
