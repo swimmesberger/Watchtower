@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
 using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
+using Watchtower.Api.Proxy;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -95,6 +96,12 @@ RuntimeSettingsLayering.MakeEnvironmentWin(
 // git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
 
+// The in-process reverse proxy's TLS listener (ADR-0017, forthcoming): a second Kestrel endpoint that
+// picks its certificate per connection from the SNI name. Only added where one is configured — the
+// shipped container sets Kestrel__Endpoints__ProxyHttps__Url; development, Aspire and the integration
+// tests never do, so the host they boot is unchanged.
+ProxyHttpsEndpoint.Configure(builder);
+
 // Elarion framework composition:
 //   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.
 //   AddElarionSession  — the client-capability bootstrap (ADR-0030): module map + [ClientFeatures] flags
@@ -155,6 +162,10 @@ var app = builder.Build();
 
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
+
+// Record what the host actually bound, once it has bound it — the only signal the in-process proxy has
+// about its own data plane, since there is no container to inspect.
+ProxyListenerStateInitializer.Register(app);
 
 // First in the pipeline: everything after it — including the cookie issuance in the login endpoint —
 // must see the corrected scheme.

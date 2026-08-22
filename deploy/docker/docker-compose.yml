@@ -26,6 +26,12 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      # Built-in reverse proxy (opt-in): publish the ingress ports — 80 must be reachable for ACME
+      # HTTP-01, 443 carries the routed traffic.
+      # - "80:8080"
+      # - "443:8443"
+      # The container's own ports are set by Kestrel__Endpoints__Http__Url (8080) and
+      # Kestrel__Endpoints__ProxyHttps__Url (8443); ASPNETCORE_URLS no longer applies to this image.
     volumes:
       - watchtower-data:/data
       - /var/run/docker.sock:/var/run/docker.sock

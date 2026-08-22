@@ -47,8 +47,22 @@ COPY --from=build /app/publish/ ./
 COPY --from=web /repo/src/watchtower-web/dist/ ./wwwroot/
 
 VOLUME /data
-EXPOSE 8080
-ENV ASPNETCORE_URLS=http://+:8080
+
+# Two Kestrel endpoints, named so each can be configured on its own:
+#   Http       — the UI and the API, and the plain-HTTP half of the built-in reverse proxy.
+#   ProxyHttps — the built-in reverse proxy's TLS listener, which picks a certificate per connection
+#                from the SNI name. It is bound whether or not the proxy is enabled (a listener is a
+#                process-lifetime thing), but nothing can reach it unless the operator publishes the
+#                port — see the commented ingress ports in docker-compose.yml.
+# Named endpoints rather than ASPNETCORE_URLS because the SNI callback can only be attached to a
+# per-endpoint listener. Note the precedence this changes: configured endpoints OVERRIDE
+# ASPNETCORE_URLS, which Kestrel now ignores with a warning. To move a port, override the variable
+# by name (e.g. Kestrel__Endpoints__Http__Url=http://+:9000). Setting
+# Kestrel__Endpoints__ProxyHttps__Url to an empty value turns the TLS listener off — the app
+# filters the blank endpoint out before Kestrel reads it, and starts HTTP-only.
+EXPOSE 8080 8443
+ENV Kestrel__Endpoints__Http__Url=http://+:8080 \
+    Kestrel__Endpoints__ProxyHttps__Url=https://+:8443
 
 # The docker.sock must be mounted at runtime; grant the watchtower user the host's docker GID
 # (e.g. `group_add: ["999"]` in compose) so it can talk to the daemon.
