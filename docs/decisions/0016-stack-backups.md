@@ -51,6 +51,12 @@ whose stacks are read-mostly) can turn it off per stack. Application-aware dumps
 are explicitly out of scope for V1 — the extension point would be compose labels, and it can arrive
 in a later ADR without changing the storage or encryption format.
 
+> **Amended 2026-08-22 by [ADR-0017](0017-database-aware-dumps.md):** the switch still exists
+> with the same meaning, but the stop set is now scoped to the containers that mount a volume being
+> archived (not the whole project), overridable per service with the `watchtower.backup.stop` /
+> `watchtower.backup.exclude` compose labels, and stop/restart follow `com.docker.compose.depends_on`.
+> Postgres services are dumped with `pg_dumpall` instead of having their data volume snapshotted.
+
 ### 3. Storage backends: a small provider abstraction; SFTP and local directory built in
 
 Uploads go through `IBackupStorage` (upload / list / delete on relative paths), with two built-in
@@ -118,4 +124,5 @@ never stampede the host.
   [docs/backups.md](../backups.md) as the disaster-recovery route for a host where Watchtower is not
   running — the property §4 was chosen for.
 - Database-aware dump hooks and additional providers (S3, WebDAV) are explicit non-goals of this
-  ADR and would extend, not replace, the abstraction.
+  ADR and would extend, not replace, the abstraction. (Postgres dumps arrived in
+  [ADR-0017](0017-database-aware-dumps.md), extending the format exactly as foreseen.)
