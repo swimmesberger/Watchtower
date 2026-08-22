@@ -5,6 +5,15 @@ using Microsoft.Extensions.Logging;
 namespace Watchtower.Application.Services;
 
 /// <summary>
+/// A host-side file to place inside the archive next to the volume directories — a database dump.
+/// </summary>
+/// <param name="RelativePath">
+/// Path inside the archive, relative to its <c>backup/</c> root (e.g. <c>_dumps/db.sql</c>).
+/// </param>
+/// <param name="SourcePath">The host file to read the content from.</param>
+public sealed record BackupExtraFile(string RelativePath, string SourcePath);
+
+/// <summary>
 /// Turns a set of named volumes into one tar stream, without mounting anything into Watchtower's own
 /// container (ADR-0016 §1): a helper container is <em>created but never started</em> with each volume
 /// bind-mounted read-only under <c>/backup/{volume}</c>, the daemon's archive endpoint streams the
@@ -24,10 +33,33 @@ public sealed class BackupArchiveService(DockerEngineClient docker, ILogger<Back
     /// <paramref name="manifestJson"/> is set it is injected as <c>backup/backup-manifest.json</c>
     /// so the archive self-describes.
     /// </summary>
-    public async Task WriteArchiveAsync(
+    public Task WriteArchiveAsync(
         IReadOnlyList<string> volumeNames, string? manifestJson, Stream destination,
-        string helperImage, CancellationToken ct) {
-        if (volumeNames.Count == 0)
+        string helperImage, CancellationToken ct) =>
+        WriteArchiveAsync(volumeNames, manifestJson, [], destination, helperImage, ct);
+
+    /// <summary>
+    /// Same, plus host-side files placed under the archive's <c>backup/</c> root — the database dumps
+    /// that stand in for the volumes they replaced (ADR-0017).
+    /// </summary>
+    /// <remarks>
+    /// The manifest and the extras go in with a single push-stream PUT at <c>/</c>, streamed straight
+    /// from disk into the request body, so a dump of any size costs no memory and no second copy. The
+    /// tar carries an explicit <c>backup/</c> directory entry with a real mode: it is what creates the
+    /// directory when <em>no</em> volume is mounted (a stack whose only state is a dumped database),
+    /// and leaving the mode at zero would chmod the mount root out of the daemon's own reach before it
+    /// reads the archive back.
+    /// </remarks>
+    /// <param name="volumeNames">The named volumes to archive; may be empty when there are extras.</param>
+    /// <param name="manifestJson">The manifest, or null for a bare single-volume download.</param>
+    /// <param name="extraFiles">Host files to add under <c>backup/</c>.</param>
+    /// <param name="destination">Where the tar goes — typically a gzip/encryption pipeline.</param>
+    /// <param name="helperImage">Image for the never-started helper container.</param>
+    /// <param name="ct">The run's token.</param>
+    public async Task WriteArchiveAsync(
+        IReadOnlyList<string> volumeNames, string? manifestJson, IReadOnlyList<BackupExtraFile> extraFiles,
+        Stream destination, string helperImage, CancellationToken ct) {
+        if (volumeNames.Count == 0 && extraFiles.Count == 0)
             throw new InvalidOperationException("No volumes to archive.");
 
         await EnsureHelperImageAsync(helperImage, ct);
@@ -45,9 +77,10 @@ public sealed class BackupArchiveService(DockerEngineClient docker, ILogger<Back
         }, name: $"watchtower-backup-{Guid.NewGuid():N}"[..32], ct);
 
         try {
-            if (manifestJson is not null)
+            if (manifestJson is not null || extraFiles.Count > 0)
                 await docker.PutContainerArchiveAsync(
-                    containerId, MountRoot, BuildManifestTar(manifestJson), ct);
+                    containerId, "/",
+                    (stream, token) => WriteInjectedTarAsync(stream, manifestJson, extraFiles, token), ct);
 
             await using var archive = await docker.GetContainerArchiveAsync(containerId, MountRoot, ct);
             await archive.CopyToAsync(destination, ct);
@@ -113,16 +146,66 @@ public sealed class BackupArchiveService(DockerEngineClient docker, ILogger<Back
         await docker.PullImageAsync(image, ct: ct);
     }
 
-    /// <summary>A one-entry tar containing the manifest, for the archive PUT endpoint.</summary>
-    private static MemoryStream BuildManifestTar(string manifestJson) {
-        var buffer = new MemoryStream();
-        using (var writer = new TarWriter(buffer, leaveOpen: true)) {
-            var entry = new PaxTarEntry(TarEntryType.RegularFile, "backup-manifest.json") {
-                DataStream = new MemoryStream(Encoding.UTF8.GetBytes(manifestJson)),
-            };
-            writer.WriteEntry(entry);
+    /// <summary>
+    /// Writes the injected tar — <c>backup/</c>, the manifest and the extra files — straight into the
+    /// PUT request's body. The extras are streamed from disk one at a time, so the largest thing ever
+    /// held in memory is the manifest.
+    /// </summary>
+    private static async Task WriteInjectedTarAsync(
+        Stream destination, string? manifestJson, IReadOnlyList<BackupExtraFile> extraFiles,
+        CancellationToken ct) {
+        await using var writer = new TarWriter(destination, TarEntryFormat.Pax, leaveOpen: true);
+        foreach (var directory in Directories(extraFiles))
+            await writer.WriteEntryAsync(
+                new PaxTarEntry(TarEntryType.Directory, directory) { Mode = DirectoryMode }, ct);
+
+        if (manifestJson is not null) {
+            using var manifest = new MemoryStream(Encoding.UTF8.GetBytes(manifestJson));
+            await writer.WriteEntryAsync(
+                new PaxTarEntry(TarEntryType.RegularFile, $"{ArchiveRoot}backup-manifest.json") {
+                    Mode = RegularFileMode,
+                    DataStream = manifest,
+                }, ct);
         }
-        buffer.Position = 0;
-        return buffer;
+
+        foreach (var file in extraFiles) {
+            await using var content = File.OpenRead(file.SourcePath);
+            await writer.WriteEntryAsync(
+                new PaxTarEntry(TarEntryType.RegularFile, ArchiveRoot + file.RelativePath.TrimStart('/')) {
+                    Mode = RegularFileMode,
+                    DataStream = content,
+                }, ct);
+        }
     }
+
+    /// <summary>
+    /// The directory entries the injected tar needs: the archive root, plus every directory the extra
+    /// files sit in. Written explicitly rather than left to the daemon's implicit parent creation, so
+    /// the modes are ours and an archive with no volumes still has a root to be read back from.
+    /// </summary>
+    private static IReadOnlyList<string> Directories(IReadOnlyList<BackupExtraFile> extraFiles) {
+        var directories = new SortedSet<string>(StringComparer.Ordinal) { ArchiveRoot };
+        foreach (var file in extraFiles) {
+            var segments = file.RelativePath.TrimStart('/').Split('/');
+            var prefix = ArchiveRoot;
+            for (var i = 0; i < segments.Length - 1; i++) {
+                prefix += segments[i] + "/";
+                directories.Add(prefix);
+            }
+        }
+        return [.. directories];
+    }
+
+    /// <summary>The tar path prefix every entry of a backup archive carries.</summary>
+    private const string ArchiveRoot = "backup/";
+
+    /// <summary>0755 — the daemon has to be able to walk into the directories it just created.</summary>
+    private const UnixFileMode DirectoryMode =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+        | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+        | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+    /// <summary>0644 — a manifest and a dump are read, never executed.</summary>
+    private const UnixFileMode RegularFileMode =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
 }

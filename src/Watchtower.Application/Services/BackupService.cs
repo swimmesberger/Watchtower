@@ -35,6 +35,7 @@ namespace Watchtower.Application.Services;
 public sealed class BackupService(
     DockerEngineClient docker,
     BackupArchiveService archiveService,
+    PostgresDumpService postgres,
     BackupStorageFactory storageFactory,
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<WatchtowerOptions> options,
@@ -80,7 +81,9 @@ public sealed class BackupService(
             // then?" is answered by the trail, not by today's configuration.
             await audit.RecordAsync(AuditCategory, "run", stack.Name,
                 $"{RunSummary(triggeredBy, stack, backup, result.StoppedCount, result.ExcludedVolumeCount)}"
-                + $" · {result.VolumeCount} volume(s), {result.SizeBytes} bytes → {result.RemotePath}",
+                + $" · {result.VolumeCount} volume(s)"
+                + (result.DumpCount > 0 ? $" · {result.DumpCount} dump(s)" : "")
+                + $", {result.SizeBytes} bytes → {result.RemotePath}",
                 ct: CancellationToken.None);
             logger.LogInformation(
                 "Backup of stack {StackName} completed: {RemotePath} ({SizeBytes} bytes)",
@@ -216,7 +219,8 @@ public sealed class BackupService(
             // 3. Which of those the labels actually allow us to touch, and who has to go down for them.
             // The master switch is passed on regardless of the stack's setting: extracting under a
             // running application is never sound, so a restore always stops the writers it finds.
-            var plan = await PlanAsync(stack.ComposeProjectName, targets, stopContainers: true, log, ct);
+            var containers = await ListProjectContainersAsync(stack.ComposeProjectName, ct);
+            var plan = Plan(containers, targets, stopContainers: true, log);
             foreach (var excluded in plan.Excluded)
                 log(excluded.Reason == BackupVolumeExclusionReason.Label
                     ? $"WARNING: archive volume '{excluded.Name}' is excluded by {BackupPlan.ExcludeLabel} "
@@ -292,7 +296,29 @@ public sealed class BackupService(
     };
 
     private sealed record RunResult(
-        string RemotePath, long SizeBytes, int VolumeCount, int StoppedCount = 0, int ExcludedVolumeCount = 0);
+        string RemotePath, long SizeBytes, int VolumeCount, int StoppedCount = 0, int ExcludedVolumeCount = 0,
+        int DumpCount = 0);
+
+    /// <summary>One completed database dump, as the manifest records it (ADR-0017).</summary>
+    /// <param name="Service">The compose service the dump was taken from — its identity on restore.</param>
+    /// <param name="Engine">Which engine's tooling produced it.</param>
+    /// <param name="File">Path inside the archive, relative to <c>backup/</c>.</param>
+    /// <param name="Image">The image the service was running when it was dumped.</param>
+    /// <param name="User">The database role the dump was taken as.</param>
+    /// <param name="Container">The container's name at the time of the run.</param>
+    /// <param name="Volumes">The volumes this dump stands in for — left out of the file snapshot.</param>
+    /// <param name="Databases">The databases the dump covers.</param>
+    /// <param name="SizeBytes">Size of the uncompressed SQL.</param>
+    internal sealed record BackupDumpEntry(
+        string Service,
+        DumpEngine Engine,
+        string File,
+        string Image,
+        string User,
+        string Container,
+        IReadOnlyList<string> Volumes,
+        IReadOnlyList<string> Databases,
+        long SizeBytes);
 
     private async Task<RunResult> RunAsync(
         Stack stack, BackupOptions backup, Action<string> log, CancellationToken ct) {
@@ -300,51 +326,89 @@ public sealed class BackupService(
         var takenAt = DateTimeOffset.UtcNow;
         var encrypted = !string.IsNullOrEmpty(backup.EncryptionPassphrase);
 
-        // 1. The stack's candidate volumes, by compose project label.
+        // 1. The stack's candidate volumes, by compose project label, and its containers.
         var candidates = (await docker.ListVolumesAsync(ct))
             .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
             .Select(v => v.Name)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
-        if (candidates.Count == 0)
+        var containers = await ListProjectContainersAsync(project, ct);
+
+        // 2. Which databases are captured as a logical dump instead of a file snapshot. They keep
+        // running (a dump is consistent without stopping anything) and their data volume leaves the
+        // archive, because the dump is the better copy of exactly that content.
+        var dumpTargets = await SelectDumpTargetsAsync(containers, log, ct);
+        if (candidates.Count == 0 && dumpTargets.Count == 0)
             throw new InvalidOperationException(
                 $"No volumes found for compose project '{project}'. Has the stack been deployed?");
 
-        // 2. Narrow them to what the labels allow, and work out who has to go down for them.
-        var plan = await PlanAsync(project, candidates, stack.BackupStopContainers, log, ct);
+        // 3. Narrow the volumes to what the labels allow, and work out who has to go down for them.
+        var dumpCovered = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var target in dumpTargets.Where(t => t.DataVolume is not null))
+            dumpCovered[target.DataVolume!] = $"covered by the '{target.Service}' dump";
+        var plan = Plan(containers, candidates, stack.BackupStopContainers, log,
+            keepRunning: new HashSet<string>(dumpTargets.Select(t => t.ContainerId), StringComparer.Ordinal),
+            excludeVolumes: dumpCovered);
         foreach (var excluded in plan.Excluded)
             log(excluded.Reason == BackupVolumeExclusionReason.Label
                 ? $"Excluding volume '{excluded.Name}' — only mounted by excluded {excluded.Detail}."
                 : $"Excluding volume '{excluded.Name}' — {excluded.Detail}.");
-        if (plan.Volumes.Count == 0)
+        if (plan.Volumes.Count == 0 && dumpTargets.Count == 0)
             throw new InvalidOperationException(
                 $"Every volume of compose project '{project}' is excluded by {BackupPlan.ExcludeLabel} "
                 + "— there is nothing left to archive.");
         var volumes = plan.Volumes;
-        log($"Backing up {volumes.Count} volume(s) of project '{project}': {string.Join(", ", volumes)}");
+        log(volumes.Count == 0
+            ? $"No volumes left to snapshot for project '{project}' — the archive carries the dump(s) alone."
+            : $"Backing up {volumes.Count} volume(s) of project '{project}': {string.Join(", ", volumes)}");
         foreach (var kept in plan.Keep.Where(k =>
             k.MountsPlannedVolume && k.Reason != BackupKeepReason.MasterSwitchOff))
             log($"WARNING: {kept.Container.DisplayName} keeps running while volume(s) it writes to are "
                 + "archived — that volume's snapshot is only crash-consistent.");
 
+        // 4. Prove every dump can be taken while the stack is still fully up: a database we cannot
+        // reach has to fail the run here, not after its dependents have been stopped.
+        var connections = new Dictionary<string, PostgresConnection>(StringComparer.Ordinal);
+        foreach (var target in dumpTargets)
+            connections[target.ContainerId] = await postgres.PreflightAsync(target, log, ct);
+
         var instance = backup.ResolveInstanceName();
         var directory = BackupNaming.StackDirectory(instance, stack.Name);
         var fileName = BackupNaming.FileName(project, takenAt, encrypted);
         var relativePath = $"{directory}/{fileName}";
-        var manifest = BuildManifest(instance, stack, volumes, takenAt, encrypted);
 
-        // 3. Snapshot to a local spool file — stopping containers only for this step, not the upload.
+        // 5. Snapshot to a local spool file — stopping containers only for this step, not the upload.
         var spoolPath = Path.Combine(Path.GetTempPath(), $"watchtower-{fileName}.spool");
+        var dumpSpools = new List<string>();
         try {
             var stopped = await StopPlannedContainersAsync(plan, log, ct);
+            var dumps = new List<BackupDumpEntry>();
             try {
+                // The dumps are taken inside the stop window, so the SQL and the file snapshots
+                // describe one moment of the stack rather than two.
+                var extras = new List<BackupExtraFile>();
+                var usedNames = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var target in dumpTargets) {
+                    var dumpSpool = Path.Combine(Path.GetTempPath(), $"watchtower-dump-{Guid.NewGuid():N}.sql");
+                    dumpSpools.Add(dumpSpool);
+                    var connection = connections[target.ContainerId];
+                    var dumped = await postgres.DumpAsync(target, connection, dumpSpool, log, ct);
+                    var file = $"{PostgresDumpService.DumpDirectory}/{DumpFileName(target.Service, usedNames)}";
+                    extras.Add(new BackupExtraFile(file, dumpSpool));
+                    dumps.Add(new BackupDumpEntry(
+                        target.Service, target.Engine, file, target.Image, connection.User, target.ContainerName,
+                        target.DataVolume is { } data ? [data] : [], dumped.Databases, dumped.SizeBytes));
+                }
+
+                var manifest = BuildManifest(instance, stack, volumes, takenAt, encrypted, dumps);
                 await using var spool = File.Create(spoolPath);
                 Stream sink = spool;
                 try {
                     if (encrypted)
                         sink = BackupEncryption.CreateEncryptingStream(spool, backup.EncryptionPassphrase!);
                     await using (var gzip = new GZipStream(sink, CompressionLevel.Optimal, leaveOpen: true))
-                        await archiveService.WriteArchiveAsync(volumes, manifest, gzip, backup.HelperImage, ct);
+                        await archiveService.WriteArchiveAsync(
+                            volumes, manifest, extras, gzip, backup.HelperImage, ct);
                 } finally {
                     if (!ReferenceEquals(sink, spool)) await sink.DisposeAsync(); // flush final cipher block
                 }
@@ -355,7 +419,7 @@ public sealed class BackupService(
             var sizeBytes = new FileInfo(spoolPath).Length;
             log($"Snapshot complete: {sizeBytes} bytes{(encrypted ? " (encrypted)" : "")}");
 
-            // 4. Upload + retention.
+            // 6. Upload + retention.
             using var storage = storageFactory.Create(backup);
             log($"Uploading to {storage.Description}: {relativePath}");
             await storage.UploadAsync(relativePath, async (dest, uploadCt) => {
@@ -364,25 +428,80 @@ public sealed class BackupService(
             }, ct);
 
             await ApplyRetentionAsync(storage, directory, backup, log, ct);
-            return new RunResult(relativePath, sizeBytes, volumes.Count, stopped.Count, plan.Excluded.Count);
+            return new RunResult(
+                relativePath, sizeBytes, volumes.Count, stopped.Count, plan.Excluded.Count, dumps.Count);
         } finally {
-            try {
-                if (File.Exists(spoolPath)) File.Delete(spoolPath);
-            } catch (Exception ex) {
-                logger.LogWarning(ex, "Failed to delete backup spool file {SpoolPath}", spoolPath);
+            foreach (var path in dumpSpools.Append(spoolPath)) {
+                try {
+                    if (File.Exists(path)) File.Delete(path);
+                } catch (Exception ex) {
+                    logger.LogWarning(ex, "Failed to delete backup spool file {SpoolPath}", path);
+                }
             }
         }
     }
 
     /// <summary>
-    /// Lists the compose project's containers (every state — a stopped service still owns its volumes)
-    /// and turns them, the candidate volumes and the stack's master switch into a <see cref="BackupPlan"/>,
-    /// surfacing the planner's warnings in the run output.
+    /// The archive-side file name for a service's dump: its sanitized name, with a numeric suffix when
+    /// two services sanitize to the same thing (<c>my.db</c> and <c>my-db</c> both become <c>my-db</c>).
     /// </summary>
-    private async Task<BackupPlan> PlanAsync(
-        string project, IReadOnlyList<string> volumes, bool stopContainers, Action<string> log, CancellationToken ct) {
-        var containers = await docker.ListContainersByLabelsAsync([$"{ComposeProjectLabel}={project}"], ct);
-        var plan = BackupPlan.Create(containers, volumes, stopContainers);
+    private static string DumpFileName(string service, HashSet<string> used) {
+        var stem = BackupNaming.Sanitize(service);
+        var name = $"{stem}.sql";
+        for (var suffix = 2; !used.Add(name); suffix++) name = $"{stem}-{suffix}.sql";
+        return name;
+    }
+
+    /// <summary>
+    /// Works out which containers are dumped rather than snapshotted, resolving <c>PGDATA</c> for the
+    /// candidates only — inspecting every container of a project to find its one database would be a
+    /// round-trip per service on every run.
+    /// </summary>
+    private async Task<IReadOnlyList<DumpTarget>> SelectDumpTargetsAsync(
+        IReadOnlyList<DockerContainerInfo> containers, Action<string> log, CancellationToken ct) {
+        var pgData = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var candidate in DatabaseDumpTargets.Candidates(containers)) {
+            try {
+                var details = await docker.InspectContainerAsync(candidate.Id, ct);
+                pgData[candidate.Id] = (details.Config.Env ?? [])
+                    .FirstOrDefault(e => e.StartsWith("PGDATA=", StringComparison.Ordinal))?["PGDATA=".Length..];
+            } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
+                // Only costs us the volume exclusion: the default data directory is assumed, and a
+                // volume that is really the data directory is then archived as well as dumped.
+                log($"WARNING: could not read the environment of {candidate.Names?.FirstOrDefault()?.TrimStart('/')
+                    ?? candidate.Id} ({ex.Message}) — assuming the default data directory.");
+                logger.LogWarning(ex, "Failed to inspect dump candidate {ContainerId}", candidate.Id);
+            }
+        }
+        return DatabaseDumpTargets.Select(containers, pgData, log);
+    }
+
+    /// <summary>
+    /// The compose project's containers in every state — a stopped service still owns its volumes, and
+    /// an excluded one that happens to be down must not put its volume back into the archive.
+    /// </summary>
+    private Task<IReadOnlyList<DockerContainerInfo>> ListProjectContainersAsync(
+        string project, CancellationToken ct) =>
+        docker.ListContainersByLabelsAsync([$"{ComposeProjectLabel}={project}"], ct);
+
+    /// <summary>
+    /// Turns the project's containers, the candidate volumes and the stack's master switch into a
+    /// <see cref="BackupPlan"/>, surfacing the planner's warnings in the run output.
+    /// </summary>
+    /// <param name="containers">Every container of the project, as the engine listed them.</param>
+    /// <param name="volumes">The candidate volumes.</param>
+    /// <param name="stopContainers">The stack's "stop containers" master switch.</param>
+    /// <param name="log">The run output.</param>
+    /// <param name="keepRunning">Containers the run needs left up — the databases it dumps.</param>
+    /// <param name="excludeVolumes">Volumes captured another way, name → reason detail.</param>
+    private static BackupPlan Plan(
+        IReadOnlyList<DockerContainerInfo> containers,
+        IReadOnlyList<string> volumes,
+        bool stopContainers,
+        Action<string> log,
+        IReadOnlySet<string>? keepRunning = null,
+        IReadOnlyDictionary<string, string>? excludeVolumes = null) {
+        var plan = BackupPlan.Create(containers, volumes, stopContainers, keepRunning, excludeVolumes);
         foreach (var warning in plan.Warnings) log($"WARNING: {warning}");
         return plan;
     }
@@ -468,10 +587,26 @@ public sealed class BackupService(
         }
     }
 
-    private static string BuildManifest(
-        string instance, Stack stack, IReadOnlyList<string> volumes, DateTimeOffset takenAt, bool encrypted) =>
-        new JsonObject {
-            ["formatVersion"] = 1,
+    /// <summary>
+    /// The archive's self-description, written to <c>backup/backup-manifest.json</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>formatVersion</c> steps to 2 <em>only</em> when the archive carries dumps, and the
+    /// <c>dumps</c> key is then appended at the end: a stack without a database produces a manifest
+    /// byte-identical to the one Watchtower wrote before dumps existed, so nothing downstream has to
+    /// tell "new tool" from "new archive shape".
+    /// </remarks>
+    /// <param name="instance">The Watchtower instance name the run belongs to.</param>
+    /// <param name="stack">The stack that was backed up.</param>
+    /// <param name="volumes">The volumes actually in the archive.</param>
+    /// <param name="takenAt">When the run started.</param>
+    /// <param name="encrypted">Whether the archive is encrypted.</param>
+    /// <param name="dumps">The database dumps the archive carries; empty for a v1 manifest.</param>
+    internal static string BuildManifest(
+        string instance, Stack stack, IReadOnlyList<string> volumes, DateTimeOffset takenAt, bool encrypted,
+        IReadOnlyList<BackupDumpEntry> dumps) {
+        var manifest = new JsonObject {
+            ["formatVersion"] = dumps.Count > 0 ? 2 : 1,
             ["tool"] = "watchtower",
             ["instance"] = instance,
             ["stackId"] = stack.Id,
@@ -480,7 +615,24 @@ public sealed class BackupService(
             ["volumes"] = new JsonArray([.. volumes.Select(v => JsonValue.Create(v))]),
             ["createdAtUtc"] = takenAt.UtcDateTime.ToString("O"),
             ["encrypted"] = encrypted,
-        }.ToJsonString();
+        };
+        if (dumps.Count > 0)
+            manifest["dumps"] = new JsonArray([.. dumps.Select(DumpNode)]);
+        return manifest.ToJsonString();
+    }
+
+    /// <summary>One entry of the manifest's <c>dumps</c> array.</summary>
+    private static JsonNode DumpNode(BackupDumpEntry dump) => new JsonObject {
+        ["service"] = dump.Service,
+        ["engine"] = dump.Engine.ToString().ToLowerInvariant(),
+        ["file"] = dump.File,
+        ["image"] = dump.Image,
+        ["user"] = dump.User,
+        ["container"] = dump.Container,
+        ["volumes"] = new JsonArray([.. dump.Volumes.Select(v => JsonValue.Create(v))]),
+        ["databases"] = new JsonArray([.. dump.Databases.Select(d => JsonValue.Create(d))]),
+        ["sizeBytes"] = dump.SizeBytes,
+    };
 
     private async Task FinishAsync(
         int backupEventId, bool success, string output, string? remotePath, long? sizeBytes, CancellationToken ct) {

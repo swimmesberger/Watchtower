@@ -46,6 +46,46 @@ public sealed class BackupArchiveInspectorTests {
         Assert.Empty(contents.Volumes);
     }
 
+    [Fact]
+    public async Task TheDumpDirectoryIsNotAVolume_AndItsFilesAreListedAsDumps() {
+        var tar = BuildTar(writer => {
+            AddDir(writer, "backup/");
+            AddFile(writer, "backup/backup-manifest.json", """{"formatVersion":2}""");
+            AddDir(writer, "backup/_dumps/");
+            AddFile(writer, "backup/_dumps/db.sql", "DROP DATABASE app;");
+            AddFile(writer, "backup/_dumps/reporting.sql", "DROP DATABASE reports;");
+            AddDir(writer, "backup/web-app_uploads/");
+        });
+
+        var contents = await BackupArchiveInspector.InspectAsync(tar, CancellationToken.None);
+
+        // Restoring "_dumps" as if it were a volume is exactly what an older Watchtower does with a
+        // v2 archive; this reader knows the name is reserved.
+        Assert.Equal(["web-app_uploads"], contents.Volumes);
+        Assert.Equal(["_dumps/db.sql", "_dumps/reporting.sql"], contents.DumpFiles);
+    }
+
+    [Fact]
+    public async Task ADumpDirectoryWithoutFilesYieldsNeitherAVolumeNorADump() {
+        var tar = BuildTar(writer => AddDir(writer, "backup/_dumps/"));
+        var contents = await BackupArchiveInspector.InspectAsync(tar, CancellationToken.None);
+        Assert.Empty(contents.Volumes);
+        Assert.Empty(contents.DumpFiles);
+    }
+
+    [Fact]
+    public async Task AV1ArchiveSimplyHasNoDumps() {
+        var tar = BuildTar(writer => {
+            AddFile(writer, "backup/backup-manifest.json", """{"formatVersion":1}""");
+            AddFile(writer, "backup/web-app_pgdata/base/1234", "pg bytes");
+        });
+
+        var contents = await BackupArchiveInspector.InspectAsync(tar, CancellationToken.None);
+
+        Assert.Equal(["web-app_pgdata"], contents.Volumes);
+        Assert.Empty(contents.DumpFiles);
+    }
+
     private static MemoryStream BuildTar(Action<TarWriter> write) {
         var buffer = new MemoryStream();
         using (var writer = new TarWriter(buffer, leaveOpen: true))
