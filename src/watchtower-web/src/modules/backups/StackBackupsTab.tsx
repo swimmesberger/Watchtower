@@ -33,6 +33,7 @@ import { StatusBadge } from '@/components/ui/status-badge'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
+import { BackupPlanPreviewSection } from './BackupPlanPreviewSection'
 
 // ── Backups tab (ADR-0016) ──────────────────────────────────────────────────────
 // Per-stack participation in the backup schedule (with an optional cron override, ADR-0018), a
@@ -290,6 +291,8 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
           </CardContent>
         </Card>
       )}
+
+      <BackupPlanPreviewSection stack={stack} />
 
       <SectionHeader title="History" />
       {eventsLoading ? (

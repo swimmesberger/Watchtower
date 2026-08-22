@@ -28,6 +28,11 @@ namespace Watchtower.Application.Services;
 /// database-aware dump policy reads it and hands the planner its decision back as
 /// <see cref="BackupPlanRequest.KeepRunningContainerIds"/> / <see cref="BackupPlanRequest.ExcludeVolumes"/>.
 /// </param>
+/// <param name="Override">
+/// The per-service settings configured in Watchtower's UI for this container's service, or null. They
+/// fill in for a label that is <em>absent</em> and never beat one that is present (ADR-0020) — read
+/// them through <see cref="Exclude"/>, <see cref="Stop"/> and <see cref="Dump"/>, which apply that rule.
+/// </param>
 public sealed record BackupContainer(
     string Id,
     string DisplayName,
@@ -38,15 +43,36 @@ public sealed record BackupContainer(
     IReadOnlyList<string> DependsOn,
     string? ExcludeLabel = null,
     string? StopLabel = null,
-    string? DumpLabel = null) {
+    string? DumpLabel = null,
+    BackupServiceOverride? Override = null) {
+
+    /// <summary>The effective <c>watchtower.backup.exclude</c> value and where it comes from.</summary>
+    public BackupSetting Exclude => Resolve(ExcludeLabel, Override?.Exclude == true ? "true" : null);
+
+    /// <summary>The effective <c>watchtower.backup.stop</c> value and where it comes from.</summary>
+    public BackupSetting Stop => Resolve(StopLabel, Override?.Stop);
+
+    /// <summary>The effective <c>watchtower.backup.dump</c> value and where it comes from.</summary>
+    public BackupSetting Dump => Resolve(DumpLabel, Override?.Dump);
+
+    /// <summary>The label wins; the override fills a gap; otherwise there is no setting at all.</summary>
+    private static BackupSetting Resolve(string? label, string? overrideValue) =>
+        label is not null ? new(label, BackupSettingSource.Label)
+        : overrideValue is not null ? new(overrideValue, BackupSettingSource.Override)
+        : new(null, BackupSettingSource.Default);
 
     /// <summary>
     /// Projects a container as the engine listed it. Tolerates a null <c>Labels</c>/<c>Mounts</c> array
     /// and a container without names, both of which the daemon may report.
     /// </summary>
     /// <param name="container">One entry of <c>GET /containers/json</c> for the compose project.</param>
+    /// <param name="overrides">
+    /// The stack's per-service UI overrides by service name, if any — attached to the container whose
+    /// compose service matches.
+    /// </param>
     /// <returns>The planner's view of that container.</returns>
-    public static BackupContainer FromDocker(DockerContainerInfo container) {
+    public static BackupContainer FromDocker(
+        DockerContainerInfo container, IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) {
         var labels = container.Labels;
         var name = container.Names?.FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))?.TrimStart('/');
         if (string.IsNullOrEmpty(name))
@@ -59,12 +85,11 @@ public sealed record BackupContainer(
             if (!volumes.Contains(mount.Name, StringComparer.Ordinal)) volumes.Add(mount.Name);
         }
 
+        var service = Label(BackupPlan.ComposeServiceLabel) is { } s && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
         return new BackupContainer(
             container.Id,
             name,
-            Label(BackupPlan.ComposeServiceLabel) is { } service && !string.IsNullOrWhiteSpace(service)
-                ? service.Trim()
-                : null,
+            service,
             int.TryParse(Label(BackupPlan.ComposeContainerNumberLabel), NumberStyles.Integer,
                 CultureInfo.InvariantCulture, out var number) ? number : 1,
             string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase),
@@ -72,7 +97,8 @@ public sealed record BackupContainer(
             ParseDependsOn(Label(BackupPlan.ComposeDependsOnLabel)),
             Label(BackupPlan.ExcludeLabel),
             Label(BackupPlan.StopLabel),
-            Label(BackupPlan.DumpLabel));
+            Label(BackupPlan.DumpLabel),
+            service is not null && overrides is not null && overrides.TryGetValue(service, out var o) ? o : null);
 
         string? Label(string key) => labels is not null && labels.TryGetValue(key, out var value) ? value : null;
     }
@@ -96,6 +122,36 @@ public sealed record BackupContainer(
         }
         return services;
     }
+}
+
+/// <summary>Where an effective per-service backup setting came from (ADR-0020).</summary>
+public enum BackupSettingSource {
+    /// <summary>Nothing was configured for the service — the mount rule / stack default decided.</summary>
+    Default,
+
+    /// <summary>A <c>watchtower.backup.*</c> compose label on the service (infrastructure as code).</summary>
+    Label,
+
+    /// <summary>A per-service override configured in Watchtower's UI, filling in for an absent label.</summary>
+    Override,
+}
+
+/// <summary>One effective per-service setting: the value (label syntax) and where it came from.</summary>
+/// <param name="Value">The value in label syntax (<c>"true"</c>, <c>"pause"</c>, <c>"postgres"</c>…), or null when unset.</param>
+/// <param name="Source">Where it came from; <see cref="BackupSettingSource.Default"/> when <paramref name="Value"/> is null.</param>
+public sealed record BackupSetting(string? Value, BackupSettingSource Source);
+
+/// <summary>
+/// The per-service settings an operator configures in the UI instead of (or before) writing labels —
+/// one value per label, in the label's own syntax, so the two surfaces describe the same thing and an
+/// override can be promoted to compose labels verbatim. Null means "no override for this setting".
+/// </summary>
+/// <param name="Exclude">True stands in for <c>watchtower.backup.exclude=true</c>.</param>
+/// <param name="Stop"><c>"true"</c>, <c>"false"</c> or <c>"pause"</c>, standing in for <c>watchtower.backup.stop</c>.</param>
+/// <param name="Dump"><c>"false"</c> or <c>"postgres"</c>, standing in for <c>watchtower.backup.dump</c>.</param>
+public sealed record BackupServiceOverride(bool Exclude = false, string? Stop = null, string? Dump = null) {
+    /// <summary>True when nothing is set — such an override is not worth a row.</summary>
+    public bool IsEmpty => !Exclude && Stop is null && Dump is null;
 }
 
 /// <summary>Why a running container is left up instead of being quiesced for the snapshot.</summary>
@@ -141,8 +197,14 @@ public sealed record ExcludedBackupVolume(string Name, BackupVolumeExclusionReas
 /// True when it mounts at least one volume the run does touch — the case worth warning about, because
 /// the snapshot of that volume is then only crash-consistent.
 /// </param>
+/// <param name="Source">
+/// Where the keep decision came from: the label or the UI override for
+/// <see cref="BackupKeepReason.StopLabel"/> and <see cref="BackupKeepReason.Excluded"/>,
+/// <see cref="BackupSettingSource.Default"/> for every other reason.
+/// </param>
 public sealed record KeptBackupContainer(
-    BackupContainer Container, BackupKeepReason Reason, bool MountsPlannedVolume);
+    BackupContainer Container, BackupKeepReason Reason, bool MountsPlannedVolume,
+    BackupSettingSource Source = BackupSettingSource.Default);
 
 /// <summary>One container the run takes out of service for the snapshot, and how.</summary>
 /// <param name="Container">The container.</param>
@@ -150,7 +212,12 @@ public sealed record KeptBackupContainer(
 /// <see cref="BackupQuiesceMode.Stop"/> (SIGTERM, restart afterwards) or
 /// <see cref="BackupQuiesceMode.Pause"/> (cgroup freeze, unpause afterwards — crash-consistent).
 /// </param>
-public sealed record BackupQuiesceStep(BackupContainer Container, BackupQuiesceMode Mode);
+/// <param name="Source">
+/// Where the decision came from: the label or the UI override when one selected the container or its
+/// mode, <see cref="BackupSettingSource.Default"/> when the mount rule and the stack default did.
+/// </param>
+public sealed record BackupQuiesceStep(
+    BackupContainer Container, BackupQuiesceMode Mode, BackupSettingSource Source = BackupSettingSource.Default);
 
 /// <summary>The inputs <see cref="BackupPlan.Create(BackupPlanRequest)"/> decides from.</summary>
 /// <param name="Containers">
@@ -287,6 +354,7 @@ public sealed record BackupPlan(
     /// <param name="stopAllRunning">Quiesce every running container, not only the volume writers (restore with dumps).</param>
     /// <param name="quiesceMode">The stack's default quiesce mode for unlabelled containers.</param>
     /// <param name="forceStop">Stop everything that is quiesced, labels and default notwithstanding (restore).</param>
+    /// <param name="overrides">The stack's per-service UI overrides by service name (ADR-0020).</param>
     /// <returns>The plan.</returns>
     public static BackupPlan Create(
         IReadOnlyList<DockerContainerInfo> containers,
@@ -296,9 +364,10 @@ public sealed record BackupPlan(
         IReadOnlyDictionary<string, string>? excludeVolumes = null,
         bool stopAllRunning = false,
         BackupQuiesceMode quiesceMode = BackupQuiesceMode.Stop,
-        bool forceStop = false) =>
+        bool forceStop = false,
+        IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) =>
         Create(new BackupPlanRequest(
-            [.. containers.Select(BackupContainer.FromDocker)], volumes, stopContainers,
+            [.. containers.Select(c => BackupContainer.FromDocker(c, overrides))], volumes, stopContainers,
             keepRunning, excludeVolumes, stopAllRunning, quiesceMode, forceStop));
 
     /// <summary>Applies the mount-scoping, label and ordering rules to one run's inputs.</summary>
@@ -329,9 +398,10 @@ public sealed record BackupPlan(
         var excluded = new Dictionary<string, bool>(StringComparer.Ordinal);
         var stopLabels = new Dictionary<string, StopDirective>(StringComparer.Ordinal);
         foreach (var container in request.Containers) {
-            if (ParseLabel(container, ExcludeLabel, container.ExcludeLabel, labelWarnings) is { } exclude)
+            // The effective value: the label where present, else the UI override (ADR-0020).
+            if (ParseLabel(container, ExcludeLabel, container.Exclude.Value, labelWarnings) is { } exclude)
                 excluded[container.Id] = exclude;
-            if (ParseStopLabel(container, container.StopLabel, labelWarnings) is { } directive)
+            if (ParseStopLabel(container, container.Stop.Value, labelWarnings) is { } directive)
                 stopLabels[container.Id] = directive;
         }
 
@@ -353,9 +423,15 @@ public sealed record BackupPlan(
                         $"{Describe(container)} is labelled both {ExcludeLabel}=true and {StopLabel}="
                         + $"{(directive == StopDirective.Pause ? StopLabelPause : "true")} "
                         + "— the exclusion wins and it is left running.");
-                keep.Add(new KeptBackupContainer(container, kept, mountsPlanned));
+                var source = kept switch {
+                    BackupKeepReason.Excluded => container.Exclude.Source,
+                    BackupKeepReason.StopLabel => container.Stop.Source,
+                    _ => BackupSettingSource.Default,
+                };
+                keep.Add(new KeptBackupContainer(container, kept, mountsPlanned, source));
             } else {
-                quiesce.Add(new BackupQuiesceStep(container, ModeFor(request, directive)));
+                var (mode, source) = ModeFor(request, container, directive);
+                quiesce.Add(new BackupQuiesceStep(container, mode, source));
             }
         }
 
@@ -385,13 +461,19 @@ public sealed record BackupPlan(
         return mountsPlanned ? null : BackupKeepReason.NoPlannedMount;
     }
 
-    /// <summary>How a quiesced container goes down: the label where explicit, the stack default otherwise.</summary>
-    private static BackupQuiesceMode ModeFor(BackupPlanRequest request, StopDirective? directive) {
-        if (request.ForceStop) return BackupQuiesceMode.Stop;
+    /// <summary>
+    /// How a quiesced container goes down — the label/override where explicit, the stack default
+    /// otherwise — and where that came from. A forced stop keeps the source: the label still selected the
+    /// container, the restore merely refuses to pause it.
+    /// </summary>
+    private static (BackupQuiesceMode Mode, BackupSettingSource Source) ModeFor(
+        BackupPlanRequest request, BackupContainer container, StopDirective? directive) {
+        var source = directive is null ? BackupSettingSource.Default : container.Stop.Source;
+        if (request.ForceStop) return (BackupQuiesceMode.Stop, source);
         return directive switch {
-            StopDirective.Pause => BackupQuiesceMode.Pause,
-            StopDirective.Stop => BackupQuiesceMode.Stop,
-            _ => request.QuiesceMode,
+            StopDirective.Pause => (BackupQuiesceMode.Pause, source),
+            StopDirective.Stop => (BackupQuiesceMode.Stop, source),
+            _ => (request.QuiesceMode, source),
         };
     }
 

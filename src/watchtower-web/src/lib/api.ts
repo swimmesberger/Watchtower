@@ -15,7 +15,9 @@ import type {
   BackupEvent,
   BackupRemoteFile,
   BackupRunAccepted,
+  BackupPlanPreview,
   BackupQuiesceMode,
+  BackupServiceOverride,
   BackupStackConfig,
   UpdateBackupConfigRequest,
   Container,
@@ -330,6 +332,15 @@ export const api = {
     ) =>
       (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron, quiesceMode }))
         .config as BackupStackConfig,
+    previewPlan: async (stackId: number) =>
+      (await rpc('backups.previewPlan', { stackId })).preview as BackupPlanPreview,
+    setServiceOverride: async (
+      stackId: number,
+      service: string,
+      override: { exclude: boolean; stop: string | null; dump: string | null },
+    ) =>
+      (await rpc('backups.setServiceOverride', { stackId, service, ...override }))
+        .override as BackupServiceOverride | null,
   },
 
   templates: {

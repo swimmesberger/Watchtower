@@ -120,6 +120,91 @@ internal static class BackupQuiesceModes {
     }
 }
 
+/// <summary>
+/// Per-service backup settings configured in the UI (ADR-0020), in the compose labels' own value
+/// syntax: <c>exclude</c> stands in for <c>watchtower.backup.exclude=true</c>, <c>stop</c> for
+/// <c>watchtower.backup.stop</c> (<c>true</c>/<c>false</c>/<c>pause</c>), <c>dump</c> for
+/// <c>watchtower.backup.dump</c> (<c>false</c>/<c>postgres</c>). Null = not set.
+/// </summary>
+public sealed record BackupServiceOverrideDto(string Service, bool Exclude, string? Stop, string? Dump) {
+    internal static BackupServiceOverrideDto From(string service, BackupServiceOverride o) =>
+        new(service, o.Exclude, o.Stop, o.Dump);
+}
+
+/// <summary>One row of the plan preview: a container, what the next run would do with it, why, and the inputs.</summary>
+/// <param name="Service">The compose service (the container name for a container without one).</param>
+/// <param name="Container">The container's name; null for an override whose service is not deployed.</param>
+/// <param name="State"><c>running</c>, <c>not running</c> or <c>absent</c>.</param>
+/// <param name="Volumes">Named volumes the container mounts.</param>
+/// <param name="Action"><c>stop</c>, <c>pause</c>, <c>keep</c>, <c>dump</c>, <c>excluded</c> or <c>notRunning</c>.</param>
+/// <param name="Reason">Operator-facing prose.</param>
+/// <param name="Source"><c>default</c>, <c>label</c> or <c>override</c>.</param>
+/// <param name="ExcludeLabel">The raw compose label, or null.</param>
+/// <param name="StopLabel">The raw compose label, or null.</param>
+/// <param name="DumpLabel">The raw compose label, or null.</param>
+/// <param name="Override">The UI override for the service, or null.</param>
+public sealed record BackupServicePreviewDto(
+    string Service,
+    string? Container,
+    string State,
+    IReadOnlyList<string> Volumes,
+    string Action,
+    string Reason,
+    string Source,
+    string? ExcludeLabel,
+    string? StopLabel,
+    string? DumpLabel,
+    BackupServiceOverrideDto? Override) {
+    internal static BackupServicePreviewDto From(BackupServicePreview row) => new(
+        row.Service, row.Container, row.State, row.Volumes,
+        row.Action switch {
+            BackupServiceAction.Stop => "stop",
+            BackupServiceAction.Pause => "pause",
+            BackupServiceAction.Keep => "keep",
+            BackupServiceAction.Dump => "dump",
+            BackupServiceAction.Excluded => "excluded",
+            _ => "notRunning",
+        },
+        row.Reason,
+        BackupSettingSources.ToWire(row.Source),
+        row.ExcludeLabel, row.StopLabel, row.DumpLabel,
+        row.Override is { } o ? BackupServiceOverrideDto.From(row.Service, o) : null);
+}
+
+/// <summary>A candidate volume the run would leave out, with why.</summary>
+public sealed record BackupExcludedVolumeDto(string Name, string Reason, string Detail);
+
+/// <summary>
+/// The dry run the Backups tab shows: what the next run would archive, quiesce, dump and skip for the
+/// stack as deployed right now (ADR-0020). <see cref="LabelSnippet"/> renders the UI overrides as
+/// compose labels to paste.
+/// </summary>
+public sealed record BackupPlanPreviewDto(
+    bool Deployed,
+    IReadOnlyList<string> Volumes,
+    IReadOnlyList<BackupExcludedVolumeDto> ExcludedVolumes,
+    IReadOnlyList<BackupServicePreviewDto> Services,
+    IReadOnlyList<string> Warnings,
+    string? LabelSnippet) {
+    internal static BackupPlanPreviewDto From(BackupPlanPreview preview) => new(
+        preview.Deployed,
+        preview.Volumes,
+        [.. preview.ExcludedVolumes.Select(v => new BackupExcludedVolumeDto(
+            v.Name, v.Reason == BackupVolumeExclusionReason.Label ? "label" : "dump", v.Detail))],
+        [.. preview.Services.Select(BackupServicePreviewDto.From)],
+        preview.Warnings,
+        preview.LabelSnippet);
+}
+
+/// <summary>The wire form of <see cref="BackupSettingSource"/>.</summary>
+internal static class BackupSettingSources {
+    public static string ToWire(BackupSettingSource source) => source switch {
+        BackupSettingSource.Label => "label",
+        BackupSettingSource.Override => "override",
+        _ => "default",
+    };
+}
+
 /// <summary>One archive present on the storage — the restore picker's row.</summary>
 public sealed record BackupRemoteFileDto(string Name, long SizeBytes, DateTimeOffset TakenAt, bool Encrypted);
 
@@ -155,4 +240,12 @@ public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 [JsonSerializable(typeof(GetStackBackupConfig.Response), TypeInfoPropertyName = "GetStackBackupConfigResponse")]
 [JsonSerializable(typeof(SetStackBackupConfig.Command), TypeInfoPropertyName = "SetStackBackupConfigCommand")]
 [JsonSerializable(typeof(SetStackBackupConfig.Response), TypeInfoPropertyName = "SetStackBackupConfigResponse")]
+[JsonSerializable(typeof(BackupPlanPreviewDto))]
+[JsonSerializable(typeof(BackupServicePreviewDto))]
+[JsonSerializable(typeof(BackupServiceOverrideDto))]
+[JsonSerializable(typeof(BackupExcludedVolumeDto))]
+[JsonSerializable(typeof(GetBackupPlanPreview.Query), TypeInfoPropertyName = "GetBackupPlanPreviewQuery")]
+[JsonSerializable(typeof(GetBackupPlanPreview.Response), TypeInfoPropertyName = "GetBackupPlanPreviewResponse")]
+[JsonSerializable(typeof(SetBackupServiceOverride.Command), TypeInfoPropertyName = "SetBackupServiceOverrideCommand")]
+[JsonSerializable(typeof(SetBackupServiceOverride.Response), TypeInfoPropertyName = "SetBackupServiceOverrideResponse")]
 public sealed partial class BackupsJsonContext : JsonSerializerContext;

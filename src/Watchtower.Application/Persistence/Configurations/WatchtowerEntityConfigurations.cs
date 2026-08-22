@@ -200,6 +200,21 @@ public sealed class BackupPausedContainerConfiguration : IEntityTypeConfiguratio
 }
 
 [EntityConfiguration]
+public sealed class StackBackupServiceOverrideConfiguration : IEntityTypeConfiguration<StackBackupServiceOverride> {
+    public void Configure(EntityTypeBuilder<StackBackupServiceOverride> b) {
+        b.ToTable("stack_backup_service_overrides");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Service).IsRequired();
+        // One row per (stack, service): setting an override upserts, clearing every knob deletes it.
+        b.HasIndex(x => new { x.StackId, x.Service }).IsUnique();
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnvVar> {
     public void Configure(EntityTypeBuilder<StackEnvVar> b) {
         b.ToTable("stack_env_vars");

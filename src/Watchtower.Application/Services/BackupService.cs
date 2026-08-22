@@ -475,30 +475,12 @@ public sealed class BackupService(
         var takenAt = DateTimeOffset.UtcNow;
         var encrypted = !string.IsNullOrEmpty(backup.EncryptionPassphrase);
 
-        // 1. The stack's candidate volumes, by compose project label, and its containers.
-        var candidates = (await docker.ListVolumesAsync(ct))
-            .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
-            .Select(v => v.Name)
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToList();
-        var containers = await ListProjectContainersAsync(project, ct);
-
-        // 2. Which databases are captured as a logical dump instead of a file snapshot. They keep
-        // running (a dump is consistent without stopping anything) and their data volume leaves the
-        // archive, because the dump is the better copy of exactly that content.
-        var dumpTargets = await SelectDumpTargetsAsync(containers, log, ct);
+        // 1–3. Volumes, containers, dump targets and the plan — the same preparation the Backups tab
+        // previews, so what the operator saw there is what runs here.
+        var (candidates, containers, dumpTargets, plan, _, _) = await PrepareAsync(stack, log, ct);
         if (candidates.Count == 0 && dumpTargets.Count == 0)
             throw new InvalidOperationException(
                 $"No volumes found for compose project '{project}'. Has the stack been deployed?");
-
-        // 3. Narrow the volumes to what the labels allow, and work out who has to go down for them.
-        var dumpCovered = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var target in dumpTargets.Where(t => t.DataVolume is not null))
-            dumpCovered[target.DataVolume!] = $"covered by the '{target.Service}' dump";
-        var plan = Plan(containers, candidates, stack.BackupStopContainers, log,
-            keepRunning: new HashSet<string>(dumpTargets.Select(t => t.ContainerId), StringComparer.Ordinal),
-            excludeVolumes: dumpCovered,
-            quiesceMode: stack.BackupQuiesceMode);
         foreach (var excluded in plan.Excluded)
             log(excluded.Reason == BackupVolumeExclusionReason.Label
                 ? $"Excluding volume '{excluded.Name}' — only mounted by excluded {excluded.Detail}."
@@ -609,9 +591,12 @@ public sealed class BackupService(
     /// round-trip per service on every run.
     /// </summary>
     private async Task<IReadOnlyList<DumpTarget>> SelectDumpTargetsAsync(
-        IReadOnlyList<DockerContainerInfo> containers, Action<string> log, CancellationToken ct) {
+        IReadOnlyList<DockerContainerInfo> containers,
+        IReadOnlyDictionary<string, BackupServiceOverride> overrides,
+        Action<string> log,
+        CancellationToken ct) {
         var pgData = new Dictionary<string, string?>(StringComparer.Ordinal);
-        foreach (var candidate in DatabaseDumpTargets.Candidates(containers)) {
+        foreach (var candidate in DatabaseDumpTargets.Candidates(containers, overrides)) {
             try {
                 var details = await docker.InspectContainerAsync(candidate.Id, ct);
                 pgData[candidate.Id] = (details.Config.Env ?? [])
@@ -624,7 +609,7 @@ public sealed class BackupService(
                 logger.LogWarning(ex, "Failed to inspect dump candidate {ContainerId}", candidate.Id);
             }
         }
-        return DatabaseDumpTargets.Select(containers, pgData, log);
+        return DatabaseDumpTargets.Select(containers, pgData, log, overrides);
     }
 
     /// <summary>
@@ -634,6 +619,77 @@ public sealed class BackupService(
     private Task<IReadOnlyList<DockerContainerInfo>> ListProjectContainersAsync(
         string project, CancellationToken ct) =>
         docker.ListContainersByLabelsAsync([$"{ComposeProjectLabel}={project}"], ct);
+
+    /// <summary>Everything a run decides before it touches a container — also what the Backups tab previews.</summary>
+    /// <param name="Candidates">The project's volumes, sorted.</param>
+    /// <param name="Containers">The project's containers, every state.</param>
+    /// <param name="DumpTargets">The databases captured as dumps.</param>
+    /// <param name="Plan">The plan.</param>
+    /// <param name="Overrides">The stack's per-service UI overrides by service name.</param>
+    /// <param name="DumpLog">What the dump policy logged while selecting targets.</param>
+    internal sealed record BackupPreparation(
+        IReadOnlyList<string> Candidates,
+        IReadOnlyList<DockerContainerInfo> Containers,
+        IReadOnlyList<DumpTarget> DumpTargets,
+        BackupPlan Plan,
+        IReadOnlyDictionary<string, BackupServiceOverride> Overrides,
+        IReadOnlyList<string> DumpLog);
+
+    /// <summary>
+    /// Steps 1–3 of a run: the stack's candidate volumes (by compose project label) and containers, the
+    /// databases captured as a logical dump instead of a file snapshot — they keep running and their data
+    /// volume leaves the archive, because the dump is the better copy of exactly that content — and the
+    /// plan that narrows the volumes to what the labels and overrides allow and works out who goes down
+    /// for them. Shared by the run and the preview on purpose: one code path, one answer.
+    /// </summary>
+    internal async Task<BackupPreparation> PrepareAsync(Stack stack, Action<string> log, CancellationToken ct) {
+        var project = stack.ComposeProjectName;
+        var overrides = await LoadOverridesAsync(stack.Id, ct);
+        var candidates = (await docker.ListVolumesAsync(ct))
+            .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
+            .Select(v => v.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+        var containers = await ListProjectContainersAsync(project, ct);
+
+        var dumpLog = new List<string>();
+        var dumpTargets = await SelectDumpTargetsAsync(containers, overrides, line => { dumpLog.Add(line); log(line); }, ct);
+
+        var dumpCovered = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var target in dumpTargets.Where(t => t.DataVolume is not null))
+            dumpCovered[target.DataVolume!] = $"covered by the '{target.Service}' dump";
+        var plan = Plan(containers, candidates, stack.BackupStopContainers, log,
+            keepRunning: new HashSet<string>(dumpTargets.Select(t => t.ContainerId), StringComparer.Ordinal),
+            excludeVolumes: dumpCovered,
+            quiesceMode: stack.BackupQuiesceMode,
+            overrides: overrides);
+        return new BackupPreparation(candidates, containers, dumpTargets, plan, overrides, dumpLog);
+    }
+
+    /// <summary>
+    /// The dry run the Backups tab shows (ADR-0020): what the next run would do with every container of
+    /// the stack as deployed right now, and why. Read-only — it lists and inspects, never stops.
+    /// </summary>
+    public async Task<BackupPlanPreview> PreviewPlanAsync(Stack stack, CancellationToken ct) {
+        var prep = await PrepareAsync(stack, _ => { }, ct);
+        return BackupPlanPreview.Build(
+            [.. prep.Containers.Select(c => BackupContainer.FromDocker(c, prep.Overrides))],
+            prep.Plan, prep.DumpTargets, prep.Overrides, prep.DumpLog,
+            stack.BackupStopContainers, stack.BackupQuiesceMode);
+    }
+
+    /// <summary>The stack's per-service UI overrides, keyed by service name.</summary>
+    private async Task<IReadOnlyDictionary<string, BackupServiceOverride>> LoadOverridesAsync(int stackId, CancellationToken ct) {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var rows = await db.StackBackupServiceOverrides.AsNoTracking()
+            .Where(o => o.StackId == stackId)
+            .ToListAsync(ct);
+        return rows.ToDictionary(
+            o => o.Service,
+            o => new BackupServiceOverride(o.Exclude, o.Stop, o.Dump),
+            StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// Turns the project's containers, the candidate volumes and the stack's master switch into a
@@ -657,9 +713,11 @@ public sealed class BackupService(
         IReadOnlyDictionary<string, string>? excludeVolumes = null,
         bool stopAllRunning = false,
         BackupQuiesceMode quiesceMode = BackupQuiesceMode.Stop,
-        bool forceStop = false) {
+        bool forceStop = false,
+        IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) {
         var plan = BackupPlan.Create(
-            containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning, quiesceMode, forceStop);
+            containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning, quiesceMode, forceStop,
+            overrides);
         foreach (var warning in plan.Warnings) log($"WARNING: {warning}");
         return plan;
     }
