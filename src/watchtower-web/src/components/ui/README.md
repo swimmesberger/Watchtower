@@ -70,6 +70,9 @@ Icons are auto-sized to 16px. Also exports `buttonVariants` for styling non-butt
 </Card>
 ```
 `interactive` adds hover border-strong + subtle shadow. Padding 20px desktop / 16px mobile.
+`CardContent` is fully padded on its own (put a `SectionHeader` inside it for a titled card —
+the usual pattern); it drops its top padding only when it directly follows a `CardHeader`. Don't
+pass `pt-*` overrides to re-add padding.
 
 ## StatCard — `@/components/ui/stat-card`
 
@@ -295,7 +298,8 @@ tokens). Editable (default) = password input for entering env values / tokens.
 ```tsx
 <SectionHeader eyebrow? title="Repository" description? action={<Button/>} />
 ```
-h2 + hairline underline + mb-4, right-aligned action slot.
+h2 + hairline underline + mb-4, right-aligned action slot (top-aligned beside a multi-line
+header, centered beside a bare title).
 
 ## Banner — `@/components/ui/banner`
 

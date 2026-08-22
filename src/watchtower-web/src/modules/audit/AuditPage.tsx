@@ -141,7 +141,7 @@ export function AuditPage() {
   ]
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-6 md:px-6">
+    <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Audit</h1>

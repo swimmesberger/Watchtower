@@ -122,7 +122,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           description="Where the compose project lives and how it’s deployed."
         />
         <Card>
-          <CardContent className="grid grid-cols-1 gap-4 pt-4 md:grid-cols-2 md:pt-5">
+          <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <Field label="Stack name" required className="md:col-span-2">
               {({ id }) => (
                 <Input
@@ -203,7 +203,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           description="Only needed for private repos or registries."
         />
         <Card>
-          <CardContent className="space-y-4 pt-4 md:pt-5">
+          <CardContent className="space-y-4">
             <Field label="Credential" hint="Only needed for private repositories">
               <Select
                 value={form.credentialId != null ? String(form.credentialId) : NO_CREDENTIAL}
@@ -273,7 +273,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           description="Redeploy without an inbound webhook: Watchtower polls the registry for newer images and the git branch for new commits."
         />
         <Card>
-          <CardContent className="space-y-4 pt-4 md:pt-5">
+          <CardContent className="space-y-4">
             <Field label="Mode">
               <Select
                 value={form.autoDeployMode ?? 'off'}
@@ -351,7 +351,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
       <section>
         <SectionHeader title="Danger zone" />
         <Card className="border-danger-bd">
-          <CardContent className="flex flex-col gap-4 pt-4 sm:flex-row sm:items-center sm:justify-between md:pt-5">
+          <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <p className="text-sm font-medium text-text">Delete stack</p>
               <p className="mt-0.5 text-[13px] text-text-2">

@@ -142,7 +142,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
 
       {configLoading ? (
         <Card>
-          <CardContent className="flex flex-col gap-4 p-5">
+          <CardContent className="flex flex-col gap-4">
             <Skeleton variant="line" className="w-2/3" />
             <Skeleton variant="line" className="w-1/2" />
           </CardContent>
@@ -159,7 +159,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
         />
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-5 p-5">
+          <CardContent className="flex flex-col gap-5">
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">

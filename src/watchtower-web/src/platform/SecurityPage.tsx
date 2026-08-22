@@ -73,7 +73,7 @@ export function SecurityPage() {
         <Skeleton className="h-32 w-full" />
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-4 pt-4 md:pt-5">
+          <CardContent className="flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex min-w-0 items-start gap-3">
                 <span

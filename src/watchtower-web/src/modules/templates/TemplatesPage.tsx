@@ -114,7 +114,7 @@ export function TemplatesPage() {
   )
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-6 p-4 md:p-6">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Templates</h1>
         <Button asChild variant="primary">

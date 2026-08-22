@@ -141,7 +141,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
         description={`Run this repository’s GitHub Actions jobs on this box in ephemeral containers.`}
       />
       <Card>
-        <CardContent className="space-y-4 pt-4 md:pt-5">
+        <CardContent className="space-y-4">
           <p className="text-[13px] text-text-2">
             Enabling CI registers ephemeral, just-in-time runners for{' '}
             <span className="font-mono text-text">{owner}/{name}</span> — no tokens are copied into
@@ -242,7 +242,7 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
 
       {/* Runner slots */}
       <Card>
-        <CardContent className="space-y-4 pt-4 md:pt-5">
+        <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
             <Hammer className="size-4 text-text-2" aria-hidden />
             <span className="text-sm text-text">
@@ -299,7 +299,7 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
 
       {/* Toolchains + cache warming */}
       <Card>
-        <CardContent className="space-y-3 pt-4 md:pt-5">
+        <CardContent className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Flame className="size-4 text-text-2" aria-hidden />
