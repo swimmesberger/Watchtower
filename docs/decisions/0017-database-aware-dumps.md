@@ -116,6 +116,40 @@ manifest lists**, not by psql's exit code: `pg_dumpall --clean` output reliably 
 `role "postgres" already exists`, so `ON_ERROR_STOP=1` would abort every restore. Diagnostics are
 counted and reported as a warning; missing databases fail the run.
 
+### 6. Plain-SQL `pg_dumpall` is a deliberate V1 choice; the per-database `pg_dump -Fc` split is the known upgrade
+
+`pg_dumpall` writes plain SQL only — there is no `--format`. Non-text formats (custom/directory/tar
+plus `pg_restore --globals-only`) were committed for PostgreSQL 18 and reverted before release, then
+re-committed for 19 and reverted again on 2026-06-18 after post-commit review, so plain text is all
+the cluster-wide tool offers for the foreseeable future. What that costs, from the official
+documentation and a published 11.9 GB benchmark (sources in the References below):
+
+- **Archive size**: nothing — the archive is gzipped downstream, and the docs note custom format
+  "will produce dump file sizes similar to using gzip".
+- **Dump time**: nothing — plain text is the fastest single-threaded writer (≈100 s vs ≈265 s for
+  uncompressed custom format in the benchmark); only `-Fd -j N` is faster, and `pg_dumpall` cannot
+  produce it.
+- **Restore time**: the real cost. A plain dump is replayed single-threaded by `psql`; `pg_restore
+  -j N` over a custom/directory dump restores ≈2× faster (735 s vs ≈380–400 s in the benchmark,
+  more on many-core hosts with many indexes) and allows selective restore of one table or schema.
+  For the database sizes Watchtower stacks carry this is seconds versus minutes on the rare path.
+
+The documented best practice for logical backups is `pg_dumpall --globals-only` for roles and
+tablespaces **plus** `pg_dump -Fc` (or `-Fd -j N`) per database, restored with `pg_restore -j N`
+and followed by `ANALYZE`. Physical backups with WAL archiving (pgBackRest, Barman, WAL-G; PITR,
+incrementals) are the production standard for large or RPO-sensitive clusters; they need an agent
+beside the database and a WAL archive, which a socket-only Watchtower cannot provide and the
+self-hosted stacks it targets do not need.
+
+Decision: keep the single whole-cluster plain dump for V1 — one artefact, stock tools for the
+manual restore, no extra restore steps to get wrong. The upgrade path is fixed now so the archive
+format does not have to change again: `_dumps/{service}/globals.sql` (`pg_dumpall --globals-only`)
+plus `_dumps/{service}/{database}.dump` (`pg_dump -Fc -Z0` — the archive's gzip compresses, avoiding
+double compression; `-Fd -j N` if parallel dumps are ever wanted), restored with `psql -f` for the
+globals and `pg_restore -j N --clean --if-exists -C -d postgres` per database, then `ANALYZE`. The
+manifest's `dumps[]` entries already carry `databases`, so the restore can verify per database
+either way. Adding `ANALYZE` after today's replay is a cheap independent improvement.
+
 ## Rejected alternatives
 
 - `Contains("postgres")` detection — see §2.
@@ -143,3 +177,24 @@ counted and reported as a warning; missing databases fail the run.
   `docs/backups.md` is the remedy. A v1 archive restores in the new code exactly as before.
 - Other engines (MySQL/MariaDB, MongoDB) fit the same `DumpEngine` + label shape and would extend
   this ADR rather than replace it.
+- Restores replay single-threaded through `psql`; the per-database custom-format split of §6 is the
+  known ≈2× restore-time upgrade and keeps the archive layout, so it can land without a new ADR.
+
+## References
+
+- PostgreSQL docs: [pg_dumpall](https://www.postgresql.org/docs/18/app-pg-dumpall.html),
+  [pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html) (output formats, parallel
+  restore, compression), [SQL Dump](https://www.postgresql.org/docs/current/backup-dump.html)
+  (`--globals-only` + per-database `pg_dump`, `psql` restore, `ANALYZE`),
+  [Populating a Database](https://www.postgresql.org/docs/current/populate.html) (`pg_restore --jobs`,
+  single-transaction trade-off).
+- Non-text `pg_dumpall`: committed for 18
+  ([depesz, 2025-04-15](https://www.depesz.com/2025/04/15/waiting-for-postgresql-18-non-text-modes-for-pg_dumpall-correspondingly-change-pg_restore/)),
+  reverted; re-committed for 19
+  ([depesz, 2026-03-17](https://www.depesz.com/2026/03/17/waiting-for-postgresql-19-add-non-text-output-formats-to-pg_dumpall/)),
+  reverted again 2026-06-18
+  ([pgsql-committers](http://www.mail-archive.com/pgsql-committers@lists.postgresql.org/msg46750.html)).
+- Format benchmark (11.9 GB, plain vs custom vs directory, `pg_restore -j4`):
+  [R. Dugin, PostgreSQL backups: comparing pg_dump speed in different formats](https://dev.to/rostislav_dugin/postgresql-backups-comparing-pgdump-speed-in-different-formats-and-with-different-compression-50oa).
+- Physical backup landscape: [Crunchy Data, Introduction to Postgres Backups](https://www.crunchydata.com/blog/introduction-to-postgres-backups);
+  [pgBackRest vs Barman vs WAL-G](https://dblog.co.kr/en/posts/postgresql-part-5).
