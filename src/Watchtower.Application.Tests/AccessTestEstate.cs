@@ -92,7 +92,12 @@ internal static class AccessTestEstate {
     /// the stack a tenant of that category, which is how a route ends up in a non-system realm.
     /// </summary>
     public static async Task<Route> AddRouteAsync(
-        this AuthTestHost host, string domain, AccessMode mode = AccessMode.Public, int? templateId = null) {
+        this AuthTestHost host,
+        string domain,
+        AccessMode mode = AccessMode.Public,
+        int? templateId = null,
+        string? bypassPaths = null,
+        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var ct = TestContext.Current.CancellationToken;
@@ -116,6 +121,8 @@ internal static class AccessTestEstate {
             ServiceName = "web",
             ContainerPort = 8080,
             AccessMode = mode,
+            BypassPaths = bypassPaths,
+            IdentityHeaderMode = identityHeaderMode,
         };
         db.Routes.Add(route);
         await db.SaveChangesAsync(ct);

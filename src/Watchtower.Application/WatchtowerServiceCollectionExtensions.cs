@@ -160,6 +160,13 @@ public static class WatchtowerServiceCollectionExtensions {
         // the context it writes through. Registered unconditionally — it is inert until something logs in.
         services.AddScoped<AuthSessionService>();
 
+        // The forward-auth decision (design.md §5): may this request enter that app, and as whom. Scoped
+        // like the context it reads through, and registered unconditionally alongside the other auth
+        // services: nothing resolves it while Auth:Enabled is false — the verify endpoint is mapped as a
+        // bare 404 in that mode. Shared with the in-process proxy so the two transports cannot come to
+        // different verdicts (ADR-0017, forthcoming).
+        services.AddScoped<AccessVerifier>();
+
         // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it
         // writes through. Registered unconditionally and inert until an account enrols.
         services.AddScoped<UserMfaService>();
