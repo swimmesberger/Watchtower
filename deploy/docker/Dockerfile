@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Non-root user; /data holds the SQLite database and, when the built-in reverse proxy is enabled, the
 # issued certificates and the ACME account key under /data/proxy-certs — so both survive a recreate in
-# the same named volume, with no second mount to declare (ADR-0017).
+# the same named volume, with no second mount to declare (ADR-0020).
 RUN groupadd -r watchtower && useradd -r -g watchtower watchtower \
     && mkdir -p /data && chown watchtower:watchtower /data
 

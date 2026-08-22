@@ -13,7 +13,7 @@ using Xunit;
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// Access control on the in-process proxy's request path (ADR-0017): the same verdicts
+/// Access control on the in-process proxy's request path (ADR-0020): the same verdicts
 /// <c>AccessVerifyTests</c> pins down for Caddy's <c>forward_auth</c> hop, reached without one.
 /// </summary>
 /// <remarks>

@@ -1,6 +1,6 @@
 # Built-in reverse proxy (in-process) — operator guide
 
-The default provider since [ADR-0017](../decisions/0017-in-process-yarp-proxy.md). Watchtower binds
+The default provider since [ADR-0020](../decisions/0020-in-process-yarp-proxy.md). Watchtower binds
 the ingress ports itself, terminates TLS with certificates it obtains from an ACME CA, and forwards
 each request to the routed container over that stack's private ingress network. There is **no second
 container, no control network and no admin API** — the proxy is Watchtower.

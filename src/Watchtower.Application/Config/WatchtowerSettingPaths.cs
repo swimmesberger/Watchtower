@@ -40,7 +40,7 @@ public static class WatchtowerSettingPaths {
 
     /// <summary>
     /// Internal marker: <see cref="Services.ProxyProviderMigration"/> has already decided whether this
-    /// installation predates ADR-0017's default flip. Not a user setting — never offered in the UI, never
+    /// installation predates ADR-0020's default flip. Not a user setting — never offered in the UI, never
     /// listed among the proxy card's paths, and deliberately not env-pinnable. It exists because the
     /// question the migration answers ("did this instance rely on the old implicit caddy default?") stops
     /// being answerable the moment the instance adds its first route under the new default.

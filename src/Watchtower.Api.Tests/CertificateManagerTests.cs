@@ -7,7 +7,7 @@ namespace Watchtower.Api.Tests;
 
 /// <summary>
 /// The scheduling half of certificate management: which hosts are wanted, when an attempt is made, and
-/// — most of all — when files are and are not deleted. ADR-0017.
+/// — most of all — when files are and are not deleted. ADR-0020.
 /// </summary>
 /// <remarks>
 /// The asymmetry these tests exist to protect: a host leaving the desired set costs nothing to get wrong

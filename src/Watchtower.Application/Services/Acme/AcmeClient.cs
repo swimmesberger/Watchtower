@@ -12,10 +12,10 @@ namespace Watchtower.Application.Services.Acme;
 /// <summary>
 /// A minimal RFC 8555 client: directory discovery, account registration (with optional External Account
 /// Binding), one-identifier orders, HTTP-01 challenge triggering, finalization and certificate download.
-/// ADR-0017.
+/// ADR-0020.
 /// </summary>
 /// <remarks>
-/// Hand-written over <see cref="HttpClient"/> and source-generated JSON, for the reasons ADR-0017 records:
+/// Hand-written over <see cref="HttpClient"/> and source-generated JSON, for the reasons ADR-0020 records:
 /// the maintained .NET ACME libraries either carry Newtonsoft.Json or ship a compiled-in public-suffix
 /// list that goes stale, and the protocol surface Watchtower needs is one order shape and six requests.
 /// The shape follows <see cref="CloudflareApiClient"/> — a private send method, the server's own error

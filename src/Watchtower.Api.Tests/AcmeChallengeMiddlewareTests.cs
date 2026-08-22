@@ -7,7 +7,7 @@ using Xunit;
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// The ACME HTTP-01 responder (ADR-0017). Everything here is about <em>reachability</em>:
+/// The ACME HTTP-01 responder (ADR-0020). Everything here is about <em>reachability</em>:
 /// the CA calls this path over plain HTTP, on the domain being validated, as an unauthenticated stranger,
 /// and every one of Watchtower's own defences would otherwise have something to say about that.
 /// </summary>

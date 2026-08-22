@@ -9,7 +9,7 @@ namespace Watchtower.Api.Tests;
 
 /// <summary>
 /// One certificate, ordered from an ACME CA and installed — end to end, over the real protocol, through
-/// the real request pipeline. ADR-0017.
+/// the real request pipeline. ADR-0020.
 /// </summary>
 /// <remarks>
 /// The CA here verifies every signature and fetches the challenge from Watchtower itself

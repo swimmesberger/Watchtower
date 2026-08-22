@@ -74,7 +74,7 @@ public sealed class ProxyRouteTableSnapshot {
 /// <summary>
 /// The in-process proxy's routing table: a singleton holding the current
 /// <see cref="ProxyRouteTableSnapshot"/>, replaced wholesale by
-/// <see cref="YarpProxyProvider.ApplyAsync"/> on every route change — ADR-0017.
+/// <see cref="YarpProxyProvider.ApplyAsync"/> on every route change — ADR-0020.
 /// </summary>
 /// <remarks>
 /// The read is the request hot path and the write happens once per reconcile, so the concurrency

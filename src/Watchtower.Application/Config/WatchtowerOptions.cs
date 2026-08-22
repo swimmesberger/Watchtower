@@ -85,7 +85,7 @@ public sealed record WatchtowerOptions {
     public MetricsOptions Metrics { get; init; } = new();
 
     /// <summary>
-    /// Reverse-proxy settings. Three providers (ADR-0015, ADR-0017): <c>yarp</c> — the in-process
+    /// Reverse-proxy settings. Three providers (ADR-0015, ADR-0020): <c>yarp</c> — the in-process
     /// proxy Watchtower runs itself, and the default; <c>caddy</c> — a sibling Caddy container,
     /// deprecated and kept for existing installs; <c>cloudflare</c> — a Cloudflare Tunnel.
     /// Bound from <c>WATCHTOWER__PROXY__*</c> (e.g. <c>WATCHTOWER__PROXY__ENABLED=true</c>,
@@ -351,7 +351,7 @@ public sealed record CiOptions {
 }
 
 /// <summary>
-/// Settings for the reverse-proxy plane. Three providers exist — see ADR-0015 and ADR-0017:
+/// Settings for the reverse-proxy plane. Three providers exist — see ADR-0015 and ADR-0020:
 /// <list type="bullet">
 ///   <item><description>
 ///     <b><c>yarp</c></b> — the <b>in-process</b> proxy and the default: Watchtower terminates the
@@ -359,7 +359,7 @@ public sealed record CiOptions {
 ///     no control network at all.
 ///   </description></item>
 ///   <item><description>
-///     <b><c>caddy</c></b> — <b>deprecated</b> (ADR-0017), kept for existing installs: Watchtower
+///     <b><c>caddy</c></b> — <b>deprecated</b> (ADR-0020), kept for existing installs: Watchtower
 ///     manages a sibling Caddy container that publishes host ports 80/443 with automatic TLS.
 ///   </description></item>
 ///   <item><description>
@@ -381,7 +381,7 @@ public sealed record ProxyOptions {
     /// Which proxy backend serves the routes: <c>yarp</c> (the in-process proxy, default),
     /// <c>caddy</c> (deprecated) or <c>cloudflare</c>. Unknown values resolve to <c>yarp</c>.
     /// Runtime-switchable — switching tears the old provider's data plane down and reconciles the new
-    /// one. An instance that already served routes under the pre-ADR-0017 implicit <c>caddy</c>
+    /// one. An instance that already served routes under the pre-ADR-0020 implicit <c>caddy</c>
     /// default is pinned to <c>caddy</c> once at startup by
     /// <see cref="Services.ProxyProviderMigration"/>, so an upgrade never switches providers silently.
     /// </summary>
@@ -397,7 +397,7 @@ public sealed record ProxyOptions {
 
     /// <summary>
     /// Caddy image to run. Defaults to the official <c>caddy:2</c>. Caddy only — and Caddy is
-    /// deprecated (ADR-0017).
+    /// deprecated (ADR-0020).
     /// </summary>
     public string CaddyImage { get; init; } = "caddy:2";
 
@@ -409,7 +409,7 @@ public sealed record ProxyOptions {
 
     /// <summary>
     /// The provider <see cref="Provider"/> resolves to (case-insensitive; unknown or blank ⇒
-    /// <c>yarp</c>, the default since ADR-0017).
+    /// <c>yarp</c>, the default since ADR-0020).
     /// </summary>
     public ProxyProviderKind ResolveProvider() {
         var provider = Provider?.Trim() ?? "";
@@ -424,13 +424,13 @@ public sealed record ProxyOptions {
     public string ProviderName() => ProxyProviderNames.From(ResolveProvider());
 }
 
-/// <summary>The reverse-proxy backends. See ADR-0015 and ADR-0017.</summary>
+/// <summary>The reverse-proxy backends. See ADR-0015 and ADR-0020.</summary>
 public enum ProxyProviderKind {
-    /// <summary>A sibling Caddy container on host ports 80/443. Deprecated by ADR-0017.</summary>
+    /// <summary>A sibling Caddy container on host ports 80/443. Deprecated by ADR-0020.</summary>
     Caddy,
     Cloudflare,
     /// <summary>
-    /// The in-process reverse proxy — the default since ADR-0017: Watchtower terminates 80/443 itself,
+    /// The in-process reverse proxy — the default since ADR-0020: Watchtower terminates 80/443 itself,
     /// no sibling container.
     /// </summary>
     Yarp,
@@ -461,7 +461,7 @@ public static class ProxyProviderNames {
 }
 
 /// <summary>
-/// In-process reverse proxy + ACME settings (<c>WATCHTOWER__PROXY__YARP__*</c>), per ADR-0017. Used only
+/// In-process reverse proxy + ACME settings (<c>WATCHTOWER__PROXY__YARP__*</c>), per ADR-0020. Used only
 /// when <see cref="ProxyOptions.Provider"/> is <c>yarp</c>: Watchtower binds 80/443 itself, forwards
 /// to the routed containers over the per-stack ingress networks, and obtains its own certificates
 /// from an ACME CA — so there is neither a sibling proxy container nor a control network.

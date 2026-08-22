@@ -9,7 +9,7 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services.Yarp;
 
 /// <summary>
-/// The in-process reverse proxy — ADR-0017. Watchtower terminates 80/443 itself and
+/// The in-process reverse proxy — ADR-0020. Watchtower terminates 80/443 itself and
 /// forwards to the routed containers, instead of managing a sibling proxy container. It is the third
 /// <see cref="IProxyProvider"/> behind <see cref="ProxyProviderRouter"/> and self-gates exactly like
 /// the other two — every method no-ops unless the proxy is enabled and <c>yarp</c> is selected.

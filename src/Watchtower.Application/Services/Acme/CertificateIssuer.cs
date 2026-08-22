@@ -25,7 +25,7 @@ public abstract record IssueOutcome {
 }
 
 /// <summary>
-/// Runs one ACME order end to end for one host — ADR-0017: DNS preflight, account, order,
+/// Runs one ACME order end to end for one host — ADR-0020: DNS preflight, account, order,
 /// HTTP-01, CSR, finalize, download, install. Stateless with respect to scheduling: it makes exactly one
 /// attempt and reports how it went, and <see cref="CertificateManager"/> owns everything about when.
 /// </summary>

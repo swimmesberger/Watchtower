@@ -5,7 +5,7 @@ namespace Watchtower.Api.Proxy;
 
 /// <summary>
 /// Answers ACME HTTP-01 challenges on <c>/.well-known/acme-challenge/{token}</c> for <em>every</em> host
-/// the process serves — ADR-0017. First in the pipeline, ahead of the host dispatcher, so a
+/// the process serves — ADR-0020. First in the pipeline, ahead of the host dispatcher, so a
 /// challenge is neither forwarded to an upstream nor redirected to HTTPS: the CA calls it over plain HTTP
 /// on port 80, by definition, and both of those outcomes would fail the validation.
 /// </summary>

@@ -14,7 +14,7 @@ The feature is **opt-in**. While it is off, routes are stored and nothing is ser
 | `cloudflare` | A Cloudflare Tunnel: outbound only, no open ports, TLS at Cloudflare's edge, access gated by Zero Trust. | [cloudflare.md](cloudflare.md) |
 
 Background: [ADR-0015](../decisions/0015-proxy-provider-abstraction.md) (the provider seam) and
-[ADR-0017](../decisions/0017-in-process-yarp-proxy.md) (the in-process provider and the default flip).
+[ADR-0020](../decisions/0020-in-process-yarp-proxy.md) (the in-process provider and the default flip).
 
 ## The route table is the source of truth
 
@@ -48,7 +48,7 @@ need `ports:` in their own compose files.
 
 Note what this means for the built-in provider: **Watchtower's own container joins every ingress
 network**, because it *is* the proxy. That is a deliberate exposure change from the Caddy topology —
-see the consequences section of [ADR-0017](../decisions/0017-in-process-yarp-proxy.md).
+see the consequences section of [ADR-0020](../decisions/0020-in-process-yarp-proxy.md).
 
 ## Choosing a provider
 
@@ -66,7 +66,7 @@ Environment variables win over the UI ([ADR-0014](../decisions/0014-env-wins-run
 setting supplied that way shows as pinned and read-only on the Settings page until the variable is
 removed.
 
-**Upgrading from before ADR-0017:** an instance that has routes and never named a provider is pinned
+**Upgrading from before ADR-0020:** an instance that has routes and never named a provider is pinned
 to `caddy` once, at the first start after the upgrade — it keeps running exactly as it did, and the
 change is logged and recorded in the audit trail. Fresh installations get the built-in provider, and
 an internal marker written on that first start makes sure they are never pinned later, once they have

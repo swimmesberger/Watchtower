@@ -1,4 +1,4 @@
-# ADR-0017: The reverse proxy runs in Watchtower's own process (YARP + ACME), and is the default
+# ADR-0020: The reverse proxy runs in Watchtower's own process (YARP + ACME), and is the default
 
 - Status: Accepted
 - Date: 2026-08-22

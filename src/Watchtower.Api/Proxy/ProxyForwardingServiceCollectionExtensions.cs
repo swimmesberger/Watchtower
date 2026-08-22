@@ -1,7 +1,7 @@
 namespace Watchtower.Api.Proxy;
 
 /// <summary>
-/// Host-side registration for the in-process proxy's request path — ADR-0017. The control
+/// Host-side registration for the in-process proxy's request path — ADR-0020. The control
 /// plane (the route table, the provider, the challenge store) is registered by
 /// <c>AddWatchtowerServices</c> in the Application layer; only these two touch YARP, which is why they
 /// live here and the Application project stays proxy-agnostic.

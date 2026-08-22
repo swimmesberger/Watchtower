@@ -30,7 +30,7 @@ public enum AcmeFailureClass {
 }
 
 /// <summary>
-/// When to renew and when to try again — ADR-0017. Pure and static: every decision here is
+/// When to renew and when to try again — ADR-0020. Pure and static: every decision here is
 /// a function of the clock and a count, so the interesting cases (a 24-hour certificate from a test CA, a
 /// rate-limited account, a host that has failed six times) are testable without a CA or a background loop.
 /// </summary>

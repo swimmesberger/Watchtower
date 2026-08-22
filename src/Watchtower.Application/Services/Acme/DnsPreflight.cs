@@ -4,7 +4,7 @@ namespace Watchtower.Application.Services.Acme;
 
 /// <summary>
 /// Resolves a host's A/AAAA records — the one question asked before any ACME traffic is generated, and
-/// the same one <c>proxy.checkDns</c> answers for the Routes page. ADR-0017.
+/// the same one <c>proxy.checkDns</c> answers for the Routes page. ADR-0020.
 /// </summary>
 /// <remarks>
 /// A class rather than a static call so it can be substituted in tests, and shared between the handler

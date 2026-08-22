@@ -1,6 +1,6 @@
 # ADR-0015: Pluggable reverse-proxy provider — built-in Caddy, or a Cloudflare Tunnel
 
-- Status: Accepted — extended by [ADR-0017](0017-in-process-yarp-proxy.md) (2026-08-22): `yarp` (in
+- Status: Accepted — extended by [ADR-0020](0020-in-process-yarp-proxy.md) (2026-08-22): `yarp` (in
   process) is the third provider and the default; `caddy` is deprecated.
 - Date: 2026-08-17
 - Related: [ADR-0007](0007-pluggable-metrics-backend.md) (the provider pattern this copies),
@@ -27,7 +27,7 @@ runtime settings change re-route the next call.
 
 1. **`IProxyProvider`** (`Enabled`, `ApplyAsync`, `ConnectStackAsync`, `IsRunningAsync`) is the seam
    consumers inject; `ProxyProviderRouter` resolves the selected backend per call from
-   `Proxy:Provider` (`caddy` default | `cloudflare` — ADR-0017 added `yarp` and made it the default).
+   `Proxy:Provider` (`caddy` default | `cloudflare` — ADR-0020 added `yarp` and made it the default).
    Providers are resolved from the container, so a test substitute registered at the interface keeps
    working.
 2. **Each provider self-gates on "enabled AND selected".** Both subscribe to the options monitor and

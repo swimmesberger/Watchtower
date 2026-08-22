@@ -1,7 +1,7 @@
 namespace Watchtower.Application.Services.Yarp;
 
 /// <summary>
-/// What the host actually managed to bind for the in-process proxy — ADR-0017. Filled in
+/// What the host actually managed to bind for the in-process proxy — ADR-0020. Filled in
 /// once at <c>ApplicationStarted</c> from <c>IServerAddressesFeature</c>; read by
 /// <see cref="YarpProxyProvider"/> for its running state and by the Settings config surface, which
 /// warns when the proxy is enabled but 443 never came up.

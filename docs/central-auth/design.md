@@ -347,7 +347,7 @@ Caddy `forward_auth` sends the original headers (incl. `Cookie`) plus `X-Forward
 ## 6. Proxy config changes
 
 Two providers run this gate in front of an app: the deprecated **Caddy** container, whose generated
-configuration is below, and the **in-process** provider (ADR-0017), which renders exactly the same
+configuration is below, and the **in-process** provider (ADR-0020), which renders exactly the same
 contract as pipeline steps. Both call the same `AccessVerifier`, so they cannot come to different
 verdicts. The **Cloudflare Tunnel** provider is not in this picture at all — there access belongs to
 Zero Trust.

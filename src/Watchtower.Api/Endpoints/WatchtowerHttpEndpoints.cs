@@ -104,7 +104,7 @@ public static class WatchtowerHttpEndpoints {
     /// silent one, which is the right direction, but this is where to look when it happens.
     /// </para>
     /// <para>
-    /// Answered at all only while <c>Caddy</c> is the selected provider (ADR-0015, ADR-0017).
+    /// Answered at all only while <c>Caddy</c> is the selected provider (ADR-0015, ADR-0020).
     /// It exists for one caller — Caddy's on-demand-TLS module — and the other two providers have no use
     /// for it: the in-process proxy reads its own route table straight out of memory, and Cloudflare's edge
     /// terminates TLS and never asks anyone whether a hostname is known. Under either of those the endpoint

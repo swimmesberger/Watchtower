@@ -5,7 +5,7 @@ namespace Watchtower.Application.Services.Acme;
 
 /// <summary>
 /// The tokens an in-flight ACME HTTP-01 challenge expects to be answered on
-/// <c>/.well-known/acme-challenge/{token}</c> — ADR-0017. The certificate manager publishes
+/// <c>/.well-known/acme-challenge/{token}</c> — ADR-0020. The certificate manager publishes
 /// one before it tells the CA to validate and drops it when the order settles; the challenge middleware
 /// (the only reader) answers from here without touching a database or a disk.
 /// </summary>

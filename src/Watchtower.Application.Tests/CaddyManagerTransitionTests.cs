@@ -13,7 +13,7 @@ namespace Watchtower.Application.Tests;
 /// </summary>
 public sealed class CaddyManagerTransitionTests {
     // Caddy is named explicitly rather than left to the default, which is the in-process provider since
-    // ADR-0017: these fixtures are about what the *Caddy* manager does, and leaning on whichever provider
+    // ADR-0020: these fixtures are about what the *Caddy* manager does, and leaning on whichever provider
     // happens to be the default would turn every one of them into a test of the default instead.
     private static readonly ProxyOptions Disabled = new() { Enabled = false, Provider = ProxyProviderNames.Caddy };
     private static readonly ProxyOptions Enabled = new() { Enabled = true, Provider = ProxyProviderNames.Caddy };
@@ -58,7 +58,7 @@ public sealed class CaddyManagerTransitionTests {
     }
 
     /// <summary>
-    /// The default provider is the in-process one (ADR-0017), so enabling the proxy without naming a
+    /// The default provider is the in-process one (ADR-0020), so enabling the proxy without naming a
     /// backend must leave the Caddy container alone. This is the transition an operator who never had
     /// Caddy takes, and the one the default flip made possible in the first place.
     /// </summary>

@@ -83,7 +83,7 @@ public abstract record AccessDecision {
 /// The forward-auth decision itself (docs/central-auth/design.md §5): given a request's host, path, cookie
 /// and shape, may it enter — and as whom? Lives here rather than in the endpoint because two transports have
 /// to reach the same verdict: Caddy's <c>forward_auth</c> hop to <c>GET /api/access/verify</c>, and the
-/// in-process proxy, which asks this service directly (see ADR-0017). A second implementation
+/// in-process proxy, which asks this service directly (see ADR-0020). A second implementation
 /// of "may this request pass" would be a hole, not a bug — the same reasoning that puts
 /// <see cref="RouteAccessPolicy"/> in one place.
 /// </summary>
