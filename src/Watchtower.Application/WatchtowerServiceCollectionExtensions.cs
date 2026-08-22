@@ -15,6 +15,7 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
 
@@ -94,12 +95,14 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy (ADR-0015) — two providers behind one runtime router, mirroring the metrics
-        // backend (ADR-0007): Caddy (host ports 80/443, automatic TLS) and Cloudflare Tunnel
-        // (cloudflared + the Cloudflare API). Both are registered unconditionally and hosted so the
-        // active one reconciles on startup (each self-gates on Proxy:Enabled + Proxy:Provider);
-        // consumers inject IProxyProvider and the router resolves the selected backend per call, which
-        // is what makes the provider switchable from the Settings page without a restart.
+        // Reverse proxy — ADR-0015, extended by ADR-0017 (forthcoming) for the third provider. Three
+        // of them behind one runtime router, mirroring the metrics backend (ADR-0007): Caddy (a sibling
+        // container on host ports 80/443, automatic TLS),
+        // Cloudflare Tunnel (cloudflared + the Cloudflare API) and the in-process proxy (Watchtower
+        // binds 80/443 itself, no sibling container). All three are registered unconditionally and
+        // hosted so the active one reconciles on startup (each self-gates on Proxy:Enabled +
+        // Proxy:Provider); consumers inject IProxyProvider and the router resolves the selected backend
+        // per call, which is what makes the provider switchable from the Settings page without a restart.
         // The general audit trail (audit.listEvents). Singleton — its writers are the singleton
         // providers; TryAdd so tests can substitute a recording double.
         services.TryAddSingleton<AuditLog>();
@@ -109,7 +112,24 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CloudflareApiClient>();
         services.AddSingleton<CloudflareTunnelProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
+        // In-process provider: the routing table and the listener outcome are process state the request
+        // path reads, so both are singletons independent of whether the provider is the active one.
+        services.AddSingleton<ProxyRouteTable>();
+        services.AddSingleton<YarpListenerState>();
+        services.AddSingleton<RouteStatusUpdater>();
+        // Placeholder until the ACME certificate manager lands — only this registration is replaced.
+        services.AddSingleton<IProxyCertificateManager, NoOpProxyCertificateManager>();
+        services.AddSingleton<YarpProxyProvider>();
+        services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
+
+        // Where the in-process proxy keeps its issued certificates and ACME account key. Created up
+        // front for the same reason Auth:KeyPath is below: the certificate store is opened over this
+        // directory, and a path the process cannot write is worth failing on at startup rather than at
+        // the first issuance. Bind-time, hence read straight off configuration.
+        var certPath = section.GetValue<string>("Proxy:Yarp:CertPath");
+        if (string.IsNullOrWhiteSpace(certPath)) certPath = new YarpProxyOptions().CertPath;
+        Directory.CreateDirectory(certPath);
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and
@@ -164,7 +184,7 @@ public static class WatchtowerServiceCollectionExtensions {
         // like the context it reads through, and registered unconditionally alongside the other auth
         // services: nothing resolves it while Auth:Enabled is false — the verify endpoint is mapped as a
         // bare 404 in that mode. Shared with the in-process proxy so the two transports cannot come to
-        // different verdicts (ADR-0017, forthcoming).
+        // different verdicts — ADR-0017 (forthcoming).
         services.AddScoped<AccessVerifier>();
 
         // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it

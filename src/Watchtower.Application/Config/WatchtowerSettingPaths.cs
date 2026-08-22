@@ -39,6 +39,12 @@ public static class WatchtowerSettingPaths {
     public const string ProxyProvider = "Watchtower:Proxy:Provider";
     public const string ProxyAdminEmail = "Watchtower:Proxy:AdminEmail";
     public const string ProxyCaddyImage = "Watchtower:Proxy:CaddyImage";
+    public const string ProxyYarpCertPath = "Watchtower:Proxy:Yarp:CertPath";
+    public const string ProxyYarpAcmeDirectoryUrl = "Watchtower:Proxy:Yarp:AcmeDirectoryUrl";
+    public const string ProxyYarpAcmeCaBundlePath = "Watchtower:Proxy:Yarp:AcmeCaBundlePath";
+    public const string ProxyYarpAcmeEabKeyId = "Watchtower:Proxy:Yarp:AcmeEabKeyId";
+    public const string ProxyYarpAcmeEabHmacKey = "Watchtower:Proxy:Yarp:AcmeEabHmacKey";
+    public const string ProxyYarpRedirectHttpToHttps = "Watchtower:Proxy:Yarp:RedirectHttpToHttps";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";
     public const string ProxyCloudflareZoneId = "Watchtower:Proxy:Cloudflare:ZoneId";
     public const string ProxyCloudflareApiToken = "Watchtower:Proxy:Cloudflare:ApiToken";

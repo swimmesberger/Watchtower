@@ -645,10 +645,15 @@ function MetricsCard() {
 
 // ── Reverse proxy card (runtime-switchable, no restart) ───────────────────────
 
+/** Complete, so a stored provider always has a label to render — including one not offered below. */
 const PROVIDER_LABELS: Record<ProxyProvider, string> = {
   caddy: 'Caddy (built-in, ports 80/443)',
+  yarp: 'Built-in (in-process, ports 80/443)',
   cloudflare: 'Cloudflare Tunnel (no open ports)',
 }
+
+/** What the picker offers. phase 7 adds 'yarp' — its settings block does not exist yet. */
+const SELECTABLE_PROVIDERS: ProxyProvider[] = ['caddy', 'cloudflare']
 
 interface ProxyDraft {
   enabled: boolean
@@ -809,7 +814,7 @@ function ProxyCard() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {(Object.keys(PROVIDER_LABELS) as ProxyProvider[]).map(p => (
+                      {SELECTABLE_PROVIDERS.map(p => (
                         <SelectItem key={p} value={p}>
                           {PROVIDER_LABELS[p]}
                         </SelectItem>

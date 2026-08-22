@@ -348,10 +348,13 @@ public sealed record CiOptions {
 }
 
 /// <summary>
-/// Settings for the reverse-proxy plane. Two providers exist (ADR-0015): the built-in <b>Caddy</b>
-/// proxy (Watchtower manages a Caddy container publishing host ports 80/443 with automatic TLS) and a
-/// <b>Cloudflare Tunnel</b> (routes are projected into a cloudflared tunnel's ingress rules + DNS via
-/// the Cloudflare API — no host ports, no ACME). Both project the same <c>Route</c> table.
+/// Settings for the reverse-proxy plane. Three providers exist — see ADR-0015, extended by ADR-0017
+/// (forthcoming) for the third: the built-in
+/// <b>Caddy</b> proxy (Watchtower manages a Caddy container publishing host ports 80/443 with
+/// automatic TLS), a <b>Cloudflare Tunnel</b> (routes are projected into a cloudflared tunnel's
+/// ingress rules + DNS via the Cloudflare API — no host ports, no ACME), and the <b>in-process</b>
+/// proxy (<c>yarp</c>: Watchtower terminates 80/443 itself and issues its own certificates, with no
+/// sibling container at all). All three project the same <c>Route</c> table.
 /// Disabled by default so nothing binds ports or spawns containers unless the operator opts in.
 /// </summary>
 public sealed record ProxyOptions {
@@ -362,35 +365,136 @@ public sealed record ProxyOptions {
     public bool Enabled { get; init; } = false;
 
     /// <summary>
-    /// Which proxy backend serves the routes: <c>caddy</c> (default) or <c>cloudflare</c>.
-    /// Unknown values resolve to <c>caddy</c>. Runtime-switchable — switching tears the old
-    /// provider's data plane down and reconciles the new one.
+    /// Which proxy backend serves the routes: <c>caddy</c> (default), <c>cloudflare</c> or
+    /// <c>yarp</c> (the in-process proxy). Unknown values resolve to <c>caddy</c>.
+    /// Runtime-switchable — switching tears the old provider's data plane down and reconciles the new
+    /// one.
     /// </summary>
     public string Provider { get; init; } = "caddy";
 
     /// <summary>
     /// Email registered with the ACME CA (Let's Encrypt/ZeroSSL) for expiry notices. Optional but
-    /// recommended. When empty, Caddy issues certificates without an account email. Caddy only.
+    /// recommended. When empty, certificates are issued without an account email. Read by both
+    /// certificate-issuing providers — Caddy and the in-process proxy; ignored by Cloudflare, whose
+    /// edge terminates TLS.
     /// </summary>
     public string? AdminEmail { get; init; }
 
     /// <summary>Caddy image to run. Defaults to the official <c>caddy:2</c>. Caddy only.</summary>
     public string CaddyImage { get; init; } = "caddy:2";
 
+    /// <summary>In-process proxy settings. Only used when <see cref="Provider"/> is <c>yarp</c>.</summary>
+    public YarpProxyOptions Yarp { get; init; } = new();
+
     /// <summary>Cloudflare Tunnel settings. Only used when <see cref="Provider"/> is <c>cloudflare</c>.</summary>
     public CloudflareProxyOptions Cloudflare { get; init; } = new();
 
     /// <summary>The provider <see cref="Provider"/> resolves to (case-insensitive; unknown ⇒ <c>caddy</c>).</summary>
-    public ProxyProviderKind ResolveProvider() =>
-        string.Equals(Provider, "cloudflare", StringComparison.OrdinalIgnoreCase)
-            ? ProxyProviderKind.Cloudflare
-            : ProxyProviderKind.Caddy;
+    public ProxyProviderKind ResolveProvider() {
+        var provider = Provider?.Trim() ?? "";
+        if (string.Equals(provider, ProxyProviderNames.Cloudflare, StringComparison.OrdinalIgnoreCase))
+            return ProxyProviderKind.Cloudflare;
+        if (string.Equals(provider, ProxyProviderNames.Yarp, StringComparison.OrdinalIgnoreCase))
+            return ProxyProviderKind.Yarp;
+        return ProxyProviderKind.Caddy;
+    }
+
+    /// <summary>The canonical wire name of the resolved provider — what the API surfaces and stores.</summary>
+    public string ProviderName() => ProxyProviderNames.From(ResolveProvider());
 }
 
-/// <summary>The two reverse-proxy backends (ADR-0015).</summary>
+/// <summary>The reverse-proxy backends. See ADR-0015 and ADR-0017 (forthcoming).</summary>
 public enum ProxyProviderKind {
     Caddy,
     Cloudflare,
+    /// <summary>The in-process reverse proxy: Watchtower terminates 80/443 itself, no sibling container.</summary>
+    Yarp,
+}
+
+/// <summary>
+/// The canonical wire names of the proxy providers — the strings <c>Proxy:Provider</c> is stored as
+/// and the API surfaces. One place so the handlers, the validation message and the settings writer
+/// cannot drift apart.
+/// </summary>
+public static class ProxyProviderNames {
+    public const string Caddy = "caddy";
+    public const string Cloudflare = "cloudflare";
+    public const string Yarp = "yarp";
+
+    /// <summary>Every accepted provider name, in the order the Settings page offers them.</summary>
+    public static readonly string[] All = [Caddy, Cloudflare, Yarp];
+
+    /// <summary>The wire name of a resolved provider kind.</summary>
+    public static string From(ProxyProviderKind kind) => kind switch {
+        ProxyProviderKind.Cloudflare => Cloudflare,
+        ProxyProviderKind.Yarp => Yarp,
+        _ => Caddy,
+    };
+}
+
+/// <summary>
+/// In-process reverse proxy + ACME settings (<c>WATCHTOWER__PROXY__YARP__*</c>), per ADR-0017
+/// (forthcoming). Used only
+/// when <see cref="ProxyOptions.Provider"/> is <c>yarp</c>: Watchtower binds 80/443 itself, forwards
+/// to the routed containers over the per-stack ingress networks, and obtains its own certificates
+/// from an ACME CA — so there is neither a sibling proxy container nor a control network.
+/// </summary>
+public sealed record YarpProxyOptions {
+    /// <summary>
+    /// Directory holding the issued PEM certificates and the ACME account key. Read at bind time
+    /// (the directory is created at startup and the certificate store is opened over it), so it is
+    /// environment/appsettings-only — not editable from the Settings page.
+    /// </summary>
+    public string CertPath { get; init; } = "/data/proxy-certs";
+
+    /// <summary>
+    /// ACME directory URL of the CA that issues the certificates. Defaults to Let's Encrypt
+    /// production; point it at the staging directory while testing, or at an internal CA's directory.
+    /// </summary>
+    public string AcmeDirectoryUrl { get; init; } = "https://acme-v02.api.letsencrypt.org/directory";
+
+    /// <summary>
+    /// Path to a PEM bundle of roots trusted <em>in addition</em> to the system trust store when
+    /// talking to the ACME directory. The escape hatch for an internal CA (e.g. step-ca) whose root
+    /// the container does not ship. Optional; unset means system trust only.
+    /// </summary>
+    public string? AcmeCaBundlePath { get; init; }
+
+    /// <summary>
+    /// External Account Binding key id, for CAs that require an account to be bound to an existing
+    /// customer record (ZeroSSL, Sectigo, many internal CAs). Set together with
+    /// <see cref="AcmeEabHmacKey"/> or not at all.
+    /// </summary>
+    public string? AcmeEabKeyId { get; init; }
+
+    /// <summary>
+    /// External Account Binding HMAC key, base64url-encoded as the CA hands it out. Treated as a
+    /// secret — never logged, never echoed to the UI (the config surface reports only whether one is
+    /// stored).
+    /// </summary>
+    public string? AcmeEabHmacKey { get; init; }
+
+    /// <summary>
+    /// How many certificate orders may be in flight at once. Kept low on purpose: ACME CAs rate-limit
+    /// per account, and a first start with many routes would otherwise burn the budget in one burst.
+    /// Environment/appsettings only.
+    /// </summary>
+    public int AcmeMaxConcurrentOrders { get; init; } = 2;
+
+    /// <summary>
+    /// When true (default), the challenge responder is probed over the public hostname before the
+    /// order is submitted, so a domain whose DNS does not point here fails fast as
+    /// <see cref="Entities.RouteStatus.AwaitingDns"/> instead of consuming an ACME failure.
+    /// Environment only — an operator behind a split-horizon DNS may need it off.
+    /// </summary>
+    public bool AcmeSelfCheckEnabled { get; init; } = true;
+
+    /// <summary>
+    /// When true (default), plain HTTP requests for a TLS route are redirected to HTTPS. Turn it off
+    /// when another TLS terminator (a load balancer, a cloud ingress) fronts Watchtower and already
+    /// speaks HTTPS to the client — redirecting again would loop.
+    /// </summary>
+    public bool RedirectHttpToHttps { get; init; } = true;
 }
 
 /// <summary>

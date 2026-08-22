@@ -454,8 +454,24 @@ export interface UpdateAuthConfigRequest {
   absoluteSessionLifetimeDays: number
 }
 
-/** The two reverse-proxy backends (ADR-0015). */
-export type ProxyProvider = 'caddy' | 'cloudflare'
+/** The reverse-proxy backends. See ADR-0015 and ADR-0017 (forthcoming). */
+export type ProxyProvider = 'caddy' | 'cloudflare' | 'yarp'
+
+/** In-process proxy + ACME values (the EAB HMAC key never leaves the server). */
+export interface ProxyYarpConfig {
+  /** Where issued certificates and the ACME account key live. Bind-time — read-only here. */
+  certPath: string
+  acmeDirectoryUrl: string
+  /** Extra PEM roots trusted when talking to the ACME directory (an internal CA). */
+  acmeCaBundlePath: string | null
+  /** External Account Binding key id, for CAs that require one. */
+  acmeEabKeyId: string | null
+  /** True when an EAB HMAC key is stored — the UI sends a new one only to replace it. */
+  hasAcmeEabHmacKey: boolean
+  redirectHttpToHttps: boolean
+  /** Runtime state: false means the proxy is serving over plain HTTP only. */
+  httpsListenerBound: boolean
+}
 
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
 export interface ProxyCloudflareConfig {
@@ -485,20 +501,26 @@ export interface ProxyCloudflareConfig {
 export interface ProxyConfig {
   enabled: boolean
   provider: ProxyProvider
-  /** ACME account email for certificate expiry notices (Caddy only). */
+  /** ACME account email for certificate expiry notices (the certificate-issuing providers). */
   adminEmail: string | null
   caddyImage: string
+  yarp: ProxyYarpConfig
   cloudflare: ProxyCloudflareConfig
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
 
-/** `proxy.updateConfig` request. Null cloudflare fields keep the stored values (token included). */
+/** `proxy.updateConfig` request. Null provider fields keep the stored values (secrets included). */
 export interface UpdateProxyConfigRequest {
   enabled: boolean
   provider: ProxyProvider
   adminEmail: string | null
   caddyImage: string
+  yarpAcmeDirectoryUrl?: string | null
+  yarpAcmeCaBundlePath?: string | null
+  yarpAcmeEabKeyId?: string | null
+  yarpAcmeEabHmacKey?: string | null
+  yarpRedirectHttpToHttps?: boolean | null
   cloudflareAccountId?: string | null
   cloudflareZoneId?: string | null
   cloudflareApiToken?: string | null
@@ -677,6 +699,8 @@ export interface ProxyStatus {
   caddyRunning: boolean
   routeCount: number
   provider: ProxyProvider
+  /** A provider-specific caveat worth showing next to the status, or null. */
+  providerDetail: string | null
 }
 
 // ── Multi-tenancy (stack templates) ─────────────────────────────────────────

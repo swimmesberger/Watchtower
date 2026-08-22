@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Services;
 
@@ -15,6 +16,7 @@ public sealed class ProxyProviderRouter(IServiceProvider services, IOptionsMonit
     : IProxyProvider {
     private IProxyProvider Current => options.CurrentValue.Proxy.ResolveProvider() switch {
         ProxyProviderKind.Cloudflare => services.GetRequiredService<CloudflareTunnelProvider>(),
+        ProxyProviderKind.Yarp => services.GetRequiredService<YarpProxyProvider>(),
         _ => services.GetRequiredService<CaddyManager>(),
     };
 

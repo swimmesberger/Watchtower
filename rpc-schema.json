@@ -3794,6 +3794,47 @@
               "caddyImage": {
                 "type": "string"
               },
+              "yarp": {
+                "type": "object",
+                "properties": {
+                  "certPath": {
+                    "type": "string"
+                  },
+                  "acmeDirectoryUrl": {
+                    "type": "string"
+                  },
+                  "acmeCaBundlePath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "acmeEabKeyId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasAcmeEabHmacKey": {
+                    "type": "boolean"
+                  },
+                  "redirectHttpToHttps": {
+                    "type": "boolean"
+                  },
+                  "httpsListenerBound": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "certPath",
+                  "acmeDirectoryUrl",
+                  "acmeCaBundlePath",
+                  "acmeEabKeyId",
+                  "hasAcmeEabHmacKey",
+                  "redirectHttpToHttps",
+                  "httpsListenerBound"
+                ]
+              },
               "cloudflare": {
                 "type": "object",
                 "properties": {
@@ -3873,6 +3914,7 @@
               "provider",
               "adminEmail",
               "caddyImage",
+              "yarp",
               "cloudflare",
               "pinnedPaths"
             ]
@@ -3992,13 +4034,20 @@
           },
           "provider": {
             "type": "string"
+          },
+          "providerDetail": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "enabled",
           "caddyRunning",
           "routeCount",
-          "provider"
+          "provider",
+          "providerDetail"
         ]
       }
     },
@@ -4284,6 +4333,41 @@
           "caddyImage": {
             "type": "string"
           },
+          "yarpAcmeDirectoryUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeCaBundlePath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeEabKeyId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeEabHmacKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpRedirectHttpToHttps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
           "cloudflareAccountId": {
             "type": [
               "string",
@@ -4397,6 +4481,47 @@
               "caddyImage": {
                 "type": "string"
               },
+              "yarp": {
+                "type": "object",
+                "properties": {
+                  "certPath": {
+                    "type": "string"
+                  },
+                  "acmeDirectoryUrl": {
+                    "type": "string"
+                  },
+                  "acmeCaBundlePath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "acmeEabKeyId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasAcmeEabHmacKey": {
+                    "type": "boolean"
+                  },
+                  "redirectHttpToHttps": {
+                    "type": "boolean"
+                  },
+                  "httpsListenerBound": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "certPath",
+                  "acmeDirectoryUrl",
+                  "acmeCaBundlePath",
+                  "acmeEabKeyId",
+                  "hasAcmeEabHmacKey",
+                  "redirectHttpToHttps",
+                  "httpsListenerBound"
+                ]
+              },
               "cloudflare": {
                 "type": "object",
                 "properties": {
@@ -4476,6 +4601,7 @@
               "provider",
               "adminEmail",
               "caddyImage",
+              "yarp",
               "cloudflare",
               "pinnedPaths"
             ]

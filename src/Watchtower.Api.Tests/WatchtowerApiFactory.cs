@@ -60,9 +60,11 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         // and the tests would stop describing what ships.
         builder.UseEnvironment(Environments.Production);
 
-        // DbPath and Auth:KeyPath default to /data/*, which AddWatchtowerServices creates eagerly.
+        // DbPath, Auth:KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices
+        // creates eagerly.
         builder.UseSetting("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db"));
         builder.UseSetting("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys"));
+        builder.UseSetting("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs"));
         builder.UseSetting("Watchtower:Auth:BootstrapPassword", AdminPassword);
         foreach (var (key, value) in _settings) builder.UseSetting(key, value);
 
