@@ -20,21 +20,24 @@ namespace Watchtower.Application.Tests;
 public sealed class RealmsModuleTests {
     /// <summary>
     /// Every Realms handler, added the way the generated module registration does, plus the recording
-    /// proxy manager: a realm's login host is a site block, so every write here has to ask for a reload,
-    /// and the real manager no-ops while the proxy is disabled (which is how every test host runs it).
+    /// proxy provider: a realm's login host is a site of its own, so every write here has to ask for a
+    /// reload, and every real provider no-ops while the proxy is disabled (which is how every test host
+    /// runs it). Substituted at <see cref="IProxyProvider"/> — the seam the handlers inject — rather
+    /// than at one backend, so the assertion stays about "the proxy was asked" whichever provider is
+    /// the default.
     /// </summary>
     private static readonly Action<IServiceCollection> WithRealmsModule = services => {
         services.AddListRealms();
         services.AddCreateRealm();
         services.AddUpdateRealm();
         services.AddDeleteRealm();
-        services.RemoveAll<CaddyManager>();
-        services.AddSingleton<CaddyManager>(sp => ActivatorUtilities.CreateInstance<RecordingCaddyManager>(sp));
+        services.RemoveAll<IProxyProvider>();
+        services.AddSingleton<IProxyProvider, RecordingProxyProvider>();
     };
 
-    /// <summary>The proxy manager the host runs with, as the double that counts reloads.</summary>
-    private static RecordingCaddyManager Caddy(AuthTestHost host) =>
-        (RecordingCaddyManager)host.Services.GetRequiredService<CaddyManager>();
+    /// <summary>The proxy provider the host runs with, as the double that counts reloads.</summary>
+    private static RecordingProxyProvider Proxy(AuthTestHost host) =>
+        (RecordingProxyProvider)host.Services.GetRequiredService<IProxyProvider>();
 
     private const string AuthHost = "watchtower.example.invalid";
 
@@ -310,30 +313,30 @@ public sealed class RealmsModuleTests {
     [Fact]
     public async Task EveryWrite_AsksTheProxyToReload() {
         using var host = AuthTestHost.Start(WithRealmsModule);
-        var caddy = Caddy(host);
+        var proxy = Proxy(host);
 
         var id = await CreateAsync(host, "acme", "login.acme.invalid");
-        Assert.Equal(1, caddy.ApplyCount);
+        Assert.Equal(1, proxy.ApplyCount);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var updated = await SendAsync<UpdateRealm.Command, UpdateRealm.Response>(
                 scope.ServiceProvider, new UpdateRealm.Command(id, AuthHost: "sso.acme.invalid"));
             Assert.True(updated.IsSuccess, Describe(updated));
         }
-        Assert.Equal(2, caddy.ApplyCount);
+        Assert.Equal(2, proxy.ApplyCount);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var deleted = await SendAsync<DeleteRealm.Command, DeleteRealm.Response>(
                 scope.ServiceProvider, new DeleteRealm.Command(id));
             Assert.True(deleted.IsSuccess, Describe(deleted));
         }
-        Assert.Equal(3, caddy.ApplyCount);
+        Assert.Equal(3, proxy.ApplyCount);
     }
 
     [Fact]
     public async Task ARefusedWrite_DoesNotTouchTheProxy() {
         using var host = AuthTestHost.Start(WithRealmsModule);
-        var caddy = Caddy(host);
+        var proxy = Proxy(host);
 
         await using var scope = host.Services.CreateAsyncScope();
         var badSlug = await SendAsync<CreateRealm.Command, CreateRealm.Response>(
@@ -344,7 +347,7 @@ public sealed class RealmsModuleTests {
         // Nothing committed, so nothing to serve differently — the reload rides the commit, not the call.
         Assert.False(badSlug.IsSuccess);
         Assert.False(unknown.IsSuccess);
-        Assert.Equal(0, caddy.ApplyCount);
+        Assert.Equal(0, proxy.ApplyCount);
     }
 
     // -- List / authorization --------------------------------------------------------------------

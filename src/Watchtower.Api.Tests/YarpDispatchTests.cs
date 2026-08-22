@@ -14,7 +14,7 @@ using Xunit;
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// Host dispatch for the in-process proxy (ADR-0017, forthcoming): which requests leave for a container,
+/// Host dispatch for the in-process proxy (ADR-0017): which requests leave for a container,
 /// which ones stay with Watchtower, and what the upstream is told about the one that left.
 /// </summary>
 /// <remarks>

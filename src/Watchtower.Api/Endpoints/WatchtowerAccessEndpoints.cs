@@ -28,7 +28,7 @@ namespace Watchtower.Api.Endpoints;
 /// the adapter that reads a request's shape off the <c>X-Forwarded-*</c> headers and renders the resulting
 /// <see cref="AccessDecision"/> as a status, headers and — for a denial — a page. The same service answers
 /// the in-process proxy without an HTTP hop, so the two transports cannot come to different verdicts about
-/// who may enter an app; see ADR-0017 (forthcoming).
+/// who may enter an app; see ADR-0017.
 /// </para>
 /// <para>
 /// UserInfo and <c>/api/access/apps</c> are anonymous in the ASP.NET sense for the same reason: they
@@ -120,7 +120,7 @@ public static class WatchtowerAccessEndpoints {
     /// An adapter and nothing more: it reads the request's shape off the forwarded headers, hands it to
     /// <see cref="AccessVerifier"/>, and renders the <see cref="AccessDecision"/> as the status, headers and
     /// page Caddy expects. The decision itself is shared with the in-process proxy, which asks the same
-    /// service without an HTTP hop — see ADR-0017 (forthcoming).
+    /// service without an HTTP hop — see ADR-0017.
     /// </remarks>
     private static void MapVerify(WebApplication app) {
         app.MapGet(RouteAccessPolicy.VerifyPath, async (

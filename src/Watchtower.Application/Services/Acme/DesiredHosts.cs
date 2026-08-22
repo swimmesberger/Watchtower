@@ -10,10 +10,10 @@ public readonly record struct HostSetDiff(IReadOnlyList<string> Added, IReadOnly
 }
 
 /// <summary>
-/// Normalizes and validates the host names the in-process proxy asks for certificates for — ADR-0017
-/// (forthcoming). Pure and static, so the rules can be read and tested in one place instead of being
-/// rediscovered at each of the three points that need them (route validation, the desired-host set, the
-/// certificate store's directory names).
+/// Normalizes and validates the host names the in-process proxy asks for certificates for — ADR-0017.
+/// Pure and static, so the rules can be read and tested in one place instead of being rediscovered at
+/// each of the three points that need them (route validation, the desired-host set, the certificate
+/// store's directory names).
 /// </summary>
 /// <remarks>
 /// The rules are the intersection of what a CA will issue for and what the store can safely write to

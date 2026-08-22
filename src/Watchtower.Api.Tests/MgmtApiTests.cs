@@ -441,7 +441,7 @@ public sealed class MgmtApiTests {
         var tenantStackId = await factory.AddTenantAsync(billing, "acme");
         await factory.AddDeployEventAsync(tenantStackId, "success");
         await factory.GrantManagementAsync(stackId, billing, allowDelete: true);
-        var reloadsBefore = factory.Caddy.ApplyCount;
+        var reloadsBefore = factory.Proxy.ApplyCount;
         ProbeStack(factory, tenantStackId);
 
         using var client = factory.CreateApiClient();
@@ -458,7 +458,7 @@ public sealed class MgmtApiTests {
         // only after it was gone. Asserting the end state alone would not tell this apart from the
         // reverse order, which would strand containers nothing names.
         Assert.True(factory.Compose.StackExistedAtDown);
-        Assert.False(factory.Caddy.StackExistedAtApply);
+        Assert.False(factory.Proxy.StackExistedAtApply);
         // Only then were the rows deleted — and the proxy reloaded, so it stops serving the dead domain.
         Assert.False(await factory.ReadAsync(db => db.Stacks.AnyAsync(
             s => s.Id == tenantStackId, TestContext.Current.CancellationToken)));
@@ -468,7 +468,7 @@ public sealed class MgmtApiTests {
             v => v.StackId == tenantStackId, TestContext.Current.CancellationToken)));
         Assert.False(await factory.ReadAsync(db => db.DeployEvents.AnyAsync(
             e => e.StackId == tenantStackId, TestContext.Current.CancellationToken)));
-        Assert.Equal(reloadsBefore + 1, factory.Caddy.ApplyCount);
+        Assert.Equal(reloadsBefore + 1, factory.Proxy.ApplyCount);
     }
 
     [Fact]
@@ -519,7 +519,7 @@ public sealed class MgmtApiTests {
         var billing = await factory.AddTemplateAsync("billing");
         var tenantStackId = await factory.AddTenantAsync(billing, "acme");
         await factory.GrantManagementAsync(stackId, billing, allowDelete: true);
-        var reloadsBefore = factory.Caddy.ApplyCount;
+        var reloadsBefore = factory.Proxy.ApplyCount;
         ProbeStack(factory, tenantStackId);
 
         using var client = factory.CreateApiClient();
@@ -531,8 +531,8 @@ public sealed class MgmtApiTests {
         Assert.True(factory.Compose.StackExistedAtDown);
         Assert.True(await factory.ReadAsync(db => db.Stacks.AnyAsync(
             s => s.Id == tenantStackId, TestContext.Current.CancellationToken)));
-        Assert.Equal(reloadsBefore, factory.Caddy.ApplyCount);
-        Assert.Null(factory.Caddy.StackExistedAtApply);
+        Assert.Equal(reloadsBefore, factory.Proxy.ApplyCount);
+        Assert.Null(factory.Proxy.StackExistedAtApply);
     }
 
     /// <summary>
@@ -587,7 +587,7 @@ public sealed class MgmtApiTests {
         }
 
         factory.Compose.StackProbe = Probe;
-        factory.Caddy.StackProbe = Probe;
+        factory.Proxy.StackProbe = Probe;
     }
 
     private static Task<HttpResponseMessage> GetAsync(HttpClient client, string url, string? token) =>

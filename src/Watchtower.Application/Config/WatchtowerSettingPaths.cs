@@ -37,6 +37,15 @@ public static class WatchtowerSettingPaths {
     // ── Proxy (proxy.updateConfig) ───────────────────────────────────────────
     public const string ProxyEnabled = "Watchtower:Proxy:Enabled";
     public const string ProxyProvider = "Watchtower:Proxy:Provider";
+
+    /// <summary>
+    /// Internal marker: <see cref="Services.ProxyProviderMigration"/> has already decided whether this
+    /// installation predates ADR-0017's default flip. Not a user setting — never offered in the UI, never
+    /// listed among the proxy card's paths, and deliberately not env-pinnable. It exists because the
+    /// question the migration answers ("did this instance rely on the old implicit caddy default?") stops
+    /// being answerable the moment the instance adds its first route under the new default.
+    /// </summary>
+    public const string ProxyProviderMigrated = "Watchtower:Proxy:ProviderMigrated";
     public const string ProxyAdminEmail = "Watchtower:Proxy:AdminEmail";
     public const string ProxyCaddyImage = "Watchtower:Proxy:CaddyImage";
     public const string ProxyYarpCertPath = "Watchtower:Proxy:Yarp:CertPath";

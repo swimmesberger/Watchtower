@@ -52,7 +52,7 @@ internal sealed class AcmeEstate(FakeAcmeServer ca, WatchtowerApiFactory factory
             ("Watchtower:Proxy:Yarp:AcmeSelfCheckEnabled", selfCheck ? "true" : "false"),
             ("Watchtower:Proxy:AdminEmail", "ops@example.invalid"),
             .. settings,
-        ]) { AcmeTransport = ca.Transport };
+        ]) { AcmeTransport = ca.Transport, UseRealProxyProvider = true };
 
         // Touching Services builds the host, which is what makes the handler below exist.
         factory.Services.GetRequiredService<YarpListenerState>().HttpsBound = httpsBound;

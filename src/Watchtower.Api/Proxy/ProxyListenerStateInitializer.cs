@@ -6,7 +6,7 @@ namespace Watchtower.Api.Proxy;
 
 /// <summary>
 /// Records what the host actually bound into <see cref="YarpListenerState"/> once the server is up —
-/// ADR-0017 (forthcoming). Everything the in-process proxy reports about itself ("running", "enabled but
+/// ADR-0017. Everything the in-process proxy reports about itself ("running", "enabled but
 /// 443 never came up") comes from here, because there is no container to inspect.
 /// </summary>
 /// <remarks>
