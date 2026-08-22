@@ -13,9 +13,11 @@ public sealed class GetRoute(WatchtowerDbContext db)
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var route = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
+            .Include(r => r.Realm)
             .FirstOrDefaultAsync(r => r.Id == query.Id, ct);
-        return route is null
-            ? AppError.NotFound($"Route {query.Id} not found")
-            : new Response(RouteMapping.ToDto(route));
+        if (route is null) return AppError.NotFound($"Route {query.Id} not found");
+
+        var isLoginRoute = await db.Realms.AsNoTracking().AnyAsync(r => r.LoginRouteId == route.Id, ct);
+        return new Response(RouteMapping.ToDto(route, isLoginRoute));
     }
 }

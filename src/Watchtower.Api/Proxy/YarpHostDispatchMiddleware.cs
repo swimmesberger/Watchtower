@@ -40,8 +40,9 @@ namespace Watchtower.Api.Proxy;
 /// how <c>http://&lt;public-ip&gt;/</c> ends up serving the management plane — the login page with
 /// authentication on, the whole UI with it off. The mirror rule holds on the management port: a routed
 /// application's host is refused there too, so ingress traffic cannot be half-served on the endpoint an
-/// operator is meant to bind privately. Login hosts are served on both, which is what keeps the UI
-/// reachable — through ingress on exactly one hostname, as it was under Caddy.
+/// operator is meant to bind privately. Watchtower's own hosts (ADR-0021) are served on both, which is
+/// what keeps the UI reachable — through ingress on the hostnames the operator routed there, and on the
+/// management endpoint whatever they are.
 /// </para>
 /// <para>
 /// <b>When the provider is inactive</b> — disabled, or Caddy/Cloudflare selected — the route table is
@@ -105,13 +106,12 @@ public sealed class YarpHostDispatchMiddleware(
             return;
         }
 
-        // A realm's login page. Watchtower serves it itself — forwarding it would be forwarding to
-        // ourselves — so it takes the ordinary pipeline, SPA and all, on either kind of listener: through
-        // ingress it is the one hostname the management plane is deliberately reachable on, and on the
+        // A Watchtower route (ADR-0021). Watchtower serves it itself — forwarding it would be forwarding
+        // to ourselves — so it takes the ordinary pipeline, SPA and all, on either kind of listener:
+        // through ingress it is a hostname the management plane is deliberately reachable on, and on the
         // management endpoint it is how an operator who bound 8080 privately still reaches the UI. The one
-        // thing it does get is the upgrade, exactly as Caddy's self-route did: a login page reached over
-        // plain HTTP would set the session cookie without its Secure attribute, and every app redirects
-        // visitors here.
+        // thing it does get is the upgrade: a login page reached over plain HTTP would set the session
+        // cookie without its Secure attribute, and every protected app redirects visitors here.
         if (row.Local) {
             if (WantsUpgrade(row, request)) {
                 RedirectToHttps(context, host);

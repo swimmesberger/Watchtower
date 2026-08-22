@@ -81,8 +81,8 @@ pinned and read-only until the variable is removed.
                                          ▼
                          Host in the route table?  ── no ──►  404, and nothing else
                                          │
-                                        yes  ── a realm login host ──►  Watchtower's own pipeline
-                                         │                               (the UI and API, behind auth)
+                                        yes  ── a Watchtower route ──►  Watchtower's own pipeline
+                                         │                                (the UI and API, behind auth)
                                          ▼
                     strip every identity header the client sent
                                          ▼
@@ -107,6 +107,18 @@ catch-all and swallow the tenant's paths.
 The management endpoint (8080) runs the same middleware with the branches reversed: an unknown host is
 Watchtower's own UI, and a *routed* host is the 404. Only the challenge responder behaves identically
 on every port, because the CA does not get to choose which listener it reaches.
+
+### Watchtower routes
+
+A route whose target is **Watchtower (this instance)** rather than a stack service
+([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md)) is the branch marked above:
+the request takes Watchtower's ordinary pipeline — SPA, `/rpc`, `/api/*` and all — instead of being
+forwarded anywhere. Forwarding it would be forwarding to ourselves. It is the one kind of host served
+on **both** listeners: through ingress because that is how the UI and the login page are reachable from
+outside, and on the management endpoint because that is how an operator who bound 8080 privately still
+reaches them. It gets the HTTP→HTTPS upgrade like any other TLS route — the session cookie is set here,
+and a page reached over plain HTTP would set it without its `Secure` attribute — and it gets an ACME
+certificate and a status on the Routes page for the same reason every other row does.
 
 ## Certificates
 

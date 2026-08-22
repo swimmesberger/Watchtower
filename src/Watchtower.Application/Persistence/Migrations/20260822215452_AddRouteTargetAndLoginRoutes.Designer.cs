@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Watchtower.Application.Persistence;
 
@@ -10,9 +11,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260822215452_AddRouteTargetAndLoginRoutes")]
+    partial class AddRouteTargetAndLoginRoutes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -583,6 +586,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("id");
 
+                    b.Property<string>("AuthHost")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("auth_host");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("TEXT")
                         .HasColumnName("created_at");
@@ -607,6 +614,11 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_realms");
+
+                    b.HasIndex("AuthHost")
+                        .IsUnique()
+                        .HasDatabaseName("ix_realms_auth_host")
+                        .HasFilter("\"auth_host\" IS NOT NULL");
 
                     b.HasIndex("LoginRouteId")
                         .IsUnique()

@@ -321,11 +321,10 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
         var routes = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
             .ToListAsync(ct);
-        // Every realm's login page has to be served too, not just the operator one (design.md §13).
-        var realmHosts = await scope.ServiceProvider
-            .GetRequiredService<RealmResolver>()
-            .AuthHostsAsync(ct);
-        return ProxySiteProjection.Project(routes, _options.CurrentValue.Auth, realmHosts);
+        // Watchtower's own hostnames are rows in that table like any other (ADR-0021); the projection
+        // points them at `watchtower:8080` on the control network, which is where Caddy already sends the
+        // forward-auth and callback traffic of every protected site.
+        return ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);
     }
 
     /// <summary>POSTs the Caddyfile to the admin <c>/load</c> endpoint, retrying while Caddy boots.</summary>

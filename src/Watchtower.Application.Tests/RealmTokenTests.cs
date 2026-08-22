@@ -50,7 +50,7 @@ public sealed class RealmTokenTests {
         using var host = AuthTestHost.Start();
         var signer = host.Services.GetRequiredService<AuthTokenSigner>();
 
-        var issuer = signer.IssuerFor(new RealmIdentity("acme", AuthHost: null, IsSystem: false));
+        var issuer = signer.IssuerFor(new RealmIdentity("acme", LoginHost: null, IsSystem: false));
 
         Assert.False(string.IsNullOrWhiteSpace(issuer));
         Assert.NotEqual(signer.Issuer, issuer);

@@ -1992,9 +1992,25 @@ function AuthCard() {
               />
             </label>
 
+            {/* Read-only, and first: this is what the operator realm's protected apps actually redirect
+                to. It comes from the Watchtower route marked as the login host (ADR-0021); the field
+                below is only the fallback used while there is none. */}
             <Field
-              label="Login host"
-              hint="Public hostname of the central login page (bare host, no scheme). Optional while only Watchtower's own UI is protected."
+              label="Operator login host (effective)"
+              hint={
+                data?.effectiveLoginHost
+                  ? 'Where anonymous visitors to protected apps are sent. Change it on the Routes page by marking a Watchtower route as the operator realm’s login host.'
+                  : 'No login host: protected apps answer anonymous visitors with 401. Create a Watchtower route on the Routes page and mark it as the operator realm’s login host.'
+              }
+            >
+              {({ id }) => (
+                <Input id={id} mono readOnly disabled value={data?.effectiveLoginHost ?? 'none'} />
+              )}
+            </Field>
+
+            <Field
+              label="Fallback login host (operator realm)"
+              hint="Used only while no Watchtower route is marked as the operator realm's login host. Normally leave this empty and create a Watchtower route instead — a route is served, gets a certificate and reports its status. Set it when another proxy in front of Watchtower terminates the hostname."
             >
               {({ id }) => (
                 <>

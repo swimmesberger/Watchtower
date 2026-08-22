@@ -17,16 +17,21 @@ namespace Watchtower.Application.Services;
 /// realms are rows.
 /// </summary>
 /// <param name="Slug">The realm's stable identifier, which becomes the <c>realm</c> claim.</param>
-/// <param name="AuthHost">Its login host, which becomes the <c>iss</c> claim for a non-system realm.</param>
+/// <param name="LoginHost">Its login host, which becomes the <c>iss</c> claim for a non-system realm.</param>
 /// <param name="IsSystem">True for the operator realm, whose issuer is the instance-wide configured one.</param>
-public readonly record struct RealmIdentity(string Slug, string? AuthHost, bool IsSystem) {
+public readonly record struct RealmIdentity(string Slug, string? LoginHost, bool IsSystem) {
     /// <summary>The built-in operator realm — the realm every assertion belonged to before realms existed.</summary>
     public static RealmIdentity System { get; } = new(Realm.SystemRealmSlug, null, IsSystem: true);
 
-    /// <summary>Projects a stored realm.</summary>
-    public static RealmIdentity From(Realm realm) {
+    /// <summary>
+    /// Projects a stored realm together with the login host resolved for it
+    /// (<see cref="RealmResolver.LoginHostForAsync"/>). The host is passed in rather than read off the row
+    /// because since ADR-0021 it lives on the realm's login <see cref="Route"/>, and the signer is a
+    /// singleton with no database of its own.
+    /// </summary>
+    public static RealmIdentity From(Realm realm, string? loginHost) {
         ArgumentNullException.ThrowIfNull(realm);
-        return new RealmIdentity(realm.Slug, realm.AuthHost, realm.IsSystem);
+        return new RealmIdentity(realm.Slug, loginHost, realm.IsSystem);
     }
 }
 
@@ -108,7 +113,7 @@ public sealed class AuthTokenSigner : IDisposable {
     /// </remarks>
     public string IssuerFor(RealmIdentity realm) {
         if (realm.IsSystem) return Issuer;
-        var host = realm.AuthHost?.Trim();
+        var host = realm.LoginHost?.Trim();
         if (!string.IsNullOrEmpty(host)) return host;
         var slug = realm.Slug?.Trim();
         return string.IsNullOrEmpty(slug) ? DefaultIssuer : $"{DefaultIssuer}:{slug}";

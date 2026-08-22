@@ -338,7 +338,8 @@ public sealed class RealmAuthFlowTests {
             var signer = sp.GetRequiredService<AuthTokenSigner>();
             var user = await db.Users.SingleAsync(u => u.Id == userId, Ct);
             var realm = await db.Realms.SingleAsync(r => r.Id == realmId, Ct);
-            token = signer.Mint(user, AcmeApp, RealmIdentity.From(realm));
+            var realms = sp.GetRequiredService<RealmResolver>();
+            token = signer.Mint(user, AcmeApp, await realms.IdentityForAsync(realm, Ct));
         });
         return token;
     }

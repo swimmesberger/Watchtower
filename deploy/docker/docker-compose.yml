@@ -39,8 +39,9 @@ services:
       # The management plane: Watchtower's own UI and API. Bound to the loopback interface, because this
       # port answers for every Host name and is the process holding the Docker socket, the database and
       # every credential. Reach it over a VPN or an SSH tunnel; to reach the UI from the internet, enable
-      # authentication, set WATCHTOWER__AUTH__HOST to a hostname you control and use the 443 mapping
-      # below — that login host is the one name ingress will serve Watchtower itself on.
+      # authentication, use the 443 mapping below and create a route in the Routes UI whose target is
+      # "Watchtower (this instance)" for a hostname you control — those are the only names ingress will
+      # serve Watchtower itself on.
       - "127.0.0.1:8080:8080"
       # Built-in reverse proxy (opt-in): publish the ingress ports — 80 must be reachable for ACME
       # HTTP-01, 443 carries the routed traffic. These are separate container ports from 8080 on purpose:

@@ -438,12 +438,17 @@ export interface AuthConfig {
   active: boolean
   /** True when `enabled` ≠ `active`: `Auth:Enabled` shapes the pipeline pre-DI, so it needs a restart. */
   restartRequired: boolean
-  /** Central login hostname (bare host, no scheme). */
+  /**
+   * Fallback login hostname for the operator realm (bare host, no scheme). Since ADR-0021 the login host
+   * is normally a `watchtower` route; this is read only while no route is marked as one.
+   */
   host: string | null
   sessionLifetimeHours: number
   absoluteSessionLifetimeDays: number
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
+  /** Where the operator realm actually redirects anonymous visitors now. Read-only; set on Routes. */
+  effectiveLoginHost?: string | null
 }
 
 /** `system.updateAuthConfig` request. */
@@ -540,9 +545,17 @@ export interface UpdateProxyConfigRequest {
 export type RouteStatus = 'pending' | 'awaitingdns' | 'active' | 'error'
 export type DomainKind = 'managed' | 'custom'
 
+/**
+ * What a route's hostname is served by (ADR-0021). `service` forwards it to a container inside a stack;
+ * `watchtower` means this instance serves the hostname itself — its UI and API, and for the realm's login
+ * route, its login page.
+ */
+export type RouteTarget = 'service' | 'watchtower'
+
 export interface Route {
   id: number
-  stackId: number
+  /** Null on a `watchtower` route, which forwards nowhere. */
+  stackId: number | null
   stackName: string | null
   domain: string
   serviceName: string
@@ -555,6 +568,12 @@ export interface Route {
   /** ISO timestamp of the certificate expiry, when known. */
   certNotAfter: string | null
   createdAt: string
+  target: RouteTarget
+  /** The realm a `watchtower` route serves; null on a `service` route. */
+  realmId: number | null
+  realmSlug: string | null
+  /** Whether that realm redirects its anonymous visitors to this hostname. */
+  isLoginRoute: boolean
 }
 
 export interface CreateRouteRequest {
@@ -565,6 +584,12 @@ export interface CreateRouteRequest {
   tlsEnabled: boolean
   isPrimary: boolean
   kind?: DomainKind | null
+  /** Omitted means `service` — the only kind of route that existed before ADR-0021. */
+  target?: RouteTarget | null
+  /** `watchtower` routes only; defaults to the operator realm. */
+  realmId?: number | null
+  /** `watchtower` routes only; omitted means "yes, if the realm has no login host yet". */
+  makeLoginRoute?: boolean | null
 }
 
 export interface UpdateRouteRequest {
@@ -573,6 +598,9 @@ export interface UpdateRouteRequest {
   containerPort: number
   tlsEnabled: boolean
   isPrimary: boolean
+  kind?: DomainKind | null
+  /** `watchtower` routes only: designate (true) or release (false) this realm's login host. */
+  makeLoginRoute?: boolean | null
 }
 
 /**
@@ -623,14 +651,14 @@ export interface DnsCheckResult {
 }
 
 /**
- * One host's certificate state under the in-process proxy. Covers hosts with no route row — a realm's
- * login page is served by Watchtower itself and still needs a certificate — and hosts with no route
- * *any more*, whose certificate is still on disk (`source: 'orphan'`).
+ * One host's certificate state under the in-process proxy. Every served host has a route row since
+ * ADR-0021, Watchtower's own hostnames included; `source: 'orphan'` is a certificate still on disk for a
+ * host nothing routes to any more.
  */
 export interface CertificateInfo {
   host: string
-  /** `route` — a routed domain; `loginHost` — a realm's login page; `orphan` — nothing routes here. */
-  source: 'route' | 'loginHost' | 'orphan'
+  /** `route` — a routed domain; `orphan` — nothing routes here any more. */
+  source: 'route' | 'orphan'
   routeId?: number | null
   /** `active` means a certificate is being served, whatever the last renewal attempt did. */
   state: 'none' | 'pending' | 'active' | 'awaitingDns' | 'error'
@@ -872,29 +900,36 @@ export interface Realm {
   name: string
   /** URL-safe identifier, chosen at creation and immutable afterwards. */
   slug: string
-  /** The host this realm's login page answers on; null until DNS for it is ready. */
-  authHost: string | null
-  /** The operator realm: renameable, never deletable, and its auth host stays the configured `Auth:Host`. */
+  /** The operator realm: renameable, never deletable, and the only one `Auth:Host` is a fallback for. */
   isSystem: boolean
   userCount: number
   groupCount: number
   templateCount: number
   createdAt: string
+  /** The `watchtower` route this realm's login page is served on; null when it has none (ADR-0021). */
+  loginRouteId: number | null
+  /** That route's domain, or — on the operator realm alone — the configured `Auth:Host` fallback. */
+  loginHost: string | null
 }
 
 export interface CreateRealmRequest {
   name: string
   slug: string
-  authHost?: string | null
+  /**
+   * Creates a `watchtower` route for this hostname and makes it the realm's login host. There is no
+   * "pick an existing route" here on purpose: a `watchtower` route belongs to a realm, so none can exist
+   * for a realm that does not yet. Designating one is `realms.update`'s job.
+   */
+  loginDomain?: string | null
 }
 
 /**
- * A partial update: an omitted field is left alone, so renaming a realm never has to restate its auth
- * host. An empty-string `authHost` clears it — that is how "this realm has no login host yet" is said.
+ * A partial update: an omitted field is left alone, so renaming a realm never has to restate its login
+ * route. A `loginRouteId` of `0` clears it — that is how "this realm has no login host" is said.
  */
 export interface UpdateRealmRequest {
   name?: string | null
-  authHost?: string | null
+  loginRouteId?: number | null
 }
 
 

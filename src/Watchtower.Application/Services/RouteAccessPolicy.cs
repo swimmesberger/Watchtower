@@ -71,19 +71,20 @@ public static class RouteAccessPolicy {
         db.Routes.AsNoTracking().FirstOrDefaultAsync(r => r.Domain.ToLower() == host, ct);
 
     /// <summary>One route's realm as the database can project it: null means "standalone stack".</summary>
-    private sealed record RouteRealmRow(int RouteId, int? TemplateRealmId);
+    private sealed record RouteRealmRow(int RouteId, int? RealmId);
 
     /// <summary>
     /// The realm each of <paramref name="routeIds"/> belongs to, as one query
-    /// (docs/central-auth/design.md §13). A route inherits its realm from its stack's category
-    /// (<see cref="StackTemplate.RealmId"/>); a standalone stack has no category, so its routes belong to
-    /// the system realm.
+    /// (docs/central-auth/design.md §13). A <see cref="RouteTarget.Service"/> route inherits its realm from
+    /// its stack's category (<see cref="StackTemplate.RealmId"/>); a standalone stack has no category, so
+    /// its routes belong to the system realm. A <see cref="RouteTarget.Watchtower"/> route has no stack to
+    /// inherit from and states its realm outright (ADR-0021).
     /// </summary>
     /// <remarks>
-    /// Routes carry no realm column of their own on purpose: the category is where a population is decided,
-    /// and duplicating it onto every tenant route would be one more thing that can disagree with it. Ids
-    /// that name no route are simply absent from the result, which is what lets a caller tell "belongs to
-    /// the system realm" from "there is no such route".
+    /// A service route carries no realm column of its own on purpose: the category is where a population is
+    /// decided, and duplicating it onto every tenant route would be one more thing that can disagree with
+    /// it. Ids that name no route are simply absent from the result, which is what lets a caller tell
+    /// "belongs to the system realm" from "there is no such route".
     /// </remarks>
     public static async Task<IReadOnlyDictionary<int, int>> RouteRealmIdsAsync(
         WatchtowerDbContext db, IReadOnlyCollection<int> routeIds, CancellationToken ct) {
@@ -93,10 +94,12 @@ public static class RouteAccessPolicy {
 
         var rows = await db.Routes.AsNoTracking()
             .Where(r => routeIds.Contains(r.Id))
-            .Select(r => new RouteRealmRow(r.Id, (int?)r.Stack!.Template!.RealmId))
+            .Select(r => new RouteRealmRow(
+                r.Id,
+                r.Target == RouteTarget.Watchtower ? r.RealmId : (int?)r.Stack!.Template!.RealmId))
             .ToListAsync(ct);
 
-        return rows.ToDictionary(x => x.RouteId, x => x.TemplateRealmId ?? Realm.SystemRealmId);
+        return rows.ToDictionary(x => x.RouteId, x => x.RealmId ?? Realm.SystemRealmId);
     }
 
     /// <summary>

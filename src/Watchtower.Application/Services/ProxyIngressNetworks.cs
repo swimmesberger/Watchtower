@@ -95,9 +95,12 @@ public sealed class ProxyIngressNetworks(
         List<(int StackId, string Project, string Service)> targets;
         await using (var scope = scopeFactory.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            // Service routes only: a Watchtower route has no stack and no container to join to anything —
+            // the proxy reaches Watchtower on the control network, not on a stack's ingress network.
             targets = await db.Routes.AsNoTracking()
+                .Where(r => r.StackId != null)
                 .Include(r => r.Stack)
-                .Select(r => new { r.StackId, r.Stack!.ComposeProjectName, r.ServiceName })
+                .Select(r => new { StackId = r.StackId!.Value, r.Stack!.ComposeProjectName, r.ServiceName })
                 .Distinct()
                 .Select(x => new ValueTuple<int, string, string>(x.StackId, x.ComposeProjectName, x.ServiceName))
                 .ToListAsync(ct);

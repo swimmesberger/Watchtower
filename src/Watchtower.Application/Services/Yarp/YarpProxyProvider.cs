@@ -226,14 +226,16 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var routes = await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
-            // Every realm's login page has to be served too, not just the operator one (design.md §13).
-            var realmHosts = await scope.ServiceProvider.GetRequiredService<RealmResolver>().AuthHostsAsync(ct);
-            var sites = ProxySiteProjection.Project(routes, _options.CurrentValue.Auth, realmHosts);
+            // Watchtower's own hostnames are rows in that table like any other (ADR-0021), and the
+            // projection marks them Local; the dispatch middleware hands those to Watchtower's own
+            // pipeline instead of forwarding them.
+            var sites = ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);
 
             var snapshot = ProxyRouteTable.From(sites);
             _table.Replace(snapshot);
             _certs.SetDesiredHosts(snapshot.TlsHosts);
-            // Only real routes get a status — a synthesized login host has no row to report on.
+            // Every served host has a row now, Watchtower's own included, so every one of them reports a
+            // certificate status on the Routes page.
             await _routeStatus.MarkPendingAsync(
                 snapshot.Rows.Where(r => r.RouteId is not null && r.Tls).Select(r => r.Host), ct);
         } catch (Exception ex) {

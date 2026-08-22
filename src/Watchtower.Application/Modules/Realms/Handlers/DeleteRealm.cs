@@ -47,12 +47,22 @@ public sealed class DeleteRealm(
                 $"{templateCount} template(s). Remove them first.");
         }
 
+        // Its Watchtower routes are public hostnames this instance is currently served on (ADR-0021).
+        // Removing the realm would have to take them with it — deleting live hostnames as a side effect
+        // of a realm delete is exactly the blast radius the rest of this handler refuses to have — so the
+        // routes are deleted first, deliberately and visibly, and the foreign key is the backstop.
+        var routeCount = await db.Routes.CountAsync(r => r.RealmId == realm.Id, ct);
+        if (routeCount > 0) {
+            return AppError.Conflict(
+                $"Realm '{realm.Slug}' still serves Watchtower on {routeCount} route(s). Delete those " +
+                "routes first — they are public hostnames this instance answers on.");
+        }
+
         var slug = realm.Slug;
         db.Realms.Remove(realm);
         await db.SaveChangesAsync(ct);
 
-        // Its login host is no longer a site block Watchtower should be serving. Best-effort, like the
-        // route CRUD handlers.
+        // Nothing of the realm's is served any more. Best-effort, like the route CRUD handlers.
         await proxy.ApplyAsync(ct);
 
         // Past the commit point, and delete-then-audit like the Users and Groups handlers: a delete that

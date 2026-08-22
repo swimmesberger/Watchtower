@@ -20,8 +20,13 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
     /// and the CNAME Watchtower pointed at the tunnel). Ignored by providers with nothing external to
     /// remove (Caddy regenerates its whole configuration from the table).
     /// </param>
+    /// <param name="Warning">
+    /// What the deletion cost beyond the row itself, or <see langword="null"/> when it cost nothing.
+    /// Today that is one thing: the route was a realm's login host, so that realm now has none and its
+    /// protected apps answer anonymous visitors with 401 instead of a login redirect (ADR-0021).
+    /// </param>
     public sealed record Command(int Id, bool RemoveFromProvider = false);
-    public sealed record Response(int Id);
+    public sealed record Response(int Id, string? Warning = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var domain = await db.Routes.AsNoTracking()
@@ -31,7 +36,25 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
         if (domain is null)
             return AppError.NotFound($"Route {command.Id} not found");
 
+        // Read before the delete: afterwards the foreign key has already set login_route_id to null and
+        // there is nothing left to notice. Deleting is allowed — an operator removing a hostname has said
+        // the hostname is going — but a realm quietly losing its login page is worth saying out loud.
+        var orphanedRealm = await db.Realms.AsNoTracking()
+            .Where(r => r.LoginRouteId == command.Id)
+            .Select(r => r.Slug)
+            .FirstOrDefaultAsync(ct);
+
         await db.Routes.Where(r => r.Id == command.Id).ExecuteDeleteAsync(ct);
+
+        string? warning = orphanedRealm is null
+            ? null
+            : $"Realm '{orphanedRealm}' has no login host now: its protected apps answer anonymous " +
+              "visitors with 401 until another Watchtower route is marked as its login host.";
+        if (warning is not null) {
+            await audit.RecordAsync(
+                "proxy", "route.delete", domain, warning,
+                actor: await audit.ActorAsync(currentUser, ct), ct: ct);
+        }
 
         // Forget BEFORE the reconcile: the reconcile preserves every rule for a hostname not in the
         // table as foreign, so removing the rule afterwards would have to fight it.
@@ -48,7 +71,7 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
         // The route is gone either way; a failed provider cleanup is reported rather than rolled back —
         // the audit trail carries the provider's words, and the hostname is still visible as foreign.
         return cleanupError is null
-            ? new Response(command.Id)
+            ? new Response(command.Id, warning)
             : AppError.Internal($"The route was deleted, but removing {domain} from the provider failed: {cleanupError}");
     }
 }

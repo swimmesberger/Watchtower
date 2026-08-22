@@ -8,9 +8,9 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// What the in-process proxy holds, or is trying to hold, per host — ADR-0020.
 /// </summary>
 /// <param name="Source">
-/// Where the host comes from: <c>route</c> for a domain in the route table, <c>loginHost</c> for a
-/// realm's login page (which Watchtower serves itself and which therefore needs a certificate too, with
-/// no route row behind it), <c>orphan</c> for a certificate still on disk that nothing routes to.
+/// Where the host comes from: <c>route</c> for a domain in the route table — Watchtower's own hostnames
+/// included, since ADR-0021 made those rows like any other — or <c>orphan</c> for a certificate still on
+/// disk that nothing routes to.
 /// </param>
 /// <param name="State">One of <c>none</c>, <c>pending</c>, <c>active</c>, <c>awaitingDns</c>, <c>error</c>.</param>
 public sealed record CertificateDto(
@@ -38,15 +38,15 @@ public sealed class ListCertificates(CertificateManager certificates, Watchtower
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         // Route ids come from the database rather than from the routing table, because a route created
-        // moments ago may not have been projected yet — and a host with no id at all is exactly what
-        // distinguishes a login host from a routed one.
+        // moments ago may not have been projected yet — and a host with no row at all is a certificate
+        // nothing routes to any more.
         var routeIds = await db.Routes.AsNoTracking()
             .Select(r => new { r.Id, r.Domain })
             .ToDictionaryAsync(r => r.Domain, r => r.Id, StringComparer.OrdinalIgnoreCase, ct);
 
         var listed = certificates.Snapshot().Select(s => new CertificateDto(
             Host: s.Host,
-            Source: routeIds.ContainsKey(s.Host) ? "route" : s.Desired ? "loginHost" : "orphan",
+            Source: routeIds.ContainsKey(s.Host) ? "route" : "orphan",
             RouteId: routeIds.TryGetValue(s.Host, out var id) ? id : null,
             State: s.State,
             NotBefore: s.NotBefore,

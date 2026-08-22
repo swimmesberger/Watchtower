@@ -35,6 +35,14 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     /// <summary>Audit-trail category for every external write this provider performs.</summary>
     internal const string AuditCategory = "proxy.cloudflare";
 
+    /// <summary>
+    /// What a <see cref="RouteTarget.Watchtower"/> route's status says under this provider. Stated once so
+    /// the reconcile and the tests read the same sentence.
+    /// </summary>
+    internal const string SelfRouteUnsupported =
+        "Watchtower routes are not served by the Cloudflare provider yet; expose Watchtower through " +
+        "Cloudflare's dashboard/Access. The hostname is still used as this realm's login address.";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
     private readonly ProxyIngressNetworks _networks;
@@ -142,7 +150,17 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             var tunnel = await EnsureTunnelAsync(cf, ct);
             if (tunnel is null) return;
 
-            var routes = await LoadRoutesAsync(ct);
+            var all = await LoadRoutesAsync(ct);
+            // Watchtower's own hostnames (ADR-0021) are not something this provider can serve: a tunnel
+            // ingress rule pointing at Watchtower would publish the management plane through Cloudflare
+            // with no gate in front of it, which is exactly the thing Cloudflare Access exists to do
+            // properly. They are excluded from everything below and told to say so on the Routes page —
+            // the hostname still matters, because it is the address the realm's protected apps redirect to.
+            var selfRoutes = all.Where(r => r.Target == RouteTarget.Watchtower).ToList();
+            if (selfRoutes.Count > 0)
+                await SetRouteStatusAsync(selfRoutes.Select(r => r.Id), RouteStatus.Error, SelfRouteUnsupported, ct);
+
+            var routes = all.Where(r => r.Target == RouteTarget.Service).ToList();
             // Merge, don't replace: rules the operator made in the dashboard (hostnames Watchtower's
             // route table doesn't know) are preserved verbatim — the configurations endpoint is a
             // whole-config PUT, so without this a fresh Watchtower pointed at an existing tunnel
@@ -667,9 +685,13 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     /// network; TLS is Cloudflare's edge job), sorted by hostname for a stable configuration, and the
     /// mandatory catch-all 404 last so unknown hostnames don't leak an arbitrary upstream.
     /// </summary>
+    /// <remarks>
+    /// A <see cref="RouteTarget.Watchtower"/> route has no stack and is filtered out here as well as by the
+    /// caller — the projection is the pure function the tests drive directly, so it states the rule itself.
+    /// </remarks>
     internal static List<CloudflareIngressRule> ProjectIngress(IReadOnlyList<Route> routes) {
         var rules = routes
-            .Where(r => r.Stack is not null)
+            .Where(r => r.Target == RouteTarget.Service && r.Stack is not null)
             .Select(r => new CloudflareIngressRule {
                 Hostname = r.Domain,
                 Service = $"http://{ProxyIngressNetworks.EdgeAlias(r.Stack!.ComposeProjectName, r.ServiceName)}:{r.ContainerPort}",

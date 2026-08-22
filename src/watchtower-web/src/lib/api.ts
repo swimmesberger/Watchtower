@@ -235,6 +235,9 @@ export const api = {
         tlsEnabled: data.tlsEnabled,
         isPrimary: data.isPrimary,
         kind: data.kind ?? null,
+        target: data.target ?? null,
+        realmId: data.realmId ?? null,
+        makeLoginRoute: data.makeLoginRoute ?? null,
       })).route as Route,
     updateRoute: async (id: number, data: UpdateRouteRequest) =>
       (await rpc('proxy.updateRoute', {
@@ -244,10 +247,13 @@ export const api = {
         containerPort: data.containerPort,
         tlsEnabled: data.tlsEnabled,
         isPrimary: data.isPrimary,
+        kind: data.kind ?? null,
+        makeLoginRoute: data.makeLoginRoute ?? null,
       })).route as Route,
-    deleteRoute: async (id: number, removeFromProvider = false) => {
-      await rpc('proxy.deleteRoute', { id, removeFromProvider })
-    },
+    // Returns the server's response rather than swallowing it: deleting a realm's login host succeeds
+    // and carries a `warning` the caller has to show (ADR-0021).
+    deleteRoute: async (id: number, removeFromProvider = false) =>
+      (await rpc('proxy.deleteRoute', { id, removeFromProvider })) as { id: number; warning?: string | null },
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
     listCertificates: async () =>
@@ -477,17 +483,17 @@ export const api = {
       (await rpc('realms.create', {
         name: data.name,
         slug: data.slug,
-        authHost: data.authHost ?? null,
+        loginDomain: data.loginDomain ?? null,
       })).realm as Realm,
     // A partial update, unlike every other update on this facade: null means "leave this field alone", so
     // `?? null` here folds an omitted field into "leave alone" rather than into a cleared value. Clearing
-    // the auth host is therefore an empty string, which survives the `??` — the caller says which of the
-    // two it means by omitting the field or passing ''.
+    // the login route is therefore `0`, which survives the `??` — the caller says which of the two it
+    // means by omitting the field or passing 0.
     update: async (id: number, data: UpdateRealmRequest) =>
       (await rpc('realms.update', {
         id,
         name: data.name ?? null,
-        authHost: data.authHost ?? null,
+        loginRouteId: data.loginRouteId ?? null,
       })).realm as Realm,
     remove: async (id: number) => {
       await rpc('realms.delete', { id })

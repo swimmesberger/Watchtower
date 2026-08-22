@@ -440,9 +440,13 @@ public static class WatchtowerAccessEndpoints {
 
         // The whole table as a narrow projection, then the policy: the bulk form settles every route in one
         // indexed grants query, and Watchtower's scale is tens of routes, so there is nothing to paginate.
+        // Watchtower's own routes are excluded outright (ADR-0021): the portal names applications a visitor
+        // can be sent to, and the page they are already looking at is not one of them — it is where this
+        // list is rendered.
         var rows = await db.Routes.AsNoTracking()
+            .Where(r => r.Target == RouteTarget.Service)
             .Select(r => new AppRouteRow(
-                r.Id, r.Domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId, r.ServiceName, r.Stack!.Name))
+                r.Id, r.Domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId!.Value, r.ServiceName, r.Stack!.Name))
             .ToListAsync(ct);
 
         // Detached stand-ins rather than a widened projection: AccessibleRouteIdsAsync documents that it

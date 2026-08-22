@@ -84,6 +84,13 @@ planes (deploys, settings changes) land in the same log.
 
 ## Limitations
 
+- **Watchtower routes are not served by this provider.** A route whose target is Watchtower itself
+  ([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md)) is skipped by the tunnel
+  projection and its row is set to `Error` saying so. An ingress rule pointing at Watchtower would
+  publish the management plane through the tunnel with nothing in front of it — which is exactly what
+  Cloudflare Access exists to do properly, so expose Watchtower through the Cloudflare dashboard and
+  gate it there. The row is still worth keeping: it is where the realm's login address is written down,
+  and that is what its protected apps redirect to.
 - **Single zone:** all route domains must live under the configured zone id. A domain outside it
   fails its DNS upsert (logged, best-effort) while the rest proceed.
 - **Access control:** Watchtower's forward-auth (central-auth) does not run in front of tunneled

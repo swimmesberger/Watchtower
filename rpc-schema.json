@@ -3609,6 +3609,27 @@
               "string",
               "null"
             ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "makeLoginRoute": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -3631,7 +3652,10 @@
                 "type": "integer"
               },
               "stackId": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "stackName": {
                 "type": [
@@ -3676,6 +3700,24 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "target": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realmSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isLoginRoute": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -3691,7 +3733,11 @@
               "status",
               "statusDetail",
               "certNotAfter",
-              "createdAt"
+              "createdAt",
+              "target",
+              "realmId",
+              "realmSlug",
+              "isLoginRoute"
             ]
           }
         },
@@ -3721,6 +3767,13 @@
         "properties": {
           "id": {
             "type": "integer"
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -3968,7 +4021,10 @@
                 "type": "integer"
               },
               "stackId": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "stackName": {
                 "type": [
@@ -4013,6 +4069,24 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "target": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realmSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isLoginRoute": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -4028,7 +4102,11 @@
               "status",
               "statusDetail",
               "certNotAfter",
-              "createdAt"
+              "createdAt",
+              "target",
+              "realmId",
+              "realmSlug",
+              "isLoginRoute"
             ]
           }
         },
@@ -4257,7 +4335,10 @@
                   "type": "integer"
                 },
                 "stackId": {
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "stackName": {
                   "type": [
@@ -4302,6 +4383,24 @@
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "realmId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "realmSlug": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "isLoginRoute": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -4317,7 +4416,11 @@
                 "status",
                 "statusDetail",
                 "certNotAfter",
-                "createdAt"
+                "createdAt",
+                "target",
+                "realmId",
+                "realmSlug",
+                "isLoginRoute"
               ]
             }
           }
@@ -4843,6 +4946,20 @@
           },
           "isPrimary": {
             "type": "boolean"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "makeLoginRoute": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -4864,7 +4981,10 @@
                 "type": "integer"
               },
               "stackId": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "stackName": {
                 "type": [
@@ -4909,6 +5029,24 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "target": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realmSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isLoginRoute": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -4924,7 +5062,11 @@
               "status",
               "statusDetail",
               "certNotAfter",
-              "createdAt"
+              "createdAt",
+              "target",
+              "realmId",
+              "realmSlug",
+              "isLoginRoute"
             ]
           }
         },
@@ -4943,7 +5085,7 @@
           "slug": {
             "type": "string"
           },
-          "authHost": {
+          "loginDomain": {
             "type": [
               "string",
               "null"
@@ -4971,12 +5113,6 @@
               "slug": {
                 "type": "string"
               },
-              "authHost": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "isSystem": {
                 "type": "boolean"
               },
@@ -4992,18 +5128,31 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "loginRouteId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "loginHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "id",
               "name",
               "slug",
-              "authHost",
               "isSystem",
               "userCount",
               "groupCount",
               "templateCount",
-              "createdAt"
+              "createdAt",
+              "loginRouteId",
+              "loginHost"
             ]
           }
         },
@@ -5057,12 +5206,6 @@
                 "slug": {
                   "type": "string"
                 },
-                "authHost": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
                 "isSystem": {
                   "type": "boolean"
                 },
@@ -5078,18 +5221,31 @@
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "loginRouteId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "loginHost": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "id",
                 "name",
                 "slug",
-                "authHost",
                 "isSystem",
                 "userCount",
                 "groupCount",
                 "templateCount",
-                "createdAt"
+                "createdAt",
+                "loginRouteId",
+                "loginHost"
               ]
             }
           }
@@ -5113,9 +5269,9 @@
             ],
             "default": null
           },
-          "authHost": {
+          "loginRouteId": {
             "type": [
-              "string",
+              "integer",
               "null"
             ],
             "default": null
@@ -5140,12 +5296,6 @@
               "slug": {
                 "type": "string"
               },
-              "authHost": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "isSystem": {
                 "type": "boolean"
               },
@@ -5161,18 +5311,31 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "loginRouteId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "loginHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "id",
               "name",
               "slug",
-              "authHost",
               "isSystem",
               "userCount",
               "groupCount",
               "templateCount",
-              "createdAt"
+              "createdAt",
+              "loginRouteId",
+              "loginHost"
             ]
           }
         },
@@ -6747,6 +6910,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "effectiveLoginHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -6937,6 +7107,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "effectiveLoginHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [

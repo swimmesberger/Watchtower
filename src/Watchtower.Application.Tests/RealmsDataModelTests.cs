@@ -29,7 +29,7 @@ public sealed class RealmsDataModelTests {
     // -- The seeded system realm -----------------------------------------------------------------
 
     [Fact]
-    public async Task Migration_SeedsExactlyOneSystemRealm_WithNoAuthHostOfItsOwn() {
+    public async Task Migration_SeedsExactlyOneSystemRealm_WithNoLoginRouteOfItsOwn() {
         using var host = AuthTestHost.Start();
 
         await using var scope = host.Services.CreateAsyncScope();
@@ -40,9 +40,9 @@ public sealed class RealmsDataModelTests {
         Assert.Equal(Realm.SystemRealmId, realm.Id);
         Assert.Equal(Realm.SystemRealmSlug, realm.Slug);
         Assert.Equal(Realm.SystemRealmName, realm.Name);
-        // Never a stored host: the operator login page is found through Watchtower:Auth:Host, so
-        // authentication does not depend on a row to locate itself.
-        Assert.Null(realm.AuthHost);
+        // A fresh install has no routes at all, so the operator realm starts with no login route and
+        // falls back to Watchtower:Auth:Host until one is created (ADR-0021).
+        Assert.Null(realm.LoginRouteId);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class RealmsDataModelTests {
     }
 
     [Fact]
-    public async Task LoginHost_IsConfigurationForTheSystemRealm_AndTheRowForAnyOther() {
+    public async Task LoginHost_ComesFromTheLoginRoute_WithAuthHostAsTheSystemRealmsFallback() {
         using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "Watchtower.Example.Invalid"));
         var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
         var pending = await host.AddRealmAsync("pending");
@@ -103,10 +103,135 @@ public sealed class RealmsDataModelTests {
         await using var scope = host.Services.CreateAsyncScope();
         var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
 
-        Assert.Equal("watchtower.example.invalid", realms.LoginHostFor(await realms.SystemRealmAsync(Ct)));
-        Assert.Equal("login.acme.invalid", realms.LoginHostFor((await realms.FindAsync(acme, Ct))!));
-        // Created before its DNS exists: no host, and therefore nowhere to send a challenge.
-        Assert.Null(realms.LoginHostFor((await realms.FindAsync(pending, Ct))!));
+        // No login route on the system realm yet, so the configured fallback answers (ADR-0021).
+        Assert.Equal(
+            "watchtower.example.invalid",
+            await realms.LoginHostForAsync(await realms.SystemRealmAsync(Ct), Ct));
+        Assert.Equal("login.acme.invalid", await realms.LoginHostForAsync((await realms.FindAsync(acme, Ct))!, Ct));
+        // Created before its DNS exists: no login route, no fallback (it is not the system realm), and
+        // therefore nowhere to send a challenge.
+        Assert.Null(await realms.LoginHostForAsync((await realms.FindAsync(pending, Ct))!, Ct));
+    }
+
+    [Fact]
+    public async Task ASystemRealmLoginRoute_TakesPrecedenceOverTheConfiguredFallback() {
+        using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "fallback.example.invalid"));
+        await host.AddWatchtowerRouteAsync("ui.example.invalid", makeLoginRoute: true);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+
+        // The route is the answer whenever there is one; Auth:Host is what fills in while there is not.
+        Assert.Equal("ui.example.invalid", await realms.LoginHostForAsync(await realms.SystemRealmAsync(Ct), Ct));
+    }
+
+    [Fact]
+    public async Task ResolveByHost_ReadsTheWatchtowerRouteTable() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme");
+        // A second Watchtower hostname for the realm, not its login route: which population a visitor
+        // arriving on a hostname belongs to is decided by the route, not by the designation.
+        await host.AddWatchtowerRouteAsync("portal.acme.invalid", acme);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+
+        Assert.Equal(acme, (await realms.ResolveByHostAsync("PORTAL.acme.INVALID", Ct)).Id);
+    }
+
+    [Fact]
+    public async Task ResolveByHost_IgnoresAServiceRouteOnTheSameKindOfName() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+        var template = await host.AddRealmTemplateAsync("shop", acme);
+        await host.AddRouteAsync("app.acme.invalid", AccessMode.Authenticated, template);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+
+        // A forwarded application's hostname is not a login page, whatever realm the app belongs to —
+        // arriving there is not "sign in to acme", so it falls back like any unrecognised host.
+        Assert.True((await realms.ResolveByHostAsync("app.acme.invalid", Ct)).IsSystem);
+    }
+
+    [Fact]
+    public async Task ARealmStillServingWatchtowerOnAHostname_CannotBeDeletedByTheDatabase() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.Realms.Remove(await db.Realms.SingleAsync(r => r.Id == acme, Ct));
+
+        // Restrict on routes.realm_id: realms.delete refuses first, and the schema refuses regardless —
+        // a realm delete must never take a live public hostname with it (ADR-0021).
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
+    }
+
+    [Fact]
+    public async Task DeletingALoginRoute_LeavesTheRealmWithoutOne_RatherThanFailing() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        await db.Routes.Where(r => r.Domain == "login.acme.invalid").ExecuteDeleteAsync(Ct);
+
+        // ON DELETE SET NULL: removing the hostname is a legitimate act with a visible consequence, not
+        // something the schema refuses.
+        var realm = await db.Realms.AsNoTracking().SingleAsync(r => r.Id == acme, Ct);
+        Assert.Null(realm.LoginRouteId);
+    }
+
+    /// <summary>
+    /// The check constraint, not the handlers: a writer that bypasses <c>proxy.createRoute</c> entirely
+    /// still cannot store the two shapes that would break the model — a Watchtower route that is gated,
+    /// and one that also points at a stack.
+    /// </summary>
+    [Fact]
+    public async Task TheRouteTargetConstraint_RefusesAGatedWatchtowerRoute() {
+        using var host = AuthTestHost.Start();
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.Routes.Add(new Entities.Route {
+            Target = RouteTarget.Watchtower,
+            RealmId = Realm.SystemRealmId,
+            Domain = "ui.example.invalid",
+            ServiceName = string.Empty,
+            AccessMode = AccessMode.Authenticated,
+        });
+
+        var refused = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
+        Assert.IsType<SqliteException>(refused.InnerException);
+    }
+
+    [Fact]
+    public async Task TheRouteTargetConstraint_RefusesAServiceRouteCarryingARealm() {
+        using var host = AuthTestHost.Start();
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var stack = new Stack {
+            Name = "demo", RepositoryUrl = "https://example.invalid/demo.git",
+            ComposeFilePath = "docker-compose.yml", Branch = "main", ComposeProjectName = "demo",
+        };
+        db.Stacks.Add(stack);
+        await db.SaveChangesAsync(Ct);
+
+        db.Routes.Add(new Entities.Route {
+            Target = RouteTarget.Service,
+            StackId = stack.Id,
+            // A service route inherits its realm from its stack's category; a second answer stored here
+            // is exactly the disagreement the model exists to prevent.
+            RealmId = Realm.SystemRealmId,
+            Domain = "app.example.invalid",
+            ServiceName = "web",
+            ContainerPort = 8080,
+        });
+
+        var refused = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
+        Assert.IsType<SqliteException>(refused.InnerException);
     }
 
     // -- Route → realm ---------------------------------------------------------------------------
@@ -357,6 +482,164 @@ public sealed class RealmsDataModelTests {
         Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM users WHERE normalized_user_name = 'LEGACY'"));
         Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM groups WHERE normalized_name = 'LEGACY STAFF'"));
     }
+
+    // -- ADR-0021: auth_host → Watchtower route --------------------------------------------------
+
+    /// <summary>
+    /// The conversion the <c>ConvertLoginHostsToRoutes</c> migration carries. It has to happen inside a
+    /// migration because <c>realms.auth_host</c> must be read before it is dropped, and the ordering that
+    /// makes that work — raw SQL keeps its position while table rebuilds are hoisted to the end — is EF
+    /// SQLite behaviour rather than something the C# states. So this seeds a legacy database and migrates
+    /// through it for real.
+    /// </summary>
+    [Fact]
+    public async Task ConvertLoginHostsToRoutes_TurnsEachRealmsAuthHostIntoItsLoginRoute() {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using var db = LegacyContext(connection);
+
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync("AddBackupCronSchedule", Ct);
+
+        // Two realms with a stored host, one without, and a service route on an unrelated domain — the
+        // pre-ADR-0021 shape exactly as an upgraded instance would hold it.
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO realms (name, slug, auth_host, is_system, created_at) VALUES
+                ('Acme', 'acme', 'Login.ACME.invalid', 0, '2026-01-02 03:04:05+00:00'),
+                ('Contoso', 'contoso', 'login.contoso.invalid', 0, '2026-01-02 03:04:05+00:00'),
+                ('Pending', 'pending', NULL, 0, '2026-01-02 03:04:05+00:00');
+            INSERT INTO stacks (name, repository_url, compose_file_path, branch, compose_project_name,
+                                auto_deploy_mode, app_api_enabled, backup_enabled,
+                                backup_stop_containers, webhook_enabled, created_at)
+            VALUES ('demo', 'https://example.invalid/demo.git', 'docker-compose.yml', 'main', 'demo',
+                    'Off', 0, 0, 0, 0, '2026-01-02 03:04:05+00:00');
+            INSERT INTO routes (stack_id, domain, service_name, container_port, tls_enabled, is_primary,
+                                kind, access_mode, identity_header_mode, status, created_at)
+            VALUES ((SELECT id FROM stacks WHERE name = 'demo'), 'app.example.invalid', 'web', 8080, 1, 1,
+                    'Managed', 'Authenticated', 'None', 'Active', '2026-01-02 03:04:05+00:00');
+            """, Ct);
+
+        await migrator.MigrateAsync(cancellationToken: Ct);
+
+        var acme = await db.Realms.AsNoTracking().Include(r => r.LoginRoute).SingleAsync(r => r.Slug == "acme", Ct);
+        Assert.NotNull(acme.LoginRoute);
+        // Lowercased on the way in: a route domain is stored normalised, and the old column was not.
+        Assert.Equal("login.acme.invalid", acme.LoginRoute.Domain);
+        Assert.Equal(RouteTarget.Watchtower, acme.LoginRoute.Target);
+        Assert.Null(acme.LoginRoute.StackId);
+        Assert.Equal(acme.Id, acme.LoginRoute.RealmId);
+        Assert.True(acme.LoginRoute.TlsEnabled);
+        Assert.Equal(DomainKind.Managed, acme.LoginRoute.Kind);
+        Assert.Equal(AccessMode.Public, acme.LoginRoute.AccessMode);
+        Assert.Equal(RouteStatus.Pending, acme.LoginRoute.Status);
+        // Written in EF's own SQLite shape for a DateTimeOffset, so it materialises here at all and
+        // sorts as text against rows the application writes. Reading it back is the assertion; a format
+        // EF could not parse would have thrown on the query above.
+        Assert.Equal(TimeSpan.Zero, acme.LoginRoute.CreatedAt.Offset);
+        Assert.NotEqual(default, acme.LoginRoute.CreatedAt);
+
+        var contoso = await db.Realms.AsNoTracking().Include(r => r.LoginRoute).SingleAsync(r => r.Slug == "contoso", Ct);
+        Assert.Equal("login.contoso.invalid", contoso.LoginRoute!.Domain);
+
+        // A realm that never had a host still has none — nothing was invented for it.
+        var pending = await db.Realms.AsNoTracking().SingleAsync(r => r.Slug == "pending", Ct);
+        Assert.Null(pending.LoginRouteId);
+
+        // The pre-existing application route is untouched and reads as a service route.
+        var app = await db.Routes.AsNoTracking().SingleAsync(r => r.Domain == "app.example.invalid", Ct);
+        Assert.Equal(RouteTarget.Service, app.Target);
+        Assert.Null(app.RealmId);
+        Assert.NotNull(app.StackId);
+        Assert.Equal(AccessMode.Authenticated, app.AccessMode);
+
+        // And nothing was created for the operator realm, whose host is configuration rather than a
+        // column — LoginHostConversion handles that half on the next start.
+        var system = await db.Realms.AsNoTracking().SingleAsync(r => r.IsSystem, Ct);
+        Assert.Null(system.LoginRouteId);
+    }
+
+    /// <summary>
+    /// The one case where the conversion has to decline: the hostname a realm named is already a service
+    /// route. Re-pointing a domain that serves an application at the management plane would be the worst
+    /// possible reading of an upgrade, so the row is left alone and the realm simply has no login route.
+    /// </summary>
+    [Fact]
+    public async Task ConvertLoginHostsToRoutes_LeavesAnAuthHostAlreadyServedByAServiceRoute_Alone() {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using var db = LegacyContext(connection);
+
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync("AddBackupCronSchedule", Ct);
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO realms (name, slug, auth_host, is_system, created_at)
+            VALUES ('Acme', 'acme', 'login.acme.invalid', 0, '2026-01-02 03:04:05+00:00');
+            INSERT INTO stacks (name, repository_url, compose_file_path, branch, compose_project_name,
+                                auto_deploy_mode, app_api_enabled, backup_enabled,
+                                backup_stop_containers, webhook_enabled, created_at)
+            VALUES ('demo', 'https://example.invalid/demo.git', 'docker-compose.yml', 'main', 'demo',
+                    'Off', 0, 0, 0, 0, '2026-01-02 03:04:05+00:00');
+            INSERT INTO routes (stack_id, domain, service_name, container_port, tls_enabled, is_primary,
+                                kind, access_mode, identity_header_mode, status, created_at)
+            VALUES ((SELECT id FROM stacks WHERE name = 'demo'), 'login.acme.invalid', 'web', 8080, 1, 1,
+                    'Managed', 'Public', 'None', 'Active', '2026-01-02 03:04:05+00:00');
+            """, Ct);
+
+        await migrator.MigrateAsync(cancellationToken: Ct);
+
+        var route = await db.Routes.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal(RouteTarget.Service, route.Target);
+        Assert.Equal("web", route.ServiceName);
+
+        var acme = await db.Realms.AsNoTracking().SingleAsync(r => r.Slug == "acme", Ct);
+        Assert.Null(acme.LoginRouteId);
+    }
+
+    [Fact]
+    public async Task ConvertLoginHostsToRoutes_CanBeRolledBack_WithTheLoginHostWrittenBack() {
+        using var connection = new SqliteConnection("DataSource=:memory:");
+        connection.Open();
+        await using var db = LegacyContext(connection);
+
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync(cancellationToken: Ct);
+
+        var realm = new Realm { Name = "Acme", Slug = "acme", CreatedAt = DateTimeOffset.UtcNow };
+        db.Realms.Add(realm);
+        await db.SaveChangesAsync(Ct);
+        var route = new Entities.Route {
+            Target = RouteTarget.Watchtower,
+            RealmId = realm.Id,
+            Domain = "login.acme.invalid",
+            ServiceName = string.Empty,
+        };
+        db.Routes.Add(route);
+        await db.SaveChangesAsync(Ct);
+        realm.LoginRouteId = route.Id;
+        await db.SaveChangesAsync(Ct);
+
+        await migrator.MigrateAsync("AddBackupCronSchedule", Ct);
+
+        // The old shape cannot hold a stack-less route, so the Watchtower row is gone — but the hostname
+        // it carried is back in auth_host, which is the fact the old code reads.
+        Assert.Equal(0, await ScalarAsync(db, "SELECT COUNT(*) FROM routes"));
+        Assert.Equal(
+            1,
+            await ScalarAsync(db, "SELECT COUNT(*) FROM realms WHERE auth_host = 'login.acme.invalid'"));
+    }
+
+    /// <summary>
+    /// A context over the raw connection, for tests that step through migrations by hand rather than
+    /// through <see cref="AuthTestHost"/> (which always migrates all the way up).
+    /// </summary>
+    private static WatchtowerDbContext LegacyContext(SqliteConnection connection) =>
+        new(new DbContextOptionsBuilder<WatchtowerDbContext>()
+            .UseSqlite(connection)
+            .UseSnakeCaseNamingConvention()
+            .Options);
 
     /// <summary>Whether <paramref name="table"/> currently has <paramref name="column"/>.</summary>
     private static async Task<bool> ColumnExistsAsync(WatchtowerDbContext db, string table, string column) {

@@ -7,8 +7,9 @@ namespace Watchtower.Application.Services.Yarp;
 /// <summary>
 /// One row of the in-process proxy's routing table: everything the request path needs about a host,
 /// flattened out of the <see cref="ProxySite"/> projection so no database is touched per request.
-/// <paramref name="Local"/> marks a host Watchtower serves itself (a realm's login page) — those are
-/// never forwarded upstream. <paramref name="RouteId"/> is null exactly for those synthesized hosts.
+/// <paramref name="Local"/> marks a host Watchtower serves itself (a <see cref="RouteTarget.Watchtower"/>
+/// route) — those are never forwarded upstream. <paramref name="RouteId"/> is set on every row: since
+/// ADR-0021 there is one route row per served hostname, Watchtower's own included.
 /// </summary>
 public sealed record ProxyRouteSnapshot(
     string Host,
@@ -43,9 +44,9 @@ public sealed class ProxyRouteTableSnapshot {
     public int Count => _byHost.Count;
 
     /// <summary>
-    /// The distinct hosts that need a certificate, lowercased. Realm login hosts are included — they
-    /// are served over HTTPS by Watchtower itself and would otherwise be the one set of hosts nobody
-    /// could reach securely.
+    /// The distinct hosts that need a certificate, lowercased. Watchtower's own hosts are included —
+    /// they are served over HTTPS by Watchtower itself and would otherwise be the one set of hosts
+    /// nobody could reach securely.
     /// </summary>
     public IReadOnlyList<string> TlsHosts { get; }
 
@@ -93,8 +94,8 @@ public sealed class ProxyRouteTable {
     /// <summary>
     /// Projects the provider-independent site list onto a routing table. Pure, so the routing rules
     /// are testable without a database. Hosts are lowercased; on a duplicate domain the first site
-    /// wins, matching <see cref="ProxySiteProjection"/>'s own precedence (an explicit route row is
-    /// projected before the login host that would shadow it).
+    /// wins — a defensive rule rather than a load-bearing one, since the unique index on
+    /// <c>routes.domain</c> means the projection cannot produce two sites for one hostname.
     /// </summary>
     public static ProxyRouteTableSnapshot From(IReadOnlyList<ProxySite> sites) {
         var byHost = new Dictionary<string, ProxyRouteSnapshot>(StringComparer.OrdinalIgnoreCase);

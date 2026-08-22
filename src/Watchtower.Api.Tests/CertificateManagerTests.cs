@@ -1,4 +1,7 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
 using Xunit;
@@ -131,12 +134,14 @@ public sealed class CertificateManagerTests {
     }
 
     /// <summary>
-    /// The route projection is what fills the desired set, and it includes hosts with no route row — a
-    /// realm's login page is served by Watchtower itself and would otherwise be the one host nobody could
-    /// reach over HTTPS.
+    /// A login host needs a certificate like any other host, and since ADR-0021 it gets one for the
+    /// ordinary reason: it is a <c>Watchtower</c>-target route in the table, so the route projection puts
+    /// it in the desired set. This one arrives by the upgrade path — the host boots with a configured
+    /// <c>Auth:Host</c> and <c>LoginHostConversion</c> turns it into the operator realm's login route
+    /// before the providers start.
     /// </summary>
     [Fact]
-    public async Task ARealmLoginHostIsWanted() {
+    public async Task AConvertedLoginHostIsWanted() {
         await using var estate = await AcmeEstate.StartAsync(
             settings: [("Watchtower:Auth:Enabled", "true"), ("Watchtower:Auth:Host", "login.example.invalid")]);
 
@@ -144,35 +149,40 @@ public sealed class CertificateManagerTests {
 
         var login = Assert.Single(estate.Certificates.Snapshot(), s => s.Host == "login.example.invalid");
         Assert.True(login.Desired);
+
+        // And it is wanted because a row says so, not because configuration was read a second time.
+        await estate.Factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var route = await db.Routes.AsNoTracking()
+                .SingleAsync(r => r.Domain == "login.example.invalid", Ct);
+            Assert.Equal(RouteTarget.Watchtower, route.Target);
+            var system = await db.Realms.AsNoTracking().SingleAsync(r => r.IsSystem, Ct);
+            Assert.Equal(route.Id, system.LoginRouteId);
+        });
     }
 
     /// <summary>
-    /// And the list says which is which. A host with no route row is one Watchtower serves itself; one
-    /// that is neither routed nor wanted is a leftover on the volume.
+    /// And the list says which is which. Every served host has a route row now (ADR-0021), so the only
+    /// other thing the list can show is a leftover on the volume: a certificate nothing routes to.
     /// </summary>
     [Fact]
-    public async Task TheListDistinguishesRoutedHostsFromLoginHostsAndLeftovers() {
+    public async Task TheListDistinguishesRoutedHostsFromLeftovers() {
         await using var estate = await AcmeEstate.StartAsync();
         await estate.AddRouteAsync(Host);
         await estate.Certificates.RenewNowAsync(Host, Ct);
-        // A wanted host with no route row behind it — what a realm's login page looks like here.
-        estate.Certificates.SetDesiredHosts([Host, "login.example.invalid"]);
 
-        var listed = await estate.ListCertificatesAsync();
-
-        Assert.Equal("route", Assert.Single(listed, c => c.Host == Host).Source);
-        var login = Assert.Single(listed, c => c.Host == "login.example.invalid");
-        Assert.Equal("loginHost", login.Source);
-        Assert.Null(login.RouteId);
+        Assert.Equal("route", Assert.Single(await estate.ListCertificatesAsync(), c => c.Host == Host).Source);
 
         // A certificate for a host that is then dropped from the desired set and has no route row behind
         // it: on disk, wanted by nothing. Left there deliberately (dropping out of the set is not a
         // delete) and flagged so an operator can see why it is still around.
-        await estate.Certificates.RenewNowAsync("login.example.invalid", Ct);
+        estate.Certificates.SetDesiredHosts([Host, "gone.example.invalid"]);
+        await estate.Certificates.RenewNowAsync("gone.example.invalid", Ct);
         estate.Certificates.SetDesiredHosts([Host]);
-        Assert.Equal(
-            "orphan",
-            Assert.Single(await estate.ListCertificatesAsync(), c => c.Host == "login.example.invalid").Source);
+
+        var orphan = Assert.Single(await estate.ListCertificatesAsync(), c => c.Host == "gone.example.invalid");
+        Assert.Equal("orphan", orphan.Source);
+        Assert.Null(orphan.RouteId);
     }
 
     /// <summary>

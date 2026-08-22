@@ -6,26 +6,29 @@ using Xunit;
 namespace Watchtower.Application.Tests;
 
 /// <summary>
-/// Covers <c>ProxySiteProjection.Project</c> — which routes end up behind access control, and when
-/// Watchtower emits a site block for itself (docs/central-auth/design.md §6, §11).
+/// Covers <c>ProxySiteProjection.Project</c> — which routes end up behind access control, and which
+/// hostnames Watchtower serves itself (docs/central-auth/design.md §6, §11; ADR-0021).
 /// </summary>
+/// <remarks>
+/// Since ADR-0021 there is no synthesis here at all: <c>Local</c> is derived from
+/// <see cref="RouteTarget.Watchtower"/> and from nothing else, so the tests that used to describe a
+/// login host appearing out of configuration now describe a row appearing as a site.
+/// </remarks>
 public sealed class ProxySiteProjectionTests {
-    private const string AuthHost = "watchtower.example.invalid";
+    private const string SelfHost = "watchtower.example.invalid";
 
     [Fact]
-    public void WithAuthDisabled_NothingIsProtected_AndThereIsNoSelfRoute() {
+    public void WithAuthDisabled_NothingIsProtected() {
         var sites = ProxySiteProjection.Project(
             [Route("public.example.invalid", AccessMode.Public),
              Route("members.example.invalid", AccessMode.Authenticated),
              Route("secret.example.invalid", AccessMode.Restricted)],
-            new AuthOptions { Enabled = false, Host = AuthHost },
-            realmAuthHosts: []);
+            new AuthOptions { Enabled = false, Host = SelfHost });
 
         // The escape hatch: turning access control off restores the previous configuration exactly,
         // whatever the route rows happen to say. An operator locked out by a policy mistake needs this to
         // be true without editing every route first.
         Assert.All(sites, s => Assert.False(s.Protected));
-        Assert.DoesNotContain(sites, s => s.Domain == AuthHost);
     }
 
     [Fact]
@@ -34,174 +37,124 @@ public sealed class ProxySiteProjectionTests {
             [Route("public.example.invalid", AccessMode.Public),
              Route("members.example.invalid", AccessMode.Authenticated),
              Route("secret.example.invalid", AccessMode.Restricted)],
-            new AuthOptions { Enabled = true }, realmAuthHosts: []);
+            new AuthOptions { Enabled = true });
 
         Assert.False(Site(sites, "public.example.invalid").Protected);
         Assert.True(Site(sites, "members.example.invalid").Protected);
         Assert.True(Site(sites, "secret.example.invalid").Protected);
     }
 
-    [Fact]
-    public void SelfRoute_IsAddedForTheAuthHost_AndIsNeverProtected() {
-        var sites = ProxySiteProjection.Project(
-            [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = $"  {AuthHost.ToUpperInvariant()}  " },
-            realmAuthHosts: []);
+    // ── Watchtower routes (ADR-0021) ──────────────────────────────────────────
 
-        var self = Site(sites, AuthHost);
-        Assert.Equal("watchtower", self.UpstreamHost);
-        Assert.Equal(8080, self.UpstreamPort);
+    [Fact]
+    public void AWatchtowerRoute_IsServedByWatchtowerItself_AndIsNeverProtected() {
+        var sites = ProxySiteProjection.Project(
+            [SelfRoute(SelfHost), Route("members.example.invalid", AccessMode.Authenticated)],
+            new AuthOptions { Enabled = true });
+
+        var self = Site(sites, SelfHost);
+        Assert.Equal(ProxySiteProjection.SelfAlias, self.UpstreamHost);
+        Assert.Equal(ProxySiteProjection.SelfPort, self.UpstreamPort);
+        Assert.True(self.Local);
         Assert.True(self.Tls);
         Assert.False(self.OnDemand);
         // Protecting the login page with the gate that redirects to the login page is a closed loop, and
-        // Watchtower authenticates its own UI natively anyway (§2.5).
+        // Watchtower authenticates its own UI natively (§2.5).
         Assert.False(self.Protected);
-    }
-
-    [Fact]
-    public void SelfRoute_DoesNotShadowAnExplicitRouteForTheSameDomain() {
-        var explicitRoute = Route(AuthHost, AccessMode.Public);
-        explicitRoute.ContainerPort = 3000;
-
-        var sites = ProxySiteProjection.Project(
-            [explicitRoute], new AuthOptions { Enabled = true, Host = AuthHost }, realmAuthHosts: []);
-
-        // The operator has said what that host should do; quietly replacing it would be surprising in the
-        // one place surprises are least affordable.
-        var site = Assert.Single(sites);
-        Assert.Equal(3000, site.UpstreamPort);
-        Assert.Equal("watchtower-web", site.UpstreamHost);
-    }
-
-    [Fact]
-    public void ExplicitAuthHostRoute_RendersButIsNeverProtected_EvenWhenSetNonPublic() {
-        // The lockout trap: an operator creates a real Route for the auth host and, meaning well, sets it
-        // Authenticated or Restricted. Gating it would put the login page behind forward_auth, which
-        // redirects to the login page — the UI would then be reachable only via the published port.
-        var authHostRoute = Route(AuthHost, AccessMode.Restricted);
-
-        var sites = ProxySiteProjection.Project(
-            [authHostRoute, Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = AuthHost },
-            realmAuthHosts: []);
-
-        var self = Site(sites, AuthHost);
-        Assert.False(self.Protected);
-        // The explicit row still renders (its upstream, not the synthesised self-route's).
-        Assert.Equal("watchtower-web", self.UpstreamHost);
-        // The other protected route is unaffected.
+        // The rest of the table is untouched.
         Assert.True(Site(sites, "members.example.invalid").Protected);
-    }
-
-    [Fact]
-    public void WithoutAnAuthHost_NoSelfRouteIsEmitted() {
-        var sites = ProxySiteProjection.Project(
-            [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = null }, realmAuthHosts: []);
-
-        Assert.Single(sites);
-    }
-
-    // ── Per-realm login hosts (design.md §13) ─────────────────────────────────
-
-    [Fact]
-    public void EveryRealmLoginHost_GetsItsOwnUnprotectedSelfRoute() {
-        var sites = ProxySiteProjection.Project(
-            [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = AuthHost },
-            ["login.acme.invalid", "  LOGIN.Contoso.INVALID  "]);
-
-        // A protected app redirects to its own realm's login page, so that page has to be served — the
-        // same bootstrap argument the operator self-route has always answered, now once per population.
-        foreach (var host in new[] { AuthHost, "login.acme.invalid", "login.contoso.invalid" }) {
-            var self = Site(sites, host);
-            Assert.Equal("watchtower", self.UpstreamHost);
-            Assert.Equal(8080, self.UpstreamPort);
-            Assert.True(self.Tls);
-            Assert.False(self.Protected);
-        }
-        Assert.Equal(4, sites.Count);
     }
 
     /// <summary>
-    /// The invariant, stated as a test: <b>no realm's login host may sit behind its own gate.</b> An
-    /// operator who creates an explicit route for one and, meaning well, marks it Authenticated or
-    /// Restricted would otherwise put that login page behind the forward-auth that redirects to it.
+    /// The invariant, restated for the new model: <b>a Watchtower route is never protected.</b> The check
+    /// constraint refuses to store one that is not <c>Public</c>, and even handed a row that somehow says
+    /// otherwise the projection does not gate it — the closed loop is worth ruling out twice.
     /// </summary>
-    [Fact]
-    public void AnExplicitRouteForARealmLoginHost_RendersButIsForceUnprotected() {
-        var realmHostRoute = Route("login.acme.invalid", AccessMode.Restricted);
-        realmHostRoute.ContainerPort = 3000;
+    [Theory]
+    [InlineData(AccessMode.Authenticated)]
+    [InlineData(AccessMode.Restricted)]
+    public void AWatchtowerRoute_IsUnprotected_WhateverItsAccessModeSays(AccessMode mode) {
+        var self = SelfRoute(SelfHost);
+        self.AccessMode = mode;
 
-        var sites = ProxySiteProjection.Project(
-            [realmHostRoute, Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = AuthHost },
-            ["login.acme.invalid"]);
+        var site = Assert.Single(ProxySiteProjection.Project([self], new AuthOptions { Enabled = true }));
 
-        var self = Site(sites, "login.acme.invalid");
-        Assert.False(self.Protected);
-        // The operator's own row still renders — only its access mode is overridden. It stays a real
-        // upstream rather than becoming a site Watchtower serves itself.
-        Assert.Equal("watchtower-web", self.UpstreamHost);
-        Assert.Equal(3000, self.UpstreamPort);
-        Assert.False(self.Local);
-        // Everything else is untouched, including the operator self-route.
-        Assert.True(Site(sites, "members.example.invalid").Protected);
-        Assert.False(Site(sites, AuthHost).Protected);
+        Assert.False(site.Protected);
+        Assert.True(site.Local);
     }
 
     [Fact]
-    public void ARealmSharingTheOperatorLoginHost_ProducesOneSiteBlock() {
+    public void WatchtowerRoutes_AreServed_WithAuthDisabledToo() {
         var sites = ProxySiteProjection.Project(
-            [],
-            new AuthOptions { Enabled = true, Host = AuthHost },
-            [AuthHost.ToUpperInvariant(), "login.acme.invalid", "login.acme.invalid"]);
+            [SelfRoute(SelfHost), Route("members.example.invalid", AccessMode.Authenticated)],
+            new AuthOptions { Enabled = false });
 
-        // The handlers refuse to store a realm host equal to the configured one, and duplicates cannot
-        // exist behind the unique index — but a projection that emitted two blocks for one domain would
-        // produce a Caddyfile that does not load, so it collapses them rather than trusting that.
-        Assert.Equal(2, sites.Count);
-        Assert.Single(sites, s => s.Domain == AuthHost);
-        Assert.Single(sites, s => s.Domain == "login.acme.invalid");
-        // Both are synthesized: Watchtower serves them, and neither came from a route row.
-        Assert.All(sites, s => {
-            Assert.True(s.Local);
-            Assert.Null(s.RouteId);
-        });
+        // Unlike the synthesized login hosts it replaced, a Watchtower route is not part of access
+        // control: it is the operator saying "serve this instance here", which is just as true with
+        // authentication off — that is how the UI stays reachable on its own hostname.
+        Assert.True(Site(sites, SelfHost).Local);
+        Assert.False(Site(sites, "members.example.invalid").Protected);
     }
 
     [Fact]
-    public void WithAuthDisabled_RealmLoginHostsAreNotServedEither() {
+    public void AWatchtowerRouteOnACustomDomain_KeepsOnDemandTls() {
+        var self = SelfRoute("login.customer.invalid");
+        self.Kind = DomainKind.Custom;
+
+        var site = Assert.Single(ProxySiteProjection.Project([self], new AuthOptions { Enabled = true }));
+
+        // A realm's login host is very often a domain the customer owns, so the lazy-issuance path has to
+        // be available here exactly as it is for an application route.
+        Assert.True(site.OnDemand);
+    }
+
+    [Fact]
+    public void AWatchtowerRouteWithTlsOff_IsProjectedAsPlainHttp() {
+        var self = SelfRoute(SelfHost);
+        self.TlsEnabled = false;
+
+        var site = Assert.Single(ProxySiteProjection.Project([self], new AuthOptions { Enabled = true }));
+
+        Assert.False(site.Tls);
+        Assert.True(site.Local);
+    }
+
+    [Fact]
+    public void TheConfiguredAuthHost_NoLongerProducesASiteOfItsOwn() {
         var sites = ProxySiteProjection.Project(
             [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = false, Host = AuthHost },
-            ["login.acme.invalid"]);
+            new AuthOptions { Enabled = true, Host = SelfHost });
 
-        // The escape hatch stays total: turning access control off restores exactly the previous
-        // configuration, and a realm's login page is part of access control.
+        // Auth:Host is a redirect address for the operator realm, not a statement that this instance
+        // serves that hostname (ADR-0021). Serving it takes a route row.
         Assert.Single(sites);
-        Assert.All(sites, s => Assert.False(s.Protected));
+        Assert.DoesNotContain(sites, s => s.Domain == SelfHost);
     }
 
     [Fact]
-    public void ARealmWithNoLoginHostYet_ContributesNoSite() {
-        var sites = ProxySiteProjection.Project(
-            [], new AuthOptions { Enabled = true, Host = AuthHost }, ["", "   "]);
+    public void AServiceRouteWithNoStackLoaded_IsSkippedRatherThanThrowing() {
+        var orphan = new Route {
+            Target = RouteTarget.Service, Domain = "gone.example.invalid", ServiceName = "web",
+            ContainerPort = 8080,
+        };
 
-        // Nothing to serve: such a realm's routes fail closed at challenge time instead. Only the
-        // operator's own synthesized login host remains.
-        var self = Assert.Single(sites);
-        Assert.Equal(AuthHost, self.Domain);
-        Assert.True(self.Local);
-        Assert.Null(self.RouteId);
+        var sites = ProxySiteProjection.Project(
+            [orphan, Route("members.example.invalid", AccessMode.Public)], new AuthOptions { Enabled = true });
+
+        // The foreign key cascades, so this should not happen — but a reconcile is not the place to throw
+        // about it, and emitting a site with no upstream would be worse than emitting none.
+        var site = Assert.Single(sites);
+        Assert.Equal("members.example.invalid", site.Domain);
     }
+
+    // ── Service routes ────────────────────────────────────────────────────────
 
     [Fact]
     public void CustomDomains_KeepOnDemandTls_WhenProtected() {
         var custom = Route("app.customer.invalid", AccessMode.Restricted);
         custom.Kind = DomainKind.Custom;
 
-        var site = Assert.Single(ProxySiteProjection.Project([custom], new AuthOptions { Enabled = true }, realmAuthHosts: []));
+        var site = Assert.Single(ProxySiteProjection.Project([custom], new AuthOptions { Enabled = true }));
 
         // Access control and lazy certificate issuance are independent concerns; a customer-owned domain
         // needs both.
@@ -214,14 +167,14 @@ public sealed class ProxySiteProjectionTests {
         var route = Route("members.example.invalid", AccessMode.Authenticated);
         route.IdentityHeaderMode = IdentityHeaderMode.AuthRequest;
 
-        var site = Assert.Single(ProxySiteProjection.Project([route], new AuthOptions { Enabled = true }, realmAuthHosts: []));
+        var site = Assert.Single(ProxySiteProjection.Project([route], new AuthOptions { Enabled = true }));
 
         // The proxy config builder reads the mode off the site to decide copy_headers; it originates here.
         Assert.True(site.Protected);
         Assert.Equal(IdentityHeaderMode.AuthRequest, site.Mode);
     }
 
-    // ── Provenance: which site came from a route row, and which Watchtower serves itself ──────
+    // ── Provenance: every site comes from a row now ───────────────────────────
 
     [Fact]
     public void RouteDerivedSites_CarryRouteIdAndBypassPaths() {
@@ -229,8 +182,7 @@ public sealed class ProxySiteProjectionTests {
         route.Id = 42;
         route.BypassPaths = "/webhooks/\n/healthz";
 
-        var site = Assert.Single(ProxySiteProjection.Project(
-            [route], new AuthOptions { Enabled = true }, realmAuthHosts: []));
+        var site = Assert.Single(ProxySiteProjection.Project([route], new AuthOptions { Enabled = true }));
 
         // A provider that enforces access control in-process (rather than delegating to forward-auth)
         // needs the originating row and its bypass list; the projection is where they come from.
@@ -240,43 +192,28 @@ public sealed class ProxySiteProjectionTests {
     }
 
     [Fact]
-    public void SynthesizedLoginHostSites_AreMarkedLocal_AndHaveNoRouteId() {
-        var sites = ProxySiteProjection.Project(
-            [Route("members.example.invalid", AccessMode.Authenticated)],
-            new AuthOptions { Enabled = true, Host = AuthHost },
-            ["login.acme.invalid"]);
+    public void WatchtowerSites_CarryTheirRouteId_AndNoBypassPaths() {
+        var self = SelfRoute(SelfHost);
+        self.Id = 7;
+        // The column is unusable on this kind of row (the handlers never set it), and a bypass list on a
+        // site nothing gates would be dead configuration — so it is dropped rather than carried.
+        self.BypassPaths = "/webhooks/";
 
-        // Watchtower serves its own login pages; there is no upstream to forward them to and no route row
-        // behind them, which is exactly what Local marks.
-        foreach (var host in new[] { AuthHost, "login.acme.invalid" }) {
-            var self = Site(sites, host);
-            Assert.True(self.Local);
-            Assert.Null(self.RouteId);
-            Assert.Null(self.BypassPaths);
-        }
-        Assert.False(Site(sites, "members.example.invalid").Local);
-    }
+        var site = Assert.Single(ProxySiteProjection.Project([self], new AuthOptions { Enabled = true }));
 
-    [Fact]
-    public void AnExplicitRouteOnALoginHost_IsNotLocal_KeepsItsRouteId_ButIsUnprotected() {
-        var explicitRoute = Route(AuthHost, AccessMode.Restricted);
-        explicitRoute.Id = 7;
-
-        var site = Assert.Single(ProxySiteProjection.Project(
-            [explicitRoute], new AuthOptions { Enabled = true, Host = AuthHost }, realmAuthHosts: []));
-
-        // The operator's row still describes the site — it is a real upstream, not Watchtower itself — but
-        // the invariant stands: a login host is never behind its own gate.
-        Assert.False(site.Local);
+        // The whole point of the change: a served hostname has a row, so it has a status, a certificate
+        // and an audit trail like every other.
         Assert.Equal(7, site.RouteId);
-        Assert.Equal("watchtower-web", site.UpstreamHost);
-        Assert.False(site.Protected);
+        Assert.Null(site.BypassPaths);
+        Assert.Equal(IdentityHeaderMode.None, site.Mode);
     }
 
     private static ProxySite Site(IEnumerable<ProxySite> sites, string domain) =>
         Assert.Single(sites, s => s.Domain == domain);
 
     private static Route Route(string domain, AccessMode mode) => new() {
+        Target = RouteTarget.Service,
+        StackId = 1,
         Domain = domain,
         ServiceName = "web",
         ContainerPort = 8080,
@@ -288,5 +225,16 @@ public sealed class ProxySiteProjectionTests {
             Branch = "main",
             ComposeProjectName = "watchtower",
         },
+    };
+
+    private static Route SelfRoute(string domain) => new() {
+        Target = RouteTarget.Watchtower,
+        StackId = null,
+        RealmId = Realm.SystemRealmId,
+        Domain = domain,
+        ServiceName = string.Empty,
+        ContainerPort = 0,
+        TlsEnabled = true,
+        AccessMode = AccessMode.Public,
     };
 }

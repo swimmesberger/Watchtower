@@ -90,6 +90,27 @@ public sealed class RealmAccessPolicyTests {
         Assert.True(await RouteAccessPolicy.IsAuthorizedAsync(db, route, outsider, Ct));
     }
 
+    /// <summary>
+    /// A <see cref="RouteTarget.Watchtower"/> route has no stack to inherit a realm from and states its
+    /// own (ADR-0021), which is what makes <c>ResolveByHostAsync</c> and the grant editor agree about the
+    /// population a hostname belongs to.
+    /// </summary>
+    [Fact]
+    public async Task AWatchtowerRoute_BelongsToTheRealmItNames() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+        var realmRoute = await host.AddWatchtowerRouteAsync("portal.acme.invalid", acme);
+        var operatorRoute = await host.AddWatchtowerRouteAsync("ui.example.invalid");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+
+        var realms = await RouteAccessPolicy.RouteRealmIdsAsync(
+            db, [realmRoute.Id, operatorRoute.Id], Ct);
+        Assert.Equal(acme, realms[realmRoute.Id]);
+        Assert.Equal(Realm.SystemRealmId, realms[operatorRoute.Id]);
+    }
+
     [Fact]
     public async Task StandaloneStacks_BelongToTheOperatorRealm() {
         using var host = AuthTestHost.Start();
@@ -187,10 +208,11 @@ public sealed class RealmAccessPolicyTests {
         var signer = sp.GetRequiredService<AuthTokenSigner>();
         var discovery = sp.GetRequiredService<TenantDiscoveryService>();
         var user = await db.Users.SingleAsync(u => u.Id == carol, Ct);
-        var stackId = (await db.Routes.SingleAsync(r => r.Id == route.Id, Ct)).StackId;
+        var stackId = (await db.Routes.SingleAsync(r => r.Id == route.Id, Ct)).StackId!.Value;
 
+        var realms = sp.GetRequiredService<RealmResolver>();
         var acmeRealm = await db.Realms.SingleAsync(r => r.Id == acme, Ct);
-        var mintedForAcme = signer.Mint(user, route.Domain, RealmIdentity.From(acmeRealm));
+        var mintedForAcme = signer.Mint(user, route.Domain, await realms.IdentityForAsync(acmeRealm, Ct));
         Assert.Equal(carol, await discovery.ResolveAssertionSubjectAsync(stackId, mintedForAcme, Ct));
 
         // Same key, same audience, same subject — only the issuer says another population. Accepting it
@@ -213,12 +235,13 @@ public sealed class RealmAccessPolicyTests {
         var signer = sp.GetRequiredService<AuthTokenSigner>();
         var discovery = sp.GetRequiredService<TenantDiscoveryService>();
         var user = await db.Users.SingleAsync(u => u.Id == alice, Ct);
-        var stackId = (await db.Routes.SingleAsync(r => r.Id == route.Id, Ct)).StackId;
+        var stackId = (await db.Routes.SingleAsync(r => r.Id == route.Id, Ct)).StackId!.Value;
+        var realms = sp.GetRequiredService<RealmResolver>();
         var acmeRealm = await db.Realms.SingleAsync(r => r.Id == acme, Ct);
 
         // Defence in depth: the issuer is the calling realm's, but the account named by `sub` is not in it.
         // One key pair signs every realm, so the subject has to be re-checked, not inferred from the issuer.
-        var token = signer.Mint(user, route.Domain, RealmIdentity.From(acmeRealm));
+        var token = signer.Mint(user, route.Domain, await realms.IdentityForAsync(acmeRealm, Ct));
         Assert.Null(await discovery.ResolveAssertionSubjectAsync(stackId, token, Ct));
     }
 }

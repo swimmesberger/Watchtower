@@ -161,8 +161,9 @@ public sealed class YarpDispatchTests {
         await factory.AddRouteAsync(AppDomain, AccessMode.Public);
         await factory.ApplyProxyAsync();
 
-        // The login host is in the table — it needs a certificate — but marked Local: Watchtower serves it
-        // itself, and forwarding it would be forwarding to ourselves.
+        // The login host is a Watchtower route in the table (ADR-0021 — the configured Auth:Host was
+        // converted into one at startup) and so is marked Local: Watchtower serves it itself, and
+        // forwarding it would be forwarding to ourselves.
         var response = await client.GetAsync($"https://{AuthHost}/health", Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -171,10 +172,10 @@ public sealed class YarpDispatchTests {
     }
 
     /// <summary>
-    /// Serving itself is not the same as serving itself over anything. The login host gets the same upgrade
-    /// a route host does — as it did under Caddy, whose self-route was an ordinary TLS site — because this
-    /// is where the central session cookie is set, and a page reached over plain HTTP would set it without
-    /// its Secure attribute.
+    /// Serving itself is not the same as serving itself over anything. A Watchtower route gets the same
+    /// upgrade a forwarded one does — it is an ordinary TLS site — because this is where the central
+    /// session cookie is set, and a page reached over plain HTTP would set it without its Secure
+    /// attribute.
     /// </summary>
     [Fact]
     public async Task LoginHost_OverPlainHttp_Redirects() {
@@ -186,6 +187,28 @@ public sealed class YarpDispatchTests {
 
         Assert.Equal(HttpStatusCode.Found, response.StatusCode);
         Assert.Equal($"https://{AuthHost}/login?redirect_uri=x", response.Headers.Location?.ToString());
+    }
+
+    /// <summary>
+    /// A Watchtower route created outright rather than converted from configuration, and in a customer
+    /// realm rather than the operator one — the ordinary way one comes into existence (ADR-0021). It is
+    /// served in process just the same: which realm's login page a hostname carries is an auth question,
+    /// and "who serves this hostname" is not.
+    /// </summary>
+    [Fact]
+    public async Task AWatchtowerRouteCreatedOutright_ReachesWatchtower() {
+        using var factory = WatchtowerApiFactory.WithYarpProxy(("Watchtower:Auth:Enabled", "true"));
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme");
+        await factory.AddWatchtowerRouteAsync("login.acme.invalid", acme, makeLoginRoute: true);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("https://login.acme.invalid/health", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("healthy", await Body(response), StringComparison.Ordinal);
+        Assert.Empty(factory.Forwarder.Forwarded);
     }
 
     private static WatchtowerApiFactory LoginHostEstate() => WatchtowerApiFactory.WithYarpProxy(
@@ -413,9 +436,9 @@ public sealed class YarpDispatchTests {
     }
 
     /// <summary>
-    /// The login host is the exception on both listeners, and deliberately so: through ingress it is the one
-    /// hostname Watchtower serves itself on, and on the management endpoint it is how an operator who bound
-    /// 8080 privately still reaches the UI.
+    /// A Watchtower route is the exception on both listeners, and deliberately so: through ingress it is a
+    /// hostname Watchtower serves itself on, and on the management endpoint it is how an operator who
+    /// bound 8080 privately still reaches the UI.
     /// </summary>
     [Fact]
     public async Task LoginHost_OnTheManagementPort_ReachesWatchtower() {

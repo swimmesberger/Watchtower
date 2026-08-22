@@ -59,21 +59,70 @@ public enum IdentityHeaderMode {
 }
 
 /// <summary>
-/// A public domain that the built-in reverse proxy (Caddy) terminates TLS for and forwards to a
-/// service inside a <see cref="Stack"/>. The set of routes is the authoritative source for the
-/// generated proxy configuration.
+/// What a route's hostname is served by (ADR-0021). One column decides whether a row describes a
+/// forwarded application or a hostname Watchtower answers on itself, and everything downstream —
+/// the site projection, the check constraint, the realm lookup, the UI — reads it rather than
+/// inferring the answer from which other columns happen to be null.
+/// </summary>
+public enum RouteTarget {
+    /// <summary>A service inside a <see cref="Stack"/>: the proxy forwards to its container.</summary>
+    Service,
+    /// <summary>
+    /// Watchtower itself. The proxy serves this instance's own UI and API on the hostname — its
+    /// management surface, and (when the route is its realm's login route) that realm's login page.
+    /// Such a row carries a <see cref="RealmId"/> instead of a <see cref="StackId"/> and is always
+    /// <see cref="AccessMode.Public"/>: Watchtower authenticates its visitors natively, so route
+    /// access control has nothing to add and putting a login page behind the gate that redirects to
+    /// it would be a closed loop.
+    /// </summary>
+    Watchtower,
+}
+
+/// <summary>
+/// A public domain the reverse proxy terminates TLS for. A <see cref="RouteTarget.Service"/> route
+/// forwards it to a service inside a <see cref="Stack"/>; a <see cref="RouteTarget.Watchtower"/>
+/// route is served by Watchtower itself (ADR-0021). The set of routes is the authoritative source
+/// for the generated proxy configuration and for which hostnames serve Watchtower.
 /// </summary>
 public sealed class Route {
     public int Id { get; set; }
-    /// <summary>The stack whose service this route targets.</summary>
-    public int StackId { get; set; }
+
+    /// <summary>
+    /// Whether this hostname forwards to a stack service or is served by Watchtower itself. Immutable
+    /// after creation: the two kinds are different rows with different required columns, and switching
+    /// between them in place would mean silently re-pointing a live hostname at something else.
+    /// </summary>
+    public RouteTarget Target { get; set; } = RouteTarget.Service;
+
+    /// <summary>
+    /// The stack whose service this route targets. Null exactly for a
+    /// <see cref="RouteTarget.Watchtower"/> route, which has no upstream to forward to — the check
+    /// constraint <c>ck_routes_target</c> is what makes "exactly" true.
+    /// </summary>
+    public int? StackId { get; set; }
     public Stack? Stack { get; set; }
+
+    /// <summary>
+    /// The realm whose Watchtower surface this hostname serves — its login page when the realm names
+    /// this route as its <see cref="Realm.LoginRouteId"/>, and its portal either way. Set exactly for
+    /// a <see cref="RouteTarget.Watchtower"/> route; a <see cref="RouteTarget.Service"/> route
+    /// inherits its realm from its stack's category instead (docs/central-auth/design.md §13).
+    /// </summary>
+    public int? RealmId { get; set; }
+    public Realm? Realm { get; set; }
 
     /// <summary>The public hostname, e.g. <c>app.example.com</c>. Unique across all routes.</summary>
     public required string Domain { get; set; }
-    /// <summary>The compose service within the stack to forward to (its container is joined to the edge network).</summary>
+    /// <summary>
+    /// The compose service within the stack to forward to (its container is joined to the edge
+    /// network). Empty on a <see cref="RouteTarget.Watchtower"/> route, which forwards nowhere.
+    /// </summary>
     public required string ServiceName { get; set; }
-    /// <summary>The container-side port the service listens on.</summary>
+    /// <summary>
+    /// The container-side port the service listens on. Zero on a <see cref="RouteTarget.Watchtower"/>
+    /// route — where Watchtower reaches itself is <see cref="Services.ProxySiteProjection.SelfPort"/>,
+    /// not a per-row choice.
+    /// </summary>
     public int ContainerPort { get; set; }
     /// <summary>When true the proxy terminates HTTPS and auto-manages a certificate; when false it serves plain HTTP.</summary>
     public bool TlsEnabled { get; set; } = true;

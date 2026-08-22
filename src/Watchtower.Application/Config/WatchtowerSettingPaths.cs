@@ -34,6 +34,14 @@ public static class WatchtowerSettingPaths {
     public const string AuthSessionLifetimeHours = "Watchtower:Auth:SessionLifetimeHours";
     public const string AuthAbsoluteSessionLifetimeDays = "Watchtower:Auth:AbsoluteSessionLifetimeDays";
 
+    /// <summary>
+    /// Internal marker: <see cref="Services.LoginHostConversion"/> has already turned this installation's
+    /// configured <c>Auth:Host</c> into a Watchtower route (ADR-0021). Not a user setting — never offered
+    /// in the UI and deliberately not env-pinnable. It exists so an operator who deletes the converted
+    /// route does not find it recreated on the next restart.
+    /// </summary>
+    public const string AuthLoginHostsConverted = "Watchtower:Auth:LoginHostsConverted";
+
     // ── Proxy (proxy.updateConfig) ───────────────────────────────────────────
     public const string ProxyEnabled = "Watchtower:Proxy:Enabled";
     public const string ProxyProvider = "Watchtower:Proxy:Provider";

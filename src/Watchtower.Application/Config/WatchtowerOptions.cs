@@ -287,9 +287,17 @@ public sealed record AuthOptions {
     public bool Enabled { get; init; } = false;
 
     /// <summary>
-    /// Public hostname of the central login page, e.g. <c>watchtower.example.com</c>. Protected apps
-    /// redirect unauthenticated visitors here, so it must be reachable through the proxy. Optional
-    /// while only Watchtower's own UI is protected.
+    /// <b>Fallback login host for the operator realm</b>, e.g. <c>watchtower.example.com</c>. Since
+    /// ADR-0021 the login host is a <c>Watchtower</c>-target route, and this setting is read only when the
+    /// operator realm has no login route designated. Normally leave it empty and create a Watchtower route
+    /// instead — a route is served, gets a certificate, reports a status and is audited, none of which a
+    /// configuration string can do.
+    /// <para>
+    /// It exists for the one topology where a route cannot help: somebody else's proxy terminates the
+    /// hostname and forwards to Watchtower, so no provider of ours serves it and there is nothing for a row
+    /// to do except carry the name. A non-system realm in that position creates a Watchtower route anyway —
+    /// unserved while our proxy is off, but still where its login address is written down.
+    /// </para>
     /// </summary>
     public string? Host { get; init; }
 

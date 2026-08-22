@@ -37,30 +37,33 @@ public sealed class YarpProxyProviderApplyTests {
         using var yarp = Build(host, EnabledYarp());
         await yarp.Provider.ApplyAsync(Ct);
 
-        // Two route rows plus the two login hosts: the configured operator one and the realm's.
+        // Three rows: two application routes and the realm's login route. The configured Auth:Host adds
+        // nothing — since ADR-0021 a served hostname is a row, and Auth:Host is only a redirect address.
         var snapshot = yarp.Table.Current;
-        Assert.Equal(4, snapshot.Count);
+        Assert.Equal(3, snapshot.Count);
         Assert.True(snapshot.TryGet("app.example.invalid", out var app));
         Assert.Equal(ProxyIngressNetworks.EdgeAlias("billing", "web"), app.UpstreamHost);
         Assert.Equal(8080, app.UpstreamPort);
         Assert.True(app.Tls);
         Assert.NotNull(app.RouteId);
 
-        // The realm's login page is served by Watchtower itself, not forwarded to a stack.
+        // The realm's login page is served by Watchtower itself, not forwarded to a stack — and it has a
+        // row like any other host, which is what gives it a status and an audit trail.
         Assert.True(snapshot.TryGet("acme.example.invalid", out var login));
         Assert.True(login.Local);
-        Assert.Null(login.RouteId);
+        Assert.NotNull(login.RouteId);
         Assert.Equal(ProxySiteProjection.SelfAlias, login.UpstreamHost);
 
-        // The plain-HTTP route is served but never asks for a certificate; both login hosts do.
+        // The plain-HTTP route is served but never asks for a certificate; the login host does.
         Assert.Equal(
-            ["acme.example.invalid", "app.example.invalid", AuthHost],
+            ["acme.example.invalid", "app.example.invalid"],
             yarp.Certs.DesiredHosts.Order(StringComparer.Ordinal).ToArray());
         Assert.DoesNotContain("plain.example.invalid", yarp.Certs.DesiredHosts);
+        Assert.DoesNotContain(AuthHost, yarp.Certs.DesiredHosts);
     }
 
     [Fact]
-    public async Task Apply_MarksTlsRoutesAsWaitingForACertificate_ButNotTheLoginHost() {
+    public async Task Apply_MarksEveryTlsHostAsWaitingForACertificate_WatchtowersOwnIncluded() {
         using var host = AuthTestHost.Start();
         var stackId = await host.AddStackAsync("billing", composeProjectName: "billing");
         await host.AddRouteAsync(stackId, "app.example.invalid");
@@ -77,8 +80,9 @@ public sealed class YarpProxyProviderApplyTests {
         Assert.Equal("Waiting for a certificate", byDomain["app.example.invalid"]);
         // Nothing is pending for a route that is served over plain HTTP.
         Assert.Null(byDomain["plain.example.invalid"]);
-        // And the synthesized login host has no row to report on at all.
-        Assert.False(await db.Routes.AnyAsync(r => r.Domain == "acme.example.invalid", Ct));
+        // The login host reports its provisioning state like every other row — the whole point of
+        // ADR-0021 is that "is my login page's certificate issued yet?" has an answer on the Routes page.
+        Assert.Equal("Waiting for a certificate", byDomain["acme.example.invalid"]);
     }
 
     [Fact]

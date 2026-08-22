@@ -138,6 +138,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0020). Scoped because it
         // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.
         services.AddScoped<ProxyProviderMigration>();
+        // The other one-time upgrade step: a configured Auth:Host becomes the system realm's Watchtower
+        // route (ADR-0021). Scoped and run from the same place, and after the migration — which is what
+        // converts the realms' own stored auth hosts.
+        services.AddScoped<LoginHostConversion>();
 
         // Where the in-process proxy keeps its issued certificates and ACME account key. Created up
         // front for the same reason Auth:KeyPath is below: the certificate store is opened over this

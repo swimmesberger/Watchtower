@@ -35,6 +35,7 @@ public sealed class UpdateAuthConfig(
     AuthStartupState startup,
     EnvironmentSettingPins pins,
     AuditLog audit,
+    RealmResolver realms,
     ICurrentUser currentUser)
     : IHandler<UpdateAuthConfig.Command, Result<UpdateAuthConfig.Response>> {
     public sealed record Command(
@@ -43,6 +44,12 @@ public sealed class UpdateAuthConfig(
         int SessionLifetimeHours,
         int AbsoluteSessionLifetimeDays);
 
+    /// <param name="EffectiveLoginHost">
+    /// Where the operator realm actually redirects anonymous visitors after this write — its login
+    /// route's domain, or <paramref name="Host"/> when it has none (ADR-0021). Echoed for the same
+    /// reason every other field here is: the Settings page writes this response straight into its
+    /// cache, and a response that omitted it would blank the field it just rendered.
+    /// </param>
     public sealed record Response(
         bool Enabled,
         bool Active,
@@ -50,7 +57,8 @@ public sealed class UpdateAuthConfig(
         string? Host,
         int SessionLifetimeHours,
         int AbsoluteSessionLifetimeDays,
-        string[] PinnedPaths);
+        string[] PinnedPaths,
+        string? EffectiveLoginHost = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         if (command.SessionLifetimeHours is < 1 or > 720)
@@ -61,6 +69,29 @@ public sealed class UpdateAuthConfig(
         var host = command.Host?.Trim().ToLowerInvariant() ?? "";
         if (host.Length > 0 && (host.Contains("://", StringComparison.Ordinal) || host.Contains('/') || host.Contains(' ')))
             return AppError.Validation("Host must be a bare hostname (e.g. watchtower.example.com) — no scheme, path or spaces.");
+
+        // The one collision the fallback can still cause (ADR-0021). Auth:Host answers for the operator
+        // realm while it has no login route of its own, so pointing it at a hostname a *customer* realm
+        // serves Watchtower on would send operator-realm visitors to that realm's login page — a page
+        // that cannot admit them — and make both populations mint under the same token issuer, which
+        // RealmResolver.IssuersAsync can then only resolve by dropping one. Refused here because this is
+        // the only order that is refusable: a route cannot be created on a hostname that is already
+        // routed, so the reverse collision is impossible.
+        if (host.Length > 0) {
+            var claimedBy = await db.Routes.AsNoTracking()
+                .Where(r => r.Target == RouteTarget.Watchtower
+                            && r.Domain == host
+                            && r.RealmId != Realm.SystemRealmId)
+                .Select(r => r.Realm!.Slug)
+                .FirstOrDefaultAsync(ct);
+            if (claimedBy is not null) {
+                return AppError.Validation(
+                    $"'{host}' is the Watchtower hostname of realm '{claimedBy}'. Using it as the " +
+                    "operator realm's fallback login host would send operator visitors to that realm's " +
+                    "login page and give both populations the same token issuer. Mark a Watchtower " +
+                    "route of the operator realm as its login host instead.");
+            }
+        }
 
         var auth = options.CurrentValue.Auth;
         var violations = new List<string>();
@@ -98,6 +129,17 @@ public sealed class UpdateAuthConfig(
             + (command.Enabled != startup.Enabled ? " · restart required" : ""),
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
+        // The route wins over the fallback, so the effective host is not simply what was just written.
+        // The route half goes through the resolver — one reading of "where does the operator realm send
+        // people", shared with GetAuthConfig and with the redirect itself. The fallback half comes from
+        // the command rather than from the resolver, for the same reason the echo below does: the
+        // settings provider reloads asynchronously, so `Auth:Host` in options is still the old value here
+        // and the resolver would report the host this call has just replaced.
+        var system = await realms.SystemRealmAsync(ct);
+        var effective = system.LoginRouteId is null
+            ? (host.Length > 0 ? host : null)
+            : await realms.LoginHostForAsync(system, ct);
+
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // system.updateAutomation): immediately consistent for the caller.
         return new Response(
@@ -107,7 +149,8 @@ public sealed class UpdateAuthConfig(
             Host: host.Length > 0 ? host : null,
             SessionLifetimeHours: command.SessionLifetimeHours,
             AbsoluteSessionLifetimeDays: command.AbsoluteSessionLifetimeDays,
-            PinnedPaths: pins.Pinned(GetAuthConfig.AuthPaths));
+            PinnedPaths: pins.Pinned(GetAuthConfig.AuthPaths),
+            EffectiveLoginHost: effective);
     }
 
     private Task SetUnlessPinnedAsync(string path, string value, CancellationToken ct) =>

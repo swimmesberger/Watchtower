@@ -103,6 +103,12 @@ Only Caddy publishes host ports; your services never need `ports:` in their comp
   route table.
 - Config is pushed to Caddy's admin API (`/load`) for a **zero-downtime reload** — no restart, no
   shared config file.
+- **Watchtower routes** — routes whose target is Watchtower itself rather than a stack service
+  ([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md)) — render as an ordinary
+  site block with `reverse_proxy watchtower:8080`. That is the alias Caddy already reaches on the
+  `watchtower-control` network for every protected site's `forward_auth` and `/.watchtower/*` handler,
+  so nothing new is wired up for them. They are never given a `forward_auth` block: a login page behind
+  the gate that redirects to it is a closed loop, and Watchtower authenticates its own surface itself.
 
 ## Operational notes & current limitations
 

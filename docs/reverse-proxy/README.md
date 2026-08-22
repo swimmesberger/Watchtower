@@ -18,11 +18,13 @@ Background: [ADR-0015](../decisions/0015-proxy-provider-abstraction.md) (the pro
 
 ## The route table is the source of truth
 
-A **route** is a domain plus a target: a compose service in one of your stacks and a container port.
-You add them in the **Routes** UI (`/routes`); every provider is a projection of that one table, so
-switching providers does not mean re-entering anything. Each route also carries its **access mode**
-(Public / Authenticated / Restricted) and, for the two certificate-issuing providers, whether it is
-served over TLS.
+A **route** is a domain plus a target. The target is either a **stack service** — a compose service in
+one of your stacks and a container port — or **Watchtower itself**, which is how this instance's own UI
+and login pages get their hostnames ([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md),
+and "Exposing Watchtower itself" below). You add them in the **Routes** UI (`/routes`); every provider is
+a projection of that one table, so switching providers does not mean re-entering anything. Each route
+also carries its **access mode** (Public / Authenticated / Restricted) and, for the two
+certificate-issuing providers, whether it is served over TLS.
 
 Route status (`Pending`, `Awaiting DNS`, `Active`, `Error`) reports the certificate state, and how much
 that is worth depends on the provider. Under the **built-in provider it is authoritative**: Watchtower
@@ -72,6 +74,63 @@ change is logged and recorded in the audit trail. Fresh installations get the bu
 an internal marker written on that first start makes sure they are never pinned later, once they have
 routes of their own. Moving an existing install over is a deliberate act: see
 [caddy.md](caddy.md) for both halves of this.
+
+## Exposing Watchtower itself
+
+Watchtower's own UI needs a hostname too — and so does every realm's login page, because a protected
+application redirects anonymous visitors to `https://{loginHost}/login`. Both are the same thing: a
+route whose target is **Watchtower (this instance)** rather than a stack service. Create one in the
+Routes UI, pick the realm it serves, and tick **Use as this realm's login host** if its visitors should
+be redirected there.
+
+Such a route has no stack, no service and no port, and it is always **Public**: Watchtower authenticates
+its own visitors natively, so route access control does not apply and the database refuses to store a
+gated one. With authentication *disabled*, publishing one exposes the management UI to anyone who can
+reach the domain — turn authentication on first.
+
+A worked example. One instance, authentication on, the `yarp` provider, the management UI at
+`watchtower.example.com`, and a customer realm `acme`:
+
+| id | domain | target | stack / service:port | realm | login route? | access | served as |
+|---|---|---|---|---|---|---|---|
+| 1 | `watchtower.example.com` | Watchtower | — | system | ✔ (system) | Public (enforced) | in-process: management UI + operator login |
+| 2 | `app.example.com` | Service | `myapp` / `web:3000` | system (via stack) | — | Authenticated | forwarded after forward-auth |
+| 3 | `login.acme.com` | Watchtower | — | acme | ✔ (acme) | Public (enforced) | in-process: acme login page + "your applications" portal |
+| 4 | `crm.acme.com` | Service | `acme-crm` / `web:8080` | acme (via template) | — | Restricted | forwarded after forward-auth |
+| 5 | `admin.example.com` | Watchtower | — | system | — | Public | in-process: a second UI hostname, not used for redirects |
+
+`realms`: system (login route → 1), acme (login route → 3). Settings: `Proxy:Enabled=true`,
+`Provider=yarp`, `Auth:Enabled=true`, `Auth:Host` **empty**. Ports: `127.0.0.1:8080:8080` (management,
+private), `80:8081`, `443:8443`.
+
+What each request does:
+
+- `https://watchtower.example.com/` → ingress → row 1 is served by Watchtower → the UI, `__wt_sso` login.
+- `https://app.example.com/` while anonymous → row 2 is protected → the access check resolves realm
+  *system* → 302 to `https://watchtower.example.com/login?redirect_uri=…` → after signing in,
+  `/.watchtower/callback` on `app.example.com` mints the per-app `__wt_access` cookie → forwarded to
+  `myapp-web:3000` with `X-Watchtower-Jwt`.
+- `https://crm.acme.com/` while anonymous → realm *acme* → 302 to `https://login.acme.com/login`.
+- `http://watchtower.example.com/` on port 80 → 302 to https.
+- `http://<public-ip>/` → 404. An unknown host on ingress is a stranger and gets nothing.
+- `http://nas.lan:8080/` → the management UI, on the port you bound privately.
+
+All five rows get ACME certificates and report their status on the Routes page. Deleting row 1 is
+allowed — Watchtower warns that the system realm then has no login host, so its protected apps answer
+anonymous visitors with 401 until another Watchtower route is designated; the UI itself stays reachable
+on 8080.
+
+**Behind another proxy.** If something else terminates TLS in front of Watchtower and the built-in
+proxy is off, nothing here is served or issued by us — but rows 1 and 3 still supply the redirect
+hostnames, which is all the auth path needs. For the operator realm you may instead set
+`WATCHTOWER__AUTH__HOST`, which is read **only** when the operator realm has no login route designated.
+Prefer a route: a route is served, gets a certificate, reports a status and is audited.
+
+**Upgrading from before ADR-0021:** every realm's stored auth host becomes a Watchtower route during the
+migration, and a configured `Auth:Host` becomes the operator realm's on the first start after it.
+Neither ever re-points a hostname that already serves an application. The `Auth:Host` half is recorded
+in the audit trail as `proxy` / `route.convert`; the migration half is not — it is a schema migration,
+and the migration history is its record.
 
 ## Multi-tenancy
 

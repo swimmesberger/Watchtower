@@ -162,7 +162,8 @@ public sealed class AccessVerifier(
         //    minted for.
         var groups = await GroupMembership.NamesAsync(db, session.UserId, ct);
         return new AccessDecision.Allow(
-            IdentityHeaders(session.User, route, RealmIdentity.From(session.User.Realm), groups));
+            IdentityHeaders(
+                session.User, route, await realms.IdentityForAsync(session.User.Realm, ct), groups));
     }
 
     /// <summary>
@@ -171,11 +172,12 @@ public sealed class AccessVerifier(
     /// clean failure into a mystery, and would replay the body nowhere useful.
     /// </summary>
     /// <remarks>
-    /// The login host is <em>the route's realm's</em> (docs/central-auth/design.md §13): the configured
-    /// <c>Auth:Host</c> for a system-realm route, and the realm's own <c>AuthHost</c> for any other — so a
-    /// visitor is only ever sent to the login page of the population that could actually admit them. A realm
-    /// created before its DNS exists has no host, and its routes then fail closed with a bare 401 rather
-    /// than redirecting somewhere arbitrary, exactly as an instance with no <c>Auth:Host</c> already did.
+    /// The login host is <em>the route's realm's</em> (docs/central-auth/design.md §13): the domain of the
+    /// realm's login <see cref="Route"/>, falling back to the configured <c>Auth:Host</c> on the system
+    /// realm only (ADR-0021) — so a visitor is only ever sent to the login page of the population that could
+    /// actually admit them. A realm with no login route yet has no host, and its routes then fail closed
+    /// with a bare 401 rather than redirecting somewhere arbitrary, exactly as an instance with no
+    /// <c>Auth:Host</c> already did.
     /// <para>
     /// The redirect is assembled from <em>stored</em> values: literal <c>https</c>, the realm's login host,
     /// and the route's own domain. The forwarded scheme and host never reach the target — the only
@@ -185,9 +187,9 @@ public sealed class AccessVerifier(
     /// </remarks>
     private async Task<AccessDecision> ChallengeAnonymousAsync(Route route, AccessRequest request, CancellationToken ct) {
         var realm = await realms.RealmForRouteAsync(route, ct);
-        var authHost = realms.LoginHostFor(realm);
-        if (authHost is null) {
-            WarnMissingAuthHostOnce(realm);
+        var loginHost = await realms.LoginHostForAsync(realm, ct);
+        if (loginHost is null) {
+            WarnMissingLoginHostOnce(realm);
             return AccessDecision.Unauthorized.Instance;
         }
 
@@ -195,7 +197,7 @@ public sealed class AccessVerifier(
 
         var original = $"https://{route.Domain}{OriginalPathAndQuery(request.OriginalUri)}";
         return new AccessDecision.RedirectToLogin(
-            $"https://{authHost}/login?redirect_uri={Uri.EscapeDataString(original)}");
+            $"https://{loginHost}/login?redirect_uri={Uri.EscapeDataString(original)}");
     }
 
     /// <summary>The caller-supplied part of the original URL, or <c>/</c> when it is missing or unusable.</summary>
@@ -280,22 +282,23 @@ public sealed class AccessVerifier(
     /// <summary>
     /// Says once per realm that its protected routes cannot redirect anywhere because it has no login host.
     /// Until one exists, every anonymous request to a protected app of that realm gets a bare 401 instead of
-    /// the login page. The two realms are told apart because the fix is different: configuration for the
-    /// operator realm, a <c>realms.update</c> for any other.
+    /// the login page. The two realms are told apart because the fallback differs: the system realm also
+    /// accepts a configured <c>Auth:Host</c>, so its message names both fixes.
     /// </summary>
-    private void WarnMissingAuthHostOnce(Realm realm) {
+    private void WarnMissingLoginHostOnce(Realm realm) {
         if (!WarnedRealms.TryAdd(realm.Id, 0)) return;
         var logger = loggerFactory.CreateLogger(typeof(AccessVerifier).FullName!);
         if (realm.IsSystem) {
             logger.LogWarning(
-                "Auth:Host is not configured, so unauthenticated requests to protected apps are answered " +
-                "with 401 instead of being redirected to the login page. Set Watchtower:Auth:Host to the " +
-                "hostname the Watchtower UI is reachable on.");
+                "The operator realm has no login host, so unauthenticated requests to protected apps are " +
+                "answered with 401 instead of being redirected to the login page. Create a Watchtower " +
+                "route for the hostname the Watchtower UI is reachable on and mark it as the login host, " +
+                "or set Watchtower:Auth:Host when another proxy serves Watchtower.");
         } else {
             logger.LogWarning(
-                "Realm '{Realm}' has no auth host, so unauthenticated requests to its protected apps are " +
-                "answered with 401 instead of being redirected to a login page. Set the realm's authHost " +
-                "to the hostname its login page is reachable on.",
+                "Realm '{Realm}' has no login host, so unauthenticated requests to its protected apps are " +
+                "answered with 401 instead of being redirected to a login page. Create a Watchtower route " +
+                "in the realm and mark it as the realm's login host.",
                 realm.Slug);
         }
     }

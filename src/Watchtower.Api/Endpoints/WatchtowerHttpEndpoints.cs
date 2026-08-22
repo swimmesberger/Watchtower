@@ -78,9 +78,9 @@ public static class WatchtowerHttpEndpoints {
     /// <remarks>
     /// That answer <em>is</em> a route-existence oracle, so who gets to ask matters. This endpoint is not
     /// reachable only on the internal control network, whatever an earlier version of this comment claimed:
-    /// the Watchtower self-routes (<see cref="Application.Services.CaddyManager"/>'s site projection — the
-    /// configured <c>Auth:Host</c> plus every realm's <c>AuthHost</c>) are force-unprotected sites that
-    /// proxy <em>all</em> paths to this app, so anyone who can reach any login page can reach this path too.
+    /// the Watchtower routes (ADR-0021 — every hostname whose route targets this instance) are unprotected
+    /// sites that proxy <em>all</em> paths to this app, so anyone who can reach any login page can reach
+    /// this path too.
     /// <para>
     /// What separates the one legitimate caller from everyone else is the hop, not the network. Caddy's
     /// on-demand-TLS module calls the <c>ask</c> URL from its TLS machinery, directly, and stamps no

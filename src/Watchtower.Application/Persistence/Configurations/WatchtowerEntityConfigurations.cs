@@ -21,12 +21,18 @@ public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
         // The slug is the realm's identity on the wire (the `realm` JWT claim), so it is unique and the
         // handlers refuse to change it.
         b.HasIndex(x => x.Slug).IsUnique();
-        // At most one realm may own a given login host: the host decides which population a visitor is
-        // authenticating into, so two realms sharing one would make that ambiguous. Filtered rather than
-        // plain unique because "no host yet" is a legitimate state for any number of realms — SQLite
-        // already treats NULLs as distinct, but the filter states the intent (the RouteAccessGrant
-        // precedent) and is what a future Postgres backend would need anyway.
-        b.HasIndex(x => x.AuthHost).IsUnique().HasFilter("\"auth_host\" IS NOT NULL");
+        // At most one realm may name a given route as its login route: the host decides which population
+        // a visitor arriving on it authenticates into, so two realms sharing one would make that
+        // ambiguous. Filtered rather than plain unique because "no login route yet" is a legitimate state
+        // for any number of realms — SQLite already treats NULLs as distinct, but the filter states the
+        // intent (the RouteAccessGrant precedent) and is what a future Postgres backend would need anyway.
+        b.HasIndex(x => x.LoginRouteId).IsUnique().HasFilter("\"login_route_id\" IS NOT NULL");
+        // SET NULL, not Restrict: deleting the route is a legitimate act whose consequence (this realm
+        // has no login host any more) is reported by the handler rather than prevented by the schema.
+        b.HasOne(x => x.LoginRoute)
+            .WithMany()
+            .HasForeignKey(x => x.LoginRouteId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -200,26 +206,52 @@ public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnv
 [EntityConfiguration]
 public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
     public void Configure(EntityTypeBuilder<Route> b) {
-        b.ToTable("routes");
+        // The two route kinds are different rows, and the schema says which columns each one may fill
+        // (ADR-0021). Two properties of the Watchtower kind are load-bearing enough to be structural
+        // rather than merely enforced in the handlers: it points at a realm and not at a stack, and it is
+        // always Public. The second is the invariant "no realm's login host sits behind its own gate",
+        // which used to be a force-unprotect in the site projection and is now something the database
+        // will not store.
+        b.ToTable("routes", t => t.HasCheckConstraint(
+            "ck_routes_target",
+            """
+            ("target" = 'Watchtower' AND "stack_id" IS NULL AND "realm_id" IS NOT NULL AND "access_mode" = 'Public')
+            OR ("target" = 'Service' AND "stack_id" IS NOT NULL AND "realm_id" IS NULL)
+            """));
         b.HasKey(x => x.Id);
         b.Property(x => x.Domain).IsRequired();
         b.Property(x => x.ServiceName).IsRequired();
+        // Stored as the enum name ("Service"/"Watchtower"); "Service" is the default, which is what the
+        // check constraint above and the migration's backfill both read for every pre-ADR-0021 row.
+        b.Property(x => x.Target).HasConversion<string>().HasDefaultValue(RouteTarget.Service);
         // Stored as the enum name (e.g. "Active"/"Managed"); the API maps Status to lowercase for the client.
         b.Property(x => x.Status).HasConversion<string>();
         b.Property(x => x.Kind).HasConversion<string>();
-        // Stored as the enum name (e.g. "Public"); "Public" is the default so existing routes keep today's behaviour.
-        b.Property(x => x.AccessMode).HasConversion<string>();
+        // Stored as the enum name (e.g. "Public"); "Public" is the default so existing routes keep today's
+        // behaviour. The default is declared on the model rather than only in the migration that added the
+        // column, so a later table rebuild (SQLite regenerates the table from the model) cannot quietly
+        // drop it and leave a row inserted without the column failing its NOT NULL check.
+        b.Property(x => x.AccessMode).HasConversion<string>().HasDefaultValue(AccessMode.Public);
         // Stored as the enum name (e.g. "None"); "None" is the default so existing routes forward JWT only.
-        b.Property(x => x.IdentityHeaderMode).HasConversion<string>();
+        b.Property(x => x.IdentityHeaderMode).HasConversion<string>().HasDefaultValue(IdentityHeaderMode.None);
         // Global, and staying that way: a domain is a global resource — DNS and the proxy's site blocks
-        // have no notion of realms, so two realms claiming one host could not both be served. A route's
-        // realm is inherited from its stack's template rather than stored here (design.md §13).
+        // have no notion of realms, so two realms claiming one host could not both be served. A *service*
+        // route's realm is inherited from its stack's template rather than stored here (design.md §13);
+        // realm_id is filled only by a Watchtower route, which has no stack to inherit from.
         b.HasIndex(x => x.Domain).IsUnique();
         b.HasIndex(x => x.StackId);
+        b.HasIndex(x => x.RealmId);
         b.HasOne(x => x.Stack)
             .WithMany()
             .HasForeignKey(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
+        // Restrict, unlike the stack end: deleting a realm that still serves Watchtower on a hostname
+        // would silently un-serve that hostname (and orphan whatever redirects to it), so realms.delete
+        // refuses first and the foreign key is the backstop.
+        b.HasOne(x => x.Realm)
+            .WithMany()
+            .HasForeignKey(x => x.RealmId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

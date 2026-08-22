@@ -265,6 +265,12 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
     // Here rather than in a hosted service so the ordering is stated rather than inherited: after the
     // migration (it reads the routes table) and before app.RunAsync() starts the proxy providers.
     await scope.ServiceProvider.GetRequiredService<ProxyProviderMigration>().RunAsync();
+
+    // ADR-0021's one-time conversion: a configured Auth:Host becomes the operator realm's Watchtower
+    // route. Here for the same reason and in the same window — after the migration (which converts the
+    // realms' own stored auth hosts and drops the column) and before the providers start, so the first
+    // reconcile already serves the converted hostname.
+    await scope.ServiceProvider.GetRequiredService<LoginHostConversion>().RunAsync();
 }
 
 namespace Watchtower.Api {
