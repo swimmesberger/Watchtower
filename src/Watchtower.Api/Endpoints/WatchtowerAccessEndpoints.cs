@@ -25,6 +25,13 @@ namespace Watchtower.Api.Endpoints;
 /// public key material. None of them trusts <c>X-Forwarded-Proto</c> — scheme is not load-bearing anywhere
 /// here, and the one URL built from configuration (the login redirect) hard-codes <c>https</c>.
 /// <para>
+/// Verify's <em>decision</em> is not here: it lives in <see cref="AccessVerifier"/>, and this endpoint is
+/// the adapter that reads a request's shape off the <c>X-Forwarded-*</c> headers and renders the resulting
+/// <see cref="AccessDecision"/> as a status, headers and — for a denial — a page. The same service answers
+/// the in-process proxy without an HTTP hop, so the two transports cannot come to different verdicts about
+/// who may enter an app; see ADR-0017 (forthcoming).
+/// </para>
+/// <para>
 /// UserInfo and <c>/api/access/apps</c> are anonymous in the ASP.NET sense for the same reason: they
 /// authenticate the caller themselves, from the credential they were presented. What makes them the
 /// <em>any-realm</em> surface is that neither is behind
@@ -64,9 +71,6 @@ public static class WatchtowerAccessEndpoints {
         string ServiceName,
         string StackName);
 
-    /// <summary>Audit kind written when a signed-in visitor is refused an app they hold no grant for.</summary>
-    private const string AccessDenied = "access.denied";
-
     /// <summary>Audit kind written when a login code is exchanged for an app session.</summary>
     private const string CodeRedeemed = "code.redeemed";
 
@@ -78,25 +82,6 @@ public static class WatchtowerAccessEndpoints {
 
     /// <summary>The applications the calling account may enter, served on the auth host for the SPA portal.</summary>
     private const string AppsApiPath = "/api/access/apps";
-
-    /// <summary>
-    /// Caps the length of the <c>redirect_uri</c> echoed into the login redirect. A caller controls
-    /// <c>X-Forwarded-Uri</c>, and an unbounded value would become an unbounded <c>Location</c> header.
-    /// </summary>
-    private const int MaxOriginalUriLength = 2000;
-
-    /// <summary>
-    /// Realms whose missing-login-host warning has already been logged, by id. Verify runs on every
-    /// proxied request, so a misconfiguration that cannot be fixed from here must not also flood the log —
-    /// but one realm having no host says nothing about another, so the suppression is per realm rather
-    /// than global.
-    /// </summary>
-    /// <remarks>
-    /// Keyed by id rather than slug: a realm that was deleted and recreated under the same slug is a new
-    /// population with a new misconfiguration, and it should say so again rather than inherit the old
-    /// one's silence.
-    /// </remarks>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> WarnedRealms = new();
 
     /// <summary>
     /// Maps the forward-auth endpoints. With <paramref name="authEnabled"/> false they answer 404 rather
@@ -132,96 +117,52 @@ public static class WatchtowerAccessEndpoints {
     /// verdict: 2xx lets the request through with <c>copy_headers</c> applied, anything else is returned to
     /// the client verbatim.
     /// </summary>
+    /// <remarks>
+    /// An adapter and nothing more: it reads the request's shape off the forwarded headers, hands it to
+    /// <see cref="AccessVerifier"/>, and renders the <see cref="AccessDecision"/> as the status, headers and
+    /// page Caddy expects. The decision itself is shared with the in-process proxy, which asks the same
+    /// service without an HTTP hop — see ADR-0017 (forthcoming).
+    /// </remarks>
     private static void MapVerify(WebApplication app) {
         app.MapGet(RouteAccessPolicy.VerifyPath, async (
             HttpContext http,
-            WatchtowerDbContext db,
-            AuthSessionService sessions,
-            AuthTokenSigner signer,
-            RealmResolver realms,
-            TimeProvider time,
-            ILoggerFactory loggerFactory,
+            AccessVerifier verifier,
             CancellationToken ct) => {
 
-            // 1. Which app is this? The host names the route; an unknown one is not a Watchtower app.
-            var host = RouteAccessPolicy.NormalizeForwardedHost(http.Request.Headers["X-Forwarded-Host"]);
-            if (host is null) return Results.NotFound();
+            var decision = await verifier.DecideAsync(new AccessRequest(
+                Host: http.Request.Headers["X-Forwarded-Host"],
+                OriginalUri: http.Request.Headers["X-Forwarded-Uri"],
+                AccessCookie: http.Request.Cookies[AuthSessionService.AccessCookieName],
+                IsBrowserNavigation: IsBrowserNavigation(http),
+                ClientDescription: Describe(http)), ct);
 
-            var route = await RouteAccessPolicy.FindRouteByHostAsync(db, host, ct);
-            if (route is null) return Results.NotFound();
-
-            // No forward_auth is emitted for a public route, so reaching here means the config is stale.
-            // Letting the request through matches what the proxy would have done without us.
-            if (route.AccessMode == AccessMode.Public) return Results.Ok();
-
-            // 2. Exempt paths answer before any identity is considered, and carry no identity headers —
-            //    a bypass path is "no access control here", not "anonymous access as somebody".
-            var forwardedUri = http.Request.Headers["X-Forwarded-Uri"].ToString();
-            var path = RouteAccessPolicy.ExtractPath(forwardedUri);
-            if (RouteAccessPolicy.IsExemptPath(route.BypassPaths, path)) return Results.Ok();
-
-            // 3. The per-app session. Deliberately not ct: validation may renew the sliding window, and a
-            //    client that hangs up must not turn that write into a cancellation out of the auth check.
-            var session = await sessions.ValidateAppSessionAsync(
-                http.Request.Cookies[AuthSessionService.AccessCookieName], route.Id, CancellationToken.None);
-
-            // The realm is loaded with the account, so an authorised request costs no extra read for it;
-            // the anonymous branch is the one that has to go and ask which population owns this route.
-            if (session?.User?.Realm is null)
-                return await ChallengeAnonymousAsync(http, route, forwardedUri, realms, loggerFactory, ct);
-
-            // 4. Signed in, but policy may still refuse this app — including because the account belongs to
-            //    another realm, which IsAuthorizedAsync folds into the same single refusal as a missing grant.
-            if (!await RouteAccessPolicy.IsAuthorizedAsync(db, route, session.UserId, ct))
-                return await DenyAsync(db, time, route, session.UserId, http);
-
-            // 5. Authorised. One membership read feeds both forwarding channels — see WriteIdentityHeaders.
-            //    The account's realm is the route's realm by the check above, so it is what the assertion is
-            //    minted for.
-            var groups = await GroupMembership.NamesAsync(db, session.UserId, ct);
-            WriteIdentityHeaders(
-                http, session.User, route, signer, RealmIdentity.From(session.User.Realm), groups);
-            return Results.Ok();
+            switch (decision) {
+                case AccessDecision.Pass:
+                    return Results.Ok();
+                case AccessDecision.Allow allow:
+                    // Onto the *response*: forward_auth's copy_headers is what moves them onto the proxied
+                    // request, so this is where the upstream's identity headers are handed over.
+                    foreach (var (name, value) in allow.Headers) http.Response.Headers[name] = value;
+                    return Results.Ok();
+                case AccessDecision.RedirectToLogin redirect:
+                    return Results.Redirect(redirect.Url);
+                case AccessDecision.Unauthorized:
+                    return Results.Unauthorized();
+                case AccessDecision.Denied denied:
+                    // The decision states the message as plain text; escaping it is the renderer's job.
+                    return Html(
+                        StatusCodes.Status403Forbidden, denied.Title, Encode(denied.Message), denied.Hint);
+                case AccessDecision.NotFound:
+                    return Results.NotFound();
+                default:
+                    // Every case is answered above, so reaching here means a new one was added to
+                    // AccessDecision without deciding what this transport makes of it. Failing loudly is the
+                    // only safe direction: a fall-through 404 would quietly turn an unhandled verdict into
+                    // "not a Watchtower app", which is a 4xx Caddy hands straight to the visitor.
+                    throw new InvalidOperationException(
+                        $"Unhandled access decision {decision.GetType().Name}.");
+            }
         });
-    }
-
-    /// <summary>
-    /// What an unauthenticated request gets: a browser navigation is sent to the central login page, and
-    /// everything else gets a plain 401 — redirecting an XHR or a POST into a login form would turn a
-    /// clean failure into a mystery, and would replay the body nowhere useful.
-    /// </summary>
-    /// <remarks>
-    /// The login host is <em>the route's realm's</em> (docs/central-auth/design.md §13): the configured
-    /// <c>Auth:Host</c> for a system-realm route, and the realm's own <c>AuthHost</c> for any other — so a
-    /// visitor is only ever sent to the login page of the population that could actually admit them. A realm
-    /// created before its DNS exists has no host, and its routes then fail closed with a bare 401 rather
-    /// than redirecting somewhere arbitrary, exactly as an instance with no <c>Auth:Host</c> already did.
-    /// <para>
-    /// The redirect is assembled from <em>stored</em> values: literal <c>https</c>, the realm's login host,
-    /// and the route's own domain. <c>X-Forwarded-Proto</c> and <c>X-Forwarded-Host</c> never reach the
-    /// target — the only caller-supplied part is the path, which is bounded, required to be rooted, and
-    /// percent-encoded into a query parameter.
-    /// </para>
-    /// </remarks>
-    private static async Task<IResult> ChallengeAnonymousAsync(
-        HttpContext http,
-        Route route,
-        string? forwardedUri,
-        RealmResolver realms,
-        ILoggerFactory loggerFactory,
-        CancellationToken ct) {
-
-        var realm = await realms.RealmForRouteAsync(route, ct);
-        var authHost = realms.LoginHostFor(realm);
-        if (authHost is null) {
-            WarnMissingAuthHostOnce(loggerFactory, realm);
-            return Results.Unauthorized();
-        }
-
-        if (!IsBrowserNavigation(http)) return Results.Unauthorized();
-
-        var original = $"https://{route.Domain}{OriginalPathAndQuery(forwardedUri)}";
-        return Results.Redirect($"https://{authHost}/login?redirect_uri={Uri.EscapeDataString(original)}");
     }
 
     /// <summary>
@@ -234,85 +175,6 @@ public static class WatchtowerAccessEndpoints {
         if (string.IsNullOrEmpty(method)) method = http.Request.Method;
         if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method)) return false;
         return http.Request.Headers.Accept.ToString().Contains("text/html", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>The caller-supplied part of the original URL, or <c>/</c> when it is missing or unusable.</summary>
-    private static string OriginalPathAndQuery(string? forwardedUri) =>
-        string.IsNullOrEmpty(forwardedUri) || forwardedUri[0] != '/' || forwardedUri.Length > MaxOriginalUriLength
-            ? "/"
-            : forwardedUri;
-
-    /// <summary>
-    /// Authenticated but not authorised. Recorded, then answered with the denial page rather than a
-    /// redirect: sending them back to a login they have already completed would loop.
-    /// </summary>
-    private static async Task<IResult> DenyAsync(
-        WatchtowerDbContext db, TimeProvider time, Route route, int userId, HttpContext http) {
-        await AuthAudit.QueueAsync(db, time, AccessDenied, userId, route.Id, Describe(http),
-            success: false, target: route.Domain);
-        // Not RequestAborted: a caller that disconnects must not be able to keep denials out of the trail.
-        await db.SaveChangesAsync(CancellationToken.None);
-
-        return Html(StatusCodes.Status403Forbidden, "Access denied",
-            $"You are signed in, but your account is not permitted to use {Encode(route.Domain)}.",
-            "Ask an administrator to grant you access.");
-    }
-
-    /// <summary>
-    /// Sets the identity headers on a verified request. The signed assertion is <em>always</em> written — it
-    /// is the source of truth (design.md §2.3). Plaintext convenience headers are written only when the route
-    /// opted into a mode, under that mode's ecosystem-standard names, read from the single-source
-    /// <see cref="IdentityForwarding"/> helper so the set can never drift from what Caddy strips and copies.
-    /// Caddy strips every forwardable name from the inbound request before calling us, so what the upstream
-    /// receives is only ever what is written here.
-    /// </summary>
-    /// <param name="groups">
-    /// The account's group names, read once by the caller and used for both channels. Reading them twice —
-    /// once for the assertion and once for the header — would let a membership change in between put an
-    /// upstream in the position of seeing two different answers to the same question in one request.
-    /// </param>
-    /// <param name="realm">
-    /// The account's realm, which is the route's by the authorisation check that precedes this: it decides
-    /// the assertion's <c>iss</c> and is stated in its <c>realm</c> claim (design.md §13).
-    /// </param>
-    private static void WriteIdentityHeaders(
-        HttpContext http,
-        User user,
-        Route route,
-        AuthTokenSigner signer,
-        RealmIdentity realm,
-        IReadOnlyList<string> groups) {
-        // Source of truth, forwarded for every protected route regardless of mode. It carries the groups
-        // even on a None route: the signed assertion is where a group-aware app should read them from.
-        var assertion = signer.Mint(user, route.Domain, realm, groups);
-        http.Response.Headers[RouteAccessPolicy.JwtHeaderName] = assertion;
-        // Cloudflare mode: the same assertion also travels under Cloudflare's header name, so an app
-        // written against Cf-Access-Jwt-Assertion only re-points its JWKS/issuer config at Watchtower.
-        if (route.IdentityHeaderMode == IdentityHeaderMode.Cloudflare)
-            http.Response.Headers[IdentityForwarding.CfAccessJwtAssertion] = assertion;
-
-        // Plaintext convenience headers: only for a route that asked for them, and only values safe to put
-        // in a header (the email and group entries are already omitted by the helper when there is nothing
-        // to say). Group names are constrained to printable ASCII at creation time, so the joined value the
-        // helper produces survives HeaderSafe intact.
-        foreach (var (headerName, value) in IdentityForwarding.PlaintextHeaders(
-                     route.IdentityHeaderMode, user.UserName, user.Email, groups)) {
-            var safe = HeaderSafe(value);
-            if (safe is not null) http.Response.Headers[headerName] = safe;
-        }
-    }
-
-    /// <summary>
-    /// The value if it is safe to put in a header, otherwise <see langword="null"/>. Administrators choose
-    /// user names and emails, so this is not an untrusted input — but a header value is a place where a
-    /// stray control character stops being a display problem, and the JWT carries the same fields anyway,
-    /// so dropping the convenience copy loses nothing an app cannot recover.
-    /// </summary>
-    private static string? HeaderSafe(string? value) {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        foreach (var c in value)
-            if (c is < ' ' or > '~') return null;
-        return value;
     }
 
     // ── JWKS ──────────────────────────────────────────────────────────────────
@@ -706,26 +568,4 @@ public static class WatchtowerAccessEndpoints {
     private static string Describe(HttpContext http) =>
         $"from {http.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
 
-    /// <summary>
-    /// Says once per realm that its protected routes cannot redirect anywhere because it has no login host.
-    /// Until one exists, every anonymous request to a protected app of that realm gets a bare 401 instead of
-    /// the login page. The two realms are told apart because the fix is different: configuration for the
-    /// operator realm, a <c>realms.update</c> for any other.
-    /// </summary>
-    private static void WarnMissingAuthHostOnce(ILoggerFactory loggerFactory, Realm realm) {
-        if (!WarnedRealms.TryAdd(realm.Id, 0)) return;
-        var logger = loggerFactory.CreateLogger(typeof(WatchtowerAccessEndpoints).FullName!);
-        if (realm.IsSystem) {
-            logger.LogWarning(
-                "Auth:Host is not configured, so unauthenticated requests to protected apps are answered " +
-                "with 401 instead of being redirected to the login page. Set Watchtower:Auth:Host to the " +
-                "hostname the Watchtower UI is reachable on.");
-        } else {
-            logger.LogWarning(
-                "Realm '{Realm}' has no auth host, so unauthenticated requests to its protected apps are " +
-                "answered with 401 instead of being redirected to a login page. Set the realm's authHost " +
-                "to the hostname its login page is reachable on.",
-                realm.Slug);
-        }
-    }
 }
