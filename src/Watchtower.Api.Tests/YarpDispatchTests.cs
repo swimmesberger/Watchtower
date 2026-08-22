@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Watchtower.Api.Proxy;
@@ -8,6 +9,7 @@ using Yarp.ReverseProxy.Forwarder;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
 using Xunit;
 
@@ -269,6 +271,7 @@ public sealed class YarpDispatchTests {
         var middleware = new YarpHostDispatchMiddleware(
             _ => Task.FromException(new InvalidOperationException("The request must not fall through.")),
             table, forwarder, client,
+            new YarpListenerState(),
             new StaticOptionsMonitor(new WatchtowerOptions()),
             NullLogger<YarpHostDispatchMiddleware>.Instance);
 
@@ -304,6 +307,170 @@ public sealed class YarpDispatchTests {
         Assert.Contains("healthy", await Body(response), StringComparison.Ordinal);
         Assert.Empty(factory.Forwarder.Forwarded);
     }
+
+    // ── Ingress versus the management plane ───────────────────────────────────
+
+    /// <summary>
+    /// The invariant this whole split exists for. Under Caddy an unknown host on 80/443 got nothing at all,
+    /// because there was no site block for it; sharing one Kestrel endpoint between ingress and the
+    /// management plane quietly replaced that with "serve the management SPA to whoever asks" —
+    /// <c>http://&lt;public-ip&gt;/</c> reaching the login page with authentication on, and the entire UI
+    /// with it off.
+    /// </summary>
+    [Theory]
+    [InlineData(8081)]
+    [InlineData(8443)]
+    public async Task UnknownHost_OnAnIngressPort_Is404(int port) {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(port);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("https://nobody.example.invalid/health", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        // Nothing about what else lives here — not a body, not a redirect to a login host.
+        Assert.Equal("", await Body(response));
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// The other half of the rule, and the one that has to keep working: on ingress a routed host is
+    /// forwarded exactly as before. Without this the management-port refusal below could be inverted — or
+    /// the whole port test made to fail closed — and the suite would still be green.
+    /// </summary>
+    [Fact]
+    public async Task RouteHost_OnAnIngressPort_IsForwarded() {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(8443);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AppDomain}/reports?range=30d", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(RecordingHttpForwarder.MarkerBody, await Body(response));
+        Assert.Equal($"{AppUpstream}/reports?range=30d", factory.Forwarder.Single().RequestUri?.ToString());
+    }
+
+    /// <summary>
+    /// The reserved prefix is Watchtower answering on the <em>tenant's</em> domain — a routed host, on
+    /// ingress, that must not be refused. It is the one place where "this host is a route" and "this
+    /// request stays here" are both true, so a port rule written a shade too broadly breaks every
+    /// cross-domain sign-in and nothing else.
+    /// </summary>
+    [Theory]
+    [InlineData(8443)]
+    [InlineData(8081)]
+    public async Task DotWatchtowerCallback_OnAnIngressRouteHost_ReachesWatchtower(int port) {
+        using var factory = IngressLoginHostEstate();
+        using var client = factory.CreateApiClient(port);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Authenticated, tlsEnabled: false);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"http://{AppDomain}/.watchtower/userinfo", Ct);
+
+        // Whatever the endpoint answers an anonymous caller, it is Watchtower answering — not the
+        // dispatcher's 404, and not the upstream.
+        Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// The same request on the management endpoint is the ordinary one it always was: this port is
+    /// Watchtower's own UI and API, answering for any name, which is exactly why it is the port an operator
+    /// binds to a private interface rather than publishing.
+    /// </summary>
+    [Fact]
+    public async Task UnknownHost_OnTheManagementPort_ReachesWatchtower() {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(WatchtowerApiFactory.ManagementPort);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("https://nobody.example.invalid/health", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("healthy", await Body(response), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And the mirror rule: a tenant's domain is not served on the management endpoint either. Half-serving
+    /// it there — the access check and the forward, on a port whose whole point is that it is not ingress —
+    /// would be a second way into every routed application, on a port nobody published for that.
+    /// </summary>
+    [Fact]
+    public async Task RouteHost_OnTheManagementPort_Is404() {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(WatchtowerApiFactory.ManagementPort);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AppDomain}/reports", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// The login host is the exception on both listeners, and deliberately so: through ingress it is the one
+    /// hostname Watchtower serves itself on, and on the management endpoint it is how an operator who bound
+    /// 8080 privately still reaches the UI.
+    /// </summary>
+    [Fact]
+    public async Task LoginHost_OnTheManagementPort_ReachesWatchtower() {
+        using var factory = IngressLoginHostEstate();
+        using var client = factory.CreateApiClient(WatchtowerApiFactory.ManagementPort);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AuthHost}/health", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("healthy", await Body(response), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LoginHost_OnAnIngressPort_ReachesWatchtower() {
+        using var factory = IngressLoginHostEstate();
+        using var client = factory.CreateApiClient(8443);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AuthHost}/health", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("healthy", await Body(response), StringComparison.Ordinal);
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// The one thing that must answer on ingress whatever the Host says. It runs ahead of the dispatcher, so
+    /// the 404 rule never sees it — and if it did, no certificate would ever be issued: HTTP-01 arrives on
+    /// port 80 for a domain that, by definition, has no route serving it yet.
+    /// </summary>
+    [Fact]
+    public async Task AcmeChallenge_OnAnIngressPort_StillAnswers() {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(8081);
+        await factory.ApplyProxyAsync();
+        var challenges = factory.Services.GetRequiredService<AcmeHttpChallengeStore>();
+        using var published = challenges.Publish("token-abc", "token-abc.key-authorization");
+
+        var answered = await client.GetAsync(
+            "http://not-a-route.example.invalid/.well-known/acme-challenge/token-abc", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, answered.StatusCode);
+        Assert.Equal("token-abc.key-authorization", await Body(answered));
+
+        // A token nobody issued is still the challenge middleware's 404, not the dispatcher's — the
+        // distinction does not show in the status, which is the point: neither one says what is here.
+        var unknown = await client.GetAsync(
+            "http://not-a-route.example.invalid/.well-known/acme-challenge/never-issued", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+    }
+
+    private static WatchtowerApiFactory IngressLoginHostEstate() => WatchtowerApiFactory.WithIngress(
+        ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Auth:Host", AuthHost));
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

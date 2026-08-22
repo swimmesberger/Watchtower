@@ -34,6 +34,16 @@ namespace Watchtower.Api.Proxy;
 /// <c>/rpc</c>, <c>/api/*</c>, the static files and the SPA fallback.
 /// </para>
 /// <para>
+/// <b>Ingress and management are different listeners.</b> The dispatch is by host <em>and</em> by local
+/// port (<see cref="YarpListenerState.IngressPorts"/>). On an ingress port a host nobody routed gets a
+/// bare 404 rather than falling through, because falling through on a port published to the internet is
+/// how <c>http://&lt;public-ip&gt;/</c> ends up serving the management plane — the login page with
+/// authentication on, the whole UI with it off. The mirror rule holds on the management port: a routed
+/// application's host is refused there too, so ingress traffic cannot be half-served on the endpoint an
+/// operator is meant to bind privately. Login hosts are served on both, which is what keeps the UI
+/// reachable — through ingress on exactly one hostname, as it was under Caddy.
+/// </para>
+/// <para>
 /// <b>When the provider is inactive</b> — disabled, or Caddy/Cloudflare selected — the route table is
 /// <see cref="ProxyRouteTableSnapshot.Empty"/> and every request costs one failed dictionary lookup before
 /// falling through. That is why it is registered unconditionally rather than behind the option: the
@@ -45,6 +55,7 @@ public sealed class YarpHostDispatchMiddleware(
     ProxyRouteTable table,
     IHttpForwarder forwarder,
     ProxyForwardHttpClient client,
+    YarpListenerState listener,
     IOptionsMonitor<WatchtowerOptions> options,
     ILogger<YarpHostDispatchMiddleware> logger) {
     /// <summary>
@@ -73,23 +84,50 @@ public sealed class YarpHostDispatchMiddleware(
         // table is case-insensitive.
         var host = request.Host.Host.TrimEnd('.');
 
-        // A miss is the common case on the published management port and for any host nobody routed, and it
-        // is simply not our request.
+        // Which listener did this arrive on? The ingress endpoints (ProxyHttp, ProxyHttps) are the ones an
+        // operator publishes to the world; the management endpoint carries Watchtower's own UI and API and
+        // is meant to be bound to a private interface. The Host header cannot answer this and neither can
+        // the scheme — only the local port can, which is why the listener state records it.
+        var isIngress = listener.IngressPorts.Contains(context.Connection.LocalPort);
+
         if (!table.Current.TryGet(host, out var row)) {
+            // On ingress, a host nobody routed is a stranger: a scanner on the public IP, or a domain
+            // someone pointed here. It gets nothing — not Watchtower's login page, and certainly not the
+            // whole management SPA when authentication is off. This is the invariant Caddy used to hold by
+            // simply not having a site block for it.
+            if (isIngress) {
+                NotFound(context);
+                return;
+            }
+
+            // On the management endpoint a miss is the ordinary case — this is Watchtower's own UI.
             await next(context);
             return;
         }
 
         // A realm's login page. Watchtower serves it itself — forwarding it would be forwarding to
-        // ourselves — so it takes the ordinary pipeline, SPA and all. The one thing it does get is the
-        // upgrade, exactly as Caddy's self-route did: a login page reached over plain HTTP would set the
-        // session cookie without its Secure attribute, and every app redirects visitors here.
+        // ourselves — so it takes the ordinary pipeline, SPA and all, on either kind of listener: through
+        // ingress it is the one hostname the management plane is deliberately reachable on, and on the
+        // management endpoint it is how an operator who bound 8080 privately still reaches the UI. The one
+        // thing it does get is the upgrade, exactly as Caddy's self-route did: a login page reached over
+        // plain HTTP would set the session cookie without its Secure attribute, and every app redirects
+        // visitors here.
         if (row.Local) {
             if (WantsUpgrade(row, request)) {
                 RedirectToHttps(context, host);
                 return;
             }
             await next(context);
+            return;
+        }
+
+        // A routed application's host, arriving on the management endpoint. Half-serving it there — the
+        // access check and the forward, on a port whose whole point is that it is not ingress — is a second
+        // way in that nobody published, so it gets the same nothing an unrouted host gets on ingress.
+        // Guarded by there being ingress at all: a deployment that turned both proxy endpoints off has one
+        // listener, and refusing routes on it would refuse them everywhere.
+        if (!isIngress && listener.IngressPorts.Count > 0) {
+            NotFound(context);
             return;
         }
 
@@ -201,6 +239,14 @@ public sealed class YarpHostDispatchMiddleware(
         if (!context.Response.HasStarted && context.Response.StatusCode == StatusCodes.Status200OK)
             context.Response.StatusCode = StatusCodes.Status502BadGateway;
     }
+
+    /// <summary>
+    /// The answer to a request that is not this listener's to serve. Bare: no body, no reason, no
+    /// <c>Server</c>-side hint about what else might be here. "Nothing is at this name" is the only thing a
+    /// stranger on the ingress port is owed, and any detail beyond it would turn the refusal into an oracle.
+    /// </summary>
+    private static void NotFound(HttpContext context) =>
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
 
     /// <summary>
     /// Whether this request should be sent back over HTTPS instead of being served: a TLS route reached

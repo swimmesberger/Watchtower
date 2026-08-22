@@ -7,15 +7,19 @@
 #   2. Put that value in `group_add` below.
 #   3. docker compose up -d
 #
-# The UI is served on http://localhost:8080. Put it behind an authenticating reverse proxy
-# (e.g. Cloudflare Access, Authelia) — Watchtower itself has no built-in authentication.
+# The UI is served on http://localhost:8080 — the management plane, published on the loopback interface
+# below. Put it behind an authenticating reverse proxy (e.g. Cloudflare Access, Authelia) — Watchtower
+# itself has no built-in authentication unless you enable it.
 #
 # Built-in reverse proxy (optional): set WATCHTOWER__PROXY__ENABLED=true and Watchtower terminates TLS
 # in its own process, routing the domains you add under "Routes" to services inside your stacks over
 # private per-stack networks. There is no second container and no control network. Requirements when
 # enabled:
-#   * uncomment the 80:8080 and 443:8443 port mappings below. Port 80 is not optional: ACME HTTP-01
+#   * uncomment the 80:8081 and 443:8443 port mappings below. Port 80 is not optional: ACME HTTP-01
 #     validation is how certificates are issued, and the CA reaches it over plain HTTP.
+#   * ingress (8081/8443) and the management plane (8080) are separate listeners. A request on an
+#     ingress port whose Host is not a route — or a realm login host — is answered with 404 and never
+#     reaches Watchtower's UI or API.
 #   * point each route's DNS at this host before adding it, so the first issuance can validate.
 #   * set WATCHTOWER__PROXY__ADMINEMAIL for Let's Encrypt expiry notices (recommended).
 # Certificates and the ACME account key are written to /data/proxy-certs, so they persist in the data
@@ -32,13 +36,20 @@ services:
     container_name: watchtower
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # The management plane: Watchtower's own UI and API. Bound to the loopback interface, because this
+      # port answers for every Host name and is the process holding the Docker socket, the database and
+      # every credential. Reach it over a VPN or an SSH tunnel; to reach the UI from the internet, enable
+      # authentication, set WATCHTOWER__AUTH__HOST to a hostname you control and use the 443 mapping
+      # below — that login host is the one name ingress will serve Watchtower itself on.
+      - "127.0.0.1:8080:8080"
       # Built-in reverse proxy (opt-in): publish the ingress ports — 80 must be reachable for ACME
-      # HTTP-01, 443 carries the routed traffic.
-      # - "80:8080"
+      # HTTP-01, 443 carries the routed traffic. These are separate container ports from 8080 on purpose:
+      # an unknown Host arriving here gets a 404 rather than Watchtower's management plane.
+      # - "80:8081"
       # - "443:8443"
-      # The container's own ports are set by Kestrel__Endpoints__Http__Url (8080) and
-      # Kestrel__Endpoints__ProxyHttps__Url (8443); ASPNETCORE_URLS no longer applies to this image.
+      # The container's own ports are set by Kestrel__Endpoints__Http__Url (8080),
+      # Kestrel__Endpoints__ProxyHttp__Url (8081) and Kestrel__Endpoints__ProxyHttps__Url (8443);
+      # ASPNETCORE_URLS no longer applies to this image.
     volumes:
       - watchtower-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -52,7 +63,7 @@ services:
       # Enable the background "update available" checkers (opt-in — generate registry traffic):
       # WATCHTOWER__AUTOCHECKENABLED: "true"
       # WATCHTOWER__STACKCHECKENABLED: "true"
-      # Built-in reverse proxy (opt-in) — needs the 80/443 port mappings above.
+      # Built-in reverse proxy (opt-in) — needs the 80:8081 / 443:8443 port mappings above.
       # WATCHTOWER__PROXY__ENABLED: "true"
       # WATCHTOWER__PROXY__ADMINEMAIL: you@example.com
       # WATCHTOWER__PROXY__PROVIDER: yarp   # yarp (default) | caddy (deprecated) | cloudflare

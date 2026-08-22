@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The host wiring is internal by default; the API test assembly drives some of it directly (the
+         listener-state derivation, which is a pure function over bound addresses and configuration). -->
+    <InternalsVisibleTo Include="Watchtower.Api.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Watchtower.Application\Watchtower.Application.csproj" />
     <!-- Elarion host packages (NuGet). Elarion bundles the bootstrapper generator that emits
          ElarionBootstrapper; the JSON-RPC transport + ASP.NET glue are their own packages. -->

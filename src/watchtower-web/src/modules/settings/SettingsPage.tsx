@@ -825,7 +825,7 @@ function ProxyCard() {
 
             <Field
               label="Provider"
-              hint="The built-in provider terminates TLS in Watchtower's own process — publish 80:8080 and 443:8443 on this container. Caddy is deprecated and kept for existing installs; it runs as a sibling container holding the host's ports 80/443. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
+              hint="The built-in provider terminates TLS in Watchtower's own process — publish 80:8081 and 443:8443 on this container's ingress endpoints (8080 stays the management plane and should be bound to a private interface). Caddy is deprecated and kept for existing installs; it runs as a sibling container holding the host's ports 80/443. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
             >
               {({ id }) => (
                 <>
@@ -915,7 +915,7 @@ function ProxyCard() {
                     Routes resolve and are served, but over plain HTTP only. The listener's port comes
                     from <span className="font-mono">Kestrel__Endpoints__ProxyHttps__Url</span> in the
                     image and has to be published — map <span className="font-mono">443:8443</span> on
-                    Watchtower's container (and <span className="font-mono">80:8080</span>, which ACME
+                    Watchtower's container (and <span className="font-mono">80:8081</span>, which ACME
                     HTTP-01 validation needs).
                   </Banner>
                 )}

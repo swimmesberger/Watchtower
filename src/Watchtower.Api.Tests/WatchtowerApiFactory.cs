@@ -1,3 +1,5 @@
+using System.Globalization;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
@@ -116,6 +118,30 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             UseRealProxyProvider = true,
         };
 
+    /// <summary>The ingress ports a <see cref="WithIngress"/> host pretends to have bound.</summary>
+    public static readonly IReadOnlySet<int> DefaultIngressPorts = new HashSet<int> { 8081, 8443 };
+
+    /// <summary>The port a request is treated as having arrived on unless it says otherwise.</summary>
+    public const int ManagementPort = 8080;
+
+    /// <summary>
+    /// A host with the in-process proxy <em>and</em> the shipped image's endpoint split: ingress on
+    /// 8081/8443, management on 8080. <c>TestServer</c> binds nothing and reports no local port, so the
+    /// ports are seeded here and the client names one per request through
+    /// <see cref="CreateApiClient(int?)"/> — the only two things a real Kestrel would have supplied.
+    /// </summary>
+    public static WatchtowerApiFactory WithIngress(params (string Key, string? Value)[] settings) =>
+        new([("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", "yarp"), .. settings]) {
+            UseRealProxyProvider = true,
+            IngressPorts = DefaultIngressPorts,
+        };
+
+    /// <summary>
+    /// The ingress ports the host's <see cref="YarpListenerState"/> starts with. Empty by default, which is
+    /// the single-listener shape every other test in this assembly runs under.
+    /// </summary>
+    public IReadOnlySet<int> IngressPorts { get; init; } = new HashSet<int>();
+
     /// <summary>
     /// Projects the seeded routes into the in-process proxy's routing table, the way a route change or the
     /// startup reconcile does. Explicit because the factory drops the hosted services, so nothing calls it
@@ -199,10 +225,46 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
                 services.AddSingleton(AcmeTransport);
             }
 
+            // The listener facts a real Kestrel would have recorded at startup. TestServer binds nothing,
+            // so a host that wants the ingress/management split has to be told what it "bound" — and the
+            // per-request half of it, Connection.LocalPort, is supplied by the filter below.
+            if (IngressPorts.Count > 0) {
+                services.RemoveAll<YarpListenerState>();
+                services.AddSingleton(new YarpListenerState {
+                    IngressPorts = IngressPorts,
+                    ManagementPort = ManagementPort,
+                });
+                services.AddSingleton<IStartupFilter>(new TestLocalPortStartupFilter());
+            }
+
             if (UseRealForwarder) return;
             services.RemoveAll<IHttpForwarder>();
             services.AddSingleton<IHttpForwarder>(new RecordingHttpForwarder());
         });
+    }
+
+    /// <summary>The header <see cref="CreateApiClient(int?)"/> names the connection's local port in.</summary>
+    public const string LocalPortHeader = "X-Test-Local-Port";
+
+    /// <summary>
+    /// Puts <see cref="LocalPortHeader"/> onto <c>Connection.LocalPort</c>, at the very front of the
+    /// pipeline. Test-only and registered only by this factory: production code reads the real connection,
+    /// and there is no header in it that could reach this.
+    /// </summary>
+    /// <remarks>
+    /// An <see cref="IStartupFilter"/> rather than a <c>Configure</c> hook because filters run ahead of the
+    /// application's own middleware, which is where this has to be — the ACME responder and the host
+    /// dispatcher are the first two things in the pipeline and both are what these tests are about.
+    /// </remarks>
+    private sealed class TestLocalPortStartupFilter : IStartupFilter {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app => {
+            app.Use(async (context, following) => {
+                if (int.TryParse(context.Request.Headers[LocalPortHeader], out var port))
+                    context.Connection.LocalPort = port;
+                await following(context);
+            });
+            next(app);
+        };
     }
 
     /// <summary>Runs <paramref name="action"/> against a scope of the running host's container.</summary>
@@ -213,12 +275,26 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
 
     /// <summary>
     /// A client that keeps cookies but never follows redirects — every assertion here is about the exact
-    /// status and headers of one response.
+    /// status and headers of one response. <paramref name="localPort"/> makes every request it sends look
+    /// like it arrived on that listener, for the tests that are about the ingress/management split.
     /// </summary>
-    public HttpClient CreateApiClient() => CreateClient(new WebApplicationFactoryClientOptions {
-        AllowAutoRedirect = false,
-        HandleCookies = false,
-    });
+    public HttpClient CreateApiClient(int? localPort = null) {
+        // Naming a port on a host that has no ingress ports would set Connection.LocalPort and change
+        // nothing, because the dispatcher's ingress rules are all gated on the set being non-empty — so the
+        // test would pass while asserting the single-listener behaviour it thought it had opted out of.
+        if (localPort is not null && IngressPorts.Count == 0)
+            throw new InvalidOperationException(
+                $"A local port is only meaningful on a host with ingress ports; build it with "
+                + $"{nameof(WithIngress)}() or set {nameof(IngressPorts)}.");
+
+        var client = CreateClient(new WebApplicationFactoryClientOptions {
+            AllowAutoRedirect = false,
+            HandleCookies = false,
+        });
+        if (localPort is { } port)
+            client.DefaultRequestHeaders.Add(LocalPortHeader, port.ToString(CultureInfo.InvariantCulture));
+        return client;
+    }
 
     protected override void Dispose(bool disposing) {
         base.Dispose(disposing);

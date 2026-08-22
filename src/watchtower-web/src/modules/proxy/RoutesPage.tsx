@@ -516,7 +516,7 @@ export function RoutesPage() {
         <Banner tone="warn" title="Reverse proxy is disabled">
           Routes are saved but not served until the proxy is enabled — flip it under Settings →
           Reverse proxy (applies immediately). The built-in provider needs host ports 80 and 443
-          published to Watchtower's container (<span className="font-mono">80:8080</span>,{' '}
+          published to Watchtower's ingress endpoints (<span className="font-mono">80:8081</span>,{' '}
           <span className="font-mono">443:8443</span>); the Caddy provider needs them free on the
           host; the Cloudflare Tunnel provider needs no open ports.
         </Banner>

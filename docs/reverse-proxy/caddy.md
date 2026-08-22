@@ -8,8 +8,8 @@
 > per route change and an HTTP forward-auth hop per protected request, and its certificate state is
 > invisible to Watchtower, which is why route status is only indicative here. Removing it will be its
 > own decision record. To move over, set `WATCHTOWER__PROXY__PROVIDER=yarp` (or pick the built-in
-> provider under Settings → Reverse proxy), publish `80:8080` and `443:8443` on Watchtower's
-> container, and remove the `watchtower-caddy` container once the new certificates are issued.
+> provider under Settings → Reverse proxy), publish `80:8081` and `443:8443` on Watchtower's
+> container (its ingress endpoints — 8080 stays the management plane), and remove the `watchtower-caddy` container once the new certificates are issued.
 
 With this provider Watchtower terminates TLS and routes public domains to services inside your stacks
 through a sibling **Caddy** container, so every application container stays internal to Docker and

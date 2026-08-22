@@ -82,9 +82,16 @@ question rather than the routing.
    still anonymous. Realm login hosts are dispatched to the local pipeline rather than forwarded, and
    still get the HTTPS upgrade.
 
-8. **Ports are published as `80:8080` and `443:8443`** on Watchtower's own container. The container
-   ports come from `Kestrel__Endpoints__Http__Url` and `Kestrel__Endpoints__ProxyHttps__Url`; setting
-   the latter to an empty value turns the TLS listener off.
+8. **Ingress and management are separate Kestrel endpoints.** Three named listeners: `Http` (8080) is
+   the management plane — Watchtower's own UI and API, to be bound to a private interface and never
+   published to the internet — while `ProxyHttp` (8081) and `ProxyHttps` (8443) are ingress, published
+   as `80:8081` and `443:8443`. The dispatcher decides by host **and** by local port: on an ingress
+   port a host that is not in the route table gets a bare **404**, and the only Watchtower hostname
+   ingress will serve is a realm's **login host**. The mirror rule holds on the management port — a
+   routed application's host is refused there too, so ingress traffic cannot be half-served on the
+   endpoint an operator kept private. Setting either proxy endpoint's URL to an empty value turns that
+   listener off, and with no ingress bound at all the single remaining endpoint serves everything, as
+   before.
 
 9. **`/api/proxy/ask` answers only under the `caddy` provider.** It is a route-existence oracle that
    exists for Caddy's on-demand-TLS module; the in-process proxy holds the route table in memory and
@@ -103,6 +110,16 @@ question rather than the routing.
   than gating it. A tenant container was always able to reach Watchtower over its stack's ingress
   network under Caddy too; what changes is that it is now the same process, so the blast radius of a
   bug in that surface is larger.
+- **The management plane is no longer one mistake away from the internet.** Sharing a single Kestrel
+  endpoint between ingress and management made `80:8080` the obvious mapping and a fall-through the
+  obvious behaviour for an unrouted host — which meant `http://<public-ip>/` served the login page with
+  authentication on, and the entire UI, `/rpc` included, with it off. Nobody had to misconfigure
+  anything: publishing the port the proxy needs was enough. Caddy never had this shape, because a
+  request with no matching site block got nothing, and Watchtower was reachable through ingress on the
+  login host alone. Splitting the listeners and refusing unknown hosts on ingress restores that
+  invariant, and binding 8080 to a private interface is now the documented default rather than an
+  operator's idea. The cost is a breaking change to the port mapping: `80:8080` becomes `80:8081`, and
+  an upgrade that keeps the old mapping publishes the management plane exactly as before.
 - **`Route.Status`, `Route.StatusDetail` and `Route.CertNotAfter` become real.** The proxy issues the
   certificates, so it knows their state, the last failure and the next attempt — which is what the
   Routes page's Certificates card and `proxy.renewCertificate` surface. Under Caddy these stay

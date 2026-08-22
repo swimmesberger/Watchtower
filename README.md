@@ -18,8 +18,10 @@ client generated from the exported schema.
 
 Watchtower also has a **built-in reverse proxy** for putting your stacks on the internet: point a
 domain at a service under *Routes* and it is served with a certificate Watchtower obtains and renews
-itself over ACME — in its own process, with no sibling proxy container to run. Publish `80:8080` and
-`443:8443` and set `WATCHTOWER__PROXY__ENABLED=true`. A **Cloudflare Tunnel** provider is there for
+itself over ACME — in its own process, with no sibling proxy container to run. Publish `80:8081` and
+`443:8443` and set `WATCHTOWER__PROXY__ENABLED=true`; ingress binds its own container ports, so an
+unknown domain arriving there gets a 404 rather than Watchtower's own UI, which stays on 8080 for you
+to bind privately. A **Cloudflare Tunnel** provider is there for
 hosts that cannot open ports at all, and the older Caddy-container provider stays supported for
 existing installations. See [docs/reverse-proxy/](docs/reverse-proxy/README.md) and
 [ADR-0020](docs/decisions/0020-in-process-yarp-proxy.md).

@@ -10,6 +10,28 @@ route table and every request falls through to Watchtower's own pipeline.
 
 For what all three providers share, start at [README.md](README.md).
 
+## Ports: ingress is not the management plane
+
+The image binds **three** named Kestrel endpoints, and the split is load-bearing rather than tidy.
+
+| Container port | Endpoint | What it is | Publish it as |
+| --- | --- | --- | --- |
+| 8080 | `Http` | **Management plane** — Watchtower's own UI, `/rpc` and `/api/*`. Answers for every host name. | `127.0.0.1:8080:8080` — a private interface, never the internet |
+| 8081 | `ProxyHttp` | **Ingress, plain HTTP** — ACME HTTP-01 validation and the plain half of the proxy | `80:8081` |
+| 8443 | `ProxyHttps` | **Ingress, TLS** — the routed traffic, one certificate per SNI name | `443:8443` |
+
+On the ingress ports a request whose `Host` is **not** in the route table is answered with a bare
+**404** — no body, no redirect, nothing that says what else is here. The one Watchtower hostname
+ingress will serve is a realm's **login host** (`WATCHTOWER__AUTH__HOST`), which is how you reach the
+UI from outside: over 443, on a name you chose, with authentication on. The rule runs the other way
+too — a routed application's domain is refused on 8080, so ingress traffic is never half-served on the
+port you kept private.
+
+That is the invariant the Caddy provider had for free (a request with no matching site block got
+nothing) and it is why 8080 is a separate listener now: published straight to the internet, a shared
+endpoint serves `http://<your-ip>/` the login page with authentication on, and the whole UI with it
+off.
+
 ## Enabling it
 
 Publish the two ingress ports on Watchtower's own container, then turn the proxy on.
@@ -18,9 +40,9 @@ Publish the two ingress ports on Watchtower's own container, then turn the proxy
 services:
   watchtower:
     ports:
-      - "8080:8080"   # the UI and API, as before
-      - "80:8080"     # ACME HTTP-01 validation, and the plain-HTTP half of the proxy
-      - "443:8443"    # the routed traffic
+      - "127.0.0.1:8080:8080"   # the UI and API — reach it over a VPN or an SSH tunnel
+      - "80:8081"               # ACME HTTP-01 validation, and the plain-HTTP half of the proxy
+      - "443:8443"              # the routed traffic
     environment:
       WATCHTOWER__PROXY__ENABLED: "true"
       WATCHTOWER__PROXY__ADMINEMAIL: you@example.com   # recommended, for expiry notices
@@ -31,13 +53,16 @@ services:
 the challenge responder over plain HTTP on port 80 by definition. Without it no certificate is ever
 issued.
 
-The container-side ports come from `Kestrel__Endpoints__Http__Url` (8080) and
-`Kestrel__Endpoints__ProxyHttps__Url` (8443), both set in the image. To move one, override that
-variable by name — **`ASPNETCORE_URLS` does not apply to this image** and Kestrel ignores it with a
-warning. Setting `Kestrel__Endpoints__ProxyHttps__Url` to an empty value turns the TLS listener off
-entirely, which is what you want when something else terminates TLS in front of Watchtower.
+The container-side ports come from `Kestrel__Endpoints__Http__Url` (8080),
+`Kestrel__Endpoints__ProxyHttp__Url` (8081) and `Kestrel__Endpoints__ProxyHttps__Url` (8443), all set
+in the image. To move one, override that variable by name — **`ASPNETCORE_URLS` does not apply to this
+image** and Kestrel ignores it with a warning. Setting either proxy variable to an empty value turns
+that ingress listener off: blank `ProxyHttps` is what you want when something else terminates TLS in
+front of Watchtower, and blank `ProxyHttp` when nothing publishes 80 (no certificate will be issued
+then). With **both** blank there is no ingress at all, and the single remaining endpoint serves routes
+and the UI together, as it did before the split.
 
-Everything except the two `Kestrel__*` variables and `Proxy:Yarp:CertPath` is editable at runtime
+Everything except the three `Kestrel__*` variables and `Proxy:Yarp:CertPath` is editable at runtime
 under **Settings → Reverse proxy**, and applies immediately. Env vars win over the UI
 ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)): a setting supplied that way shows as
 pinned and read-only until the variable is removed.
@@ -45,18 +70,19 @@ pinned and read-only until the variable is removed.
 ## How a request flows
 
 ```
-                    :80 ─────────┐                 ┌──────── :443 (SNI → per-host certificate)
-                                 ▼                 ▼
-                    ┌────────────────────────────────────────┐
-                    │  Kestrel (Http + ProxyHttps endpoints)  │
-                    └────────────────────┬───────────────────┘
+             :80 → 8081 ──────────┐                 ┌──────── :443 → 8443 (SNI → per-host certificate)
+                                  ▼                 ▼
+                    ┌─────────────────────────────────────────┐
+                    │  Kestrel ingress (ProxyHttp/ProxyHttps)  │
+                    └────────────────────┬────────────────────┘
                                          ▼
                     /.well-known/acme-challenge/*  ──► answered from the challenge store, always
                                          │              (never forwarded, never redirected)
                                          ▼
-                         Host in the route table?  ── no ──►  Watchtower's own pipeline
-                                         │                     (UI, /rpc, /api/*, SPA)
-                                        yes
+                         Host in the route table?  ── no ──►  404, and nothing else
+                                         │
+                                        yes  ── a realm login host ──►  Watchtower's own pipeline
+                                         │                               (the UI and API, behind auth)
                                          ▼
                     strip every identity header the client sent
                                          ▼
@@ -77,6 +103,10 @@ pinned and read-only until the variable is removed.
 The dispatch happens **before** Watchtower's own routing, which is the point: on a route host,
 Watchtower's literal endpoints (`/rpc`, `/api/*`, the SPA fallback) would otherwise out-rank any
 catch-all and swallow the tenant's paths.
+
+The management endpoint (8080) runs the same middleware with the branches reversed: an unknown host is
+Watchtower's own UI, and a *routed* host is the 404. Only the challenge responder behaves identically
+on every port, because the CA does not get to choose which listener it reaches.
 
 ## Certificates
 
@@ -197,8 +227,19 @@ Check `Kestrel__Endpoints__ProxyHttps__Url` — an empty value disables it delib
 container log for a bind failure. Routes still resolve and are served, but over plain HTTP only, which
 is exactly the state this caveat exists to make visible.
 
-**Nothing reaches the proxy at all.** Confirm `80:8080` and `443:8443` are published on Watchtower's
-container (`docker port watchtower`) and that nothing else on the host holds 80 or 443.
+**Nothing reaches the proxy at all.** Confirm `80:8081` and `443:8443` are published on Watchtower's
+container (`docker port watchtower`) and that nothing else on the host holds 80 or 443. If you are
+upgrading from a mapping of `80:8080`, that is the change: 8080 is the management plane now, and 8081
+is plain-HTTP ingress.
+
+**A domain you added answers 404 instead of your app.** The request reached the management endpoint
+rather than ingress — `80:8080` instead of `80:8081`, or a browser going straight to `:8080`. Routes
+are served on the ingress ports only.
+
+**You cannot reach the UI any more after publishing 8080 on loopback.** That is the intended shape.
+Tunnel to it (`ssh -L 8080:127.0.0.1:8080 you@host`), or enable authentication, set
+`WATCHTOWER__AUTH__HOST` to a hostname pointed at this host, and use it over 443 — that login host is
+the one name ingress serves Watchtower itself on.
 
 **Validation keeps failing and you want to see why, locally.** Run [Pebble](https://github.com/letsencrypt/pebble),
 a deliberately pedantic test CA:
