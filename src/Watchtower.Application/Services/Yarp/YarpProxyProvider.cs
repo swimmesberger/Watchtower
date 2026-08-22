@@ -148,7 +148,14 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
     /// the route table. Best-effort — logs and returns on failure, since route CRUD and deploys
     /// re-drive the relevant parts afterwards.
     /// </summary>
-    private async Task ReconcileAsync(CancellationToken ct) {
+    /// <remarks>
+    /// The two halves are independent on purpose, and the network half is the one that is allowed to
+    /// fail. An unreachable Docker daemon used to take the projection down with it, which is far worse
+    /// than a missing upstream hop: an empty route table makes every routed host fall through to
+    /// Watchtower's own pipeline, so a tenant domain answers with Watchtower's UI — over the tenant's
+    /// own certificate — while every status surface still reports the proxy as healthy.
+    /// </remarks>
+    internal async Task ReconcileAsync(CancellationToken ct) {
         try {
             // Watchtower *is* the proxy here, so the "proxy container" ProxyIngressNetworks joins to
             // each ingress network is its own.
@@ -159,7 +166,14 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
                 _logger.LogWarning(
                     "HOSTNAME unset; cannot join Watchtower to the ingress networks. Running outside Docker?");
             else
-                await _networks.ConnectAllRoutedContainersAsync(hostname, ct);
+                try {
+                    await _networks.ConnectAllRoutedContainersAsync(hostname, ct);
+                } catch (Exception ex) when (!ct.IsCancellationRequested) {
+                    _logger.LogWarning(
+                        ex,
+                        "Joining the ingress networks failed; routes are projected anyway and the upstream hop "
+                        + "will be retried on the next deploy or route change.");
+                }
 
             await ApplyAsync(ct);
             var snapshot = _table.Current;

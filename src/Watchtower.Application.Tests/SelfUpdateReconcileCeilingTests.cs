@@ -18,6 +18,7 @@ namespace Watchtower.Application.Tests;
 /// would have every retry rejected until the process restarts. Both ceilings cover the wait only:
 /// the bookkeeping that follows has to finish, or the runtime record is left half-written.
 /// </summary>
+[Collection(HostnameEnvironment.Name)]
 public sealed class SelfUpdateReconcileCeilingTests {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -117,8 +118,8 @@ public sealed class SelfUpdateReconcileCeilingTests {
             startupReconcileTimeout: TimeSpan.FromSeconds(30),
             applyWatchTimeout: TimeSpan.FromMilliseconds(300));
 
-        // Self-detection reads HOSTNAME. No other test touches it, and tests in one class do not run
-        // concurrently with each other, so setting it here is safe as long as it is put back.
+        // Self-detection reads HOSTNAME, which is process-wide. The class sits in the collection every
+        // other HOSTNAME-touching test sits in, so none of them run alongside this one.
         var previousHostname = Environment.GetEnvironmentVariable("HOSTNAME");
         Environment.SetEnvironmentVariable("HOSTNAME", "watchtower-self");
         try {

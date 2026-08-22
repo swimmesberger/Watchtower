@@ -89,6 +89,12 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     /// <summary>Retired sessions, disposed once nothing is using them. See <see cref="GetSession"/>.</summary>
     private readonly ConcurrentQueue<AcmeSession> _retired = new();
 
+    /// <summary>
+    /// The certificate thumbprint last written onto each host's route row. Purely a write-suppressor for
+    /// <see cref="ProjectHeldCertificatesAsync"/> — see there for why the projection exists at all.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _projected = new(StringComparer.Ordinal);
+
     private readonly Lock _sessionGate = new();
     private readonly SemaphoreSlim _signal = new(0, 1);
     private readonly CancellationTokenSource _stopping = new();
@@ -171,6 +177,8 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
             throw new ArgumentException(reason, nameof(host));
 
         if (_states.TryRemove(name, out var state)) state.Cancel();
+        // The material is going; a later re-add has to project again rather than assume the row still says so.
+        _projected.TryRemove(name, out _);
         // Awaited so the files are not deleted out from under an order that is still writing them.
         if (_inFlight.TryGetValue(name, out var running))
             try {
@@ -293,6 +301,12 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
 
         var desired = _desired;
         if (desired.Count > 0) {
+            var now = _time.GetUtcNow();
+            // Ahead of the listener gate, and unconditionally: a certificate the store already holds is
+            // held whether or not this process is the one that obtained it, and the route row has to say
+            // so either way.
+            await ProjectHeldCertificatesAsync(desired, now, ct);
+
             if (!_listener.HttpsBound) {
                 if (!_warnedNoHttps) {
                     _warnedNoHttps = true;
@@ -301,13 +315,49 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
                 }
             } else {
                 _warnedNoHttps = false;
-                var now = _time.GetUtcNow();
                 var due = desired.Where(host => IsDue(host, now)).ToArray();
                 if (due.Length > 0) await RunAsync(due, ct);
             }
         }
 
         Prune(desired);
+    }
+
+    /// <summary>
+    /// Writes "this host has a certificate, valid until" onto the route rows of desired hosts the pass is
+    /// about to skip, because the store already holds something usable for them.
+    /// </summary>
+    /// <remarks>
+    /// Without this, the only writer of an <c>Active</c> route row is a successful issuance in this
+    /// process — so a certificate an operator hand-placed in the volume, or one issued before the last
+    /// restart by a build that never recorded it, is served perfectly while the Routes page insists the
+    /// domain is still "Waiting for a certificate" forever. <c>proxy.listCertificates</c> reads the store
+    /// directly and reports the same host as <c>active</c>, which is the contradiction operators hit.
+    /// <para>
+    /// The thumbprint map keeps this to one write per certificate rather than one per five-minute pass:
+    /// the row does not change, and rewriting it every tick would churn the database and bury the audit
+    /// trail. A renewal changes the thumbprint, so the projection follows it.
+    /// </para>
+    /// <para>
+    /// The manager's own start needs no separate pass: <see cref="CertificateStore"/> loads the volume in
+    /// its constructor, and the first reconcile after <see cref="SetDesiredHosts"/> — which the route
+    /// projection nudges — sees exactly what that load found.
+    /// </para>
+    /// </remarks>
+    private async Task ProjectHeldCertificatesAsync(
+        IReadOnlySet<string> desired, DateTimeOffset now, CancellationToken ct) {
+        foreach (var host in desired) {
+            var entry = _store.Find(host);
+            // Nothing held, or held but on its way out: the issuance path owns those, and claiming
+            // "active" for a certificate this pass is about to replace would be a status that lies.
+            if (entry is null) continue;
+            if (CertificateRenewalPolicy.IsRenewalDue(now, entry.NotBefore, entry.NotAfter)) continue;
+            if (_projected.TryGetValue(host, out var written)
+                && string.Equals(written, entry.Thumbprint, StringComparison.Ordinal)) continue;
+
+            await _routeStatus.RecordIssuedAsync(host, entry.NotAfter, ct);
+            _projected[host] = entry.Thumbprint;
+        }
     }
 
     /// <summary>
@@ -393,6 +443,8 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
                     CertificateRenewalPolicy.RenewalDueAt(issued.NotBefore, issued.NotAfter),
                     RenewalJitterWindow, host);
                 await _routeStatus.RecordIssuedAsync(host, issued.NotAfter, ct);
+                // The row now matches what was just installed, so the next pass has nothing to project.
+                if (_store.Find(host) is { } installed) _projected[host] = installed.Thumbprint;
                 break;
 
             case IssueOutcome.AwaitingDns awaiting:
@@ -439,8 +491,10 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
         try {
             var removed = _store.PruneUndesired(desired, PruneGrace);
             if (removed > 0)
-                foreach (var host in _states.Keys.Where(h => !desired.Contains(h)).ToArray())
+                foreach (var host in _states.Keys.Where(h => !desired.Contains(h)).ToArray()) {
                     _states.TryRemove(host, out _);
+                    _projected.TryRemove(host, out _);
+                }
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Could not prune undesired certificates.");
         }
