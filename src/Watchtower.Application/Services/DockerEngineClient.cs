@@ -17,11 +17,15 @@ namespace Watchtower.Application.Services;
 /// Two clients share the one handler (and therefore one connection pool). Almost every call is
 /// UI-facing and keeps HttpClient's 100-second default timeout, so a wedged daemon socket fails
 /// fast instead of hanging a page. The few calls whose duration is a property of the host rather
-/// than of Watchtower — the container wait and the image prune — go through a second, untimed
-/// client: their responses are buffered, so the 100-second ceiling would abandon them mid-flight
-/// (a self-update watch, or a prune of months of accumulated layers) even though nothing is wrong.
-/// Streamed calls (<see cref="HttpCompletionOption.ResponseHeadersRead"/>) need no such treatment:
-/// the per-request timeout stops applying once the response headers arrive.
+/// than of Watchtower — the container wait, the image prune, the container-archive read and the
+/// exec start — go through a second, untimed client: the 100-second ceiling would abandon them
+/// mid-flight (a self-update watch, a prune of months of accumulated layers, a volume archive, or
+/// a database dump) even though nothing is wrong. Streamed calls
+/// (<see cref="HttpCompletionOption.ResponseHeadersRead"/>) get their headers at once, but the
+/// ceiling keeps running while the body is read, so a body that is both long-lived and silently
+/// truncatable — an exec's output, where a cut-off dump looks exactly like a complete one — needs
+/// the untimed client just as much. The log stream does not: it is a page's worth of text, and a
+/// wedged daemon should fail it fast.
 /// </remarks>
 public sealed class DockerEngineClient : IDisposable {
     /// <summary>
@@ -149,39 +153,13 @@ public sealed class DockerEngineClient : IDisposable {
         response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        var header = new byte[8];
 
-        while (!ct.IsCancellationRequested) {
-            // Each Docker log frame begins with an 8-byte header.
-            var bytesRead = await ReadExactAsync(stream, header, 8, ct);
-            if (bytesRead < 8) yield break;
-
-            // Bytes 4–7 encode the frame payload size as a big-endian uint32.
-            var frameSize =
-                (header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7];
-            if (frameSize == 0) continue;
-
-            var frameBuffer = new byte[frameSize];
-            bytesRead = await ReadExactAsync(stream, frameBuffer, frameSize, ct);
-            if (bytesRead < frameSize) yield break;
-
-            var text = Encoding.UTF8.GetString(frameBuffer).TrimEnd('\n', '\r');
+        // Logs mix both streams into one view on purpose: the frame's stream type is what tells
+        // stdout from stderr, and the log viewer shows them interleaved as the container wrote them.
+        await foreach (var frame in DockerStreamFrames.ReadAsync(stream, ct)) {
+            var text = Encoding.UTF8.GetString(frame.Payload).TrimEnd('\n', '\r');
             if (!string.IsNullOrEmpty(text)) yield return text;
         }
-    }
-
-    /// <summary>
-    /// Reads exactly <paramref name="count"/> bytes into <paramref name="buffer"/>.
-    /// Returns the number of bytes read (may be less than count on EOF).
-    /// </summary>
-    private static async Task<int> ReadExactAsync(Stream stream, byte[] buffer, int count, CancellationToken ct) {
-        var offset = 0;
-        while (offset < count) {
-            var read = await stream.ReadAsync(buffer.AsMemory(offset, count - offset), ct);
-            if (read == 0) break; // EOF
-            offset += read;
-        }
-        return offset;
     }
 
     /// <summary>
@@ -262,13 +240,196 @@ public sealed class DockerEngineClient : IDisposable {
     /// <c>PUT /containers/{id}/archive</c>. Also works on created containers — used to inject the
     /// backup manifest next to the mounted volumes before the archive is read back.
     /// </summary>
+    public Task PutContainerArchiveAsync(
+        string containerId, string path, Stream tarStream, CancellationToken ct = default) =>
+        PutContainerArchiveAsync(
+            containerId, path, (destination, token) => tarStream.CopyToAsync(destination, token), ct);
+
+    /// <summary>
+    /// Same as the stream overload, but hands <paramref name="writeTar"/> the request body to write
+    /// the tar into directly — the shape <see cref="IBackupStorage.UploadAsync"/> uses. Nothing is
+    /// staged in memory or on disk in between, which is what lets a dump of arbitrary size be
+    /// injected next to the mounted volumes.
+    /// </summary>
     public async Task PutContainerArchiveAsync(
-        string containerId, string path, Stream tarStream, CancellationToken ct = default) {
+        string containerId, string path, Func<Stream, CancellationToken, Task> writeTar,
+        CancellationToken ct = default) {
         var url = $"{_apiBase}/containers/{containerId}/archive?path={Uri.EscapeDataString(path)}";
-        using var content = new StreamContent(tarStream);
+        using var content = new PushStreamContent(writeTar, ct);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-tar");
         var response = await _client.PutAsync(url, content, ct);
         response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// An <see cref="HttpContent"/> whose body is produced by a callback writing into the request
+    /// stream. <see cref="TryComputeLength"/> answers false because the length genuinely is not
+    /// known up front, which sends the body chunked — the daemon accepts that, and the alternative
+    /// is buffering the whole tar to measure it.
+    /// </summary>
+    private sealed class PushStreamContent(
+        Func<Stream, CancellationToken, Task> writer, CancellationToken ct) : HttpContent {
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
+            writer(stream, ct);
+
+        protected override Task SerializeToStreamAsync(
+            Stream stream, System.Net.TransportContext? context, CancellationToken cancellationToken) =>
+            writer(stream, cancellationToken);
+
+        protected override bool TryComputeLength(out long length) {
+            length = 0;
+            return false;
+        }
+    }
+
+    // ── Exec ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Content type Docker answers an exec start with when the output carries no framing — a TTY
+    /// exec, or a daemon older than API 1.42. Everything the process wrote is then one stream.
+    /// </summary>
+    private const string RawStreamContentType = "application/vnd.docker.raw-stream";
+
+    /// <summary>
+    /// How much of an exec's stderr is kept: the last 8 KiB. Diagnostics live at the end of a
+    /// failure ("connection refused", the last psql error), while the front of a chatty tool's
+    /// stderr is progress noise — and the whole point of streaming stdout past this process is not
+    /// to hold the output of a database dump in memory.
+    /// </summary>
+    internal const int StderrTailBytes = 8 * 1024;
+
+    /// <summary>
+    /// Runs <paramref name="command"/> inside a running container (create + start + inspect, the
+    /// API equivalent of <c>docker exec</c>) and returns once the process has exited. Stdout is
+    /// written to <paramref name="stdout"/> as it arrives; a null <paramref name="stdout"/> drains
+    /// the output instead, which is how a caller that only wants the exit code avoids buffering it.
+    /// </summary>
+    /// <param name="command">The argv to run — each element one token, no shell involved.</param>
+    /// <param name="env">
+    /// Extra environment for the process, in <c>KEY=VALUE</c> form. This is the channel secrets
+    /// travel on (a database password as <c>PGPASSWORD</c>), so it is handed to the daemon and
+    /// never logged, echoed into an exception, or kept in the result.
+    /// </param>
+    /// <param name="user">The user to run as, e.g. <c>postgres</c>; null keeps the image's default.</param>
+    /// <exception cref="InvalidOperationException">
+    /// The daemon reported no exit code once the output had ended — see the remarks.
+    /// </exception>
+    public async Task<DockerExecResult> ExecAsync(
+        string containerId,
+        IReadOnlyList<string> command,
+        Stream? stdout = null,
+        IReadOnlyList<string>? env = null,
+        string? user = null,
+        CancellationToken ct = default) {
+        var body = new DockerCreateExecBody {
+            AttachStdin = false,
+            AttachStdout = true,
+            AttachStderr = true,
+            Tty = false,
+            Cmd = [.. command],
+            Env = env is { Count: > 0 } ? [.. env] : null,
+            User = string.IsNullOrEmpty(user) ? null : user,
+        };
+        var json = JsonSerializer.Serialize(body, DockerJsonContext.Default.DockerCreateExecBody);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var createResponse = await _client.PostAsync($"{_apiBase}/containers/{containerId}/exec", content, ct);
+        await EnsureSuccessWithBodyAsync(createResponse, ct);
+        await using var createStream = await createResponse.Content.ReadAsStreamAsync(ct);
+        var created = await JsonSerializer.DeserializeAsync(createStream, DockerJsonContext.Default.DockerCreateExecResponse, ct)
+            ?? throw new InvalidOperationException($"Null response creating an exec in container {containerId}");
+
+        var (stdoutBytes, stderr) = await RunExecAsync(created.Id, stdout, ct);
+
+        var inspectResponse = await _client.GetAsync($"{_apiBase}/exec/{created.Id}/json", ct);
+        await EnsureSuccessWithBodyAsync(inspectResponse, ct);
+        await using var inspectStream = await inspectResponse.Content.ReadAsStreamAsync(ct);
+        var inspect = await JsonSerializer.DeserializeAsync(inspectStream, DockerJsonContext.Default.DockerExecInspect, ct)
+            ?? throw new InvalidOperationException($"Null response inspecting exec {created.Id}");
+        // A missing exit code means the output stopped for a reason other than the process
+        // finishing — the connection dropped, or the daemon restarted under it. The bytes already
+        // written look like a complete result, so this has to be a failure rather than an exit 0.
+        if (inspect.Running || inspect.ExitCode is not { } exitCode)
+            throw new InvalidOperationException(
+                $"The exec was still running when its output ended (container {containerId}), " +
+                "so Docker reported no exit code — its output has to be assumed incomplete.");
+
+        return new DockerExecResult(exitCode, stderr, stdoutBytes);
+    }
+
+    /// <summary>
+    /// Starts a created exec and consumes its output, returning how many stdout bytes went past and
+    /// the tail of stderr.
+    /// </summary>
+    /// <remarks>
+    /// The one call on the untimed client that is also streamed. Headers arrive immediately, but
+    /// HttpClient's ceiling keeps running while the body is read, and an exec that outlives it — a
+    /// <c>pg_dumpall</c> of a real database takes minutes, not seconds — would have its output cut
+    /// off mid-frame. Nothing downstream can tell that apart from output that simply ended, so the
+    /// archive would quietly contain a short dump. The caller's token is the only bound here.
+    /// </remarks>
+    private async Task<(long StdoutBytes, string Stderr)> RunExecAsync(
+        string execId, Stream? stdout, CancellationToken ct) {
+        var json = JsonSerializer.Serialize(
+            new DockerExecStartBody { Detach = false, Tty = false }, DockerJsonContext.Default.DockerExecStartBody);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_apiBase}/exec/{execId}/start") {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        using var response = await _longRunningClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessWithBodyAsync(response, ct);
+
+        var stderr = new ExecStderrTail(StderrTailBytes);
+        long stdoutBytes = 0;
+        await using var responseBody = await response.Content.ReadAsStreamAsync(ct);
+
+        if (string.Equals(
+                response.Content.Headers.ContentType?.MediaType, RawStreamContentType,
+                StringComparison.OrdinalIgnoreCase)) {
+            // Unframed: the body is the output verbatim, stderr included and indistinguishable.
+            var buffer = new byte[8192];
+            int read;
+            while ((read = await responseBody.ReadAsync(buffer, ct)) > 0) {
+                stdoutBytes += read;
+                if (stdout is not null) await stdout.WriteAsync(buffer.AsMemory(0, read), ct);
+            }
+            return (stdoutBytes, stderr.ToString());
+        }
+
+        await foreach (var frame in DockerStreamFrames.ReadAsync(responseBody, ct)) {
+            if (frame.StreamType == DockerStreamFrame.Stderr) {
+                stderr.Append(frame.Payload);
+                continue;
+            }
+            stdoutBytes += frame.Payload.Length;
+            if (stdout is not null) await stdout.WriteAsync(frame.Payload, ct);
+        }
+        return (stdoutBytes, stderr.ToString());
+    }
+
+    /// <summary>
+    /// Keeps the last <paramref name="capacity"/> bytes written to it and renders them as text,
+    /// prefixed with <c>…</c> once anything has been dropped.
+    /// </summary>
+    private sealed class ExecStderrTail(int capacity) {
+        private readonly List<byte> _bytes = [];
+        private bool _truncated;
+
+        public void Append(byte[] payload) {
+            _bytes.AddRange(payload);
+            if (_bytes.Count <= capacity) return;
+            _bytes.RemoveRange(0, _bytes.Count - capacity);
+            _truncated = true;
+        }
+
+        public override string ToString() {
+            if (_bytes.Count == 0) return string.Empty;
+            var start = 0;
+            // Cutting the front off may have landed inside a UTF-8 sequence; dropping the orphaned
+            // continuation bytes costs at most three characters and saves a replacement glyph.
+            if (_truncated)
+                while (start < _bytes.Count && (_bytes[start] & 0xC0) == 0x80) start++;
+            var text = Encoding.UTF8.GetString(_bytes.ToArray(), start, _bytes.Count - start);
+            return _truncated ? $"…{text}" : text;
+        }
     }
 
     /// <summary>Whether <paramref name="imageName"/> exists locally (<c>GET /images/{name}/json</c> → 404 = no).</summary>
@@ -858,6 +1019,60 @@ public sealed record DockerMountInfo {
     public bool RW { get; init; }
 }
 
+/// <summary>
+/// Outcome of one <see cref="DockerEngineClient.ExecAsync"/> call. Stdout is not in here — it went
+/// to the caller's stream as it arrived; only how much of it there was is reported back.
+/// </summary>
+/// <param name="ExitCode">The process's exit status, as Docker reports it after the exec ended.</param>
+/// <param name="Stderr">
+/// The tail of what the process wrote to stderr (at most
+/// <see cref="DockerEngineClient.StderrTailBytes"/> bytes, prefixed with <c>…</c> when the front
+/// was dropped). Empty for an unframed exec, whose stderr is mixed into stdout by the daemon.
+/// </param>
+/// <param name="StdoutBytes">Number of stdout bytes seen, whether or not they were written anywhere.</param>
+public sealed record DockerExecResult(int ExitCode, string Stderr, long StdoutBytes) {
+    /// <summary>True when the process exited 0.</summary>
+    public bool Success => ExitCode == 0;
+}
+
+/// <summary>Request body for POST /containers/{id}/exec.</summary>
+public sealed record DockerCreateExecBody {
+    /// <summary>Always false — Watchtower never writes to an exec, which is what keeps the start
+    /// response a plain body instead of a hijacked bidirectional connection.</summary>
+    public bool AttachStdin { get; init; }
+    public bool AttachStdout { get; init; }
+    public bool AttachStderr { get; init; }
+    /// <summary>Always false: a TTY would merge stderr into stdout and lose the framing.</summary>
+    public bool Tty { get; init; }
+    /// <summary>The command to run — each element is a separate argv token.</summary>
+    public required string[] Cmd { get; init; }
+    /// <summary>Extra environment in "KEY=VALUE" form; null when the caller passed none.</summary>
+    public string[]? Env { get; init; }
+    /// <summary>User to run as; null keeps the image's default.</summary>
+    public string? User { get; init; }
+}
+
+/// <summary>Response body from POST /containers/{id}/exec.</summary>
+public sealed record DockerCreateExecResponse {
+    public required string Id { get; init; }
+}
+
+/// <summary>Request body for POST /exec/{id}/start.</summary>
+public sealed record DockerExecStartBody {
+    /// <summary>False, so the response body carries the output and the call ends with the process.</summary>
+    public bool Detach { get; init; }
+    /// <summary>Mirrors <see cref="DockerCreateExecBody.Tty"/>; both must agree.</summary>
+    public bool Tty { get; init; }
+}
+
+/// <summary>Subset of GET /exec/{id}/json: the exit status of a finished exec.</summary>
+public sealed record DockerExecInspect {
+    /// <summary>True while the process is still going, in which case there is no exit code yet.</summary>
+    public bool Running { get; init; }
+    /// <summary>Null while the exec is running; set once it has ended.</summary>
+    public int? ExitCode { get; init; }
+}
+
 /// <summary>Response body from POST /containers/{id}/wait.</summary>
 public sealed record DockerWaitContainerResponse {
     public required int StatusCode { get; init; }
@@ -912,6 +1127,10 @@ public sealed record DockerDeletedImage {
 [JsonSerializable(typeof(DockerCreateNetworkResponse))]
 [JsonSerializable(typeof(DockerConnectNetworkBody))]
 [JsonSerializable(typeof(DockerDisconnectNetworkBody))]
+[JsonSerializable(typeof(DockerCreateExecBody))]
+[JsonSerializable(typeof(DockerCreateExecResponse))]
+[JsonSerializable(typeof(DockerExecStartBody))]
+[JsonSerializable(typeof(DockerExecInspect))]
 [JsonSerializable(typeof(DockerWaitContainerResponse))]
 [JsonSerializable(typeof(DockerPruneImagesResponse))]
 [JsonSerializable(typeof(DockerDeletedImage))]
