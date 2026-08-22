@@ -917,8 +917,8 @@ export interface BackupSftpConfig {
 /** `backups.getConfig` / `backups.updateConfig` payload. Fully runtime-switchable (no restart). */
 export interface BackupConfig {
   enabled: boolean
-  /** Server-local daily window, "HH:mm". */
-  time: string
+  /** Five-field cron (`minute hour day-of-month month day-of-week`), server-local wall clock. */
+  cron: string
   instanceName: string | null
   /** What the instance name resolves to when unset (the machine name). */
   resolvedInstanceName: string
@@ -939,7 +939,8 @@ export interface BackupConfig {
 /** `backups.updateConfig` request. Null secret fields keep the stored values; empty string clears. */
 export interface UpdateBackupConfigRequest {
   enabled: boolean
-  time: string
+  /** Five-field cron (`minute hour day-of-month month day-of-week`), server-local wall clock. */
+  cron: string
   instanceName?: string | null
   retentionDays: number
   retentionMaxCount: number
@@ -975,10 +976,12 @@ export interface BackupEvent {
 /** A stack's backup participation. */
 export interface BackupStackConfig {
   stackId: number
-  /** Included in the daily schedule. */
+  /** Included in the backup schedule. */
   enabled: boolean
   /** Stop the stack's containers during the snapshot for consistency (ADR-0016 §2). */
   stopContainers: boolean
+  /** This stack's schedule override; null follows the instance-wide schedule. */
+  cron: string | null
 }
 
 export interface BackupRunAccepted {

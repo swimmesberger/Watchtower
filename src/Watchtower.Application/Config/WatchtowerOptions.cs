@@ -121,18 +121,36 @@ public sealed record WatchtowerOptions {
 /// </summary>
 public sealed record BackupOptions {
     /// <summary>
-    /// Master switch for the daily backup schedule. Off by default so no storage credentials are
+    /// Master switch for the backup schedule. Off by default so no storage credentials are
     /// required and no containers are ever stopped unless the operator opts in. Manual
     /// <c>backups.run</c> works regardless of this switch (it still needs a configured provider).
     /// </summary>
     public bool Enabled { get; init; } = false;
 
     /// <summary>
-    /// Server-local time of day ("HH:mm") the daily backup window opens — same semantics as
-    /// <see cref="Entities.Stack.AutoDeployTime"/>. A window that passed while Watchtower was down
-    /// is skipped, so a restart never backs up (or stops containers) outside the window.
+    /// The instance-wide schedule as a five-field cron expression (<c>minute hour day-of-month month
+    /// day-of-week</c>), evaluated against the server-local wall clock — e.g. <c>30 3,15 * * *</c>
+    /// for 03:30 and 15:30 every day, or <c>0 */6 * * *</c> for every six hours. Null/blank falls
+    /// back to the <see cref="Time"/> alias, then to <see cref="Services.BackupSchedule.DefaultExpression"/>
+    /// (03:30 daily). Stacks may override it with <see cref="Entities.Stack.BackupCron"/>. Resolve
+    /// through <see cref="Services.BackupSchedule.ResolveGlobalExpression"/>, never read directly.
     /// </summary>
-    public string Time { get; init; } = "03:30";
+    public string? Cron { get; init; }
+
+    /// <summary>
+    /// Legacy alias for <see cref="Cron"/>: a server-local time of day ("HH:mm") kept so existing
+    /// <c>WATCHTOWER__BACKUP__TIME</c> settings keep working — it reads as <c>M H * * *</c>. A
+    /// non-blank <see cref="Cron"/> takes precedence; saving a schedule from the UI clears the stored alias.
+    /// </summary>
+    public string? Time { get; init; }
+
+    /// <summary>
+    /// Misfire policy (<see cref="Services.BackupSchedule"/>): how old a window may be and still be
+    /// run once when the scheduler notices it late — after a restart, downtime, the master switch
+    /// being off, or a stack having just opted in. A window older than this is skipped (logged, never
+    /// run). Clamped to 2 minutes … 24 hours. Default 60.
+    /// </summary>
+    public int MisfireGraceMinutes { get; init; } = 60;
 
     /// <summary>
     /// Name identifying this Watchtower instance in the remote layout

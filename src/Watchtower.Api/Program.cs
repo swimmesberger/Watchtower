@@ -4,6 +4,7 @@ using Elarion.Abstractions.Modules;
 using Elarion.AspNetCore;
 using Elarion.AspNetCore.Identity;
 using Elarion.JsonRpc;
+using Elarion.Scheduling;
 using Elarion.Session;
 using Elarion.Settings.Configuration;
 using Microsoft.AspNetCore.Authentication;
@@ -108,11 +109,16 @@ builder.Services.AddWatchtowerProxyForwarding();
 ProxyHttpsEndpoint.Configure(builder);
 
 // Elarion framework composition:
-//   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.
-//   AddElarionSession  — the client-capability bootstrap (ADR-0030): module map + [ClientFeatures] flags
-//                        (e.g. Metrics' "metrics-history") for the frontend's contribution gating.
-//   AddElarionJsonRpc  — the JSON-RPC transport + shared handler dispatcher.
+//   AddElarion          — every enabled module's handlers, [Service] impls, [ScheduledJob] descriptors,
+//                         and source-generated JSON contexts.
+//   AddElarionScheduler — the in-process scheduler runtime behind those descriptors (today: the backup
+//                         schedule's minute tick, ADR-0018). Descriptors are registered per module by
+//                         AddElarion; this only adds the runtime (Scheduler:* configuration).
+//   AddElarionSession   — the client-capability bootstrap (ADR-0030): module map + [ClientFeatures] flags
+//                         (e.g. Metrics' "metrics-history") for the frontend's contribution gating.
+//   AddElarionJsonRpc   — the JSON-RPC transport + shared handler dispatcher.
 builder.Services.AddElarion(builder.Configuration);
+builder.Services.AddElarionScheduler(builder.Configuration);
 // ICurrentUser (claims-backed when Auth:Enabled, an implicit local administrator otherwise) and the
 // IAuthorizer behind [assembly: ElarionAuthorizationDefaults] are registered by AddWatchtowerServices
 // above — both are mode decisions driven by Watchtower:Auth:Enabled, so they live next to the rest of the

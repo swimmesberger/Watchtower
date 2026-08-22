@@ -37,7 +37,10 @@ is hand-registered in `WatchtowerServiceCollectionExtensions`, including the two
 `IOptionsMonitor` like `StackUpdateBackgroundService`). This was the codebase choice, not a framework
 limitation. Worth a pass to move these onto `[Service]`/the framework's hosted-service support so the
 "register nothing" model actually applies. (New `CaddyManager` in this feature follows the **existing**
-manual-DI convention for consistency; revisit alongside the wider migration.)
+manual-DI convention for consistency; revisit alongside the wider migration.) *Update (ADR-0018):* the
+backup schedule is the first piece on the framework scheduler — `BackupScheduleJob` is a `[ScheduledJob]`
+composed per module by `AddElarion` and run by `AddElarionScheduler` in the host; the four polling
+`BackgroundService`s are still the hand-rolled shape.
 
 ### A3. Consider adopting client events for status *hints* — after bumping Elarion
 For "cert/route status changed → re-query," client events (`IClientEvent` + typed `events-client.ts`)

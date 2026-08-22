@@ -69,7 +69,10 @@ public static class WatchtowerSettingPaths {
 
     // ── Backups (backups.updateConfig, ADR-0016) ─────────────────────────────
     public const string BackupEnabled = "Watchtower:Backup:Enabled";
+    public const string BackupCron = "Watchtower:Backup:Cron";
+    /// <summary>Legacy <c>HH:mm</c> alias of <see cref="BackupCron"/>; still honoured when set (env or stored).</summary>
     public const string BackupTime = "Watchtower:Backup:Time";
+    public const string BackupMisfireGraceMinutes = "Watchtower:Backup:MisfireGraceMinutes";
     public const string BackupInstanceName = "Watchtower:Backup:InstanceName";
     public const string BackupRetentionDays = "Watchtower:Backup:RetentionDays";
     public const string BackupRetentionMaxCount = "Watchtower:Backup:RetentionMaxCount";

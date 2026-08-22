@@ -55,14 +55,16 @@ public sealed class BackupEncryptionTests {
 
     [Fact]
     public void AWrongPassphraseFailsInsteadOfProducingGarbage() {
-        var container = new MemoryStream();
-        using (var e = BackupEncryption.CreateEncryptingStream(container, "right"))
-            e.Write("payload"u8);
+        // A FIXED vector, not a freshly encrypted one: CBC+PKCS7 surfaces a wrong key as a padding
+        // failure on the final block, but a wrong key forges valid padding with probability 2^-8.
+        // Since every encryption salts freshly, encrypting in the test would re-roll that die on
+        // each run (observed flaking about 1 in 256). This constant was checked once to fail with
+        // "wrong" and decrypt to "payload" with "right", so the outcome is the same on every run.
+        //   printf 'payload' |
+        //     openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 -pass pass:right -base64
+        var container = Convert.FromBase64String("U2FsdGVkX1+e4Y/gfkulGCL/A2pRUL2ngg05Zk00dt0=");
 
-        container.Position = 0;
-        using var decrypting = BackupEncryption.CreateDecryptingStream(container, "wrong");
-        // CBC+PKCS7: a wrong key surfaces as a padding failure on the final block. (A truly
-        // unlucky forged padding is 2^-8 per attempt — irrelevant for a fixed test vector.)
+        using var decrypting = BackupEncryption.CreateDecryptingStream(new MemoryStream(container), "wrong");
         Assert.Throws<CryptographicException>(() => decrypting.CopyTo(new MemoryStream()));
     }
 

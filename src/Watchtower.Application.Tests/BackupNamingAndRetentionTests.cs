@@ -1,3 +1,5 @@
+using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
 using Xunit;
 
@@ -84,8 +86,59 @@ public sealed class BackupNamingAndRetentionTests {
     }
 
     [Fact]
+    public void SeveralRunsPerDayAreOrderedBySecondAndCappedByCount() {
+        // Two windows a day (03:30 and 15:30) for three days; the names differ within the day, so the
+        // count limit keeps the newest N runs, not the newest N days — which is why the docs tell
+        // operators with several runs per day to set RetentionMaxCount.
+        string Run(int daysAgo, int hour) =>
+            BackupNaming.FileName("web-app", Now.AddDays(-daysAgo).Date.AddHours(hour).AddMinutes(30), encrypted: false);
+        var files = new[] { Run(2, 3), Run(2, 15), Run(1, 3), Run(1, 15), Run(0, 3), Run(0, 15) };
+
+        var deleted = BackupRetention.SelectDeletions(files, Now, retentionDays: 0, retentionMaxCount: 3);
+
+        // Newest three survive: today 15:30, today 03:30, yesterday 15:30.
+        Assert.Equal([Run(1, 3), Run(2, 15), Run(2, 3)], deleted);
+        // The age limit alone keeps every run of the window — 30 days × 2 runs — untouched.
+        Assert.Empty(BackupRetention.SelectDeletions(files, Now, retentionDays: 30, retentionMaxCount: 0));
+    }
+
+    [Fact]
     public void ZeroLimitsDeleteNothing() {
         var files = new[] { At(0), At(1000) };
         Assert.Empty(BackupRetention.SelectDeletions(files, Now, retentionDays: 0, retentionMaxCount: 0));
+    }
+
+    // ── Audit summary ────────────────────────────────────────────────────────
+
+    private static Stack StackWithStops() => new() {
+        Name = "web-app",
+        RepositoryUrl = "https://example.com/web-app.git",
+        ComposeFilePath = "docker-compose.yml",
+        Branch = "main",
+        ComposeProjectName = "web-app",
+        BackupStopContainers = true,
+    };
+
+    [Fact]
+    public void TheAuditSummaryReportsWhatTheRunActuallyStoppedAndExcluded() {
+        var backup = new BackupOptions { Provider = "local", RetentionDays = 30, RetentionMaxCount = 0 };
+
+        var summary = BackupService.RunSummary(
+            "manual", StackWithStops(), backup, stoppedCount: 2, excludedVolumeCount: 1);
+
+        Assert.Equal("manual · local · 2 container(s) stopped · 1 volume(s) excluded · retention 30d", summary);
+    }
+
+    [Fact]
+    public void AFailedRunReportsTheSettingRatherThanACountItCannotVouchFor() {
+        var stack = StackWithStops();
+        var backup = new BackupOptions { Provider = "local", RetentionDays = 0, RetentionMaxCount = 0 };
+
+        // No count: the run may have failed before it reached its stop step.
+        Assert.Equal("manual · local · containers stopped · keep forever",
+            BackupService.RunSummary("manual", stack, backup));
+        // Mount scoping can legitimately stop nothing at all — that is not "containers stopped".
+        Assert.Equal("manual · local · keep forever",
+            BackupService.RunSummary("manual", stack, backup, stoppedCount: 0));
     }
 }
