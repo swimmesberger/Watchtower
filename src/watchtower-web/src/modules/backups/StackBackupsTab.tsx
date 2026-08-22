@@ -182,19 +182,20 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">
-                  Stop containers during the snapshot
+                  Stop stateful containers during the snapshot
                 </span>
                 <span className="mt-0.5 block text-[13px] text-text-2">
-                  Stops this stack’s containers while the volumes are read and restarts them right
-                  after, so databases are captured in a consistent state. Off = no downtime, but a
-                  write-active database volume may be captured mid-write.
+                  Stops only the containers that mount the volumes being archived (typically just
+                  the database), dependents first, and restarts them in dependency order right
+                  after. Postgres services are dumped with pg_dumpall instead and stay up. Off =
+                  nothing is stopped; a write-active volume may be captured mid-write.
                 </span>
               </span>
               <Switch
                 checked={config.stopContainers}
                 disabled={setConfig.isPending}
                 onCheckedChange={(v) => setConfig.mutate({ enabled: config.enabled, stopContainers: v })}
-                aria-label="Stop containers during the snapshot"
+                aria-label="Stop stateful containers during the snapshot"
               />
             </label>
           </CardContent>

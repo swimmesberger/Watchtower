@@ -248,6 +248,8 @@ public static class WatchtowerServiceCollectionExtensions {
         // queue is a singleton so backups.run can enqueue and read coalesced state; hosted for the
         // worker loop and graceful shutdown.
         services.AddSingleton<BackupArchiveService>();
+        // Database-aware dumps (ADR-0017): stateless over the engine's exec API, so a singleton.
+        services.AddSingleton<PostgresDumpService>();
         services.AddSingleton<BackupStorageFactory>();
         services.AddSingleton<BackupService>();
         services.AddSingleton<BackupQueueService>();

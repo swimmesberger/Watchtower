@@ -1315,7 +1315,7 @@ function BackupsCard() {
             <div className="grid gap-4 md:grid-cols-2">
               <Field
                 label="Backup time"
-                hint="Server-local, 24h. Pick a quiet window — stacks with “stop containers” are briefly down."
+                hint="Server-local, 24h. Pick a quiet window — stacks with “stop stateful containers” briefly stop their stateful services."
               >
                 {({ id }) => (
                   <>

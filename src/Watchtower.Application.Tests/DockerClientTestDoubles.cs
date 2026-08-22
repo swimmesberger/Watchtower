@@ -12,12 +12,27 @@ namespace Watchtower.Application.Tests;
 internal sealed class RecordingHandler(
     bool hang = false, Action? onCancelled = null, TimeSpan? delay = null) : HttpMessageHandler {
     public List<string> Requests { get; } = [];
+    /// <summary>What each request carried, decoded as UTF-8; parallel to <see cref="Requests"/>.</summary>
+    public List<string?> Bodies { get; } = [];
+    /// <summary>The same bodies unmangled, for the requests that send tar rather than JSON.</summary>
+    public List<byte[]?> BodyBytes { get; } = [];
     public bool Disposed { get; private set; }
+
+    /// <summary>
+    /// Consulted before <see cref="BodyFor"/>: lets one test answer a specific request with
+    /// something the canned JSON chain cannot express — a multiplexed exec body, a chosen exit
+    /// code, an error status. Returning null falls through to the default answer.
+    /// </summary>
+    public Func<HttpRequestMessage, HttpResponseMessage?>? Responder { get; set; }
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken) {
         var path = request.RequestUri!.AbsolutePath;
         Requests.Add(request.RequestUri!.PathAndQuery);
+        // Reading the content here is also what runs a push-stream body's writer callback.
+        var bytes = request.Content is null ? null : await request.Content.ReadAsByteArrayAsync(cancellationToken);
+        BodyBytes.Add(bytes);
+        Bodies.Add(bytes is null ? null : Encoding.UTF8.GetString(bytes));
         // A daemon that answers, but not instantly — enough for a ceiling to expire around it.
         if (delay is { } pause) await Task.Delay(pause, cancellationToken);
         if (hang) {
@@ -30,6 +45,7 @@ internal sealed class RecordingHandler(
                 throw;
             }
         }
+        if (Responder?.Invoke(request) is { } answer) return answer;
         return new HttpResponseMessage(HttpStatusCode.OK) {
             Content = new StringContent(BodyFor(path), Encoding.UTF8, "application/json"),
         };
@@ -38,12 +54,18 @@ internal sealed class RecordingHandler(
     /// <summary>The container id every create answers with; long enough for the callers' [..12] logs.</summary>
     public const string CreatedContainerId = "c0ffee1234567890abcdef";
 
-    // The wait, create and inspect responses have `required` members, so an empty object would not
-    // deserialize. Inspect answers "running", which is what sends the reconcile into the wait.
+    /// <summary>The exec id every <c>POST /containers/{id}/exec</c> answers with.</summary>
+    public const string CreatedExecId = "exec0123456789abcdef";
+
+    // The wait, create, exec and inspect responses have `required` members or a nullable exit code,
+    // so an empty object would not deserialize (or would read as "still running"). Container
+    // inspect answers "running", which is what sends the reconcile into the wait.
     private static string BodyFor(string path) =>
         path.EndsWith("/containers/json") ? "[]"
         : path.EndsWith("/wait") ? """{"StatusCode":0}"""
         : path.EndsWith("/containers/create") ? $$"""{"Id":"{{CreatedContainerId}}"}"""
+        : path.EndsWith("/exec") ? $$"""{"Id":"{{CreatedExecId}}"}"""
+        : path.Contains("/exec/") && path.EndsWith("/json") ? """{"Running":false,"ExitCode":0}"""
         : path.EndsWith("/json") ? InspectBody
         : "{}";
 
@@ -56,6 +78,79 @@ internal sealed class RecordingHandler(
         Disposed = true;
         base.Dispose(disposing);
     }
+}
+
+/// <summary>
+/// Builds bodies in Docker's multiplexed stream format: an 8-byte header (stream type, three
+/// reserved zeros, big-endian payload length) in front of each payload.
+/// </summary>
+internal static class DockerFrameBuilder {
+    public static byte[] Frame(byte streamType, string payload) =>
+        Frame(streamType, Encoding.UTF8.GetBytes(payload));
+
+    public static byte[] Frame(byte streamType, byte[] payload) {
+        var frame = new byte[8 + payload.Length];
+        frame[0] = streamType;
+        frame[4] = (byte)(payload.Length >> 24);
+        frame[5] = (byte)(payload.Length >> 16);
+        frame[6] = (byte)(payload.Length >> 8);
+        frame[7] = (byte)payload.Length;
+        payload.CopyTo(frame, 8);
+        return frame;
+    }
+
+    /// <summary>A header announcing no payload at all — what the daemon emits on an empty flush.</summary>
+    public static byte[] EmptyFrame(byte streamType) => Frame(streamType, []);
+
+    public static byte[] Concat(params byte[][] parts) => [.. parts.SelectMany(p => p)];
+}
+
+/// <summary>
+/// Hands its content out in exactly the pieces it was given, one per read — the shape a socket
+/// delivers in, where a frame header can arrive split down the middle. Reads never span two chunks.
+/// </summary>
+internal sealed class ChunkedStream(params byte[][] chunks) : Stream {
+    private readonly Queue<byte[]> _chunks = new(chunks);
+    private byte[] _current = [];
+    private int _offset;
+
+    /// <summary>True once a read has run past the last chunk — i.e. the body was fully consumed.</summary>
+    public bool DrainedToEnd { get; private set; }
+
+    public override int Read(byte[] buffer, int offset, int count) {
+        while (_offset == _current.Length) {
+            if (_chunks.Count == 0) {
+                DrainedToEnd = true;
+                return 0;
+            }
+            _current = _chunks.Dequeue();
+            _offset = 0;
+        }
+        var take = Math.Min(count, _current.Length - _offset);
+        Array.Copy(_current, _offset, buffer, offset, take);
+        _offset += take;
+        return take;
+    }
+
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) {
+        var rented = new byte[buffer.Length];
+        var read = Read(rented, 0, rented.Length);
+        rented.AsMemory(0, read).CopyTo(buffer);
+        return ValueTask.FromResult(read);
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position {
+        get => throw new NotSupportedException();
+        set => throw new NotSupportedException();
+    }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
 /// <summary>
