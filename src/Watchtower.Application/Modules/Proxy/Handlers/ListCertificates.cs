@@ -5,7 +5,7 @@ using Watchtower.Application.Services.Acme;
 namespace Watchtower.Application.Modules.Proxy.Handlers;
 
 /// <summary>
-/// What the in-process proxy holds, or is trying to hold, per host — ADR-0017 (forthcoming).
+/// What the in-process proxy holds, or is trying to hold, per host — ADR-0017.
 /// </summary>
 /// <param name="Source">
 /// Where the host comes from: <c>route</c> for a domain in the route table, <c>loginHost</c> for a

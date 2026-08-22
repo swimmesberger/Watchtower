@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, CloudDownload, ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, CloudDownload, ExternalLink, Globe, Lock, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
   AccessMode,
+  CertificateInfo,
   CloudflareForeignRoute,
   CreateRouteRequest,
   IdentityHeaderMode,
@@ -12,7 +13,7 @@ import type {
   RouteStatus,
 } from '@/lib/types'
 import { LOCAL_USER_ID } from '@/lib/auth'
-import { timeAgo } from '@/lib/format'
+import { absoluteTitle, timeAgo } from '@/lib/format'
 import { useRealms } from '@/hooks/use-realms'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -487,9 +488,23 @@ export function RoutesPage() {
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Routes</h1>
           {status && (
-            <Badge tone={status.enabled ? (status.caddyRunning ? 'ok' : 'warn') : 'neutral'}>
-              {status.enabled ? (status.caddyRunning ? 'Proxy running' : 'Proxy starting…') : 'Proxy disabled'}
-            </Badge>
+            <>
+              {/* The caveat, not a second status: the badge already says running/starting, and
+                  providerDetail is what that verdict is hiding — "bound over plain HTTP only", or
+                  how far through first issuance the certificates are. */}
+              <Tooltip label={status.providerDetail ?? 'The active provider has nothing to report.'}>
+                <Badge tone={status.enabled ? (status.caddyRunning ? 'ok' : 'warn') : 'neutral'}>
+                  {status.enabled
+                    ? status.caddyRunning
+                      ? 'Proxy running'
+                      : 'Proxy starting…'
+                    : 'Proxy disabled'}
+                </Badge>
+              </Tooltip>
+              {status.providerDetail && (
+                <span className="text-[13px] text-text-2">{status.providerDetail}</span>
+              )}
+            </>
           )}
         </div>
         <Button variant="primary" onClick={() => setShowForm((v) => !v)} disabled={stacks.length === 0}>
@@ -500,8 +515,10 @@ export function RoutesPage() {
       {status && !status.enabled && (
         <Banner tone="warn" title="Reverse proxy is disabled">
           Routes are saved but not served until the proxy is enabled — flip it under Settings →
-          Reverse proxy (applies immediately). The Caddy provider needs host ports 80 and 443 free;
-          the Cloudflare Tunnel provider needs no open ports.
+          Reverse proxy (applies immediately). The built-in provider needs host ports 80 and 443
+          published to Watchtower's container (<span className="font-mono">80:8080</span>,{' '}
+          <span className="font-mono">443:8443</span>); the Caddy provider needs them free on the
+          host; the Cloudflare Tunnel provider needs no open ports.
         </Banner>
       )}
 
@@ -770,6 +787,8 @@ export function RoutesPage() {
         />
       )}
 
+      {status?.provider === 'yarp' && <CertificatesCard />}
+
       <ConfirmDialog
         open={pendingDelete != null}
         onOpenChange={(open) => {
@@ -813,6 +832,194 @@ export function RoutesPage() {
         <AccessDialog route={accessRoute} onClose={() => setAccessRoute(null)} />
       )}
     </div>
+  )
+}
+
+// ── Certificates (built-in provider only) ───────────────────────────────────
+
+const CERT_STATE_TONE: Record<CertificateInfo['state'], BadgeTone> = {
+  active: 'ok',
+  error: 'danger',
+  awaitingDns: 'warn',
+  pending: 'neutral',
+  none: 'neutral',
+}
+
+const CERT_STATE_LABEL: Record<CertificateInfo['state'], string> = {
+  active: 'Active',
+  error: 'Error',
+  awaitingDns: 'Awaiting DNS',
+  pending: 'Pending',
+  none: 'None',
+}
+
+const CERT_SOURCE_LABEL: Record<CertificateInfo['source'], string> = {
+  route: 'Route',
+  loginHost: 'Login host',
+  orphan: 'Orphan',
+}
+
+/** Relative label that also reads forwards, which "expires in 74d" needs and `timeAgo` cannot do. */
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const ms = new Date(iso).getTime() - Date.now()
+  if (Number.isNaN(ms)) return '—'
+  return ms >= 0 ? `in ${humanizeSpan(ms)}` : timeAgo(iso)
+}
+
+function humanizeSpan(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 60) return `${Math.max(minutes, 1)}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
+/**
+ * What the in-process provider holds, per host. It is the only view of the certificate plane there
+ * is: the provider issues for login hosts as well as routes, and keeps a certificate that outlived
+ * its route until it expires — neither of which the route list above can show.
+ */
+function CertificatesCard() {
+  const qc = useQueryClient()
+  const { data: certificates = [], isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['proxy-certificates'],
+    queryFn: api.proxy.listCertificates,
+    // Issuance takes tens of seconds and renewal happens on its own schedule, so the card is worth
+    // keeping fresh while it is open — and cheap: the answer is the manager's in-memory snapshot.
+    refetchInterval: 30_000,
+  })
+
+  const renew = useMutation({
+    mutationFn: (host: string) => api.proxy.renewCertificate(host),
+    onSuccess: (certificate) => {
+      toast.success(`Renewal requested for ${certificate.host}.`)
+      qc.invalidateQueries({ queryKey: ['proxy-certificates'] })
+      // A fresh certificate is what moves a route from pending to active.
+      qc.invalidateQueries({ queryKey: ['routes'] })
+      qc.invalidateQueries({ queryKey: ['proxy-status'] })
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to request renewal.'),
+  })
+
+  const columns: DataListColumn<CertificateInfo>[] = [
+    {
+      key: 'host',
+      header: 'Host',
+      cell: (c) => (
+        <div className="min-w-0">
+          <span className="block truncate font-medium text-text">{c.host}</span>
+          {c.lastError && (
+            <span className="block truncate text-xs text-danger" title={c.lastError}>
+              {c.lastError}
+            </span>
+          )}
+        </div>
+      ),
+    },
+    { key: 'source', header: 'Source', cell: (c) => CERT_SOURCE_LABEL[c.source] },
+    {
+      key: 'state',
+      header: 'State',
+      cell: (c) => <Badge tone={CERT_STATE_TONE[c.state]}>{CERT_STATE_LABEL[c.state]}</Badge>,
+    },
+    {
+      key: 'notAfter',
+      header: 'Expires',
+      cell: (c) => (
+        <span className="text-text-2" title={absoluteTitle(c.notAfter)}>
+          {relativeTime(c.notAfter)}
+        </span>
+      ),
+    },
+    {
+      key: 'nextAttempt',
+      header: 'Next attempt',
+      cell: (c) => (
+        <span className="text-text-2" title={absoluteTitle(c.nextAttemptAt)}>
+          {relativeTime(c.nextAttemptAt)}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (c) => (
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={renew.isPending && renew.variables === c.host}
+          onClick={() => renew.mutate(c.host)}
+        >
+          <RefreshCw /> Renew now
+        </Button>
+      ),
+    },
+  ]
+
+  const renderCard = (c: CertificateInfo) => (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <span className="min-w-0 truncate font-medium text-text">{c.host}</span>
+        <Badge tone={CERT_STATE_TONE[c.state]}>{CERT_STATE_LABEL[c.state]}</Badge>
+      </div>
+      <p className="text-[13px] text-text-2">
+        {CERT_SOURCE_LABEL[c.source]} · expires{' '}
+        <span title={absoluteTitle(c.notAfter)}>{relativeTime(c.notAfter)}</span> · next attempt{' '}
+        <span title={absoluteTitle(c.nextAttemptAt)}>{relativeTime(c.nextAttemptAt)}</span>
+      </p>
+      {c.lastError && <p className="text-[13px] text-danger">{c.lastError}</p>}
+      <div className="flex justify-end border-t border-border pt-3">
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={renew.isPending && renew.variables === c.host}
+          onClick={() => renew.mutate(c.host)}
+        >
+          <RefreshCw /> Renew now
+        </Button>
+      </div>
+    </div>
+  )
+
+  return (
+    <Card>
+      <CardContent>
+        <SectionHeader
+          title="Certificates"
+          description="Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then."
+        />
+        {isError ? (
+          <Banner
+            tone="danger"
+            title="Couldn’t load certificates"
+            action={
+              <Button variant="link" onClick={() => refetch()}>
+                Retry
+              </Button>
+            }
+          >
+            {(error as Error)?.message ?? 'An unexpected error occurred.'}
+          </Banner>
+        ) : (
+          <DataList
+            items={certificates}
+            getKey={(c) => c.host}
+            columns={columns}
+            renderCard={renderCard}
+            skeletonRows={isLoading ? 3 : undefined}
+            emptyState={
+              <p className="text-[13px] text-text-2">
+                No certificates yet. One is ordered per TLS route and per realm login host as soon as
+                the proxy is enabled.
+              </p>
+            }
+            aria-label="Certificates"
+          />
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

@@ -37,7 +37,7 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         var result = await SaveAsync(host, Command() with { Provider = "nginx" });
 
         Assert.False(result.IsSuccess);
-        Assert.Equal("Provider must be one of: caddy, cloudflare, yarp.", result.Error.Message);
+        Assert.Equal("Provider must be one of: yarp, caddy, cloudflare.", result.Error.Message);
     }
 
     [Theory]

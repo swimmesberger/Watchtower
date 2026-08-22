@@ -9,8 +9,10 @@ namespace Watchtower.Application.Services;
 /// The registered <see cref="IProxyProvider"/>: resolves the selected backend per call from
 /// <c>Proxy:Provider</c> (via <see cref="IOptionsMonitor{WatchtowerOptions}"/>, so a runtime settings
 /// change re-routes the very next call — same pattern as <c>MetricsSourceRouter</c>, ADR-0007/0015).
-/// Providers are resolved from the container rather than captured, so a test that substitutes
-/// <see cref="CaddyManager"/> (e.g. <c>RecordingCaddyManager</c>) is still what the router serves.
+/// Providers are resolved from the container rather than captured, so a substitute registered for one of
+/// them is still what the router serves. Tests generally do not go that way, though: they replace
+/// <see cref="IProxyProvider"/> itself with a recording double, which is the seam every consumer injects
+/// and the one that does not move when the default provider does (ADR-0017 changed it to <c>yarp</c>).
 /// </summary>
 public sealed class ProxyProviderRouter(IServiceProvider services, IOptionsMonitor<WatchtowerOptions> options)
     : IProxyProvider {

@@ -96,11 +96,11 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy — ADR-0015, extended by ADR-0017 (forthcoming) for the third provider. Three
-        // of them behind one runtime router, mirroring the metrics backend (ADR-0007): Caddy (a sibling
-        // container on host ports 80/443, automatic TLS),
-        // Cloudflare Tunnel (cloudflared + the Cloudflare API) and the in-process proxy (Watchtower
-        // binds 80/443 itself, no sibling container). All three are registered unconditionally and
+        // Reverse proxy — ADR-0015, extended by ADR-0017 for the third provider, which is also the
+        // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):
+        // the in-process proxy (Watchtower binds 80/443 itself, no sibling container), Caddy (a sibling
+        // container on host ports 80/443, automatic TLS — deprecated) and
+        // Cloudflare Tunnel (cloudflared + the Cloudflare API). All three are registered unconditionally and
         // hosted so the active one reconciles on startup (each self-gates on Proxy:Enabled +
         // Proxy:Provider); consumers inject IProxyProvider and the router resolves the selected backend
         // per call, which is what makes the provider switchable from the Settings page without a restart.
@@ -135,6 +135,9 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<YarpProxyProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
+        // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0017). Scoped because it
+        // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.
+        services.AddScoped<ProxyProviderMigration>();
 
         // Where the in-process proxy keeps its issued certificates and ACME account key. Created up
         // front for the same reason Auth:KeyPath is below: the certificate store is opened over this
@@ -201,7 +204,7 @@ public static class WatchtowerServiceCollectionExtensions {
         // like the context it reads through, and registered unconditionally alongside the other auth
         // services: nothing resolves it while Auth:Enabled is false — the verify endpoint is mapped as a
         // bare 404 in that mode. Shared with the in-process proxy so the two transports cannot come to
-        // different verdicts — ADR-0017 (forthcoming).
+        // different verdicts — ADR-0017.
         services.AddScoped<AccessVerifier>();
 
         // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it

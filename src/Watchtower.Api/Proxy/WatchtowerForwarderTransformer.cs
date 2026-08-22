@@ -3,7 +3,7 @@ using Yarp.ReverseProxy.Forwarder;
 namespace Watchtower.Api.Proxy;
 
 /// <summary>
-/// How a proxied request is reshaped on its way to the upstream — ADR-0017 (forthcoming). Two things the
+/// How a proxied request is reshaped on its way to the upstream — ADR-0017. Two things the
 /// stock <see cref="HttpTransformer"/> would get wrong for Watchtower, plus the verified identity:
 /// <list type="number">
 ///   <item><description>

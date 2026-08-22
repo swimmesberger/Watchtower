@@ -2,7 +2,7 @@ namespace Watchtower.Application.Services.Yarp;
 
 /// <summary>
 /// The seam between the in-process proxy's control plane (which knows <em>which</em> hosts need a
-/// certificate) and whatever obtains them — ADR-0017 (forthcoming). Split out so the provider's
+/// certificate) and whatever obtains them — ADR-0017. Split out so the provider's
 /// lifecycle can land — and be tested — without an ACME client, and so the ACME implementation can be
 /// swapped for a file-backed or operator-supplied one later without touching the provider.
 /// </summary>

@@ -454,7 +454,7 @@ export interface UpdateAuthConfigRequest {
   absoluteSessionLifetimeDays: number
 }
 
-/** The reverse-proxy backends. See ADR-0015 and ADR-0017 (forthcoming). */
+/** The reverse-proxy backends. See ADR-0015 and ADR-0017. */
 export type ProxyProvider = 'caddy' | 'cloudflare' | 'yarp'
 
 /** In-process proxy + ACME values (the EAB HMAC key never leaves the server). */

@@ -8,7 +8,7 @@ namespace Watchtower.Api.Tests;
 
 /// <summary>
 /// What happens when issuance does not work — which is most of the time, in a deployment where operators
-/// add routes before they add DNS records. ADR-0017 (forthcoming).
+/// add routes before they add DNS records. ADR-0017.
 /// </summary>
 /// <remarks>
 /// Every case here is about the same two things: the operator is told something they can act on, and the

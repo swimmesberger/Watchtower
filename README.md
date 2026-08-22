@@ -16,6 +16,14 @@ application framework for module-based handler pipelines with compile-time regis
 hosting. Every operation is a `[Handler]` exposed over JSON-RPC; the React frontend calls a typed
 client generated from the exported schema.
 
+Watchtower also has a **built-in reverse proxy** for putting your stacks on the internet: point a
+domain at a service under *Routes* and it is served with a certificate Watchtower obtains and renews
+itself over ACME — in its own process, with no sibling proxy container to run. Publish `80:8080` and
+`443:8443` and set `WATCHTOWER__PROXY__ENABLED=true`. A **Cloudflare Tunnel** provider is there for
+hosts that cannot open ports at all, and the older Caddy-container provider stays supported for
+existing installations. See [docs/reverse-proxy/](docs/reverse-proxy/README.md) and
+[ADR-0017](docs/decisions/0017-in-process-yarp-proxy.md).
+
 > Authentication is **opt-in and off by default**, so an upgrade cannot lock you out. Left off,
 > Watchtower is unauthenticated and belongs behind an authenticating reverse proxy (Cloudflare Access,
 > Authelia, oauth2-proxy, …). Set `WATCHTOWER__AUTH__ENABLED=true` to use built-in local accounts
@@ -75,6 +83,8 @@ client generated from the exported schema.
 
 See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/elarion.md](docs/elarion.md) for how the project consumes the framework,
+[docs/reverse-proxy/](docs/reverse-proxy/README.md) for exposing stacks on public domains (the
+built-in in-process proxy, or a Cloudflare Tunnel),
 [docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
 is no longer enough (Docker Swarm vs k3s),
 [docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip,

@@ -6,7 +6,7 @@ namespace Watchtower.Application.Services.Acme;
 
 /// <summary>
 /// The ES256 key pair every ACME request is signed with, and the account URL the CA issued for it —
-/// ADR-0017 (forthcoming). Persisted under <c>{CertPath}/accounts/{directory hash}</c> so an account
+/// ADR-0017. Persisted under <c>{CertPath}/accounts/{directory hash}</c> so an account
 /// survives restarts and, more importantly, so re-registering is never necessary: an ACME account is
 /// rate-limited per key, and a deployment that regenerated one on every start would exhaust its budget.
 /// </summary>

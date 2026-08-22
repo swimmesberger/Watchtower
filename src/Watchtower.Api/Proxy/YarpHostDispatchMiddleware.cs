@@ -10,7 +10,7 @@ using Yarp.ReverseProxy.Forwarder;
 namespace Watchtower.Api.Proxy;
 
 /// <summary>
-/// The in-process proxy's request path — ADR-0017 (forthcoming). Every request is dispatched by its
+/// The in-process proxy's request path — ADR-0017. Every request is dispatched by its
 /// <c>Host</c> <em>before</em> Watchtower's own pipeline: a host in the route table is access-checked and
 /// forwarded to its container, and everything else falls through to the app that was always there.
 /// </summary>

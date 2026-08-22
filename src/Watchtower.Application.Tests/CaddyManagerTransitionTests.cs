@@ -1,5 +1,6 @@
 using Watchtower.Application.Config;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Yarp;
 using Xunit;
 
 namespace Watchtower.Application.Tests;
@@ -11,8 +12,11 @@ namespace Watchtower.Application.Tests;
 /// load-bearing as the transitions, and a provider switch must Stop one side while Starting the other.
 /// </summary>
 public sealed class CaddyManagerTransitionTests {
-    private static readonly ProxyOptions Disabled = new() { Enabled = false };
-    private static readonly ProxyOptions Enabled = new() { Enabled = true };
+    // Caddy is named explicitly rather than left to the default, which is the in-process provider since
+    // ADR-0017: these fixtures are about what the *Caddy* manager does, and leaning on whichever provider
+    // happens to be the default would turn every one of them into a test of the default instead.
+    private static readonly ProxyOptions Disabled = new() { Enabled = false, Provider = ProxyProviderNames.Caddy };
+    private static readonly ProxyOptions Enabled = new() { Enabled = true, Provider = ProxyProviderNames.Caddy };
     private static readonly ProxyOptions EnabledCloudflare = new() { Enabled = true, Provider = "cloudflare" };
 
     [Fact]
@@ -51,6 +55,20 @@ public sealed class CaddyManagerTransitionTests {
     public void SwitchingBackToCaddy_StopsCloudflare_AndStartsCaddy() {
         Assert.Equal(ProxyTransition.Start, CaddyManager.DecideTransition(EnabledCloudflare, Enabled));
         Assert.Equal(ProxyTransition.Stop, CloudflareTunnelProvider.DecideTransition(EnabledCloudflare, Enabled));
+    }
+
+    /// <summary>
+    /// The default provider is the in-process one (ADR-0017), so enabling the proxy without naming a
+    /// backend must leave the Caddy container alone. This is the transition an operator who never had
+    /// Caddy takes, and the one the default flip made possible in the first place.
+    /// </summary>
+    [Fact]
+    public void EnablingWithTheDefaultProvider_DoesNotStartCaddy() {
+        var disabledDefault = new ProxyOptions { Enabled = false };
+        var enabledDefault = new ProxyOptions { Enabled = true };
+        Assert.Equal(ProxyTransition.None, CaddyManager.DecideTransition(disabledDefault, enabledDefault));
+        Assert.Equal(
+            ProxyTransition.Start, YarpProxyProvider.DecideTransition(disabledDefault, enabledDefault));
     }
 
     [Fact]

@@ -10,9 +10,24 @@ namespace Watchtower.Application.Tests;
 /// working provider rather than on nothing at all.
 /// </summary>
 public sealed class ProxyProviderResolutionTests {
+    /// <summary>
+    /// The default since ADR-0017. An upgrade never reaches this: an instance that was serving routes
+    /// under the old implicit <c>caddy</c> default has the provider written into its settings store once
+    /// by <c>ProxyProviderMigration</c>, so the value is stated by the time it is read here.
+    /// </summary>
     [Fact]
-    public void TheDefaultProviderIsCaddy() {
+    public void TheDefaultProviderIsTheInProcessProxy() {
         var options = new ProxyOptions();
+        Assert.Equal(ProxyProviderKind.Yarp, options.ResolveProvider());
+        Assert.Equal(ProxyProviderNames.Yarp, options.ProviderName());
+    }
+
+    [Theory]
+    [InlineData("caddy")]
+    [InlineData("CADDY")]
+    [InlineData("  Caddy  ")]
+    public void TheDeprecatedCaddyProviderStillResolves(string stored) {
+        var options = new ProxyOptions { Provider = stored };
         Assert.Equal(ProxyProviderKind.Caddy, options.ResolveProvider());
         Assert.Equal(ProxyProviderNames.Caddy, options.ProviderName());
     }
@@ -38,10 +53,10 @@ public sealed class ProxyProviderResolutionTests {
     [InlineData("nonsense")]
     [InlineData("")]
     [InlineData("   ")]
-    public void AnUnrecognisedProviderFallsBackToCaddy(string stored) {
+    public void AnUnrecognisedProviderFallsBackToTheDefault(string stored) {
         var options = new ProxyOptions { Provider = stored };
-        Assert.Equal(ProxyProviderKind.Caddy, options.ResolveProvider());
-        Assert.Equal(ProxyProviderNames.Caddy, options.ProviderName());
+        Assert.Equal(ProxyProviderKind.Yarp, options.ResolveProvider());
+        Assert.Equal(ProxyProviderNames.Yarp, options.ProviderName());
     }
 
     [Fact]

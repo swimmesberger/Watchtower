@@ -12,7 +12,7 @@ namespace Watchtower.Application.Services.Acme;
 /// <summary>
 /// A minimal RFC 8555 client: directory discovery, account registration (with optional External Account
 /// Binding), one-identifier orders, HTTP-01 challenge triggering, finalization and certificate download.
-/// ADR-0017 (forthcoming).
+/// ADR-0017.
 /// </summary>
 /// <remarks>
 /// Hand-written over <see cref="HttpClient"/> and source-generated JSON, for the reasons ADR-0017 records:

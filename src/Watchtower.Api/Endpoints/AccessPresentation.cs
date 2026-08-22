@@ -7,7 +7,7 @@ namespace Watchtower.Api.Endpoints;
 /// shape is read off it — the parts of the forward-auth surface that both transports need to agree on.
 /// </summary>
 /// <remarks>
-/// There are two of those transports (ADR-0017, forthcoming): Caddy's <c>forward_auth</c> hop to
+/// There are two of those transports (ADR-0017): Caddy's <c>forward_auth</c> hop to
 /// <c>GET /api/access/verify</c>, and the in-process host dispatcher, which asks
 /// <see cref="Application.Services.AccessVerifier"/> directly and acts on the verdict itself. The
 /// <em>decision</em> is already shared — that is what the verifier is for — and this is the other half:

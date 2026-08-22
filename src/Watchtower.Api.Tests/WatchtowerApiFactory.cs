@@ -52,8 +52,29 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// <remarks>Held here rather than resolved from the container so a test can arm it before the first request.</remarks>
     public StubComposeCliService Compose { get; } = new();
 
-    /// <summary>The Caddy manager the host runs with: a double that counts config reloads.</summary>
-    public RecordingCaddyManager Caddy => (RecordingCaddyManager)Services.GetRequiredService<CaddyManager>();
+    private readonly RecordingProxyProvider _proxy = new();
+
+    /// <summary>
+    /// The proxy provider the host runs with: a double that records reloads instead of reconciling a
+    /// data plane. Provider-agnostic on purpose — it replaces whichever backend <c>Proxy:Provider</c>
+    /// selects, so these tests do not move when the default provider does.
+    /// </summary>
+    /// <remarks>
+    /// Held here rather than resolved from the container, like the compose stub above. Throws on a host
+    /// built with <see cref="UseRealProxyProvider"/>, where there is nothing recording to read.
+    /// </remarks>
+    public RecordingProxyProvider Proxy => UseRealProxyProvider
+        ? throw new InvalidOperationException(
+            "This host runs the real proxy provider (UseRealProxyProvider); nothing is recording.")
+        : _proxy;
+
+    /// <summary>
+    /// Opts out of the recording proxy provider and leaves the real router — and through it the real
+    /// in-process provider — in place. For the tests that are <em>about</em> the in-process proxy: they
+    /// project a real route table, bind a real listener state, and ask <c>proxy.getStatus</c> what the
+    /// provider itself thinks. Set through an object initializer, so it is in place before the host is built.
+    /// </summary>
+    public bool UseRealProxyProvider { get; init; }
 
     /// <summary>The deploy queue the host runs with: accepts and records work without running it.</summary>
     public QueuedOnlyDeployQueueService DeployQueue =>
@@ -91,7 +112,9 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// dispatcher sees an empty table.
     /// </summary>
     public static WatchtowerApiFactory WithYarpProxy(params (string Key, string? Value)[] settings) =>
-        new([("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", "yarp"), .. settings]);
+        new([("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", "yarp"), .. settings]) {
+            UseRealProxyProvider = true,
+        };
 
     /// <summary>
     /// Projects the seeded routes into the in-process proxy's routing table, the way a route change or the
@@ -148,8 +171,16 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             // that genuinely needs the real implementations has to opt out here first.
             services.RemoveAll<ComposeCliService>();
             services.AddSingleton<ComposeCliService>(Compose);
-            services.RemoveAll<CaddyManager>();
-            services.AddSingleton<CaddyManager>(sp => ActivatorUtilities.CreateInstance<RecordingCaddyManager>(sp));
+            // The proxy, at the interface every consumer injects rather than at one provider: the router
+            // it replaces would otherwise resolve whichever backend Proxy:Provider names, and the two
+            // container-based ones talk to Docker or the Cloudflare API on the very calls these tests
+            // trigger. UseRealProxyProvider opts out, for the hosts that exist to exercise the in-process
+            // provider itself; YarpProxyProvider stays registered concretely either way, because
+            // ApplyProxyAsync above drives the real one deliberately.
+            if (!UseRealProxyProvider) {
+                services.RemoveAll<IProxyProvider>();
+                services.AddSingleton<IProxyProvider>(_proxy);
+            }
             services.RemoveAll<DeployQueueService>();
             services.AddSingleton<DeployQueueService>(
                 sp => ActivatorUtilities.CreateInstance<QueuedOnlyDeployQueueService>(sp));
