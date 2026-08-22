@@ -1,3 +1,5 @@
+using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
 using Xunit;
 
@@ -87,5 +89,39 @@ public sealed class BackupNamingAndRetentionTests {
     public void ZeroLimitsDeleteNothing() {
         var files = new[] { At(0), At(1000) };
         Assert.Empty(BackupRetention.SelectDeletions(files, Now, retentionDays: 0, retentionMaxCount: 0));
+    }
+
+    // ── Audit summary ────────────────────────────────────────────────────────
+
+    private static Stack StackWithStops() => new() {
+        Name = "web-app",
+        RepositoryUrl = "https://example.com/web-app.git",
+        ComposeFilePath = "docker-compose.yml",
+        Branch = "main",
+        ComposeProjectName = "web-app",
+        BackupStopContainers = true,
+    };
+
+    [Fact]
+    public void TheAuditSummaryReportsWhatTheRunActuallyStoppedAndExcluded() {
+        var backup = new BackupOptions { Provider = "local", RetentionDays = 30, RetentionMaxCount = 0 };
+
+        var summary = BackupService.RunSummary(
+            "manual", StackWithStops(), backup, stoppedCount: 2, excludedVolumeCount: 1);
+
+        Assert.Equal("manual · local · 2 container(s) stopped · 1 volume(s) excluded · retention 30d", summary);
+    }
+
+    [Fact]
+    public void AFailedRunReportsTheSettingRatherThanACountItCannotVouchFor() {
+        var stack = StackWithStops();
+        var backup = new BackupOptions { Provider = "local", RetentionDays = 0, RetentionMaxCount = 0 };
+
+        // No count: the run may have failed before it reached its stop step.
+        Assert.Equal("manual · local · containers stopped · keep forever",
+            BackupService.RunSummary("manual", stack, backup));
+        // Mount scoping can legitimately stop nothing at all — that is not "containers stopped".
+        Assert.Equal("manual · local · keep forever",
+            BackupService.RunSummary("manual", stack, backup, stoppedCount: 0));
     }
 }

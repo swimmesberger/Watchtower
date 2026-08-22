@@ -12,16 +12,25 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// Executes one stack backup end to end (ADR-0016): resolve the stack's compose volumes, optionally
-/// stop its running containers for a consistent snapshot, spool the (gzipped, optionally encrypted)
+/// Executes one stack backup end to end (ADR-0016): resolve the stack's compose volumes, stop the
+/// containers that write to them for a consistent snapshot, spool the (gzipped, optionally encrypted)
 /// volume archive to a temp file, restart the containers, upload, then apply retention. Progress and
 /// the outcome are recorded on the run's <see cref="BackupEvent"/>.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Singleton driven by <see cref="BackupQueueService"/>'s worker; reaches the scoped DbContext
 /// through <see cref="IServiceScopeFactory"/> (ADR-0004). The archive is spooled locally
 /// <em>before</em> the upload so the container-stop window covers only the snapshot, never the
 /// (possibly slow) network transfer.
+/// </para>
+/// <para>
+/// Which containers go down is not this class's decision: <see cref="BackupPlan"/> computes the stop
+/// set from what each container mounts, the per-service <c>watchtower.backup.*</c> labels and Compose's
+/// <c>depends_on</c> graph (dependents stop first, dependencies restart first). The stack's "stop
+/// containers" switch remains the master override — off means nothing is stopped. This service only
+/// executes the plan and reports it.
+/// </para>
 /// </remarks>
 public sealed class BackupService(
     DockerEngineClient docker,
@@ -70,7 +79,8 @@ public sealed class BackupService(
             // The audit row carries the settings the run operated under, so "was it encrypted back
             // then?" is answered by the trail, not by today's configuration.
             await audit.RecordAsync(AuditCategory, "run", stack.Name,
-                $"{RunSummary(triggeredBy, stack, backup)} · {result.VolumeCount} volume(s), {result.SizeBytes} bytes → {result.RemotePath}",
+                $"{RunSummary(triggeredBy, stack, backup, result.StoppedCount, result.ExcludedVolumeCount)}"
+                + $" · {result.VolumeCount} volume(s), {result.SizeBytes} bytes → {result.RemotePath}",
                 ct: CancellationToken.None);
             logger.LogInformation(
                 "Backup of stack {StackName} completed: {RemotePath} ({SizeBytes} bytes)",
@@ -85,11 +95,27 @@ public sealed class BackupService(
     }
 
     /// <summary>The effective settings a run operated under, for its audit row. Never includes secrets.</summary>
-    private static string RunSummary(string trigger, Stack stack, BackupOptions backup) {
+    /// <param name="trigger">Who or what started the run.</param>
+    /// <param name="stack">The stack, for its "stop containers" setting.</param>
+    /// <param name="backup">The backup options the run operated under.</param>
+    /// <param name="stoppedCount">
+    /// How many containers the run actually stopped, once that is known. Null on the failure path, where
+    /// the run may not have reached its stop step — the row then reports the setting rather than a count
+    /// it cannot vouch for.
+    /// </param>
+    /// <param name="excludedVolumeCount">How many candidate volumes were left out of the archive.</param>
+    internal static string RunSummary(
+        string trigger, Stack stack, BackupOptions backup, int? stoppedCount = null, int excludedVolumeCount = 0) {
         var provider = backup.ResolveProvider() == BackupProviderKind.Local ? "local" : "sftp";
+        var stopped = stoppedCount switch {
+            null => stack.BackupStopContainers ? " · containers stopped" : "",
+            > 0 => $" · {stoppedCount} container(s) stopped",
+            _ => "",
+        };
         return $"{trigger} · {provider}"
             + (string.IsNullOrEmpty(backup.EncryptionPassphrase) ? "" : " · encrypted")
-            + (stack.BackupStopContainers ? " · containers stopped" : "")
+            + stopped
+            + (excludedVolumeCount > 0 ? $" · {excludedVolumeCount} volume(s) excluded" : "")
             + $" · {RetentionSummary(backup)}";
     }
 
@@ -104,9 +130,9 @@ public sealed class BackupService(
 
     /// <summary>
     /// Runs a restore enqueued by <see cref="BackupQueueService.TryEnqueueRestore"/>: download the
-    /// archive, scan its table of contents, stop the stack's containers, wipe the target volumes
-    /// and extract the archive back into them (ADR-0016), restart. Only volumes present in BOTH the
-    /// archive and on the host are touched; mismatches are logged, never guessed at.
+    /// archive, scan its table of contents, stop the containers that mount a target volume, wipe those
+    /// volumes and extract the archive back into them (ADR-0016), restart. Only volumes present in BOTH
+    /// the archive and on the host are touched; mismatches are logged, never guessed at.
     /// </summary>
     public async Task ExecuteRestoreAsync(int backupEventId, string fileName, CancellationToken ct) {
         var output = new StringBuilder();
@@ -186,14 +212,29 @@ public sealed class BackupService(
             if (targets.Count == 0)
                 throw new InvalidOperationException(
                     "None of the archive's volumes exist on this host. Deploy the stack first so its volumes exist.");
-            log($"Restoring {targets.Count} volume(s): {string.Join(", ", targets)}");
 
-            // 3. Stop, wipe + extract, restart. Always stopped for a restore — extracting under a
-            // running application is never sound.
-            var stopped = await StopRunningContainersAsync(stack.ComposeProjectName, log, ct);
+            // 3. Which of those the labels actually allow us to touch, and who has to go down for them.
+            // The master switch is passed on regardless of the stack's setting: extracting under a
+            // running application is never sound, so a restore always stops the writers it finds.
+            var plan = await PlanAsync(stack.ComposeProjectName, targets, stopContainers: true, log, ct);
+            foreach (var excluded in plan.Excluded)
+                log(excluded.Reason == BackupVolumeExclusionReason.Label
+                    ? $"WARNING: archive volume '{excluded.Name}' is excluded by {BackupPlan.ExcludeLabel} "
+                        + $"({excluded.Detail}) — left untouched."
+                    : $"WARNING: archive volume '{excluded.Name}' is excluded — {excluded.Detail}.");
+            if (plan.Volumes.Count == 0)
+                throw new InvalidOperationException(
+                    $"Every volume of this archive is excluded by {BackupPlan.ExcludeLabel} — nothing to restore.");
+            log($"Restoring {plan.Volumes.Count} volume(s): {string.Join(", ", plan.Volumes)}");
+            foreach (var kept in plan.Keep.Where(k => k.MountsPlannedVolume))
+                log($"WARNING: {kept.Container.DisplayName} mounts a restored volume but "
+                    + $"{RestoreKeepReason(kept.Reason)} — extracting underneath it may corrupt the result.");
+
+            // 4. Stop, wipe + extract, restart.
+            var stopped = await StopPlannedContainersAsync(plan, log, ct);
             try {
                 await WithSpoolTarAsync<object?>(spoolPath, encrypted, backup, async tar => {
-                    await archiveService.RestoreArchiveAsync(targets, tar, backup.HelperImage, ct);
+                    await archiveService.RestoreArchiveAsync(plan.Volumes, tar, backup.HelperImage, ct);
                     return null;
                 });
                 log("Archive extracted into the volumes.");
@@ -201,7 +242,7 @@ public sealed class BackupService(
                 await RestartContainersAsync(stopped, log);
             }
 
-            return new RunResult(relativePath, sizeBytes, targets.Count);
+            return new RunResult(relativePath, sizeBytes, plan.Volumes.Count, stopped.Count, plan.Excluded.Count);
         } finally {
             try {
                 if (File.Exists(spoolPath)) File.Delete(spoolPath);
@@ -242,7 +283,16 @@ public sealed class BackupService(
         }
     }
 
-    private sealed record RunResult(string RemotePath, long SizeBytes, int VolumeCount);
+    /// <summary>Why a container that mounts a volume being restored was nevertheless left running.</summary>
+    private static string RestoreKeepReason(BackupKeepReason reason) => reason switch {
+        BackupKeepReason.StopLabel => $"is labelled {BackupPlan.StopLabel}=false",
+        BackupKeepReason.Excluded => $"is labelled {BackupPlan.ExcludeLabel}=true",
+        BackupKeepReason.CallerRequested => "has to stay up for its dump to be replayed",
+        _ => "was left running",
+    };
+
+    private sealed record RunResult(
+        string RemotePath, long SizeBytes, int VolumeCount, int StoppedCount = 0, int ExcludedVolumeCount = 0);
 
     private async Task<RunResult> RunAsync(
         Stack stack, BackupOptions backup, Action<string> log, CancellationToken ct) {
@@ -250,16 +300,32 @@ public sealed class BackupService(
         var takenAt = DateTimeOffset.UtcNow;
         var encrypted = !string.IsNullOrEmpty(backup.EncryptionPassphrase);
 
-        // 1. The stack's volumes, by compose project label.
-        var volumes = (await docker.ListVolumesAsync(ct))
+        // 1. The stack's candidate volumes, by compose project label.
+        var candidates = (await docker.ListVolumesAsync(ct))
             .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
             .Select(v => v.Name)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
-        if (volumes.Count == 0)
+        if (candidates.Count == 0)
             throw new InvalidOperationException(
                 $"No volumes found for compose project '{project}'. Has the stack been deployed?");
+
+        // 2. Narrow them to what the labels allow, and work out who has to go down for them.
+        var plan = await PlanAsync(project, candidates, stack.BackupStopContainers, log, ct);
+        foreach (var excluded in plan.Excluded)
+            log(excluded.Reason == BackupVolumeExclusionReason.Label
+                ? $"Excluding volume '{excluded.Name}' — only mounted by excluded {excluded.Detail}."
+                : $"Excluding volume '{excluded.Name}' — {excluded.Detail}.");
+        if (plan.Volumes.Count == 0)
+            throw new InvalidOperationException(
+                $"Every volume of compose project '{project}' is excluded by {BackupPlan.ExcludeLabel} "
+                + "— there is nothing left to archive.");
+        var volumes = plan.Volumes;
         log($"Backing up {volumes.Count} volume(s) of project '{project}': {string.Join(", ", volumes)}");
+        foreach (var kept in plan.Keep.Where(k =>
+            k.MountsPlannedVolume && k.Reason != BackupKeepReason.MasterSwitchOff))
+            log($"WARNING: {kept.Container.DisplayName} keeps running while volume(s) it writes to are "
+                + "archived — that volume's snapshot is only crash-consistent.");
 
         var instance = backup.ResolveInstanceName();
         var directory = BackupNaming.StackDirectory(instance, stack.Name);
@@ -267,12 +333,10 @@ public sealed class BackupService(
         var relativePath = $"{directory}/{fileName}";
         var manifest = BuildManifest(instance, stack, volumes, takenAt, encrypted);
 
-        // 2. Snapshot to a local spool file — stopping containers only for this step, not the upload.
+        // 3. Snapshot to a local spool file — stopping containers only for this step, not the upload.
         var spoolPath = Path.Combine(Path.GetTempPath(), $"watchtower-{fileName}.spool");
         try {
-            var stopped = stack.BackupStopContainers
-                ? await StopRunningContainersAsync(project, log, ct)
-                : [];
+            var stopped = await StopPlannedContainersAsync(plan, log, ct);
             try {
                 await using var spool = File.Create(spoolPath);
                 Stream sink = spool;
@@ -291,7 +355,7 @@ public sealed class BackupService(
             var sizeBytes = new FileInfo(spoolPath).Length;
             log($"Snapshot complete: {sizeBytes} bytes{(encrypted ? " (encrypted)" : "")}");
 
-            // 3. Upload + retention.
+            // 4. Upload + retention.
             using var storage = storageFactory.Create(backup);
             log($"Uploading to {storage.Description}: {relativePath}");
             await storage.UploadAsync(relativePath, async (dest, uploadCt) => {
@@ -300,7 +364,7 @@ public sealed class BackupService(
             }, ct);
 
             await ApplyRetentionAsync(storage, directory, backup, log, ct);
-            return new RunResult(relativePath, sizeBytes, volumes.Count);
+            return new RunResult(relativePath, sizeBytes, volumes.Count, stopped.Count, plan.Excluded.Count);
         } finally {
             try {
                 if (File.Exists(spoolPath)) File.Delete(spoolPath);
@@ -310,31 +374,66 @@ public sealed class BackupService(
         }
     }
 
-    /// <summary>Stops the project's running containers; returns them in stop order for the restart.</summary>
-    private async Task<IReadOnlyList<DockerContainerInfo>> StopRunningContainersAsync(
-        string project, Action<string> log, CancellationToken ct) {
-        var running = (await docker.ListContainersByLabelsAsync([$"{ComposeProjectLabel}={project}"], ct))
-            .Where(c => string.Equals(c.State, "running", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        foreach (var container in running) {
-            log($"Stopping {DisplayName(container)} for a consistent snapshot");
-            await docker.StopContainerAsync(container.Id, ct);
-        }
-        return running;
+    /// <summary>
+    /// Lists the compose project's containers (every state — a stopped service still owns its volumes)
+    /// and turns them, the candidate volumes and the stack's master switch into a <see cref="BackupPlan"/>,
+    /// surfacing the planner's warnings in the run output.
+    /// </summary>
+    private async Task<BackupPlan> PlanAsync(
+        string project, IReadOnlyList<string> volumes, bool stopContainers, Action<string> log, CancellationToken ct) {
+        var containers = await docker.ListContainersByLabelsAsync([$"{ComposeProjectLabel}={project}"], ct);
+        var plan = BackupPlan.Create(containers, volumes, stopContainers);
+        foreach (var warning in plan.Warnings) log($"WARNING: {warning}");
+        return plan;
     }
 
     /// <summary>
-    /// Restarts what <see cref="StopRunningContainersAsync"/> stopped. Not cancellable: containers
-    /// must come back even when the backup was aborted, and a restart failure is reported but never
-    /// masks the primary outcome.
+    /// Stops what the plan selected, in the plan's order; returns the containers actually stopped, in
+    /// that same order, so the caller can bring exactly those back.
     /// </summary>
-    private async Task RestartContainersAsync(IReadOnlyList<DockerContainerInfo> stopped, Action<string> log) {
-        foreach (var container in stopped) {
+    /// <remarks>
+    /// A stop that fails part-way through restarts what is already down before rethrowing. Without that,
+    /// a daemon hiccup on the third of five containers would leave the first two stopped with nobody
+    /// holding their list — the stack would stay half-down until an operator noticed.
+    /// </remarks>
+    private async Task<IReadOnlyList<BackupContainer>> StopPlannedContainersAsync(
+        BackupPlan plan, Action<string> log, CancellationToken ct) {
+        if (plan.Stop.Count > 0 || plan.Keep.Count > 0)
+            log($"Stopping {plan.Stop.Count} of {plan.Stop.Count + plan.Keep.Count} running container(s)"
+                + (plan.Stop.Count > 0 ? $": {string.Join(", ", plan.Stop.Select(c => c.DisplayName))}" : "")
+                + (plan.Keep.Count > 0
+                    ? $"; leaving {string.Join(", ", plan.Keep.Select(k => k.Container.DisplayName))} up"
+                    : "")
+                + ".");
+
+        var stopped = new List<BackupContainer>(plan.Stop.Count);
+        try {
+            foreach (var container in plan.Stop) {
+                log($"Stopping {container.DisplayName} for a consistent snapshot");
+                await docker.StopContainerAsync(container.Id, ct);
+                stopped.Add(container);
+            }
+        } catch {
+            await RestartContainersAsync(stopped, log);
+            throw;
+        }
+        return stopped;
+    }
+
+    /// <summary>
+    /// Restarts what <see cref="StopPlannedContainersAsync"/> stopped, in reverse — the stop order runs
+    /// dependents-first, so reversing it starts dependencies first. Not cancellable: containers must
+    /// come back even when the run was aborted, and a restart failure is reported but never masks the
+    /// primary outcome.
+    /// </summary>
+    private async Task RestartContainersAsync(IReadOnlyList<BackupContainer> stopped, Action<string> log) {
+        for (var i = stopped.Count - 1; i >= 0; i--) {
+            var container = stopped[i];
             try {
                 await docker.StartContainerAsync(container.Id, CancellationToken.None);
-                log($"Restarted {DisplayName(container)}");
+                log($"Restarted {container.DisplayName}");
             } catch (Exception ex) {
-                log($"WARNING: failed to restart {DisplayName(container)}: {ex.Message}");
+                log($"WARNING: failed to restart {container.DisplayName}: {ex.Message}");
                 logger.LogError(ex, "Failed to restart container {ContainerId} after backup", container.Id);
             }
         }
@@ -382,9 +481,6 @@ public sealed class BackupService(
             ["createdAtUtc"] = takenAt.UtcDateTime.ToString("O"),
             ["encrypted"] = encrypted,
         }.ToJsonString();
-
-    private static string DisplayName(DockerContainerInfo container) =>
-        container.Names.FirstOrDefault()?.TrimStart('/') ?? container.Id[..12];
 
     private async Task FinishAsync(
         int backupEventId, bool success, string output, string? remotePath, long? sizeBytes, CancellationToken ct) {
