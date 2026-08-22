@@ -13,6 +13,10 @@ namespace Watchtower.Api.Tests;
 /// the endpoint is reachable by anyone who can reach any login page. The property under test is therefore
 /// not just "proxied callers are refused" but that they are refused <em>indistinguishably</em>: a known and
 /// an unknown domain have to produce the same response, or the refusal is still an oracle.
+/// <para>
+/// All of that presupposes the one caller it exists for, so every host here selects Caddy explicitly. Under
+/// the other two providers nothing asks, and the endpoint is not there at all — the last test below.
+/// </para>
 /// </remarks>
 public sealed class ProxyAskTests {
     private const string KnownDomain = "app.example.invalid";
@@ -20,11 +24,14 @@ public sealed class ProxyAskTests {
 
     private static string Ask(string domain) => $"/api/proxy/ask?domain={domain}";
 
+    /// <summary>A host with Caddy as the selected provider — the only one this endpoint answers under.</summary>
+    private static WatchtowerApiFactory Caddy() => new(("Watchtower:Proxy:Provider", "caddy"));
+
     [Theory]
     [InlineData("X-Forwarded-For", "203.0.113.7")]
     [InlineData("X-Forwarded-Host", "watchtower.example.invalid")]
     public async Task AProxiedRequest_CannotTellAKnownDomainFromAnUnknownOne(string header, string value) {
-        using var factory = new WatchtowerApiFactory();
+        using var factory = Caddy();
         using var client = factory.CreateApiClient();
         await factory.AddRouteAsync(KnownDomain, AccessMode.Public);
 
@@ -43,7 +50,7 @@ public sealed class ProxyAskTests {
     /// </summary>
     [Fact]
     public async Task TheFullForwardingHeaderSet_IsRefusedToo() {
-        using var factory = new WatchtowerApiFactory();
+        using var factory = Caddy();
         using var client = factory.CreateApiClient();
         await factory.AddRouteAsync(KnownDomain, AccessMode.Public);
 
@@ -63,7 +70,7 @@ public sealed class ProxyAskTests {
     /// </summary>
     [Fact]
     public async Task AnUnmarkedRequest_KeepsTodaysAnswers() {
-        using var factory = new WatchtowerApiFactory();
+        using var factory = Caddy();
         using var client = factory.CreateApiClient();
         var ct = TestContext.Current.CancellationToken;
         await factory.AddRouteAsync(KnownDomain, AccessMode.Public);
@@ -71,6 +78,29 @@ public sealed class ProxyAskTests {
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(Ask(KnownDomain), ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(Ask(UnknownDomain), ct)).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/proxy/ask", ct)).StatusCode);
+    }
+
+    /// <summary>
+    /// Under any other provider the endpoint is simply not there. It exists for Caddy's on-demand-TLS
+    /// module and nothing else: the in-process proxy holds the route table in memory, and Cloudflare's edge
+    /// terminates TLS and never asks whether a hostname is known — so under either of those it would be a
+    /// route-existence oracle with no consumer at all.
+    /// </summary>
+    [Theory]
+    [InlineData("yarp")]
+    [InlineData("cloudflare")]
+    public async Task UnderAnotherProvider_TheEndpointIsNotThere(string provider) {
+        using var factory = new WatchtowerApiFactory(("Watchtower:Proxy:Provider", provider));
+        using var client = factory.CreateApiClient();
+        var ct = TestContext.Current.CancellationToken;
+        await factory.AddRouteAsync(KnownDomain, AccessMode.Public);
+
+        // Indistinguishable from a path that was never mapped, and identical for a known and an unknown
+        // domain — a 403 for the unknown one would still be the oracle this gate exists to close.
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Ask(KnownDomain), ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Ask(UnknownDomain), ct)).StatusCode);
+        // Not even the shape of the request is judged first: no domain at all is still a 404, not a 400.
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/proxy/ask", ct)).StatusCode);
     }
 
     private static Task<HttpResponseMessage> Send(

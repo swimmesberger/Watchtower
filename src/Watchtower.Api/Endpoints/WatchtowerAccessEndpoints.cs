@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Encodings.Web;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Watchtower.Api.Authentication;
@@ -163,18 +162,6 @@ public static class WatchtowerAccessEndpoints {
                         $"Unhandled access decision {decision.GetType().Name}.");
             }
         });
-    }
-
-    /// <summary>
-    /// A request the visitor would follow with their eyes: a document fetch. Caddy sends verify itself as a
-    /// GET and carries the original method in <c>X-Forwarded-Method</c>, so that header is the authority
-    /// when present.
-    /// </summary>
-    private static bool IsBrowserNavigation(HttpContext http) {
-        var method = http.Request.Headers["X-Forwarded-Method"].ToString();
-        if (string.IsNullOrEmpty(method)) method = http.Request.Method;
-        if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method)) return false;
-        return http.Request.Headers.Accept.ToString().Contains("text/html", StringComparison.OrdinalIgnoreCase);
     }
 
     // ── JWKS ──────────────────────────────────────────────────────────────────
@@ -533,39 +520,21 @@ public static class WatchtowerAccessEndpoints {
             "Reload the application's address to sign in again.");
 
     /// <summary>
-    /// A minimal self-contained page: no stylesheet, no script, and nothing taken from the request.
+    /// The denial page as an <see cref="IResult"/>. The markup itself comes from
+    /// <see cref="AccessPresentation.Html"/>, which the in-process dispatcher renders too — a visitor
+    /// refused by either transport sees the same page.
     /// </summary>
     /// <param name="messageHtml">
     /// The one interpolated fragment, and therefore the caller's responsibility: any value that is not a
-    /// literal must already have been through <see cref="Encode"/>. <paramref name="title"/> and
-    /// <paramref name="hint"/> are encoded here.
+    /// literal must already have been through <see cref="Encode"/>.
     /// </param>
-    private static IResult Html(int statusCode, string title, string messageHtml, string hint) {
-        var encodedTitle = Encode(title);
-        var body = $"""
-            <!doctype html>
-            <html lang="en">
-            <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>{encodedTitle}</title>
-            </head>
-            <body style="font:16px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh">
-            <main style="max-width:32rem;padding:2rem;text-align:center">
-            <h1 style="font-size:1.25rem;margin:0 0 .5rem">{encodedTitle}</h1>
-            <p style="margin:0 0 .5rem">{messageHtml}</p>
-            <p style="margin:0;opacity:.7">{Encode(hint)}</p>
-            </main>
-            </body>
-            </html>
-            """;
-        return Results.Content(body, "text/html", Encoding.UTF8, statusCode);
-    }
+    private static IResult Html(int statusCode, string title, string messageHtml, string hint) =>
+        Results.Content(AccessPresentation.Html(title, messageHtml, hint), "text/html", Encoding.UTF8, statusCode);
 
-    private static string Encode(string value) => HtmlEncoder.Default.Encode(value);
+    private static string Encode(string value) => AccessPresentation.Encode(value);
+
+    private static bool IsBrowserNavigation(HttpContext http) => AccessPresentation.IsBrowserNavigation(http);
 
     /// <summary>Audit detail: the remote address, never a cookie or a code.</summary>
-    private static string Describe(HttpContext http) =>
-        $"from {http.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
-
+    private static string Describe(HttpContext http) => AccessPresentation.Describe(http);
 }

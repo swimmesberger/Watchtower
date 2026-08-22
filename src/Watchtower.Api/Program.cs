@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
 using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
+using Watchtower.Api.Proxy;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -95,6 +96,11 @@ RuntimeSettingsLayering.MakeEnvironmentWin(
 // git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
 
+// The in-process proxy's request path (ADR-0017, forthcoming): YARP's direct forwarder and the singleton
+// client it forwards on. Registered unconditionally — the proxy provider is switchable from Settings at
+// runtime, and neither the container nor the pipeline is rebuilt for that.
+builder.Services.AddWatchtowerProxyForwarding();
+
 // Elarion framework composition:
 //   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.
 //   AddElarionSession  — the client-capability bootstrap (ADR-0030): module map + [ClientFeatures] flags
@@ -144,6 +150,11 @@ if (authEnabled) {
 // self-inflicted denial of service, not an escalation. Only the proto header is processed — X-Forwarded-For
 // and -Host are deliberately left alone so nothing downstream can be fooled about the client address or
 // the host name.
+//
+// None of this governs a request the in-process proxy handles (ADR-0017, forthcoming): that dispatcher runs
+// *before* this middleware, so its scheme decisions come from the real connection rather than from a header
+// a client could write, and it stamps the X-Forwarded-* trio itself on the one thing it hands back to this
+// pipeline — the /.watchtower/* callback and logout served on an app's own domain.
 builder.Services.Configure<ForwardedHeadersOptions>(o => {
     o.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
     // KnownIPNetworks, not the deprecated KnownNetworks (ASPDEPR005).
@@ -156,8 +167,18 @@ var app = builder.Build();
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
 
-// First in the pipeline: everything after it — including the cookie issuance in the login endpoint —
-// must see the corrected scheme.
+// ACME HTTP-01 challenges, for any host and over either scheme (ADR-0017, forthcoming). Ahead of the host
+// dispatcher so a challenge is never forwarded to an upstream and never redirected to HTTPS — the CA calls
+// it over plain HTTP by definition, and either outcome would fail the validation.
+app.UseAcmeHttpChallenge();
+
+// The in-process proxy's host dispatch: a request whose Host is in the route table is access-checked and
+// forwarded to its container instead of entering the pipeline below. Deliberately before
+// UseForwardedHeaders — its scheme decisions have to come from the real connection.
+app.UseYarpHostDispatch();
+
+// First in the pipeline for everything Watchtower serves itself: everything after it — including the
+// cookie issuance in the login endpoint — must see the corrected scheme.
 app.UseForwardedHeaders();
 
 // Allow the cross-origin Vite dev server to call the API (development only).

@@ -9,6 +9,9 @@ using Microsoft.Extensions.Logging;
 using Watchtower.Api;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Yarp;
+using Xunit;
+using Yarp.ReverseProxy.Forwarder;
 
 namespace Watchtower.Api.Tests;
 
@@ -54,6 +57,34 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// <summary>The deploy queue the host runs with: accepts and records work without running it.</summary>
     public QueuedOnlyDeployQueueService DeployQueue =>
         (QueuedOnlyDeployQueueService)Services.GetRequiredService<DeployQueueService>();
+
+    /// <summary>
+    /// Opts out of the recording forwarder and runs the host with YARP's real one, for a test that stands a
+    /// loopback upstream up and wants the bytes to actually travel. Set through an object initializer, so
+    /// it is in place before the host is built.
+    /// </summary>
+    public bool UseRealForwarder { get; init; }
+
+    /// <summary>The forwarder the host runs with: a double that records instead of connecting.</summary>
+    /// <remarks>Throws when the host was built with <see cref="UseRealForwarder"/>.</remarks>
+    public RecordingHttpForwarder Forwarder =>
+        (RecordingHttpForwarder)Services.GetRequiredService<IHttpForwarder>();
+
+    /// <summary>
+    /// A host with the in-process proxy as the active provider. The two settings are what
+    /// <see cref="YarpProxyProvider"/> gates on, so without them its route projection no-ops and the
+    /// dispatcher sees an empty table.
+    /// </summary>
+    public static WatchtowerApiFactory WithYarpProxy(params (string Key, string? Value)[] settings) =>
+        new([("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", "yarp"), .. settings]);
+
+    /// <summary>
+    /// Projects the seeded routes into the in-process proxy's routing table, the way a route change or the
+    /// startup reconcile does. Explicit because the factory drops the hosted services, so nothing calls it
+    /// on its own — seed the estate first, then apply.
+    /// </summary>
+    public Task ApplyProxyAsync() =>
+        Services.GetRequiredService<YarpProxyProvider>().ApplyAsync(TestContext.Current.CancellationToken);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder) {
         // Production, not Development: the development-only CORS policy would otherwise join the pipeline
@@ -107,6 +138,14 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             services.RemoveAll<DeployQueueService>();
             services.AddSingleton<DeployQueueService>(
                 sp => ActivatorUtilities.CreateInstance<QueuedOnlyDeployQueueService>(sp));
+
+            // The fourth, and the same reasoning: the in-process proxy's forwarder is the one component on
+            // a request path that opens a socket to somewhere else. Substituted for every test rather than
+            // only the proxy ones, so a host whose route table is unexpectedly populated records the
+            // attempt instead of dialling a container alias that does not resolve.
+            if (UseRealForwarder) return;
+            services.RemoveAll<IHttpForwarder>();
+            services.AddSingleton<IHttpForwarder>(new RecordingHttpForwarder());
         });
     }
 

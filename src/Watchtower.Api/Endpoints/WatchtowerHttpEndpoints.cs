@@ -103,10 +103,24 @@ public static class WatchtowerHttpEndpoints {
     /// on-demand TLS would stop issuing certificates for custom domains — a loud failure rather than a
     /// silent one, which is the right direction, but this is where to look when it happens.
     /// </para>
+    /// <para>
+    /// Answered at all only while <c>Caddy</c> is the selected provider (ADR-0015, ADR-0017 (forthcoming)).
+    /// It exists for one caller — Caddy's on-demand-TLS module — and the other two providers have no use
+    /// for it: the in-process proxy reads its own route table straight out of memory, and Cloudflare's edge
+    /// terminates TLS and never asks anyone whether a hostname is known. Under either of those the endpoint
+    /// would be nothing but an oracle with no consumer, so it 404s like a path that was never mapped, and
+    /// switching the provider at runtime moves it in and out of existence with no restart.
+    /// </para>
     /// </remarks>
     private static void MapProxyAsk(WebApplication app) {
         app.MapGet("/api/proxy/ask", async (
-            string? domain, HttpRequest request, WatchtowerDbContext db, CancellationToken ct) => {
+            string? domain, HttpRequest request, WatchtowerDbContext db,
+            IOptionsMonitor<WatchtowerOptions> options, CancellationToken ct) => {
+            // Only Caddy's on-demand TLS has any use for this answer. Under the other providers the
+            // endpoint would be a route-existence oracle that nothing asks — the in-process proxy holds the
+            // route table in memory, and Cloudflare's edge terminates TLS — so it is simply not there.
+            if (options.CurrentValue.Proxy.ResolveProvider() != ProxyProviderKind.Caddy)
+                return Results.NotFound();
             if (ArrivedThroughTheProxy(request)) return Results.NotFound();
             if (string.IsNullOrWhiteSpace(domain)) return Results.BadRequest();
             var known = await db.Routes.AsNoTracking()

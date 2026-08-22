@@ -15,6 +15,7 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
@@ -117,6 +118,10 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<ProxyRouteTable>();
         services.AddSingleton<YarpListenerState>();
         services.AddSingleton<RouteStatusUpdater>();
+        // The live HTTP-01 challenge answers. Registered unconditionally, like the table above: the
+        // middleware that reads it is in the pipeline whatever the provider is, and an empty store simply
+        // answers 404.
+        services.AddSingleton<AcmeHttpChallengeStore>();
         // Placeholder until the ACME certificate manager lands — only this registration is replaced.
         services.AddSingleton<IProxyCertificateManager, NoOpProxyCertificateManager>();
         services.AddSingleton<YarpProxyProvider>();

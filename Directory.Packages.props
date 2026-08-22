@@ -50,6 +50,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The in-process reverse proxy (ADR-0017, forthcoming). Only the direct-forwarding half is used —
+         IHttpForwarder plus HttpTransformer — not YARP's own config/routing pipeline, because Watchtower
+         already owns the route table and dispatches by Host itself. Referenced by Watchtower.Api alone:
+         the Application layer stays proxy-agnostic, so the projection and the access decision remain
+         testable without a web stack. Pure managed, and the net8 asset runs on net10. -->
+    <PackageVersion Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Test stack (xunit v3). -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
