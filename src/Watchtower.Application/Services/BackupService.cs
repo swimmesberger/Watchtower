@@ -1,3 +1,4 @@
+using System.Formats.Tar;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -134,7 +135,8 @@ public sealed class BackupService(
     /// <summary>
     /// Runs a restore enqueued by <see cref="BackupQueueService.TryEnqueueRestore"/>: download the
     /// archive, scan its table of contents, stop the containers that mount a target volume, wipe those
-    /// volumes and extract the archive back into them (ADR-0016), restart. Only volumes present in BOTH
+    /// volumes and extract the archive back into them (ADR-0016), replay every database dump the
+    /// archive carries into its running server (ADR-0017 §5), restart. Only volumes present in BOTH
     /// the archive and on the host are touched; mismatches are logged, never guessed at.
     /// </summary>
     public async Task ExecuteRestoreAsync(int backupEventId, string fileName, CancellationToken ct) {
@@ -162,7 +164,9 @@ public sealed class BackupService(
             var result = await RunRestoreAsync(stack, fileName, backup, Log, ct);
             await FinishAsync(backupEventId, success: true, output.ToString(), result.RemotePath, result.SizeBytes, ct);
             await audit.RecordAsync(AuditCategory, "restore", stack.Name,
-                $"{result.RemotePath} · {result.VolumeCount} volume(s) restored", ct: CancellationToken.None);
+                $"{result.RemotePath} · {result.VolumeCount} volume(s) restored"
+                + (result.DumpCount > 0 ? $" · {result.DumpCount} dump(s) replayed" : ""),
+                ct: CancellationToken.None);
             logger.LogInformation("Restore of {RemotePath} into stack {StackName} completed", result.RemotePath, stack.Name);
         } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
             Log($"FAILED: {ex.Message}");
@@ -184,6 +188,7 @@ public sealed class BackupService(
         var relativePath = $"{directory}/{fileName}";
 
         var spoolPath = Path.Combine(Path.GetTempPath(), $"watchtower-restore-{Guid.NewGuid():N}.spool");
+        var replaySpools = new List<string>();
         try {
             // 1. Download the archive to a local spool (two read passes follow: scan, then extract).
             using (var storage = storageFactory.Create(backup)) {
@@ -200,61 +205,195 @@ public sealed class BackupService(
             if (contents.ManifestJson is null)
                 log("Note: the archive carries no manifest (single-volume download?) — proceeding by its directory layout.");
 
+            // 3. What the host has: the project's containers in every state, and its volumes.
+            var containers = await ListProjectContainersAsync(stack.ComposeProjectName, ct);
             var hostVolumes = (await docker.ListVolumesAsync(ct))
                 .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p)
                     && p == stack.ComposeProjectName)
                 .Select(v => v.Name)
                 .ToList();
+
+            // 4. Only volumes in both are touched; a volume the archive replaced with a dump is
+            // reported as covered rather than as a gap, because leaving it in place is the plan.
             var targets = contents.Volumes.Intersect(hostVolumes, StringComparer.Ordinal)
                 .OrderBy(n => n, StringComparer.Ordinal)
                 .ToList();
+            var dumpPlan = RestoreDumpPlan.Match(contents, containers);
             foreach (var archiveOnly in contents.Volumes.Except(hostVolumes, StringComparer.Ordinal))
                 log($"WARNING: archive volume '{archiveOnly}' does not exist on this host — skipped.");
             foreach (var hostOnly in hostVolumes.Except(contents.Volumes, StringComparer.Ordinal))
-                log($"WARNING: host volume '{hostOnly}' is not in the archive — left untouched.");
-            if (targets.Count == 0)
+                log(dumpPlan.CoveredBy.TryGetValue(hostOnly, out var coveringService)
+                    ? $"Volume '{hostOnly}' is covered by the '{coveringService}' dump — left in place."
+                    : $"WARNING: host volume '{hostOnly}' is not in the archive — left untouched.");
+
+            // 5. Everything the dumps need has to be true before anything is stopped or wiped: a
+            // missing file or a service that is no longer a database refuses the whole restore.
+            foreach (var warning in dumpPlan.Warnings) log($"WARNING: {warning}");
+            if (dumpPlan.Errors.Count > 0)
+                throw new InvalidOperationException(
+                    "This archive cannot be restored into the stack as it stands: "
+                    + string.Join(" ", dumpPlan.Errors));
+            if (dumpPlan.Replays.Count > 0)
+                log($"Archive carries {dumpPlan.Replays.Count} dump(s): "
+                    + string.Join(", ", dumpPlan.Replays.Select(r =>
+                        $"{r.Service} ({r.Engine.ToString().ToLowerInvariant()}, "
+                        + $"{r.ExpectedDatabases.Count} database(s))"))
+                    + ".");
+
+            // 6. An archive of dumps alone still restores; nothing to do at all does not.
+            if (targets.Count == 0 && dumpPlan.Replays.Count == 0)
                 throw new InvalidOperationException(
                     "None of the archive's volumes exist on this host. Deploy the stack first so its volumes exist.");
 
-            // 3. Which of those the labels actually allow us to touch, and who has to go down for them.
-            // The master switch is passed on regardless of the stack's setting: extracting under a
+            // 7. Each database has to be up and reachable before the stack goes down — a replay that
+            // could never have worked must not cost the stack its volumes first.
+            var connections = new Dictionary<string, PostgresConnection>(StringComparer.Ordinal);
+            foreach (var replay in dumpPlan.Replays) {
+                var container = containers.First(c => string.Equals(c.Id, replay.ContainerId, StringComparison.Ordinal));
+                if (!string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase)) {
+                    // Left running afterwards on purpose: the restored database is the one thing the
+                    // operator will want to look at, and compose brings the rest back anyway.
+                    log($"Starting {replay.ContainerName} to replay the '{replay.Service}' dump (it was stopped).");
+                    await docker.StartContainerAsync(replay.ContainerId, ct);
+                }
+                var declared = await postgres.ReadConnectionAsync(replay.ContainerId, ct);
+                await postgres.WaitReadyAsync(replay.ContainerId, declared, replay.Service, log, ct);
+                connections[replay.ContainerId] = await postgres.PreflightAsync(
+                    new DumpTarget(
+                        replay.ContainerId, replay.ContainerName, replay.Service, container.Image,
+                        replay.Engine, null, []),
+                    log, ct);
+            }
+
+            // 8. Which volumes the labels allow us to touch, and who has to go down for them. The
+            // master switch is passed on regardless of the stack's setting: extracting under a
             // running application is never sound, so a restore always stops the writers it finds.
-            var containers = await ListProjectContainersAsync(stack.ComposeProjectName, ct);
-            var plan = Plan(containers, targets, stopContainers: true, log);
+            // With dumps to replay, everything running goes down, not only the volume writers: a
+            // stateless api that merely talks to the database would reconnect between the session
+            // terminate and DROP DATABASE, and --clean would merge into the old database.
+            var plan = Plan(containers, targets, stopContainers: true, log,
+                keepRunning: new HashSet<string>(
+                    dumpPlan.Replays.Select(r => r.ContainerId), StringComparer.Ordinal),
+                stopAllRunning: dumpPlan.Replays.Count > 0);
             foreach (var excluded in plan.Excluded)
                 log(excluded.Reason == BackupVolumeExclusionReason.Label
                     ? $"WARNING: archive volume '{excluded.Name}' is excluded by {BackupPlan.ExcludeLabel} "
                         + $"({excluded.Detail}) — left untouched."
                     : $"WARNING: archive volume '{excluded.Name}' is excluded — {excluded.Detail}.");
-            if (plan.Volumes.Count == 0)
+            if (plan.Volumes.Count == 0 && dumpPlan.Replays.Count == 0)
                 throw new InvalidOperationException(
                     $"Every volume of this archive is excluded by {BackupPlan.ExcludeLabel} — nothing to restore.");
-            log($"Restoring {plan.Volumes.Count} volume(s): {string.Join(", ", plan.Volumes)}");
+            if (plan.Volumes.Count > 0)
+                log($"Restoring {plan.Volumes.Count} volume(s): {string.Join(", ", plan.Volumes)}");
             foreach (var kept in plan.Keep.Where(k => k.MountsPlannedVolume))
                 log($"WARNING: {kept.Container.DisplayName} mounts a restored volume but "
                     + $"{RestoreKeepReason(kept.Reason)} — extracting underneath it may corrupt the result.");
 
-            // 4. Stop, wipe + extract, restart.
             var stopped = await StopPlannedContainersAsync(plan, log, ct);
             try {
-                await WithSpoolTarAsync<object?>(spoolPath, encrypted, backup, async tar => {
-                    await archiveService.RestoreArchiveAsync(plan.Volumes, tar, backup.HelperImage, ct);
-                    return null;
-                });
-                log("Archive extracted into the volumes.");
+                // 9. Wipe + extract, unless the archive is dumps only.
+                if (plan.Volumes.Count > 0) {
+                    await WithSpoolTarAsync<object?>(spoolPath, encrypted, backup, async tar => {
+                        await archiveService.RestoreArchiveAsync(plan.Volumes, tar, backup.HelperImage, ct);
+                        return null;
+                    });
+                    log("Archive extracted into the volumes.");
+                }
+
+                // 10. Replay, with the applications still down so nothing writes into a database
+                // that is being dropped and recreated underneath it.
+                await ReplayDumpsAsync(dumpPlan, connections, spoolPath, replaySpools, encrypted, backup, log, ct);
             } finally {
+                // 11. Back up in dependency order, whatever happened above.
                 await RestartContainersAsync(stopped, log);
             }
 
-            return new RunResult(relativePath, sizeBytes, plan.Volumes.Count, stopped.Count, plan.Excluded.Count);
+            return new RunResult(
+                relativePath, sizeBytes, plan.Volumes.Count, stopped.Count, plan.Excluded.Count,
+                dumpPlan.Replays.Count);
         } finally {
-            try {
-                if (File.Exists(spoolPath)) File.Delete(spoolPath);
-            } catch (Exception ex) {
-                logger.LogWarning(ex, "Failed to delete restore spool file {SpoolPath}", spoolPath);
+            foreach (var path in replaySpools.Append(spoolPath)) {
+                try {
+                    if (File.Exists(path)) File.Delete(path);
+                } catch (Exception ex) {
+                    logger.LogWarning(ex, "Failed to delete restore spool file {SpoolPath}", path);
+                }
             }
         }
     }
+
+    /// <summary>
+    /// Replays every dump of the archive into its database, with the stack's applications still down.
+    /// </summary>
+    /// <remarks>
+    /// A failing replay does not stop the others: the volumes are already wiped by this point, so the
+    /// only useful thing left is to get as much of the stack's state back as possible and then report
+    /// every failure at once. The run still fails — a partially restored stack that reported success
+    /// is the one outcome an operator cannot act on.
+    /// </remarks>
+    private async Task ReplayDumpsAsync(
+        RestoreDumpPlan dumpPlan,
+        IReadOnlyDictionary<string, PostgresConnection> connections,
+        string spoolPath,
+        List<string> replaySpools,
+        bool encrypted,
+        BackupOptions backup,
+        Action<string> log,
+        CancellationToken ct) {
+        var failures = new List<string>();
+        foreach (var replay in dumpPlan.Replays) {
+            var sqlPath = Path.Combine(Path.GetTempPath(), $"watchtower-replay-{Guid.NewGuid():N}.sql");
+            replaySpools.Add(sqlPath);
+            try {
+                var sizeBytes = await ExtractDumpAsync(spoolPath, encrypted, backup, replay.File, sqlPath, ct);
+                log($"Replaying the '{replay.Service}' dump ({sizeBytes} bytes)…");
+                var result = await postgres.ReplayAsync(
+                    replay.ContainerId, connections[replay.ContainerId], replay.Service, sqlPath,
+                    replay.ExpectedDatabases, log, ct);
+                if (result.ErrorLineCount > 0)
+                    log($"WARNING: psql reported {result.ErrorLineCount} diagnostic line(s) replaying "
+                        + $"'{replay.Service}'; some are expected from --clean (e.g. role \"postgres\" "
+                        + $"already exists). First: {string.Join(" | ", result.SampleErrors.Take(3))}");
+                log(replay.ExpectedDatabases.Count > 0
+                    ? $"Replayed '{replay.Service}': {replay.ExpectedDatabases.Count}/"
+                        + $"{replay.ExpectedDatabases.Count} database(s) present."
+                    : $"Replayed '{replay.Service}'.");
+            } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
+                log($"WARNING: {ex.Message}");
+                logger.LogWarning(ex, "Replaying the dump of service {Service} failed", replay.Service);
+                failures.Add(ex.Message);
+            }
+        }
+        if (failures.Count == 1) throw new InvalidOperationException(failures[0]);
+        if (failures.Count > 1)
+            throw new InvalidOperationException(
+                $"{failures.Count} dumps could not be replayed: {string.Join(" ", failures)}");
+    }
+
+    /// <summary>
+    /// Copies one dump out of the archive spool into a host file, so it can be streamed into the
+    /// database container. Read straight from the spool (decrypt → gunzip → tar) rather than kept
+    /// from the earlier passes: a dump is arbitrarily large and has no business in memory.
+    /// </summary>
+    /// <returns>The size of the extracted SQL.</returns>
+    private static Task<long> ExtractDumpAsync(
+        string spoolPath, bool encrypted, BackupOptions backup, string relativeFile, string destination,
+        CancellationToken ct) =>
+        WithSpoolTarAsync(spoolPath, encrypted, backup, async tar => {
+            var wanted = $"backup/{relativeFile}";
+            await using var reader = new TarReader(tar, leaveOpen: true);
+            while (await reader.GetNextEntryAsync(cancellationToken: ct) is { } entry) {
+                if (!string.Equals(entry.Name.TrimStart('.', '/'), wanted, StringComparison.Ordinal)) continue;
+                if (entry.DataStream is not { } data) break;
+                await using var file = File.Create(destination);
+                await data.CopyToAsync(file, ct);
+                return file.Length;
+            }
+            // The table-of-contents scan found it a moment ago, so this means the archive changed
+            // under us or is damaged — either way, not something to restore from.
+            throw new InvalidOperationException(
+                $"The archive does not contain '{wanted}', although its table of contents lists it.");
+        });
 
     /// <summary>
     /// Runs <paramref name="action"/> over the spool opened as an uncompressed tar stream
@@ -500,8 +639,9 @@ public sealed class BackupService(
         bool stopContainers,
         Action<string> log,
         IReadOnlySet<string>? keepRunning = null,
-        IReadOnlyDictionary<string, string>? excludeVolumes = null) {
-        var plan = BackupPlan.Create(containers, volumes, stopContainers, keepRunning, excludeVolumes);
+        IReadOnlyDictionary<string, string>? excludeVolumes = null,
+        bool stopAllRunning = false) {
+        var plan = BackupPlan.Create(containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning);
         foreach (var warning in plan.Warnings) log($"WARNING: {warning}");
         return plan;
     }

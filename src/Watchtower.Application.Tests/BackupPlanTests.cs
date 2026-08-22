@@ -34,8 +34,10 @@ public sealed class BackupPlanTests {
         string[] volumes,
         bool stopContainers = true,
         IReadOnlySet<string>? keepRunning = null,
-        IReadOnlyDictionary<string, string>? excludeVolumes = null) =>
-        BackupPlan.Create(new BackupPlanRequest(containers, volumes, stopContainers, keepRunning, excludeVolumes));
+        IReadOnlyDictionary<string, string>? excludeVolumes = null,
+        bool stopAllRunning = false) =>
+        BackupPlan.Create(new BackupPlanRequest(
+            containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning));
 
     private static string[] Names(IEnumerable<BackupContainer> containers) =>
         [.. containers.Select(c => c.DisplayName)];
@@ -202,6 +204,31 @@ public sealed class BackupPlanTests {
     }
 
     // ── Caller overrides (the database-dump seam) ────────────────────────────
+
+    [Fact]
+    public void StopAllRunningTakesDownNonWritersToo_ButNotTheCallerKeptOrLabelledOnes() {
+        // A restore replaying a dump: the api mounts nothing, yet it must not reconnect to the
+        // database while --clean drops and recreates it.
+        var api = C("api", volumes: []);
+        var db = C("db", volumes: ["pgdata"]);
+        var web = C("web", volumes: [], stop: "false");
+        var cache = C("cache", volumes: ["cachedata"], exclude: "true");
+        var plan = Plan([api, db, web, cache], ["uploads"],
+            keepRunning: new HashSet<string>(["db-id"]), stopAllRunning: true);
+
+        Assert.Equal(["api"], Names(plan.Stop));
+        Assert.Equal(BackupKeepReason.CallerRequested, plan.Keep.Single(k => k.Container.Id == "db-id").Reason);
+        Assert.Equal(BackupKeepReason.StopLabel, plan.Keep.Single(k => k.Container.Id == "web-id").Reason);
+        Assert.Equal(BackupKeepReason.Excluded, plan.Keep.Single(k => k.Container.Id == "cache-id").Reason);
+    }
+
+    [Fact]
+    public void StopAllRunningStillHonoursTheMasterSwitch() {
+        var plan = Plan([C("api"), C("db", volumes: ["pgdata"])], ["pgdata"],
+            stopContainers: false, stopAllRunning: true);
+        Assert.Empty(plan.Stop);
+        Assert.All(plan.Keep, k => Assert.Equal(BackupKeepReason.MasterSwitchOff, k.Reason));
+    }
 
     [Fact]
     public void ACallerRequestedContainerIsLeftRunningEvenThoughItMounts() {

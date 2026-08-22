@@ -161,12 +161,20 @@ public sealed record KeptBackupContainer(
 /// Volume name → reason detail, for volumes the caller captures another way. The label exclusion wins
 /// when both apply, because it is the operator's own instruction.
 /// </param>
+/// <param name="StopAllRunning">
+/// Stop every running container, not only the ones that mount a planned volume — what a restore
+/// needs while it replays a database dump: a stateless service that merely talks to the database
+/// would otherwise reconnect between the session terminate and <c>DROP DATABASE</c>, and
+/// <c>--clean</c> would merge into the old database instead of replacing it. Excluded services,
+/// caller-kept containers and an explicit <see cref="BackupPlan.StopLabel"/><c>=false</c> still win.
+/// </param>
 public sealed record BackupPlanRequest(
     IReadOnlyList<BackupContainer> Containers,
     IReadOnlyList<string> Volumes,
     bool StopContainers,
     IReadOnlySet<string>? KeepRunningContainerIds = null,
-    IReadOnlyDictionary<string, string>? ExcludeVolumes = null);
+    IReadOnlyDictionary<string, string>? ExcludeVolumes = null,
+    bool StopAllRunning = false);
 
 /// <summary>
 /// Which volumes one backup (or restore) run touches and which containers it stops for them, computed
@@ -235,16 +243,18 @@ public sealed record BackupPlan(
     /// <param name="stopContainers">The stack's "stop containers" master switch.</param>
     /// <param name="keepRunning">Container ids the caller needs left running.</param>
     /// <param name="excludeVolumes">Volume name → reason detail for volumes captured another way.</param>
+    /// <param name="stopAllRunning">Stop every running container, not only the volume writers (restore with dumps).</param>
     /// <returns>The plan.</returns>
     public static BackupPlan Create(
         IReadOnlyList<DockerContainerInfo> containers,
         IReadOnlyList<string> volumes,
         bool stopContainers,
         IReadOnlySet<string>? keepRunning = null,
-        IReadOnlyDictionary<string, string>? excludeVolumes = null) =>
+        IReadOnlyDictionary<string, string>? excludeVolumes = null,
+        bool stopAllRunning = false) =>
         Create(new BackupPlanRequest(
             [.. containers.Select(BackupContainer.FromDocker)], volumes, stopContainers,
-            keepRunning, excludeVolumes));
+            keepRunning, excludeVolumes, stopAllRunning));
 
     /// <summary>Applies the mount-scoping, label and ordering rules to one run's inputs.</summary>
     /// <remarks>
@@ -256,6 +266,7 @@ public sealed record BackupPlan(
     /// <item>the caller needs it running (its data is dumped rather than snapshotted);</item>
     /// <item><see cref="StopLabel"/><c>=false</c> — an explicit "this one tolerates a hot snapshot";</item>
     /// <item><see cref="StopLabel"/><c>=true</c> — an explicit stop even for a service that mounts nothing;</item>
+    /// <item>the caller asked for every running container (<see cref="BackupPlanRequest.StopAllRunning"/>);</item>
     /// <item>it mounts one of the volumes being archived;</item>
     /// <item>otherwise it is left running.</item>
     /// </list>
@@ -317,6 +328,7 @@ public sealed record BackupPlan(
         if (isExcluded) return BackupKeepReason.Excluded;
         if (request.KeepRunningContainerIds?.Contains(container.Id) == true) return BackupKeepReason.CallerRequested;
         if (stopLabels.TryGetValue(container.Id, out var stop)) return stop ? null : BackupKeepReason.StopLabel;
+        if (request.StopAllRunning) return null;
         return mountsPlanned ? null : BackupKeepReason.NoPlannedMount;
     }
 
