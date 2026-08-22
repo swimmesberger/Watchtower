@@ -22,7 +22,7 @@ public sealed class BackupAuditTests {
         var handler = ActivatorUtilities.CreateInstance<UpdateBackupConfig>(scope.ServiceProvider);
 
         var result = await handler.HandleAsync(new UpdateBackupConfig.Command(
-            Enabled: true, Time: "03:30", InstanceName: "test-instance",
+            Enabled: true, Cron: "30 3,15 * * *", InstanceName: "test-instance",
             RetentionDays: 14, RetentionMaxCount: 5,
             HelperImage: "busybox:stable", Provider: "sftp",
             EncryptionPassphrase: "s3cret-passphrase", SftpPassword: "hunter2"), Ct);
@@ -33,7 +33,7 @@ public sealed class BackupAuditTests {
         Assert.Equal("backups", row.Category);
         Assert.Equal("config.update", row.Action);
         Assert.True(row.Success);
-        Assert.Contains("schedule on, daily 03:30", row.Detail);
+        Assert.Contains("schedule on, 30 3,15 * * * (every day at 03:30 and 15:30)", row.Detail);
         Assert.Contains("provider sftp", row.Detail);
         Assert.Contains("retention 14d, keep 5", row.Detail);
         Assert.Contains("encrypted", row.Detail);

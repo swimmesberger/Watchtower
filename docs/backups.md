@@ -1,8 +1,10 @@
 # Stack backups
 
 Watchtower can back up each stack's **named volumes** — the only state on the host that is not
-reproducible from git and a registry — to external storage, on a daily schedule, with retention and
-optional encryption. Design and rationale: [ADR-0016](decisions/0016-stack-backups.md).
+reproducible from git and a registry — to external storage, on a cron schedule (once a day, twice a
+day, every six hours — per instance, overridable per stack), with retention and optional encryption.
+Design and rationale: [ADR-0016](decisions/0016-stack-backups.md) and
+[ADR-0018](decisions/0018-cron-backup-schedule.md) (schedule).
 
 What a backup is: one `*.tar.gz` (or `*.tar.gz.enc` when encrypted) per stack per run, containing
 every volume labelled with the stack's compose project plus a `backup-manifest.json` that records
@@ -24,16 +26,19 @@ variables — env vars pin their setting read-only in the UI, see
 
 | Setting | Env var | Meaning |
 | --- | --- | --- |
-| Schedule | `WATCHTOWER__BACKUP__ENABLED` | Master switch for the daily run (default off). |
-| Time | `WATCHTOWER__BACKUP__TIME` | Server-local `HH:mm` the window opens (default `03:30`). |
+| Schedule | `WATCHTOWER__BACKUP__ENABLED` | Master switch for scheduled runs (default off). |
+| Schedule expression | `WATCHTOWER__BACKUP__CRON` | Five-field cron (`minute hour day-of-month month day-of-week`), server-local time — see [The schedule](#the-schedule). Default `30 3 * * *` (03:30 daily). |
+| *(legacy)* Time | `WATCHTOWER__BACKUP__TIME` | Compatibility alias from before cron: a server-local `HH:mm` that reads as `M H * * *`. Keeps working; `CRON` wins when both are set, and the UI treats a pinned `TIME` as pinning the schedule. Prefer `CRON`. |
+| Misfire grace | `WATCHTOWER__BACKUP__MISFIREGRACEMINUTES` | How old a window may be and still be run once when it is noticed late (restart, downtime). Default `60`; clamped to 2 … 1440. Not in the UI. |
 | Instance name | `WATCHTOWER__BACKUP__INSTANCENAME` | Names this Watchtower in the storage layout and manifests. Set it explicitly in containers — the default (machine name) is the container id there. |
 | Retention (days) | `WATCHTOWER__BACKUP__RETENTIONDAYS` | Delete backups older than N days after each successful run; `0` keeps forever (default 30). |
-| Retention (count) | `WATCHTOWER__BACKUP__RETENTIONMAXCOUNT` | Keep at most N backups per stack; `0` unlimited. |
+| Retention (count) | `WATCHTOWER__BACKUP__RETENTIONMAXCOUNT` | Keep at most N backups per stack; `0` unlimited. **Set this when the schedule runs more than once a day** — the age limit alone keeps runs × days archives. |
 | Encryption passphrase | `WATCHTOWER__BACKUP__ENCRYPTIONPASSPHRASE` | When set, archives are encrypted (see below). |
 | Helper image | `WATCHTOWER__BACKUP__HELPERIMAGE` | Image for the never-started helper container (default `busybox:stable`); any pullable image works. |
 | Provider | `WATCHTOWER__BACKUP__PROVIDER` | `sftp` (default) or `local`. |
 
-Then opt each stack in on its **Backups tab**: include it in the schedule, and choose whether its
+Then opt each stack in on its **Backups tab**: include it in the schedule, optionally give it a
+**schedule override** (its own cron expression instead of the instance one), and choose whether its
 **stateful containers are stopped during the snapshot** (default on). "Stateful" means: the
 containers that mount one of the volumes being archived — typically just the database; a stateless
 web or api container that mounts nothing stays up. Dependents are stopped before the services they
@@ -43,6 +48,42 @@ captured mid-write. "Back up now" works regardless of the schedule switch.
 
 Backups run one at a time through a single-flight queue, and every run is recorded in the tab's
 history (status, size, remote path, full log).
+
+### The schedule
+
+The schedule is a classic five-field cron expression — `minute hour day-of-month month day-of-week`
+— read as **server-local wall-clock time** (the host's time zone, DST included; a local time that a
+DST jump skips does not fire). Lists, ranges, steps and names work (`30 3,15 * * *`, `0 */6 * * *`,
+`0 2 * * MON-FRI`); the Quartz extensions (`L`, `W`, `#`) and a seconds field do not. The Settings
+field previews what an expression means ("Every day at 03:30 and 15:30"); anything it cannot put
+into words is shown as entered and is still valid if the server accepts it. Some shapes:
+
+| Expression | Meaning |
+| --- | --- |
+| `30 3 * * *` | every day at 03:30 (the default) |
+| `30 3,15 * * *` | every day at 03:30 and 15:30 |
+| `0 */6 * * *` | every 6 hours, on the hour |
+| `0 2 * * 1-5` | weekdays at 02:00 |
+| `0 4 1,15 * *` | the 1st and 15th of every month at 04:00 |
+
+Each stack follows the instance expression unless its Backups tab sets an **override**; the
+override replaces the instance expression for that stack only (the master switch and the per-stack
+opt-in still apply). Invalid expressions are rejected on save with the reason.
+
+**How a window fires, and what happens when Watchtower was not running.** Every minute the scheduler
+(an Elarion scheduled job) works out, per opted-in stack, the latest window of its expression that
+is not older than the **misfire grace** (default 60 minutes) and newer than the last window it ran
+for that stack — the last window is stored per stack, so a restart can tell "already ran" from
+"slept through it". If there is one, the stack is enqueued once (the queue coalesces a stack that
+is still waiting from the previous window). A window that opened while Watchtower was down, while
+the master switch was off, or before the stack opted in, therefore **runs once if it is less than
+the grace old and is skipped otherwise** — the log names the first skipped window. Only the latest
+late window ever runs: a day of missed six-hourly windows becomes one backup, not four. Set
+`WATCHTOWER__BACKUP__MISFIREGRACEMINUTES` higher if the host is routinely down across its window,
+or to `2` (the minimum) if a late window should never run at all.
+
+The combination to watch is **several runs a day × the age limit**: with `RetentionDays=30` and
+two windows a day, retention keeps 60 archives per stack. Set **Retention (count)** as well.
 
 ### SFTP (e.g. a Hetzner Storage Box)
 
@@ -264,7 +305,9 @@ picker lists the old instance's archives as long as the instance name matches it
 6. Containers restart in reverse stop order, then the spool uploads to the storage provider (to a
    `.partial` name, renamed on completion — a torn upload never looks like a finished backup).
 7. Retention prunes the stack's remote folder: only files matching Watchtower's own naming pattern
-   are considered, and the newest backup is never deleted.
+   are considered, and the newest backup is never deleted. Archives are ordered by the
+   second-resolution timestamp in their name, so several runs on one day are separate archives and
+   the count limit counts *runs* (the age limit alone keeps runs × days of them).
 
 Failures (including "process restarted mid-run") land in the history as `failed` with the log
 attached; the next scheduled window simply tries again.

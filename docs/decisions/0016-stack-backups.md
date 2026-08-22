@@ -95,6 +95,12 @@ newest backup is never deleted, so a misconfigured retention can not delete the 
 
 ### 6. Scheduling and history follow the established patterns
 
+> **Amended by [ADR-0018](0018-cron-backup-schedule.md) (2026-08-22):** the single daily window became
+> a five-field cron expression (`Backup:Cron`, default `30 3 * * *`) with an optional per-stack
+> override (`Stack.BackupCron`), evaluated by an Elarion `[ScheduledJob]` minute tick with a persisted
+> per-stack cursor and an explicit misfire grace. `Backup:Time` remains as a compatibility alias. The
+> rest of this section — the opt-in, the settings, the history rows, the single-flight queue — stands.
+
 One global daily window (`Backup:Time`, default `03:30`, server-local — same semantics as
 `AutoDeployTime`) plus a per-stack `BackupEnabled` opt-in. All global knobs are runtime-editable
 settings under `Watchtower:Backup:*` (ADR-0014: env vars pin; secrets are write-only toward the UI).

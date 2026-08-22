@@ -12,6 +12,8 @@ namespace Watchtower.Application.Modules.Backups.Handlers;
 /// without a restart. Null secret fields (encryption passphrase, SFTP password/private key/key
 /// passphrase) keep the stored value — the UI never has to echo a secret; an empty string clears it.
 /// Env-pinned paths are rejected when the request tries to change them, and never written (ADR-0014).
+/// The schedule is a cron expression (ADR-0018); a stored legacy <c>Backup:Time</c> alias is removed
+/// when the schedule is changed, so the new expression is what takes effect.
 /// </summary>
 [Handler("backups.updateConfig")]
 public sealed class UpdateBackupConfig(
@@ -23,7 +25,7 @@ public sealed class UpdateBackupConfig(
     : IHandler<UpdateBackupConfig.Command, Result<UpdateBackupConfig.Response>> {
     public sealed record Command(
         bool Enabled,
-        string Time,
+        string Cron,
         string? InstanceName,
         int RetentionDays,
         int RetentionMaxCount,
@@ -45,9 +47,9 @@ public sealed class UpdateBackupConfig(
         var provider = command.Provider.Trim().ToLowerInvariant();
         if (provider is not ("sftp" or "local"))
             return AppError.Validation("Provider must be one of: sftp, local.");
-        var time = command.Time.Trim();
-        if (!TimeOnly.TryParseExact(time, "HH:mm", out _))
-            return AppError.Validation("Time must be a 24h wall-clock time in HH:mm format (e.g. 03:30).");
+        var cron = command.Cron?.Trim() ?? "";
+        if (!BackupSchedule.TryParse(cron, out _, out var cronError))
+            return AppError.Validation(cronError);
         if (command.RetentionDays is < 0 or > 3650)
             return AppError.Validation("RetentionDays must be between 0 (keep forever) and 3650.");
         if (command.RetentionMaxCount is < 0 or > 10_000)
@@ -60,6 +62,8 @@ public sealed class UpdateBackupConfig(
 
         var backup = options.CurrentValue.Backup;
         var sftp = backup.Sftp;
+        var currentCron = BackupSchedule.ResolveGlobalExpression(backup);
+        var cronChanged = !string.Equals(cron, currentCron, StringComparison.Ordinal);
 
         // Reject changes to env-pinned paths (env wins — a stored row would silently not take effect).
         var violations = new List<string>();
@@ -67,7 +71,10 @@ public sealed class UpdateBackupConfig(
             if (changed && pins.IsPinned(path)) violations.Add(path);
         }
         Check(WatchtowerSettingPaths.BackupEnabled, command.Enabled != backup.Enabled);
-        Check(WatchtowerSettingPaths.BackupTime, !string.Equals(time, backup.Time, StringComparison.Ordinal));
+        Check(WatchtowerSettingPaths.BackupCron, cronChanged);
+        // The legacy HH:mm env var is where the effective schedule comes from while it is set — a stored
+        // cron could not override it, so it pins the schedule field just like Backup:Cron would.
+        Check(WatchtowerSettingPaths.BackupTime, cronChanged);
         Check(WatchtowerSettingPaths.BackupInstanceName, Changed(command.InstanceName, backup.InstanceName));
         Check(WatchtowerSettingPaths.BackupRetentionDays, command.RetentionDays != backup.RetentionDays);
         Check(WatchtowerSettingPaths.BackupRetentionMaxCount, command.RetentionMaxCount != backup.RetentionMaxCount);
@@ -87,7 +94,12 @@ public sealed class UpdateBackupConfig(
             return EnvironmentSettingPins.PinnedError(violations);
 
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupEnabled, command.Enabled ? "true" : "false", ct);
-        await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupTime, time, ct);
+        if (cronChanged) {
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupCron, cron, ct);
+            // The stored legacy alias would otherwise keep feeding the old time into the fallback chain —
+            // and it cannot express the new schedule anyway. Not pinned here (checked above), so a plain remove.
+            await settings.RemoveAsync(WatchtowerSettingPaths.BackupTime, SettingsScope.Global, expectedVersion: null, ct);
+        }
         if (command.InstanceName is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupInstanceName, command.InstanceName.Trim(), ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupRetentionDays,
@@ -119,7 +131,8 @@ public sealed class UpdateBackupConfig(
         // proxy.updateConfig): immediately consistent for the caller.
         var echoed = backup with {
             Enabled = command.Enabled,
-            Time = time,
+            Cron = cron,
+            Time = cronChanged ? null : backup.Time,
             InstanceName = Coalesce(command.InstanceName, backup.InstanceName),
             RetentionDays = command.RetentionDays,
             RetentionMaxCount = command.RetentionMaxCount,
@@ -152,7 +165,7 @@ public sealed class UpdateBackupConfig(
             .Select(s => s.Item2)
             .ToList();
         var detail =
-            $"schedule {(echoed.Enabled ? $"on, daily {echoed.Time}" : "off")}"
+            $"schedule {(echoed.Enabled ? "on" : "off")}, {cron} ({BackupSchedule.Describe(cron)})"
             + $" · provider {provider}"
             + $" · {BackupService.RetentionSummary(echoed)}"
             + (string.IsNullOrEmpty(echoed.EncryptionPassphrase) ? "" : " · encrypted")

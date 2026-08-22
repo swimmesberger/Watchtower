@@ -37,3 +37,4 @@ live here.
 - [ADR-0015: Pluggable reverse-proxy provider — built-in Caddy, or a Cloudflare Tunnel](0015-proxy-provider-abstraction.md)
 - [ADR-0016: Stack backups — volume archives to pluggable remote storage](0016-stack-backups.md)
 - [ADR-0017: Database-aware backups — Postgres dumps replace the data-volume snapshot; stops are scoped to the volumes being archived](0017-database-aware-dumps.md)
+- [ADR-0018: Cron-based backup schedule with per-stack overrides, on the Elarion scheduler](0018-cron-backup-schedule.md)

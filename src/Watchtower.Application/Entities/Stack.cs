@@ -70,8 +70,20 @@ public sealed class Stack {
     public DeployStatus? LastDeployStatus { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
-    /// <summary>When true the daily backup schedule includes this stack (ADR-0016). Manual runs work regardless.</summary>
+    /// <summary>When true the backup schedule includes this stack (ADR-0016). Manual runs work regardless.</summary>
     public bool BackupEnabled { get; set; }
+    /// <summary>
+    /// Optional per-stack schedule: a five-field cron expression (server-local wall clock) that
+    /// replaces the instance-wide <c>Backup:Cron</c> for this stack (ADR-0018). Null = follow the
+    /// instance schedule.
+    /// </summary>
+    public string? BackupCron { get; set; }
+    /// <summary>
+    /// Due time of the last schedule window the scheduler enqueued a backup for — the scheduler's
+    /// cursor, so a restart neither fires a window twice nor loses one (ADR-0018). Null until the
+    /// first scheduled run; manual runs do not touch it.
+    /// </summary>
+    public DateTimeOffset? LastScheduledBackupAt { get; set; }
     /// <summary>
     /// When true (default), the stack's running containers are stopped for the duration of the
     /// volume archive step and restarted afterwards, so the snapshot is consistent (ADR-0016 §2).

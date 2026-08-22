@@ -8,7 +8,7 @@ namespace Watchtower.Application.Modules.Backups;
 
 /// <summary>
 /// Stack backups (ADR-0016): global backup settings (schedule, storage provider, encryption,
-/// retention), per-stack enablement, run-now, and the backup history.
+/// retention), per-stack enablement and schedule override (ADR-0018), run-now, and the backup history.
 /// </summary>
 [AppModule("Backups")]
 public static partial class BackupsModule {
@@ -23,7 +23,7 @@ public static partial class BackupsModule {
 /// </summary>
 public sealed record BackupConfigDto(
     bool Enabled,
-    string Time,
+    string Cron,
     string? InstanceName,
     string ResolvedInstanceName,
     int RetentionDays,
@@ -36,7 +36,7 @@ public sealed record BackupConfigDto(
     string[] PinnedPaths) {
     internal static BackupConfigDto From(BackupOptions backup, EnvironmentSettingPins pins) => new(
         Enabled: backup.Enabled,
-        Time: backup.Time,
+        Cron: BackupSchedule.ResolveGlobalExpression(backup),
         InstanceName: backup.InstanceName,
         ResolvedInstanceName: backup.ResolveInstanceName(),
         RetentionDays: backup.RetentionDays,
@@ -52,7 +52,19 @@ public sealed record BackupConfigDto(
             HasPrivateKey: !string.IsNullOrEmpty(backup.Sftp.PrivateKey),
             BasePath: backup.Sftp.BasePath),
         LocalBasePath: backup.Local.BasePath,
-        PinnedPaths: pins.Pinned(Handlers.GetBackupConfig.BackupPaths));
+        PinnedPaths: ResolvePinnedPaths(pins));
+
+    /// <summary>
+    /// The pinned paths, with the legacy <c>Backup:Time</c> env var reported as pinning the schedule
+    /// too: it is what the effective expression comes from while it is set, so the UI's cron field has
+    /// to lock exactly as if <c>Backup:Cron</c> were pinned.
+    /// </summary>
+    internal static string[] ResolvePinnedPaths(EnvironmentSettingPins pins) {
+        var pinned = pins.Pinned(Handlers.GetBackupConfig.BackupPaths);
+        if (pins.IsPinned(WatchtowerSettingPaths.BackupTime) && !pins.IsPinned(WatchtowerSettingPaths.BackupCron))
+            pinned = [.. pinned, WatchtowerSettingPaths.BackupCron];
+        return pinned;
+    }
 }
 
 /// <summary>SFTP connection values for the config surface (secrets reduced to flags).</summary>
@@ -77,8 +89,11 @@ public sealed record BackupEventDto(
     DateTimeOffset StartedAt,
     DateTimeOffset? FinishedAt);
 
-/// <summary>A stack's backup participation: schedule opt-in and the stop-for-snapshot flag.</summary>
-public sealed record BackupStackConfigDto(int StackId, bool Enabled, bool StopContainers);
+/// <summary>
+/// A stack's backup participation: schedule opt-in, the stop-for-snapshot flag, and its schedule
+/// override (a five-field cron expression; null = the instance-wide schedule applies).
+/// </summary>
+public sealed record BackupStackConfigDto(int StackId, bool Enabled, bool StopContainers, string? Cron);
 
 /// <summary>One archive present on the storage — the restore picker's row.</summary>
 public sealed record BackupRemoteFileDto(string Name, long SizeBytes, DateTimeOffset TakenAt, bool Encrypted);
