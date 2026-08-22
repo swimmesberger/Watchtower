@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Backups.Handlers;
 using Watchtower.Application.Services;
 
@@ -90,10 +91,34 @@ public sealed record BackupEventDto(
     DateTimeOffset? FinishedAt);
 
 /// <summary>
-/// A stack's backup participation: schedule opt-in, the stop-for-snapshot flag, and its schedule
-/// override (a five-field cron expression; null = the instance-wide schedule applies).
+/// A stack's backup participation: schedule opt-in, the stop-for-snapshot flag, how its stateful
+/// containers are quiesced (<c>stop</c> or <c>pause</c>, ADR-0019) and its schedule override (a
+/// five-field cron expression; null = the instance-wide schedule applies).
 /// </summary>
-public sealed record BackupStackConfigDto(int StackId, bool Enabled, bool StopContainers, string? Cron);
+public sealed record BackupStackConfigDto(
+    int StackId, bool Enabled, bool StopContainers, string? Cron, string QuiesceMode) {
+    internal static BackupStackConfigDto From(Entities.Stack stack) => new(
+        stack.Id, stack.BackupEnabled, stack.BackupStopContainers, stack.BackupCron,
+        BackupQuiesceModes.ToWire(stack.BackupQuiesceMode));
+}
+
+/// <summary>The wire form of <see cref="BackupQuiesceMode"/>: lowercase, like every other enum on this API.</summary>
+internal static class BackupQuiesceModes {
+    public const string Stop = "stop";
+    public const string Pause = "pause";
+
+    public static string ToWire(BackupQuiesceMode mode) => mode == BackupQuiesceMode.Pause ? Pause : Stop;
+
+    /// <summary>Null and blank read as <see cref="Stop"/> (the default); anything else has to be one of the two words.</summary>
+    public static bool TryParse(string? value, out BackupQuiesceMode mode) {
+        mode = BackupQuiesceMode.Stop;
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        if (string.Equals(value.Trim(), Stop, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.Equals(value.Trim(), Pause, StringComparison.OrdinalIgnoreCase)) return false;
+        mode = BackupQuiesceMode.Pause;
+        return true;
+    }
+}
 
 /// <summary>One archive present on the storage — the restore picker's row.</summary>
 public sealed record BackupRemoteFileDto(string Name, long SizeBytes, DateTimeOffset TakenAt, bool Encrypted);

@@ -89,6 +89,12 @@ public sealed class Stack {
     /// volume archive step and restarted afterwards, so the snapshot is consistent (ADR-0016 §2).
     /// </summary>
     public bool BackupStopContainers { get; set; } = true;
+    /// <summary>
+    /// How the containers <see cref="BackupStopContainers"/> selects are quiesced when their service
+    /// carries no explicit <c>watchtower.backup.stop</c> label: stopped (default, application-consistent)
+    /// or paused (cgroup freeze, milliseconds of downtime, crash-consistent) — ADR-0019.
+    /// </summary>
+    public BackupQuiesceMode BackupQuiesceMode { get; set; } = BackupQuiesceMode.Stop;
 
     /// <summary>Set when this stack is a tenant instance of a <see cref="StackTemplate"/>; null for standalone stacks.</summary>
     public int? TemplateId { get; set; }

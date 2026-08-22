@@ -178,6 +178,18 @@ public sealed record BackupOptions {
     /// </summary>
     public string HelperImage { get; init; } = "busybox:stable";
 
+    /// <summary>
+    /// How long a container stopped for the snapshot gets to exit on SIGTERM before the daemon sends
+    /// SIGKILL (<c>docker stop -t</c>), in seconds. The daemon's own default is 10 s; the backup uses
+    /// a shorter one because the stop window is downtime and a service that needs longer to flush is
+    /// a candidate for a dump or <see cref="Entities.BackupQuiesceMode.Pause"/> anyway. Clamped to
+    /// 1 … 300 by <see cref="ResolveStopTimeoutSeconds"/>. Default 5.
+    /// </summary>
+    public int StopTimeoutSeconds { get; init; } = DefaultStopTimeoutSeconds;
+
+    /// <summary>The default for <see cref="StopTimeoutSeconds"/>.</summary>
+    public const int DefaultStopTimeoutSeconds = 5;
+
     /// <summary>Storage backend the archives are shipped to: <c>sftp</c> (default) or <c>local</c>.</summary>
     public string Provider { get; init; } = "sftp";
 
@@ -192,6 +204,9 @@ public sealed record BackupOptions {
         string.Equals(Provider, "local", StringComparison.OrdinalIgnoreCase)
             ? BackupProviderKind.Local
             : BackupProviderKind.Sftp;
+
+    /// <summary>The stop timeout the backup's quiesce step sends, clamped to a sane range (1 … 300 s).</summary>
+    public int ResolveStopTimeoutSeconds() => Math.Clamp(StopTimeoutSeconds, 1, 300);
 
     /// <summary>Resolved instance name: explicit setting or machine name.</summary>
     public string ResolveInstanceName() =>

@@ -87,6 +87,10 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
+        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The column default
+        // is what the migration backfills existing rows with, so a stack from before quiesce modes
+        // existed keeps stopping its containers, exactly as before.
+        b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
         b.HasIndex(x => x.Name).IsUnique();
         // The App API authenticates every request by looking the presented bearer token up here, so
         // the column must be indexed. Unique guards against two stacks ever sharing a token; SQLite
@@ -179,6 +183,19 @@ public sealed class BackupEventConfiguration : IEntityTypeConfiguration<BackupEv
             .WithMany()
             .HasForeignKey(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class BackupPausedContainerConfiguration : IEntityTypeConfiguration<BackupPausedContainer> {
+    public void Configure(EntityTypeBuilder<BackupPausedContainer> b) {
+        b.ToTable("backup_paused_containers");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.ContainerId).IsRequired();
+        b.Property(x => x.ContainerName).IsRequired();
+        b.Property(x => x.StackName).IsRequired();
+        // The run deletes its rows by container id once the container is unpaused.
+        b.HasIndex(x => x.ContainerId);
     }
 }
 

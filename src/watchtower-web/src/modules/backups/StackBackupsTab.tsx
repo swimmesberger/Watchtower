@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Archive, ChevronDown, ChevronRight, History, Lock, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { BackupEvent, Stack } from '@/lib/types'
+import type { BackupEvent, BackupQuiesceMode, Stack } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
 import { absoluteTitle, formatBytes, formatDuration, timeAgo } from '@/lib/format'
 import { Banner } from '@/components/ui/banner'
@@ -21,6 +21,13 @@ import {
 import { EmptyState } from '@/components/ui/empty-state'
 import { Input } from '@/components/ui/input'
 import { SectionHeader } from '@/components/ui/section-header'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Switch } from '@/components/ui/switch'
@@ -61,8 +68,19 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
   })
 
   const setConfig = useMutation({
-    mutationFn: (next: { enabled: boolean; stopContainers: boolean; cron: string | null }) =>
-      api.backups.setStackConfig(stack.id, next.enabled, next.stopContainers, next.cron),
+    mutationFn: (next: {
+      enabled: boolean
+      stopContainers: boolean
+      cron: string | null
+      quiesceMode: BackupQuiesceMode
+    }) =>
+      api.backups.setStackConfig(
+        stack.id,
+        next.enabled,
+        next.stopContainers,
+        next.cron,
+        next.quiesceMode,
+      ),
     onSuccess: (next) => {
       qc.setQueryData(['backups', 'stack-config', stack.id], next)
       toast.success('Backup settings saved.')
@@ -179,6 +197,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
                     enabled: v,
                     stopContainers: config.stopContainers,
                     cron: config.cron,
+                    quiesceMode: config.quiesceMode,
                   })
                 }
                 aria-label="Include in the backup schedule"
@@ -205,11 +224,54 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
                     enabled: config.enabled,
                     stopContainers: v,
                     cron: config.cron,
+                    quiesceMode: config.quiesceMode,
                   })
                 }
                 aria-label="Stop stateful containers during the snapshot"
               />
             </label>
+
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="backup-quiesce-mode"
+                className="text-[13px] font-medium text-text"
+              >
+                Quiesce mode
+              </label>
+              <span className="text-[13px] text-text-2">
+                How the stateful containers are taken out of service for the snapshot.{' '}
+                <strong>Stop</strong> sends SIGTERM and restarts them afterwards — the application
+                flushes and exits, so the snapshot is application-consistent. <strong>Pause</strong>{' '}
+                freezes their processes for the duration of the tar (typically seconds) and thaws them
+                — no restart, connections survive — but the snapshot is only{' '}
+                <strong>crash-consistent</strong>: whatever an application still held in memory is not
+                in it. Fine for file volumes (uploads, media); a database that cannot be dumped should
+                keep <strong>Stop</strong>. A per-service{' '}
+                <code className="font-mono text-[12px]">watchtower.backup.stop</code> label (
+                <code className="font-mono text-[12px]">true</code> /{' '}
+                <code className="font-mono text-[12px]">pause</code>) overrides this for that service.
+              </span>
+              <Select
+                value={config.quiesceMode}
+                disabled={setConfig.isPending || !config.stopContainers}
+                onValueChange={(v) =>
+                  setConfig.mutate({
+                    enabled: config.enabled,
+                    stopContainers: config.stopContainers,
+                    cron: config.cron,
+                    quiesceMode: v as BackupQuiesceMode,
+                  })
+                }
+              >
+                <SelectTrigger id="backup-quiesce-mode" className="max-w-[320px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="stop">Stop (default — application-consistent)</SelectItem>
+                  <SelectItem value="pause">Pause (crash-consistent, seconds of downtime)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             <ScheduleOverride
               key={config.cron ?? ''}
@@ -221,6 +283,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
                   enabled: config.enabled,
                   stopContainers: config.stopContainers,
                   cron,
+                  quiesceMode: config.quiesceMode,
                 })
               }
             />
