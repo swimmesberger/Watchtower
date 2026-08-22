@@ -240,7 +240,7 @@ export function TemplateDetailPage() {
   if (isLoading) return <div className="flex justify-center p-10"><Spinner /></div>
   if (isError || !data)
     return (
-      <div className="mx-auto max-w-[900px] p-6">
+      <div className="mx-auto max-w-[900px]">
         <Banner tone="danger" title="Couldn’t load template">
           {(error as Error)?.message ?? 'Not found.'}
         </Banner>
@@ -335,7 +335,7 @@ export function TemplateDetailPage() {
   ]
 
   return (
-    <div className="mx-auto max-w-[1000px] space-y-6 p-4 md:p-6">
+    <div className="mx-auto max-w-[1000px] space-y-6">
       <Link
         to="/templates"
         className="inline-flex items-center gap-1 text-[13px] text-text-2 transition-colors hover:text-text"
@@ -370,7 +370,7 @@ export function TemplateDetailPage() {
       </div>
 
       <Card>
-        <CardContent className="space-y-1 pt-5 text-[13px] text-text-2">
+        <CardContent className="space-y-1 text-[13px] text-text-2">
           <p className="font-mono">{template.repositoryUrl} · {template.branch}</p>
           <p className="font-mono">{template.domainPattern} → {template.targetServiceName}:{template.targetPort}</p>
           {/* The realm decides which accounts every tenant of this template signs in with, and which
@@ -382,7 +382,7 @@ export function TemplateDetailPage() {
       </Card>
 
       <Card>
-        <CardContent className="pt-5">
+        <CardContent>
           <SectionHeader title="Add tenant" description="Spins up an isolated copy on its own subdomain." />
           <div className="space-y-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
@@ -423,7 +423,7 @@ export function TemplateDetailPage() {
 
       {canManageGrants && (
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader
               title="Management API"
               description="Granted stacks may provision and manage this template's tenants through Watchtower's public Management API with their own App-API token."

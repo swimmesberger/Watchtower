@@ -199,7 +199,7 @@ function AutomationCard() {
 
       {isLoading || !form ? (
         <Card>
-          <CardContent className="flex flex-col gap-4 p-5">
+          <CardContent className="flex flex-col gap-4">
             <Skeleton variant="line" className="w-2/3" />
             <Skeleton variant="line" className="w-1/2" />
           </CardContent>
@@ -218,7 +218,7 @@ function AutomationCard() {
         </Banner>
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-5 p-5">
+          <CardContent className="flex flex-col gap-5">
             <ToggleRow
               label="Check for Watchtower updates"
               hint="Periodically compares the running image with its registry so the update badge stays fresh."
@@ -424,7 +424,7 @@ function MetricsCard() {
 
       {isLoading || !form ? (
         <Card>
-          <CardContent className="flex flex-col gap-4 p-5">
+          <CardContent className="flex flex-col gap-4">
             <Skeleton variant="line" className="w-2/3" />
             <Skeleton variant="line" className="w-1/2" />
           </CardContent>
@@ -443,7 +443,7 @@ function MetricsCard() {
         </Banner>
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-5 p-5">
+          <CardContent className="flex flex-col gap-5">
             <Field label="Backend" hint="Persisted keeps history in Watchtower's own database with zero dependencies.">
               {({ id }) => (
                 <>
@@ -752,7 +752,7 @@ function ProxyCard() {
 
       {isLoading || !form ? (
         <Card>
-          <CardContent className="flex flex-col gap-4 p-5">
+          <CardContent className="flex flex-col gap-4">
             <Skeleton variant="line" className="w-2/3" />
             <Skeleton variant="line" className="w-1/2" />
           </CardContent>
@@ -771,7 +771,7 @@ function ProxyCard() {
         </Banner>
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-5 p-5">
+          <CardContent className="flex flex-col gap-5">
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">Enable reverse proxy</span>
@@ -1271,7 +1271,7 @@ function BackupsCard() {
 
       {isLoading || !form ? (
         <Card>
-          <CardContent className="flex flex-col gap-4 p-5">
+          <CardContent className="flex flex-col gap-4">
             <Skeleton variant="line" className="w-2/3" />
             <Skeleton variant="line" className="w-1/2" />
           </CardContent>
@@ -1290,7 +1290,7 @@ function BackupsCard() {
         </Banner>
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-5 p-5">
+          <CardContent className="flex flex-col gap-5">
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">Daily backup schedule</span>
@@ -1718,7 +1718,7 @@ function AuthCard() {
 
       {isLoading || !form ? (
         <Card>
-          <CardContent className="flex flex-col gap-4 p-5">
+          <CardContent className="flex flex-col gap-4">
             <Skeleton variant="line" className="w-2/3" />
             <Skeleton variant="line" className="w-1/2" />
           </CardContent>
@@ -1737,7 +1737,7 @@ function AuthCard() {
         </Banner>
       ) : (
         <Card>
-          <CardContent className="flex flex-col gap-5 p-5">
+          <CardContent className="flex flex-col gap-5">
             {data?.restartRequired && (
               <Banner tone="warn" title="Restart required">
                 Authentication is {data.active ? 'active' : 'inactive'} in the running process, but is

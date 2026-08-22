@@ -19,7 +19,13 @@ export function Card({ className, interactive, ...props }: CardProps) {
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('flex flex-col gap-1 p-4 md:p-5', className)} {...props} />
+  return (
+    <div
+      data-slot="card-header"
+      className={cn('flex flex-col gap-1 p-4 md:p-5', className)}
+      {...props}
+    />
+  )
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
@@ -32,8 +38,19 @@ export function CardDescription({ className, ...props }: React.HTMLAttributes<HT
   return <p className={cn('text-[13px] text-text-2', className)} {...props} />
 }
 
+/**
+ * Padded body. Full padding on its own (the common case — a SectionHeader inside the content);
+ * the top padding drops only when it directly follows a CardHeader, which already padded it. The
+ * rule lives on a sibling selector rather than a `pt-0` default so that callers never have to
+ * re-add the top padding (a plain `pt-5` would lose to the `md:` default on desktop).
+ */
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('p-4 pt-0 md:p-5 md:pt-0', className)} {...props} />
+  return (
+    <div
+      className={cn('p-4 md:p-5 [[data-slot=card-header]+&]:pt-0', className)}
+      {...props}
+    />
+  )
 }
 
 export function CardFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

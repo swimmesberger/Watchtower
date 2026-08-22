@@ -482,7 +482,7 @@ export function RoutesPage() {
   )
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-6 p-4 md:p-6">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Routes</h1>
@@ -513,7 +513,7 @@ export function RoutesPage() {
 
       {foreignRoutes.length > 0 && (
         <Card>
-          <CardContent className={foreignCollapsed ? 'py-4' : 'pt-5'}>
+          <CardContent>
             <SectionHeader
               title={`Found in Cloudflare (${foreignRoutes.length})`}
               description={
@@ -569,7 +569,7 @@ export function RoutesPage() {
 
       {showForm && (
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader
               title="New route"
               description="Point a domain at a service inside a stack. HTTPS is provisioned automatically."
@@ -714,7 +714,7 @@ export function RoutesPage() {
                 </div>
               )}
 
-              <div className="flex justify-end gap-3">
+              <div className="flex justify-end gap-2 pt-1">
                 <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>
                   Cancel
                 </Button>

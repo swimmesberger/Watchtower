@@ -260,7 +260,7 @@ export function InfraVolumesSection() {
             </h3>
             {perStack.length === 0 ? (
               <Card>
-                <CardContent className="py-6 text-sm text-text-3">
+                <CardContent className="text-sm text-text-3">
                   No stack-owned volumes yet.
                 </CardContent>
               </Card>

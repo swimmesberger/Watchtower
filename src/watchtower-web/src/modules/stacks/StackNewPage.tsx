@@ -105,7 +105,7 @@ export function StackNewPage() {
       <form onSubmit={submit} className="mt-6 space-y-6">
         {/* ── Repository ── */}
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader title="Repository" />
 
             <div className="space-y-4">
@@ -199,7 +199,7 @@ export function StackNewPage() {
 
         {/* ── Authentication ── */}
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader
               title="Authentication"
               description="Only needed for private repos or registries."
@@ -278,7 +278,7 @@ export function StackNewPage() {
 
         {/* ── Environment variables ── */}
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader title="Environment variables" />
 
             <EnvVarEditor value={envDraft} onChange={setEnvDraft} />

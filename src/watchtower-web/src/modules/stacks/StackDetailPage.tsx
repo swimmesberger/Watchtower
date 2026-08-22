@@ -100,7 +100,7 @@ export function StackDetailPage() {
 
   if (stackError || !stack) {
     return (
-      <div className="mx-auto max-w-[1200px]">
+      <div>
         <Banner
           tone="danger"
           title="Couldn’t load this stack"
@@ -117,7 +117,7 @@ export function StackDetailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-6 pb-24 md:pb-0">
+    <div className="space-y-6 pb-24 md:pb-0">
       {/* Breadcrumb */}
       <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-xs text-text-2">
         <Link
@@ -219,7 +219,7 @@ export function StackDetailPage() {
 
 function StackDetailSkeleton() {
   return (
-    <div className="mx-auto max-w-[1200px] space-y-6">
+    <div className="space-y-6">
       <Skeleton variant="line" className="h-4 w-32" />
       <div className="space-y-2">
         <Skeleton variant="line" className="h-8 w-56" />

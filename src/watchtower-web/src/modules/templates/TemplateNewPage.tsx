@@ -111,7 +111,7 @@ export function TemplateNewPage() {
 
       <form onSubmit={submit} className="mt-6 space-y-6">
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader title="Source" />
             <div className="space-y-4">
               <Field label="Template name" required>
@@ -169,7 +169,7 @@ export function TemplateNewPage() {
         </Card>
 
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader title="Routing" description="Each tenant gets a subdomain routed to one service." />
             <div className="space-y-4">
               <Field label="Domain pattern" required hint="Use {tenant} where the tenant slug goes">
@@ -226,7 +226,7 @@ export function TemplateNewPage() {
         </Card>
 
         <Card>
-          <CardContent className="pt-5">
+          <CardContent>
             <SectionHeader title="Base environment variables" description="Shared defaults; each tenant can override." />
             <EnvVarEditor value={envDraft} onChange={setEnvDraft} />
           </CardContent>

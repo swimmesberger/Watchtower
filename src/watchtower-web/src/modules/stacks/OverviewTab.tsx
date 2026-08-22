@@ -271,7 +271,7 @@ function ContainerCard({ container }: { container: Container }) {
         </div>
       </div>
 
-      <CardContent className="pt-4">
+      <CardContent>
         <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
           <Meta label="Image" value={container.image} />
           <Meta label="Status" value={container.status} />
@@ -348,7 +348,7 @@ function ImageUpdatesPanel({
         }
       />
       <Card>
-        <CardContent className="pt-4 md:pt-5">
+        <CardContent>
           {stack.hasUpdates == null && !hasAnyUpdate && (
             <p className="text-sm text-text-2">Never checked for updates.</p>
           )}
@@ -418,7 +418,7 @@ function WebhookCard({ stackId, token }: { stackId: number; token: string | null
 
   return (
     <Card>
-      <CardContent className="space-y-4 pt-4 md:pt-5">
+      <CardContent className="space-y-4">
         {!token && (
           <Banner tone="warn" title="No token set">
             This webhook is public and can be triggered without authentication.
