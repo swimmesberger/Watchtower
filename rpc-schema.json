@@ -251,7 +251,7 @@
               "enabled": {
                 "type": "boolean"
               },
-              "time": {
+              "cron": {
                 "type": "string"
               },
               "instanceName": {
@@ -327,7 +327,7 @@
             },
             "required": [
               "enabled",
-              "time",
+              "cron",
               "instanceName",
               "resolvedInstanceName",
               "retentionDays",
@@ -372,12 +372,19 @@
               },
               "stopContainers": {
                 "type": "boolean"
+              },
+              "cron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "stackId",
               "enabled",
-              "stopContainers"
+              "stopContainers",
+              "cron"
             ]
           }
         },
@@ -522,6 +529,13 @@
           },
           "stopContainers": {
             "type": "boolean"
+          },
+          "cron": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -544,12 +558,19 @@
               },
               "stopContainers": {
                 "type": "boolean"
+              },
+              "cron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "stackId",
               "enabled",
-              "stopContainers"
+              "stopContainers",
+              "cron"
             ]
           }
         },
@@ -581,7 +602,7 @@
           "enabled": {
             "type": "boolean"
           },
-          "time": {
+          "cron": {
             "type": "string"
           },
           "instanceName": {
@@ -668,7 +689,7 @@
         },
         "required": [
           "enabled",
-          "time",
+          "cron",
           "instanceName",
           "retentionDays",
           "retentionMaxCount",
@@ -685,7 +706,7 @@
               "enabled": {
                 "type": "boolean"
               },
-              "time": {
+              "cron": {
                 "type": "string"
               },
               "instanceName": {
@@ -761,7 +782,7 @@
             },
             "required": [
               "enabled",
-              "time",
+              "cron",
               "instanceName",
               "resolvedInstanceName",
               "retentionDays",

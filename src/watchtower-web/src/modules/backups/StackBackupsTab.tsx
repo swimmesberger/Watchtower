@@ -4,6 +4,7 @@ import { Link } from '@tanstack/react-router'
 import { Archive, ChevronDown, ChevronRight, History, Lock, Play } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { BackupEvent, Stack } from '@/lib/types'
+import { describeCron } from '@/lib/cron'
 import { absoluteTitle, formatBytes, formatDuration, timeAgo } from '@/lib/format'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -18,6 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Input } from '@/components/ui/input'
 import { SectionHeader } from '@/components/ui/section-header'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/ui/status-badge'
@@ -26,8 +28,9 @@ import { toast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
 
 // ── Backups tab (ADR-0016) ──────────────────────────────────────────────────────
-// Per-stack participation in the daily backup schedule, a run-now action, and the run history.
-// The storage target, schedule time, retention and encryption are instance-wide → Settings.
+// Per-stack participation in the backup schedule (with an optional cron override, ADR-0018), a
+// run-now action, and the run history. The storage target, the instance-wide schedule, retention
+// and encryption live in Settings.
 
 export function StackBackupsTab({ stack }: { stack: Stack }) {
   const qc = useQueryClient()
@@ -58,8 +61,8 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
   })
 
   const setConfig = useMutation({
-    mutationFn: (next: { enabled: boolean; stopContainers: boolean }) =>
-      api.backups.setStackConfig(stack.id, next.enabled, next.stopContainers),
+    mutationFn: (next: { enabled: boolean; stopContainers: boolean; cron: string | null }) =>
+      api.backups.setStackConfig(stack.id, next.enabled, next.stopContainers, next.cron),
     onSuccess: (next) => {
       qc.setQueryData(['backups', 'stack-config', stack.id], next)
       toast.success('Backup settings saved.')
@@ -125,8 +128,8 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
         }
       />
       <p className="-mt-2 text-[13px] text-text-2">
-        Archives this stack’s volumes to the configured storage. The storage target, daily time,
-        retention and encryption are instance-wide —{' '}
+        Archives this stack’s volumes to the configured storage. The storage target, the instance
+        schedule, retention and encryption are instance-wide —{' '}
         <Link to="/settings" className="underline underline-offset-2 hover:text-text">
           Settings → Backups
         </Link>
@@ -134,9 +137,8 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
       </p>
 
       {globalConfig && !globalConfig.enabled && (
-        <Banner tone="warn" title="The daily backup schedule is off">
-          Manual backups still work; enable the schedule under Settings → Backups for automatic
-          daily runs.
+        <Banner tone="warn" title="The backup schedule is off">
+          Manual backups still work; enable the schedule under Settings → Backups for automatic runs.
         </Banner>
       )}
 
@@ -163,19 +165,23 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">
-                  Include in the daily schedule
+                  Include in the backup schedule
                 </span>
                 <span className="mt-0.5 block text-[13px] text-text-2">
-                  Backs this stack up automatically at the configured time.
+                  Backs this stack up automatically on the schedule below.
                 </span>
               </span>
               <Switch
                 checked={config.enabled}
                 disabled={setConfig.isPending}
                 onCheckedChange={(v) =>
-                  setConfig.mutate({ enabled: v, stopContainers: config.stopContainers })
+                  setConfig.mutate({
+                    enabled: v,
+                    stopContainers: config.stopContainers,
+                    cron: config.cron,
+                  })
                 }
-                aria-label="Include in the daily backup schedule"
+                aria-label="Include in the backup schedule"
               />
             </label>
 
@@ -194,10 +200,30 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
               <Switch
                 checked={config.stopContainers}
                 disabled={setConfig.isPending}
-                onCheckedChange={(v) => setConfig.mutate({ enabled: config.enabled, stopContainers: v })}
+                onCheckedChange={(v) =>
+                  setConfig.mutate({
+                    enabled: config.enabled,
+                    stopContainers: v,
+                    cron: config.cron,
+                  })
+                }
                 aria-label="Stop stateful containers during the snapshot"
               />
             </label>
+
+            <ScheduleOverride
+              key={config.cron ?? ''}
+              value={config.cron}
+              instanceCron={globalConfig?.cron ?? null}
+              pending={setConfig.isPending}
+              onSave={(cron) =>
+                setConfig.mutate({
+                  enabled: config.enabled,
+                  stopContainers: config.stopContainers,
+                  cron,
+                })
+              }
+            />
           </CardContent>
         </Card>
       )}
@@ -212,7 +238,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
         <EmptyState
           icon={Archive}
           title="No backups yet"
-          description="Run one with “Back up now”, or enable the daily schedule."
+          description="Run one with “Back up now”, or include this stack in the backup schedule."
         />
       ) : (
         <div className="space-y-2">
@@ -264,6 +290,103 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
       />
     </div>
   )
+}
+
+/**
+ * This stack's own cron expression (ADR-0018). Empty means it follows the instance schedule, so the
+ * placeholder and the preview both show what that currently is. The server validates the expression
+ * and reports a bad one through the mutation's error toast.
+ */
+function ScheduleOverride({
+  value,
+  instanceCron,
+  pending,
+  onSave,
+}: {
+  value: string | null
+  instanceCron: string | null
+  pending: boolean
+  onSave: (cron: string | null) => void
+}) {
+  const [draft, setDraft] = useState(value ?? '')
+  const trimmed = draft.trim()
+  const dirty = trimmed !== (value ?? '')
+  const preview = describeSchedule(trimmed, instanceCron)
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[13px] font-medium text-text">Schedule override</span>
+      <span className="text-[13px] text-text-2">
+        Runs this stack on its own cron expression instead of the instance schedule — five fields
+        (minute hour day-of-month month day-of-week), server-local time. Leave empty to follow the
+        instance.
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          mono
+          className="max-w-[220px]"
+          placeholder={instanceCron ?? '30 3 * * *'}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          aria-label="Backup schedule override for this stack"
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={pending}
+          disabled={!dirty || pending}
+          onClick={() => onSave(trimmed || null)}
+        >
+          Save
+        </Button>
+        {value !== null && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={pending}
+            onClick={() => {
+              setDraft('')
+              onSave(null)
+            }}
+          >
+            Use instance schedule
+          </Button>
+        )}
+      </div>
+      <span className={cn('text-[13px]', preview.invalid ? 'text-danger' : 'text-text-2')}>
+        {preview.text}
+      </span>
+    </div>
+  )
+}
+
+/** The preview line under the override input: this stack's schedule, in words where possible. */
+function describeSchedule(
+  draft: string,
+  instanceCron: string | null,
+): { text: string; invalid: boolean } {
+  if (draft.length === 0) {
+    const instance = instanceCron === null ? null : describeCron(instanceCron) ?? instanceCron
+    return {
+      text: instance === null
+        ? 'Follows the instance schedule.'
+        : `Follows the instance schedule: ${instance}.`,
+      invalid: false,
+    }
+  }
+  if (draft.split(/\s+/).filter((f) => f.length > 0).length !== 5) {
+    return {
+      text: 'Needs exactly five fields: minute hour day-of-month month day-of-week.',
+      invalid: true,
+    }
+  }
+  const described = describeCron(draft)
+  return {
+    text: described === null
+      ? 'Custom expression — shown as entered.'
+      : described.charAt(0).toUpperCase() + described.slice(1),
+    invalid: false,
+  }
 }
 
 /** Step 1 of the restore flow: the archives actually present on the storage, newest first. */

@@ -293,7 +293,7 @@ export const api = {
     updateConfig: async (data: UpdateBackupConfigRequest) =>
       (await rpc('backups.updateConfig', {
         enabled: data.enabled,
-        time: data.time,
+        cron: data.cron,
         instanceName: data.instanceName ?? null,
         retentionDays: data.retentionDays,
         retentionMaxCount: data.retentionMaxCount,
@@ -320,8 +320,13 @@ export const api = {
       (await rpc('backups.restore', { stackId, fileName })).restore as BackupRunAccepted,
     getStackConfig: async (stackId: number) =>
       (await rpc('backups.getStackConfig', { stackId })).config as BackupStackConfig,
-    setStackConfig: async (stackId: number, enabled: boolean, stopContainers: boolean) =>
-      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers }))
+    setStackConfig: async (
+      stackId: number,
+      enabled: boolean,
+      stopContainers: boolean,
+      cron: string | null,
+    ) =>
+      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron }))
         .config as BackupStackConfig,
   },
 

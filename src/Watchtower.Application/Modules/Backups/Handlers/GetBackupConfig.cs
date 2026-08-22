@@ -20,6 +20,7 @@ public sealed class GetBackupConfig(IOptionsMonitor<WatchtowerOptions> options, 
     /// <summary>Every path the backups card manages — shared with <see cref="UpdateBackupConfig"/>.</summary>
     internal static readonly string[] BackupPaths = [
         WatchtowerSettingPaths.BackupEnabled,
+        WatchtowerSettingPaths.BackupCron,
         WatchtowerSettingPaths.BackupTime,
         WatchtowerSettingPaths.BackupInstanceName,
         WatchtowerSettingPaths.BackupRetentionDays,

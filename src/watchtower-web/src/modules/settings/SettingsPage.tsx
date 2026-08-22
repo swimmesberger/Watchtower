@@ -21,6 +21,7 @@ import type {
   SelfUpdateStatus,
   UpdateSelfConfigRequest,
 } from '@/lib/types'
+import { describeCron } from '@/lib/cron'
 import { absoluteTitle, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -1165,7 +1166,7 @@ function ProxyCard() {
 
 interface BackupDraft {
   enabled: boolean
-  time: string
+  cron: string
   instanceName: string
   retentionDays: string
   retentionMaxCount: string
@@ -1182,10 +1183,34 @@ interface BackupDraft {
   localBasePath: string
 }
 
+/**
+ * Live reading of the schedule field, in the same words the server puts in the audit trail. Shapes
+ * the describer doesn't recognise are still valid cron — the server has the final say, so say so
+ * rather than crying invalid.
+ */
+function CronPreview({ expression }: { expression: string }) {
+  const fields = expression.trim().split(/\s+/).filter(f => f.length > 0)
+  if (fields.length !== 5) {
+    return (
+      <p className="text-[13px] text-danger">
+        Needs exactly five fields: minute hour day-of-month month day-of-week.
+      </p>
+    )
+  }
+  const described = describeCron(expression)
+  return (
+    <p className="text-[13px] text-text-2">
+      {described
+        ? described.charAt(0).toUpperCase() + described.slice(1)
+        : 'Custom expression — shown as entered.'}
+    </p>
+  )
+}
+
 function toBackupDraft(config: BackupConfig): BackupDraft {
   return {
     enabled: config.enabled,
-    time: config.time,
+    cron: config.cron,
     instanceName: config.instanceName ?? '',
     retentionDays: String(config.retentionDays),
     retentionMaxCount: String(config.retentionMaxCount),
@@ -1220,7 +1245,7 @@ function BackupsCard() {
     mutationFn: (next: BackupDraft) =>
       api.backups.updateConfig({
         enabled: next.enabled,
-        time: next.time.trim(),
+        cron: next.cron.trim(),
         instanceName: next.instanceName.trim() || null,
         retentionDays: Number(next.retentionDays) || 0,
         retentionMaxCount: Number(next.retentionMaxCount) || 0,
@@ -1264,8 +1289,9 @@ function BackupsCard() {
       <div>
         <h2 className="text-sm font-semibold text-text">Backups</h2>
         <p className="mt-0.5 text-[13px] text-text-2">
-          Daily archives of each opted-in stack’s volumes, shipped to external storage with retention
-          and optional encryption. Which stacks take part is chosen on each stack’s Backups tab.
+          Scheduled archives of each opted-in stack’s volumes, shipped to external storage with
+          retention and optional encryption. Which stacks take part is chosen on each stack’s Backups
+          tab.
         </p>
       </div>
 
@@ -1293,10 +1319,10 @@ function BackupsCard() {
           <CardContent className="flex flex-col gap-5">
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
-                <span className="block text-[13px] font-medium text-text">Daily backup schedule</span>
+                <span className="block text-[13px] font-medium text-text">Backup schedule</span>
                 <span className="mt-0.5 block text-[13px] text-text-2">
-                  Backs up every opted-in stack once per day at the configured time. Manual “Back up
-                  now” works even while this is off.
+                  Runs every opted-in stack on the schedule below. Manual “Back up now” works even
+                  while this is off.
                 </span>
                 {pinnedPath('Watchtower:Backup:Enabled') && (
                   <span className="mt-1 block">
@@ -1308,27 +1334,29 @@ function BackupsCard() {
                 checked={form.enabled}
                 onCheckedChange={v => set('enabled', v)}
                 disabled={isPinned('Watchtower:Backup:Enabled')}
-                aria-label="Enable the daily backup schedule"
+                aria-label="Enable the backup schedule"
               />
             </label>
 
             <div className="grid gap-4 md:grid-cols-2">
               <Field
-                label="Backup time"
-                hint="Server-local, 24h. Pick a quiet window — stacks with “stop stateful containers” briefly stop their stateful services."
+                className="md:col-span-2"
+                label="Schedule"
+                hint="Five-field cron — minute hour day-of-month month day-of-week — in server-local time. Examples: “30 3 * * *” (daily at 03:30), “30 3,15 * * *” (03:30 and 15:30), “0 */6 * * *” (every 6 hours). Pick a quiet window — stacks with “stop stateful containers” briefly stop their stateful services. Each stack can override this on its Backups tab."
               >
                 {({ id }) => (
                   <>
                     <Input
                       id={id}
                       mono
-                      placeholder="03:30"
-                      value={form.time}
-                      onChange={e => set('time', e.target.value)}
-                      disabled={isPinned('Watchtower:Backup:Time')}
+                      placeholder="30 3 * * *"
+                      value={form.cron}
+                      onChange={e => set('cron', e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:Cron')}
                     />
-                    {pinnedPath('Watchtower:Backup:Time') && (
-                      <PinnedNote path="Watchtower:Backup:Time" />
+                    <CronPreview expression={form.cron} />
+                    {pinnedPath('Watchtower:Backup:Cron') && (
+                      <PinnedNote path="Watchtower:Backup:Cron" />
                     )}
                   </>
                 )}
@@ -1373,7 +1401,10 @@ function BackupsCard() {
                   </>
                 )}
               </Field>
-              <Field label="Keep at most (count)" hint="Per stack, oldest deleted first. 0 is unlimited.">
+              <Field
+                label="Keep at most (count)"
+                hint="With several runs per day, the age limit alone keeps runs × days archives — cap the count too. Per stack, oldest deleted first. 0 is unlimited."
+              >
                 {({ id }) => (
                   <>
                     <Input
