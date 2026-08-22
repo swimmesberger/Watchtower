@@ -10,15 +10,22 @@
 # The UI is served on http://localhost:8080. Put it behind an authenticating reverse proxy
 # (e.g. Cloudflare Access, Authelia) — Watchtower itself has no built-in authentication.
 #
-# Built-in reverse proxy (optional): set WATCHTOWER__PROXY__ENABLED=true and Watchtower manages a
-# Caddy container itself (over the Docker socket) that publishes host ports 80/443, terminates TLS
-# with automatic certificates, and routes the domains you add under "Routes" to services inside your
-# stacks over private per-stack networks. Requirements when enabled:
-#   * host ports 80 and 443 must be free (don't run another proxy on them),
+# Built-in reverse proxy (optional): set WATCHTOWER__PROXY__ENABLED=true and Watchtower terminates TLS
+# in its own process, routing the domains you add under "Routes" to services inside your stacks over
+# private per-stack networks. There is no second container and no control network. Requirements when
+# enabled:
+#   * uncomment the 80:8080 and 443:8443 port mappings below. Port 80 is not optional: ACME HTTP-01
+#     validation is how certificates are issued, and the CA reaches it over plain HTTP.
+#   * point each route's DNS at this host before adding it, so the first issuance can validate.
 #   * set WATCHTOWER__PROXY__ADMINEMAIL for Let's Encrypt expiry notices (recommended).
-# Watchtower creates the caddy_data / caddy_config volumes and the proxy networks automatically —
-# no changes to this file are needed. Leave the flag unset to run your own proxy instead.
-# See docs/reverse-proxy/README.md for details and operational notes.
+# Certificates and the ACME account key are written to /data/proxy-certs, so they persist in the data
+# volume below — nothing else to declare. An internal CA (step-ca, ZeroSSL, …) works too: set
+# WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL, plus __ACMECABUNDLEPATH for its root and the EAB pair if
+# it requires one. See docs/reverse-proxy/yarp.md.
+# Two other providers exist: `caddy` (a sibling Caddy container holding the host's ports 80/443) is
+# DEPRECATED and kept for existing installs — docs/reverse-proxy/caddy.md; `cloudflare` routes through
+# a Cloudflare Tunnel and needs no open ports at all — docs/reverse-proxy/cloudflare.md.
+# Leave the flag unset to run your own proxy instead. Start at docs/reverse-proxy/README.md.
 services:
   watchtower:
     image: swimmes/watchtower:latest
@@ -26,6 +33,12 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      # Built-in reverse proxy (opt-in): publish the ingress ports — 80 must be reachable for ACME
+      # HTTP-01, 443 carries the routed traffic.
+      # - "80:8080"
+      # - "443:8443"
+      # The container's own ports are set by Kestrel__Endpoints__Http__Url (8080) and
+      # Kestrel__Endpoints__ProxyHttps__Url (8443); ASPNETCORE_URLS no longer applies to this image.
     volumes:
       - watchtower-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -39,9 +52,11 @@ services:
       # Enable the background "update available" checkers (opt-in — generate registry traffic):
       # WATCHTOWER__AUTOCHECKENABLED: "true"
       # WATCHTOWER__STACKCHECKENABLED: "true"
-      # Built-in Caddy reverse proxy (opt-in) — see the header comment. Needs host ports 80/443 free.
+      # Built-in reverse proxy (opt-in) — needs the 80/443 port mappings above.
       # WATCHTOWER__PROXY__ENABLED: "true"
       # WATCHTOWER__PROXY__ADMINEMAIL: you@example.com
+      # WATCHTOWER__PROXY__PROVIDER: yarp   # yarp (default) | caddy (deprecated) | cloudflare
+      # WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL: https://acme-v02.api.letsencrypt.org/directory
       # Host metrics (opt-in) — needs the /proc mount above; see docs/host-metrics.md.
       # WATCHTOWER_HOST_PROC: /host/proc
       # Metrics history is ON by default (persisted into the data volume, ~30 days; ADR-0013).

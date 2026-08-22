@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
 using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
+using Watchtower.Api.Proxy;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -96,6 +97,17 @@ RuntimeSettingsLayering.MakeEnvironmentWin(
 // git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
 
+// The in-process proxy's request path (ADR-0020): YARP's direct forwarder and the singleton
+// client it forwards on. Registered unconditionally — the proxy provider is switchable from Settings at
+// runtime, and neither the container nor the pipeline is rebuilt for that.
+builder.Services.AddWatchtowerProxyForwarding();
+
+// The in-process reverse proxy's TLS listener (ADR-0020): a second Kestrel endpoint that
+// picks its certificate per connection from the SNI name. Only added where one is configured — the
+// shipped container sets Kestrel__Endpoints__ProxyHttps__Url; development, Aspire and the integration
+// tests never do, so the host they boot is unchanged.
+ProxyHttpsEndpoint.Configure(builder);
+
 // Elarion framework composition:
 //   AddElarion          — every enabled module's handlers, [Service] impls, [ScheduledJob] descriptors,
 //                         and source-generated JSON contexts.
@@ -150,6 +162,11 @@ if (authEnabled) {
 // self-inflicted denial of service, not an escalation. Only the proto header is processed — X-Forwarded-For
 // and -Host are deliberately left alone so nothing downstream can be fooled about the client address or
 // the host name.
+//
+// None of this governs a request the in-process proxy handles (ADR-0020): that dispatcher runs
+// *before* this middleware, so its scheme decisions come from the real connection rather than from a header
+// a client could write, and it stamps the X-Forwarded-* trio itself on the one thing it hands back to this
+// pipeline — the /.watchtower/* callback and logout served on an app's own domain.
 builder.Services.Configure<ForwardedHeadersOptions>(o => {
     o.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
     // KnownIPNetworks, not the deprecated KnownNetworks (ASPDEPR005).
@@ -162,8 +179,22 @@ var app = builder.Build();
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
 
-// First in the pipeline: everything after it — including the cookie issuance in the login endpoint —
-// must see the corrected scheme.
+// ACME HTTP-01 challenges, for any host and over either scheme (ADR-0020). Ahead of the host
+// dispatcher so a challenge is never forwarded to an upstream and never redirected to HTTPS — the CA calls
+// it over plain HTTP by definition, and either outcome would fail the validation.
+app.UseAcmeHttpChallenge();
+
+// The in-process proxy's host dispatch: a request whose Host is in the route table is access-checked and
+// forwarded to its container instead of entering the pipeline below. Deliberately before
+// UseForwardedHeaders — its scheme decisions have to come from the real connection.
+app.UseYarpHostDispatch();
+
+// Record what the host actually bound, once it has bound it — the only signal the in-process proxy has
+// about its own data plane, since there is no container to inspect.
+ProxyListenerStateInitializer.Register(app);
+
+// First in the pipeline for everything Watchtower serves itself: everything after it — including the
+// cookie issuance in the login endpoint — must see the corrected scheme.
 app.UseForwardedHeaders();
 
 // Allow the cross-origin Vite dev server to call the API (development only).
@@ -228,6 +259,12 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
             .SetProperty(e => e.FinishedAt, DateTimeOffset.UtcNow)
             .SetProperty(e => e.Output,
                 e => (e.Output ?? "") + "\n[Reset: process restarted while backup was in progress]"));
+
+    // ADR-0020's upgrade guard: an instance that was serving routes under the old implicit `caddy`
+    // default is pinned to caddy once, so the default flip cannot switch a working proxy silently.
+    // Here rather than in a hosted service so the ordering is stated rather than inherited: after the
+    // migration (it reads the routes table) and before app.RunAsync() starts the proxy providers.
+    await scope.ServiceProvider.GetRequiredService<ProxyProviderMigration>().RunAsync();
 }
 
 namespace Watchtower.Api {

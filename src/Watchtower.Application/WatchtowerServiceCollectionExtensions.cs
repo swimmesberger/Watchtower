@@ -15,6 +15,8 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
 
@@ -94,12 +96,14 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy (ADR-0015) — two providers behind one runtime router, mirroring the metrics
-        // backend (ADR-0007): Caddy (host ports 80/443, automatic TLS) and Cloudflare Tunnel
-        // (cloudflared + the Cloudflare API). Both are registered unconditionally and hosted so the
-        // active one reconciles on startup (each self-gates on Proxy:Enabled + Proxy:Provider);
-        // consumers inject IProxyProvider and the router resolves the selected backend per call, which
-        // is what makes the provider switchable from the Settings page without a restart.
+        // Reverse proxy — ADR-0015, extended by ADR-0020 for the third provider, which is also the
+        // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):
+        // the in-process proxy (Watchtower binds 80/443 itself, no sibling container), Caddy (a sibling
+        // container on host ports 80/443, automatic TLS — deprecated) and
+        // Cloudflare Tunnel (cloudflared + the Cloudflare API). All three are registered unconditionally and
+        // hosted so the active one reconciles on startup (each self-gates on Proxy:Enabled +
+        // Proxy:Provider); consumers inject IProxyProvider and the router resolves the selected backend
+        // per call, which is what makes the provider switchable from the Settings page without a restart.
         // The general audit trail (audit.listEvents). Singleton — its writers are the singleton
         // providers; TryAdd so tests can substitute a recording double.
         services.TryAddSingleton<AuditLog>();
@@ -109,7 +113,43 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CloudflareApiClient>();
         services.AddSingleton<CloudflareTunnelProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
+        // In-process provider: the routing table and the listener outcome are process state the request
+        // path reads, so both are singletons independent of whether the provider is the active one.
+        services.AddSingleton<ProxyRouteTable>();
+        services.AddSingleton<YarpListenerState>();
+        services.AddSingleton<RouteStatusUpdater>();
+        // The live HTTP-01 challenge answers. Registered unconditionally, like the table above: the
+        // middleware that reads it is in the pipeline whatever the provider is, and an empty store simply
+        // answers 404.
+        services.AddSingleton<AcmeHttpChallengeStore>();
+        // A/AAAA resolution, shared by proxy.checkDns and the issuer's preflight so the operator's
+        // "check DNS" button and the certificate machinery cannot come to different answers.
+        services.AddSingleton<DnsPreflight>();
+        // Certificate issuance (ADR-0020): the protocol half, and the background loop that schedules it.
+        // TryAdd on the transport so a test can substitute an in-process CA's message handler.
+        services.TryAddSingleton<IAcmeTransportFactory, AcmeTransportFactory>();
+        services.AddSingleton<CertificateIssuer>();
+        services.AddSingleton<CertificateManager>();
+        services.AddSingleton<IProxyCertificateManager>(sp => sp.GetRequiredService<CertificateManager>());
+        services.AddHostedService(sp => sp.GetRequiredService<CertificateManager>());
+        services.AddSingleton<YarpProxyProvider>();
+        services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
+        // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0020). Scoped because it
+        // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.
+        services.AddScoped<ProxyProviderMigration>();
+
+        // Where the in-process proxy keeps its issued certificates and ACME account key. Created up
+        // front for the same reason Auth:KeyPath is below: the certificate store is opened over this
+        // directory, and a path the process cannot write is worth failing on at startup rather than at
+        // the first issuance. Bind-time, hence read straight off configuration.
+        var certPath = section.GetValue<string>("Proxy:Yarp:CertPath");
+        if (string.IsNullOrWhiteSpace(certPath)) certPath = new YarpProxyOptions().CertPath;
+        Directory.CreateDirectory(certPath);
+        // The store opened over that directory. Registered unconditionally (like the rest of the proxy
+        // services) but only ever resolved by the host's HTTPS endpoint, which exists only where one is
+        // configured — so nothing reads the directory in development or under WebApplicationFactory.
+        services.AddSingleton<CertificateStore>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and
@@ -159,6 +199,13 @@ public static class WatchtowerServiceCollectionExtensions {
         // Login sessions (design.md §4): revocable database rows behind the __wt_sso cookie. Scoped, like
         // the context it writes through. Registered unconditionally — it is inert until something logs in.
         services.AddScoped<AuthSessionService>();
+
+        // The forward-auth decision (design.md §5): may this request enter that app, and as whom. Scoped
+        // like the context it reads through, and registered unconditionally alongside the other auth
+        // services: nothing resolves it while Auth:Enabled is false — the verify endpoint is mapped as a
+        // bare 404 in that mode. Shared with the in-process proxy so the two transports cannot come to
+        // different verdicts — ADR-0020.
+        services.AddScoped<AccessVerifier>();
 
         // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it
         // writes through. Registered unconditionally and inert until an account enrols.

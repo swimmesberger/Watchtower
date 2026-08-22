@@ -1,99 +1,95 @@
-# Built-in reverse proxy
+# Reverse proxy
 
-Watchtower can terminate TLS and route public domains to services inside your stacks, so every
-container stays internal to Docker and only the proxy is exposed. It uses **Caddy** for automatic
-HTTPS.
+Watchtower can put a public domain in front of a service inside one of your stacks, so every
+application container stays internal to Docker and only the ingress is exposed. **Three providers**
+serve the same route table; pick one and the rest of the feature — routing, multi-tenancy, access
+control — works the same way.
 
-The feature is **opt-in**. When it is off, none of the behavior below happens.
+The feature is **opt-in**. While it is off, routes are stored and nothing is served.
 
-This document covers the **Caddy** provider — the default. The same route table can instead be served
-through a **Cloudflare Tunnel** (no open ports, TLS at Cloudflare's edge): see
-[cloudflare.md](cloudflare.md) and [ADR-0015](../decisions/0015-proxy-provider-abstraction.md).
+| Provider | What it is | Guide |
+| --- | --- | --- |
+| **`yarp`** (default) | Watchtower terminates 80/443 in its own process and issues its own certificates over ACME. No second container. | [yarp.md](yarp.md) |
+| `caddy` *(deprecated)* | A sibling Caddy container Watchtower manages, holding the host's ports 80/443. Kept for existing installs. | [caddy.md](caddy.md) |
+| `cloudflare` | A Cloudflare Tunnel: outbound only, no open ports, TLS at Cloudflare's edge, access gated by Zero Trust. | [cloudflare.md](cloudflare.md) |
 
-- Design & rationale: [implementation-plan.md](implementation-plan.md)
-- Framework notes: [elarion-framework-notes.md](elarion-framework-notes.md)
+Background: [ADR-0015](../decisions/0015-proxy-provider-abstraction.md) (the provider seam) and
+[ADR-0020](../decisions/0020-in-process-yarp-proxy.md) (the in-process provider and the default flip).
 
-## Enabling it
+## The route table is the source of truth
 
-Make sure host ports 80 and 443 are free, then either flip **Settings → Reverse proxy** in the UI
-(applies immediately, no restart — disabling stops and removes the managed Caddy container while
-keeping networks and issued certificates), or pin it via environment variables:
+A **route** is a domain plus a target: a compose service in one of your stacks and a container port.
+You add them in the **Routes** UI (`/routes`); every provider is a projection of that one table, so
+switching providers does not mean re-entering anything. Each route also carries its **access mode**
+(Public / Authenticated / Restricted) and, for the two certificate-issuing providers, whether it is
+served over TLS.
+
+Route status (`Pending`, `Awaiting DNS`, `Active`, `Error`) reports the certificate state, and how much
+that is worth depends on the provider. Under the **built-in provider it is authoritative**: Watchtower
+issues the certificates itself, so the status, the expiry and the last error all come from its own
+certificate store, and the Routes page gains a **Certificates** card listing them per host with a
+"Renew now" button. Under **Caddy** it is only indicative — Caddy owns the certificates and does not
+report their state back. Under **Cloudflare** TLS terminates at the edge, so the per-route TLS flag
+controls nothing.
+
+## Shared network topology
+
+Whichever provider is active, the wiring below it is the same and is created automatically — you do
+not declare networks anywhere:
+
+| Network | Members | Purpose |
+| --- | --- | --- |
+| `watchtower-ingress-{stackId}` | The active proxy + that stack's routed containers | Ingress traffic only; **one per stack**, so tenants cannot reach each other at L2. |
+| `watchtower-control` | Caddy + Watchtower | *Caddy only.* Its admin API and the on-demand-TLS callback, off the public path. The other two providers have no control plane. |
+
+Each routed container joins its stack's ingress network under the stable alias
+`{project}-{service}`, and the proxy reaches it as `{project}-{service}:{port}`. Your services never
+need `ports:` in their own compose files.
+
+Note what this means for the built-in provider: **Watchtower's own container joins every ingress
+network**, because it *is* the proxy. That is a deliberate exposure change from the Caddy topology —
+see the consequences section of [ADR-0020](../decisions/0020-in-process-yarp-proxy.md).
+
+## Choosing a provider
 
 ```yaml
 environment:
   WATCHTOWER__PROXY__ENABLED: "true"
-  WATCHTOWER__PROXY__ADMINEMAIL: you@example.com   # recommended, for Let's Encrypt notices
-  # WATCHTOWER__PROXY__CADDYIMAGE: "caddy:2"        # optional override, defaults to caddy:2
+  WATCHTOWER__PROXY__PROVIDER: yarp   # yarp (default) | caddy (deprecated) | cloudflare
 ```
 
-Env vars win over the UI ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)): a setting
-supplied this way shows as pinned (read-only) on the Settings page until the variable is removed.
+Or pick it under **Settings → Reverse proxy**, which applies immediately: switching tears the old
+provider's data plane down and reconciles the new one, with no restart. Teardown removes only that
+provider's own plane — Caddy keeps its certificates, Cloudflare keeps the tunnel and its DNS records.
 
-That's the whole setup. **You do not add Caddy to any compose file.** Watchtower already has the
-Docker socket and the host docker GID (which it needs anyway), and that is all it requires.
+Environment variables win over the UI ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)): a
+setting supplied that way shows as pinned and read-only on the Settings page until the variable is
+removed.
 
-## Watchtower auto-deploys and manages Caddy
-
-You do not run Caddy yourself — Watchtower creates and supervises it over the Docker socket, the same
-way it manages the self-update coordinator, but long-lived. On startup (and whenever it reconciles) it:
-
-1. **Pulls** `caddy:2` if the image is missing.
-2. **Creates** a container named **`watchtower-caddy`**:
-   - publishes host ports **80** and **443** (tcp, plus 443/udp for HTTP/3),
-   - mounts two **named volumes** — `caddy_data` (`/data`, certificates & ACME state) and
-     `caddy_config` (`/config`, autosaved config),
-   - restart policy `unless-stopped`,
-   - attached to the private `watchtower-control` network.
-3. **Starts** it, connects the routed service containers to their per-stack ingress network, and
-   pushes the generated config via Caddy's admin API.
-
-The named volumes and all networks are **created automatically** by the Docker daemon on first use —
-you don't declare any of them anywhere. Nothing in `deploy/docker/docker-compose.yml` needs to change
-(the comments there only document the opt-in).
-
-### Networks
-
-| Network | Members | Purpose |
-| --- | --- | --- |
-| `watchtower-control` | Caddy + Watchtower | Admin API (config push) and the on-demand-TLS callback — off the public path. |
-| `watchtower-ingress-{stackId}` | Caddy + that stack's routed containers | Ingress traffic only; one per stack, so tenants can't reach each other. |
-
-Only Caddy publishes host ports; your services never need `ports:` in their compose.
-
-## How routing and TLS work
-
-- Add routes in the **Routes** UI (`/routes`): a domain → a compose service + port. Watchtower stores
-  the route, joins the target container to the stack's ingress network under a stable alias, and
-  reloads Caddy.
-- **Managed subdomains** get a certificate issued proactively (HTTP-01). Point the domain's DNS at the
-  host first; the built-in DNS preflight helps you check.
-- **Customer-owned custom domains** use Caddy's **on-demand TLS**, gated by Watchtower's
-  `GET /api/proxy/ask` endpoint, which authorizes a certificate only for domains that exist in the
-  route table.
-- Config is pushed to Caddy's admin API (`/load`) for a **zero-downtime reload** — no restart, no
-  shared config file.
+**Upgrading from before ADR-0020:** an instance that has routes and never named a provider is pinned
+to `caddy` once, at the first start after the upgrade — it keeps running exactly as it did, and the
+change is logged and recorded in the audit trail. Fresh installations get the built-in provider, and
+an internal marker written on that first start makes sure they are never pinned later, once they have
+routes of their own. Moving an existing install over is a deliberate act: see
+[caddy.md](caddy.md) for both halves of this.
 
 ## Multi-tenancy
 
 Use the **Templates** UI (`/templates`) to run the same stack once per tenant, each on its own
-subdomain (`{tenant}.example.com`), fully isolated (own containers, network, and volumes). Adding a
-tenant creates an isolated stack, merges the template's base env with per-tenant overrides, creates the
-managed route, and deploys.
+subdomain (`{tenant}.example.com`), fully isolated — own containers, network and volumes. Adding a
+tenant creates the isolated stack, merges the template's base environment with per-tenant overrides,
+creates the managed route, and deploys. This is provider-independent.
 
-## Operational notes & current limitations
+## Access control
 
-- **Lifecycle is Watchtower's.** On restart it reconciles: a healthy `watchtower-caddy` is reused; a
-  stale one is removed and recreated. If you `docker rm` it, Watchtower brings it back on the next
-  reconcile.
-- **It's a sibling container**, not part of your Watchtower compose project — it appears as a
-  standalone `watchtower-caddy` container on the host.
-- **Disabling the proxy does not tear Caddy down.** Setting `WATCHTOWER__PROXY__ENABLED=false` stops
-  Watchtower from managing/reconciling it, but an already-running `watchtower-caddy` keeps running until
-  you remove it manually: `docker rm -f watchtower-caddy`.
-- **Caddy image upgrades are not automated.** The image is pulled only when the container is missing.
-  To move to a newer Caddy, remove the container so it is recreated from a freshly pulled image.
-- **Ports 80/443 must be free.** If you already run a proxy there, leave the feature off and keep your
-  own. (A "bring-your-own-Caddy, Watchtower only generates config" mode is not wired up today — the
-  config/reload path targets the container Watchtower manages.)
-- **Route status is indicative.** Live certificate-state readback from Caddy is a planned follow-up; a
-  route may show `pending` until it is refreshed.
+With authentication enabled, a route can be gated centrally: Public, any authenticated user, or
+selected users and groups — with a signed identity forwarded to the application. The decision core is
+shared by the providers that run it in front of your apps, so `yarp` and `caddy` reach identical
+verdicts; under `cloudflare`, access belongs to Zero Trust instead. See
+[docs/central-auth/README.md](../central-auth/README.md).
+
+## Also here
+
+- [implementation-plan.md](implementation-plan.md) — the original design and rationale for the route
+  table and the Caddy engine.
+- [elarion-framework-notes.md](elarion-framework-notes.md) — framework notes gathered while building it.

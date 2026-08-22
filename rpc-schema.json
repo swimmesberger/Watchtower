@@ -3815,6 +3815,47 @@
               "caddyImage": {
                 "type": "string"
               },
+              "yarp": {
+                "type": "object",
+                "properties": {
+                  "certPath": {
+                    "type": "string"
+                  },
+                  "acmeDirectoryUrl": {
+                    "type": "string"
+                  },
+                  "acmeCaBundlePath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "acmeEabKeyId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasAcmeEabHmacKey": {
+                    "type": "boolean"
+                  },
+                  "redirectHttpToHttps": {
+                    "type": "boolean"
+                  },
+                  "httpsListenerBound": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "certPath",
+                  "acmeDirectoryUrl",
+                  "acmeCaBundlePath",
+                  "acmeEabKeyId",
+                  "hasAcmeEabHmacKey",
+                  "redirectHttpToHttps",
+                  "httpsListenerBound"
+                ]
+              },
               "cloudflare": {
                 "type": "object",
                 "properties": {
@@ -3894,6 +3935,7 @@
               "provider",
               "adminEmail",
               "caddyImage",
+              "yarp",
               "cloudflare",
               "pinnedPaths"
             ]
@@ -4013,13 +4055,112 @@
           },
           "provider": {
             "type": "string"
+          },
+          "providerDetail": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "enabled",
           "caddyRunning",
           "routeCount",
-          "provider"
+          "provider",
+          "providerDetail"
+        ]
+      }
+    },
+    "proxy.listCertificates": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "certificates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "routeId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "notBefore": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "notAfter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "issuer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nextAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "consecutiveFailures": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "host",
+                "source",
+                "routeId",
+                "state",
+                "notBefore",
+                "notAfter",
+                "issuer",
+                "lastAttemptAt",
+                "lastError",
+                "nextAttemptAt",
+                "consecutiveFailures"
+              ]
+            }
+          }
+        },
+        "required": [
+          "certificates"
         ]
       }
     },
@@ -4186,6 +4327,103 @@
         ]
       }
     },
+    "proxy.renewCertificate": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "certificate": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "routeId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "notBefore": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "notAfter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "issuer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastAttemptAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nextAttemptAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "consecutiveFailures": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "source",
+              "routeId",
+              "state",
+              "notBefore",
+              "notAfter",
+              "issuer",
+              "lastAttemptAt",
+              "lastError",
+              "nextAttemptAt",
+              "consecutiveFailures"
+            ]
+          }
+        },
+        "required": [
+          "certificate"
+        ]
+      }
+    },
     "proxy.setAccess": {
       "params": {
         "type": "object",
@@ -4305,6 +4543,41 @@
           "caddyImage": {
             "type": "string"
           },
+          "yarpAcmeDirectoryUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeCaBundlePath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeEabKeyId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeEabHmacKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpRedirectHttpToHttps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
           "cloudflareAccountId": {
             "type": [
               "string",
@@ -4418,6 +4691,47 @@
               "caddyImage": {
                 "type": "string"
               },
+              "yarp": {
+                "type": "object",
+                "properties": {
+                  "certPath": {
+                    "type": "string"
+                  },
+                  "acmeDirectoryUrl": {
+                    "type": "string"
+                  },
+                  "acmeCaBundlePath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "acmeEabKeyId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasAcmeEabHmacKey": {
+                    "type": "boolean"
+                  },
+                  "redirectHttpToHttps": {
+                    "type": "boolean"
+                  },
+                  "httpsListenerBound": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "certPath",
+                  "acmeDirectoryUrl",
+                  "acmeCaBundlePath",
+                  "acmeEabKeyId",
+                  "hasAcmeEabHmacKey",
+                  "redirectHttpToHttps",
+                  "httpsListenerBound"
+                ]
+              },
               "cloudflare": {
                 "type": "object",
                 "properties": {
@@ -4497,6 +4811,7 @@
               "provider",
               "adminEmail",
               "caddyImage",
+              "yarp",
               "cloudflare",
               "pinnedPaths"
             ]

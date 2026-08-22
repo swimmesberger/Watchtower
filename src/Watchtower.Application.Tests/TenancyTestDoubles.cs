@@ -106,22 +106,39 @@ internal sealed class StubComposeCliService()
 }
 
 /// <summary>
-/// A Caddy manager that counts config reloads and samples <see cref="StackProbe"/> as it does. The real
-/// one no-ops while the proxy is disabled — which is how every test host runs it — so counting is the
-/// only way to see that a reload was asked for, and the sample is how "reloaded once the routes had
-/// actually cascaded away" is distinguished from "reloaded while they were still being served".
+/// A proxy provider that records what was asked of it and samples <see cref="StackProbe"/> as it does.
+/// Every real provider no-ops while the proxy is disabled — which is how every test host runs it — so
+/// counting is the only way to see that a reload was asked for, and the sample is how "reloaded once the
+/// routes had actually cascaded away" is distinguished from "reloaded while they were still being served".
 /// </summary>
-internal sealed class RecordingCaddyManager(
-    IServiceScopeFactory scopeFactory,
-    DockerEngineClient docker,
-    ProxyIngressNetworks networks,
-    IOptionsMonitor<WatchtowerOptions> options,
-    ILogger<CaddyManager> logger)
-    : CaddyManager(scopeFactory, docker, networks, options, logger) {
+/// <remarks>
+/// Deliberately an <see cref="IProxyProvider"/> rather than a subclass of one provider: it stands in for
+/// whichever backend <c>Proxy:Provider</c> selects, so a test asserting that a write asked <em>the proxy</em>
+/// to reconcile keeps testing that contract rather than which provider is this release's default.
+/// </remarks>
+internal sealed class RecordingProxyProvider : IProxyProvider {
     private int _applyCount;
+    private readonly List<(string Domain, string? Actor)> _forgotten = [];
+    private readonly List<int> _connectedStacks = [];
 
     /// <summary>How many times a proxy reload was requested.</summary>
     public int ApplyCount => Volatile.Read(ref _applyCount);
+
+    /// <summary>The domains a route delete asked the provider to forget, with the recorded actor.</summary>
+    public IReadOnlyList<(string Domain, string? Actor)> Forgotten {
+        get { lock (_forgotten) return [.. _forgotten]; }
+    }
+
+    /// <summary>The stacks whose routed containers were joined to their ingress network.</summary>
+    public IReadOnlyList<int> ConnectedStacks {
+        get { lock (_connectedStacks) return [.. _connectedStacks]; }
+    }
+
+    /// <summary>What <see cref="IsRunningAsync"/> answers. False, like a proxy nothing started.</summary>
+    public bool Running { get; set; }
+
+    /// <summary>What <see cref="Enabled"/> answers.</summary>
+    public bool Enabled { get; set; }
 
     /// <summary>Reports whether the tenant's stack row still exists; sampled on each reload.</summary>
     public Func<bool>? StackProbe { get; set; }
@@ -129,9 +146,22 @@ internal sealed class RecordingCaddyManager(
     /// <summary>What <see cref="StackProbe"/> said at the last reload; null when never called.</summary>
     public bool? StackExistedAtApply { get; private set; }
 
-    public override Task ApplyAsync(CancellationToken ct = default) {
+    public Task ApplyAsync(CancellationToken ct = default) {
         Interlocked.Increment(ref _applyCount);
         StackExistedAtApply = StackProbe?.Invoke();
         return Task.CompletedTask;
     }
+
+    public Task ForgetDomainAsync(string domain, string? actor, CancellationToken ct = default) {
+        lock (_forgotten) _forgotten.Add((domain, actor));
+        return Task.CompletedTask;
+    }
+
+    public Task ConnectStackAsync(int stackId, CancellationToken ct = default) {
+        lock (_connectedStacks) _connectedStacks.Add(stackId);
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> IsRunningAsync(CancellationToken ct = default) => Task.FromResult(Running);
 }
+

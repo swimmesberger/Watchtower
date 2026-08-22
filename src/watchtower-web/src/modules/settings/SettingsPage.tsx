@@ -646,16 +646,27 @@ function MetricsCard() {
 
 // ── Reverse proxy card (runtime-switchable, no restart) ───────────────────────
 
+/** Complete, so a stored provider always has a label to render — including one not offered below. */
 const PROVIDER_LABELS: Record<ProxyProvider, string> = {
-  caddy: 'Caddy (built-in, ports 80/443)',
+  yarp: 'Built-in (in-process, ports 80/443)',
+  caddy: 'Caddy container (deprecated)',
   cloudflare: 'Cloudflare Tunnel (no open ports)',
 }
+
+/** What the picker offers, default first — the same order the backend accepts them in. */
+const SELECTABLE_PROVIDERS: ProxyProvider[] = ['yarp', 'caddy', 'cloudflare']
 
 interface ProxyDraft {
   enabled: boolean
   provider: ProxyProvider
   adminEmail: string
   caddyImage: string
+  yarpAcmeDirectoryUrl: string
+  yarpAcmeCaBundlePath: string
+  yarpAcmeEabKeyId: string
+  /** Only sent when non-empty — an empty field keeps the stored key. */
+  yarpAcmeEabHmacKey: string
+  yarpRedirectHttpToHttps: boolean
   cfAccountId: string
   cfZoneId: string
   /** Only sent when non-empty — an empty field keeps the stored token. */
@@ -677,6 +688,11 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     provider: config.provider,
     adminEmail: config.adminEmail ?? '',
     caddyImage: config.caddyImage,
+    yarpAcmeDirectoryUrl: config.yarp.acmeDirectoryUrl,
+    yarpAcmeCaBundlePath: config.yarp.acmeCaBundlePath ?? '',
+    yarpAcmeEabKeyId: config.yarp.acmeEabKeyId ?? '',
+    yarpAcmeEabHmacKey: '',
+    yarpRedirectHttpToHttps: config.yarp.redirectHttpToHttps,
     cfAccountId: config.cloudflare.accountId ?? '',
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
@@ -711,6 +727,18 @@ function ProxyCard() {
         provider: next.provider,
         adminEmail: next.adminEmail.trim() || null,
         caddyImage: next.caddyImage.trim(),
+        // The yarp fields are sent only while the in-process provider is the one selected. The server
+        // validates any value this request supplies, so sending them from a caddy/cloudflare save would
+        // let a stale CA bundle path — a file that vanished across a remount, say — refuse the very two
+        // saves an operator reaches for when the certificate plane is broken: "disable the proxy" and
+        // "switch back to caddy". Omitted, the stored values are simply kept.
+        yarpAcmeDirectoryUrl: next.provider === 'yarp' ? next.yarpAcmeDirectoryUrl.trim() : null,
+        yarpAcmeCaBundlePath: next.provider === 'yarp' ? next.yarpAcmeCaBundlePath.trim() : null,
+        yarpAcmeEabKeyId: next.provider === 'yarp' ? next.yarpAcmeEabKeyId.trim() : null,
+        // Empty also means "keep what is stored", which is how a secret survives a save it did not replace.
+        yarpAcmeEabHmacKey:
+          next.provider === 'yarp' ? next.yarpAcmeEabHmacKey.trim() || null : null,
+        yarpRedirectHttpToHttps: next.provider === 'yarp' ? next.yarpRedirectHttpToHttps : null,
         cloudflareAccountId: next.cfAccountId.trim() || null,
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
@@ -746,8 +774,8 @@ function ProxyCard() {
       <div>
         <h2 className="text-sm font-semibold text-text">Reverse proxy</h2>
         <p className="mt-0.5 text-[13px] text-text-2">
-          How your routes reach the internet: the built-in Caddy proxy or a Cloudflare Tunnel. Changes
-          apply immediately — no restart needed.
+          How your routes reach the internet: the built-in proxy Watchtower runs in its own process, a
+          Caddy container, or a Cloudflare Tunnel. Changes apply immediately — no restart needed.
         </p>
       </div>
 
@@ -797,7 +825,7 @@ function ProxyCard() {
 
             <Field
               label="Provider"
-              hint="Caddy publishes ports 80/443 with automatic TLS. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
+              hint="The built-in provider terminates TLS in Watchtower's own process — publish 80:8080 and 443:8443 on this container. Caddy is deprecated and kept for existing installs; it runs as a sibling container holding the host's ports 80/443. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
             >
               {({ id }) => (
                 <>
@@ -810,7 +838,7 @@ function ProxyCard() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {(Object.keys(PROVIDER_LABELS) as ProxyProvider[]).map(p => (
+                      {SELECTABLE_PROVIDERS.map(p => (
                         <SelectItem key={p} value={p}>
                           {PROVIDER_LABELS[p]}
                         </SelectItem>
@@ -824,28 +852,39 @@ function ProxyCard() {
               )}
             </Field>
 
+            {/* Both certificate-issuing providers register this address with the CA, so it lives
+                above their blocks rather than being duplicated inside each. Cloudflare's edge
+                terminates TLS and never asks for one. */}
+            {form.provider !== 'cloudflare' && (
+              <Field
+                label="ACME email"
+                hint="Registered with the certificate authority for expiry notices."
+              >
+                {({ id }) => (
+                  <>
+                    <Input
+                      id={id}
+                      mono
+                      placeholder="ops@example.com"
+                      value={form.adminEmail}
+                      onChange={e => set('adminEmail', e.target.value)}
+                      disabled={isPinned('Watchtower:Proxy:AdminEmail')}
+                    />
+                    {pinnedPath('Watchtower:Proxy:AdminEmail') && (
+                      <PinnedNote path="Watchtower:Proxy:AdminEmail" />
+                    )}
+                  </>
+                )}
+              </Field>
+            )}
+
             {form.provider === 'caddy' && (
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field
-                  label="ACME email"
-                  hint="Registered with the certificate authority for expiry notices. Optional but recommended."
-                >
-                  {({ id }) => (
-                    <>
-                      <Input
-                        id={id}
-                        mono
-                        placeholder="ops@example.com"
-                        value={form.adminEmail}
-                        onChange={e => set('adminEmail', e.target.value)}
-                        disabled={isPinned('Watchtower:Proxy:AdminEmail')}
-                      />
-                      {pinnedPath('Watchtower:Proxy:AdminEmail') && (
-                        <PinnedNote path="Watchtower:Proxy:AdminEmail" />
-                      )}
-                    </>
-                  )}
-                </Field>
+              <div className="flex flex-col gap-4">
+                <p className="text-[13px] text-text-2">
+                  The Caddy provider is deprecated and kept for installations already running on it.
+                  The built-in provider does the same job in Watchtower's own process — no sibling
+                  container, no control network, and route status reflects real certificate state.
+                </p>
                 <Field
                   label="Caddy image"
                   hint="Applies when the proxy container is next recreated (e.g. after disabling and re-enabling)."
@@ -866,6 +905,161 @@ function ProxyCard() {
                     </>
                   )}
                 </Field>
+              </div>
+            )}
+
+            {form.provider === 'yarp' && (
+              <div className="flex flex-col gap-4">
+                {form.enabled && data && !data.yarp.httpsListenerBound && (
+                  <Banner tone="warn" title="HTTPS listener not bound">
+                    Routes resolve and are served, but over plain HTTP only. The listener's port comes
+                    from <span className="font-mono">Kestrel__Endpoints__ProxyHttps__Url</span> in the
+                    image and has to be published — map <span className="font-mono">443:8443</span> on
+                    Watchtower's container (and <span className="font-mono">80:8080</span>, which ACME
+                    HTTP-01 validation needs).
+                  </Banner>
+                )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="HTTPS listener"
+                    hint="Published as 443:8443 on Watchtower's container; the port itself comes from Kestrel__Endpoints__ProxyHttps__Url in the image."
+                  >
+                    {({ id }) => (
+                      <p id={id} className="text-[13px] text-text-2">
+                        {data?.yarp.httpsListenerBound
+                          ? 'Bound'
+                          : 'Not bound — routes are served over plain HTTP only'}
+                      </p>
+                    )}
+                  </Field>
+                  <Field
+                    label="Certificate directory"
+                    hint="Set at startup; certificates live here inside the data volume."
+                  >
+                    {({ id }) => (
+                      <p id={id} className="font-mono text-[13px] text-text-2">
+                        {data?.yarp.certPath}
+                      </p>
+                    )}
+                  </Field>
+                </div>
+
+                <Field
+                  label="ACME directory URL"
+                  hint="Use https://acme-staging-v02.api.letsencrypt.org/directory while testing — staging certificates are untrusted but the rate limits are far higher. Any RFC 8555 CA works, including an on-premises step-ca."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="https://acme-v02.api.letsencrypt.org/directory"
+                        value={form.yarpAcmeDirectoryUrl}
+                        onChange={e => set('yarpAcmeDirectoryUrl', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:Yarp:AcmeDirectoryUrl')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:Yarp:AcmeDirectoryUrl') && (
+                        <PinnedNote path="Watchtower:Proxy:Yarp:AcmeDirectoryUrl" />
+                      )}
+                    </>
+                  )}
+                </Field>
+
+                <Field
+                  label="ACME CA bundle path"
+                  hint="Absolute path to a PEM file of roots to trust in addition to the system store, when the directory above is an internal CA whose root this image doesn't ship. Leave empty for Let's Encrypt."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="/data/acme-ca.pem"
+                        value={form.yarpAcmeCaBundlePath}
+                        onChange={e => set('yarpAcmeCaBundlePath', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:Yarp:AcmeCaBundlePath')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:Yarp:AcmeCaBundlePath') && (
+                        <PinnedNote path="Watchtower:Proxy:Yarp:AcmeCaBundlePath" />
+                      )}
+                    </>
+                  )}
+                </Field>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="EAB key id"
+                    hint="External Account Binding, for a CA that binds accounts to an existing customer record (ZeroSSL, Sectigo, many internal CAs). Set together with the HMAC key, or leave both empty."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="kid-from-your-ca"
+                          value={form.yarpAcmeEabKeyId}
+                          onChange={e => set('yarpAcmeEabKeyId', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Yarp:AcmeEabKeyId')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Yarp:AcmeEabKeyId') && (
+                          <PinnedNote path="Watchtower:Proxy:Yarp:AcmeEabKeyId" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="EAB HMAC key"
+                    hint={
+                      isPinned('Watchtower:Proxy:Yarp:AcmeEabHmacKey')
+                        ? 'The key is set via the environment and cannot be changed here.'
+                        : data?.yarp.hasAcmeEabHmacKey
+                          ? 'A key is stored. Leave blank to keep it; enter a new one to replace it.'
+                          : 'Base64url-encoded, as the CA hands it out.'
+                    }
+                  >
+                    {() => (
+                      <>
+                        <SecretField
+                          value={form.yarpAcmeEabHmacKey}
+                          copyable={false}
+                          placeholder={
+                            data?.yarp.hasAcmeEabHmacKey ? '••••••••  (stored)' : 'Paste the HMAC key'
+                          }
+                          onChange={v => set('yarpAcmeEabHmacKey', v)}
+                          readOnly={isPinned('Watchtower:Proxy:Yarp:AcmeEabHmacKey')}
+                          aria-label="ACME EAB HMAC key"
+                        />
+                        {pinnedPath('Watchtower:Proxy:Yarp:AcmeEabHmacKey') && (
+                          <PinnedNote path="Watchtower:Proxy:Yarp:AcmeEabHmacKey" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <label className="flex items-start justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-text">
+                      Redirect HTTP to HTTPS
+                    </span>
+                    <span className="mt-0.5 block text-[13px] text-text-2">
+                      Turn this off only when another TLS terminator (a load balancer, a cloud ingress)
+                      sits in front of Watchtower and already speaks HTTPS to the visitor — redirecting
+                      again would loop.
+                    </span>
+                    {pinnedPath('Watchtower:Proxy:Yarp:RedirectHttpToHttps') && (
+                      <span className="mt-1 block">
+                        <PinnedNote path="Watchtower:Proxy:Yarp:RedirectHttpToHttps" />
+                      </span>
+                    )}
+                  </span>
+                  <Switch
+                    checked={form.yarpRedirectHttpToHttps}
+                    onCheckedChange={v => set('yarpRedirectHttpToHttps', v)}
+                    disabled={isPinned('Watchtower:Proxy:Yarp:RedirectHttpToHttps')}
+                    aria-label="Redirect HTTP to HTTPS"
+                  />
+                </label>
               </div>
             )}
 

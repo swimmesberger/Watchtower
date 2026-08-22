@@ -24,18 +24,18 @@ public sealed class TenantTeardownServiceTests {
         var templateId = await host.AddTemplateAsync("billing");
         var stackId = await SeedTenantAsync(host, templateId, "acme");
 
-        var (result, compose, caddy) = await TeardownAsync(host, templateId, "acme", probeStackId: stackId);
+        var (result, compose, proxy) = await TeardownAsync(host, templateId, "acme", probeStackId: stackId);
 
         Assert.Equal(TenantTeardownStatus.Removed, result.Status);
         Assert.Equal([("billing-acme", false)], compose.Downs);
-        Assert.Equal(1, caddy.ApplyCount);
+        Assert.Equal(1, proxy.ApplyCount);
 
         // The order, not just the outcome. Compose was asked to bring the project down while the row
         // that names that project still existed, and the proxy was reloaded only once it was gone —
         // deleting first would strand containers nothing names, reloading first would drop the route
         // while it was still being served.
         Assert.True(compose.StackExistedAtDown);
-        Assert.False(caddy.StackExistedAtApply);
+        Assert.False(proxy.StackExistedAtApply);
 
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
@@ -69,15 +69,15 @@ public sealed class TenantTeardownServiceTests {
         var templateId = await host.AddTemplateAsync("billing");
         var stackId = await SeedTenantAsync(host, templateId, "acme");
 
-        var (result, compose, caddy) = await TeardownAsync(
+        var (result, compose, proxy) = await TeardownAsync(
             host, templateId, "acme", downExitCode: 1, probeStackId: stackId);
 
         Assert.Equal(TenantTeardownStatus.ComposeDownFailed, result.Status);
         Assert.Single(compose.Downs);
         // The row was still there when compose was called, and nothing after it ran.
         Assert.True(compose.StackExistedAtDown);
-        Assert.Equal(0, caddy.ApplyCount);
-        Assert.Null(caddy.StackExistedAtApply);
+        Assert.Equal(0, proxy.ApplyCount);
+        Assert.Null(proxy.StackExistedAtApply);
 
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
@@ -97,11 +97,11 @@ public sealed class TenantTeardownServiceTests {
         var stackId = await SeedTenantAsync(host, templateId, "acme");
         await host.AddDeployEventAsync(stackId, status);
 
-        var (result, compose, caddy) = await TeardownAsync(host, templateId, "acme");
+        var (result, compose, proxy) = await TeardownAsync(host, templateId, "acme");
 
         Assert.Equal(TenantTeardownStatus.DeployActive, result.Status);
         Assert.Empty(compose.Downs);
-        Assert.Equal(0, caddy.ApplyCount);
+        Assert.Equal(0, proxy.ApplyCount);
 
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
@@ -181,17 +181,17 @@ public sealed class TenantTeardownServiceTests {
     /// moment they are called, which is what turns the ordering from an implication of the end state
     /// into something a test can actually fail on.
     /// </summary>
-    private static async Task<(TenantTeardownResult Result, StubComposeCliService Compose, RecordingCaddyManager Caddy)>
+    private static async Task<(TenantTeardownResult Result, StubComposeCliService Compose, RecordingProxyProvider Proxy)>
         TeardownAsync(
             AuthTestHost host, int templateId, string? slug, bool removeVolumes = false, int downExitCode = 0,
             int? probeStackId = null) {
         await using var scope = host.Services.CreateAsyncScope();
         var compose = new StubComposeCliService { DownExitCode = downExitCode };
-        var caddy = ActivatorUtilities.CreateInstance<RecordingCaddyManager>(scope.ServiceProvider);
+        var proxy = new RecordingProxyProvider();
 
         if (probeStackId is { } id) {
             compose.StackProbe = Probe;
-            caddy.StackProbe = Probe;
+            proxy.StackProbe = Probe;
 
             bool Probe() {
                 // A scope of its own: the teardown's context is mid-call, and this must read committed
@@ -204,10 +204,10 @@ public sealed class TenantTeardownServiceTests {
 
         var service = new TenantTeardownService(
             scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>(),
-            compose, caddy, NullLogger<TenantTeardownService>.Instance);
+            compose, proxy, NullLogger<TenantTeardownService>.Instance);
 
         var result = await service.TeardownAsync(
             templateId, slug, removeVolumes, TestContext.Current.CancellationToken);
-        return (result, compose, caddy);
+        return (result, compose, proxy);
     }
 }

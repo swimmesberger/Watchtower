@@ -23,6 +23,7 @@ import type {
   AddTenantRequest,
   CiRepo,
   StackCi,
+  CertificateInfo,
   CreateCredentialRequest,
   CreateRealmRequest,
   CreateRegistryRequest,
@@ -249,6 +250,10 @@ export const api = {
     },
     checkDns: async (domain: string) =>
       (await rpc('proxy.checkDns', { domain })) as DnsCheckResult,
+    listCertificates: async () =>
+      (await rpc('proxy.listCertificates', {})).certificates as CertificateInfo[],
+    renewCertificate: async (host: string) =>
+      (await rpc('proxy.renewCertificate', { host })).certificate as CertificateInfo,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
     listCloudflareForeignRoutes: async () =>
       (await rpc('proxy.listCloudflareForeignRoutes', {})) as {
@@ -262,6 +267,11 @@ export const api = {
         provider: data.provider,
         adminEmail: data.adminEmail ?? null,
         caddyImage: data.caddyImage,
+        yarpAcmeDirectoryUrl: data.yarpAcmeDirectoryUrl ?? null,
+        yarpAcmeCaBundlePath: data.yarpAcmeCaBundlePath ?? null,
+        yarpAcmeEabKeyId: data.yarpAcmeEabKeyId ?? null,
+        yarpAcmeEabHmacKey: data.yarpAcmeEabHmacKey ?? null,
+        yarpRedirectHttpToHttps: data.yarpRedirectHttpToHttps ?? null,
         cloudflareAccountId: data.cloudflareAccountId ?? null,
         cloudflareZoneId: data.cloudflareZoneId ?? null,
         cloudflareApiToken: data.cloudflareApiToken ?? null,

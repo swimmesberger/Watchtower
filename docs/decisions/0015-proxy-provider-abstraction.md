@@ -1,10 +1,11 @@
 # ADR-0015: Pluggable reverse-proxy provider — built-in Caddy, or a Cloudflare Tunnel
 
-- Status: Accepted
+- Status: Accepted — extended by [ADR-0020](0020-in-process-yarp-proxy.md) (2026-08-22): `yarp` (in
+  process) is the third provider and the default; `caddy` is deprecated.
 - Date: 2026-08-17
 - Related: [ADR-0007](0007-pluggable-metrics-backend.md) (the provider pattern this copies),
   [ADR-0014](0014-env-wins-runtime-settings.md) (the runtime settings this rides on),
-  [docs/reverse-proxy/](../reverse-proxy/README.md) (the Caddy engine),
+  [docs/reverse-proxy/](../reverse-proxy/README.md) (the provider landing page),
   [docs/reverse-proxy/cloudflare.md](../reverse-proxy/cloudflare.md) (the new provider's guide).
 
 ## Context
@@ -26,8 +27,9 @@ runtime settings change re-route the next call.
 
 1. **`IProxyProvider`** (`Enabled`, `ApplyAsync`, `ConnectStackAsync`, `IsRunningAsync`) is the seam
    consumers inject; `ProxyProviderRouter` resolves the selected backend per call from
-   `Proxy:Provider` (`caddy` default | `cloudflare`). Providers are resolved from the container, so
-   test substitutes (`RecordingCaddyManager`) keep working.
+   `Proxy:Provider` (`caddy` default | `cloudflare` — ADR-0020 added `yarp` and made it the default).
+   Providers are resolved from the container, so a test substitute registered at the interface keeps
+   working.
 2. **Each provider self-gates on "enabled AND selected".** Both subscribe to the options monitor and
    compute their own `ProxyTransition` (shared pure helper) from every change — so a provider switch
    is a `Stop` on one side and a `Start` on the other, atomically driven by one settings write, with

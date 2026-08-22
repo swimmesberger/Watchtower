@@ -47,12 +47,13 @@ public sealed class AuthTestHost : IDisposable {
         _configure = configure;
         _dataDirectory = dataDirectory;
 
-        // DbPath and KeyPath default to /data/*, which AddWatchtowerServices creates eagerly — point
-        // both at a scratch directory so tests never try to write outside their own temp space.
+        // DbPath, KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices creates
+        // eagerly — point them all at a scratch directory so tests never write outside their temp space.
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(settings.Concat([
                 new KeyValuePair<string, string?>("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db")),
                 new KeyValuePair<string, string?>("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys")),
+                new KeyValuePair<string, string?>("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs")),
             ]))
             .Build();
 

@@ -9,6 +9,10 @@ using Microsoft.Extensions.Logging;
 using Watchtower.Api;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.Yarp;
+using Xunit;
+using Yarp.ReverseProxy.Forwarder;
 
 namespace Watchtower.Api.Tests;
 
@@ -48,21 +52,88 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// <remarks>Held here rather than resolved from the container so a test can arm it before the first request.</remarks>
     public StubComposeCliService Compose { get; } = new();
 
-    /// <summary>The Caddy manager the host runs with: a double that counts config reloads.</summary>
-    public RecordingCaddyManager Caddy => (RecordingCaddyManager)Services.GetRequiredService<CaddyManager>();
+    private readonly RecordingProxyProvider _proxy = new();
+
+    /// <summary>
+    /// The proxy provider the host runs with: a double that records reloads instead of reconciling a
+    /// data plane. Provider-agnostic on purpose — it replaces whichever backend <c>Proxy:Provider</c>
+    /// selects, so these tests do not move when the default provider does.
+    /// </summary>
+    /// <remarks>
+    /// Held here rather than resolved from the container, like the compose stub above. Throws on a host
+    /// built with <see cref="UseRealProxyProvider"/>, where there is nothing recording to read.
+    /// </remarks>
+    public RecordingProxyProvider Proxy => UseRealProxyProvider
+        ? throw new InvalidOperationException(
+            "This host runs the real proxy provider (UseRealProxyProvider); nothing is recording.")
+        : _proxy;
+
+    /// <summary>
+    /// Opts out of the recording proxy provider and leaves the real router — and through it the real
+    /// in-process provider — in place. For the tests that are <em>about</em> the in-process proxy: they
+    /// project a real route table, bind a real listener state, and ask <c>proxy.getStatus</c> what the
+    /// provider itself thinks. Set through an object initializer, so it is in place before the host is built.
+    /// </summary>
+    public bool UseRealProxyProvider { get; init; }
 
     /// <summary>The deploy queue the host runs with: accepts and records work without running it.</summary>
     public QueuedOnlyDeployQueueService DeployQueue =>
         (QueuedOnlyDeployQueueService)Services.GetRequiredService<DeployQueueService>();
+
+    /// <summary>
+    /// Opts out of the recording forwarder and runs the host with YARP's real one, for a test that stands a
+    /// loopback upstream up and wants the bytes to actually travel. Set through an object initializer, so
+    /// it is in place before the host is built.
+    /// </summary>
+    public bool UseRealForwarder { get; init; }
+
+    /// <summary>
+    /// The ACME transport the host runs with. Set to <see cref="FakeAcmeServer.Transport"/> to point
+    /// issuance at an in-process CA; left null the host keeps the real one, which never gets used because
+    /// no test enables the certificate manager's loop.
+    /// </summary>
+    public IAcmeTransportFactory? AcmeTransport { get; init; }
+
+    /// <summary>
+    /// The DNS resolver the host runs with: a stub that answers for everything unless a test says
+    /// otherwise. Substituted for every test, like the compose CLI and the forwarder — a suite that
+    /// queries the developer's real resolver is one that fails differently on a train.
+    /// </summary>
+    public StubDnsPreflight Dns { get; } = new();
+
+    /// <summary>The forwarder the host runs with: a double that records instead of connecting.</summary>
+    /// <remarks>Throws when the host was built with <see cref="UseRealForwarder"/>.</remarks>
+    public RecordingHttpForwarder Forwarder =>
+        (RecordingHttpForwarder)Services.GetRequiredService<IHttpForwarder>();
+
+    /// <summary>
+    /// A host with the in-process proxy as the active provider. The two settings are what
+    /// <see cref="YarpProxyProvider"/> gates on, so without them its route projection no-ops and the
+    /// dispatcher sees an empty table.
+    /// </summary>
+    public static WatchtowerApiFactory WithYarpProxy(params (string Key, string? Value)[] settings) =>
+        new([("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", "yarp"), .. settings]) {
+            UseRealProxyProvider = true,
+        };
+
+    /// <summary>
+    /// Projects the seeded routes into the in-process proxy's routing table, the way a route change or the
+    /// startup reconcile does. Explicit because the factory drops the hosted services, so nothing calls it
+    /// on its own — seed the estate first, then apply.
+    /// </summary>
+    public Task ApplyProxyAsync() =>
+        Services.GetRequiredService<YarpProxyProvider>().ApplyAsync(TestContext.Current.CancellationToken);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder) {
         // Production, not Development: the development-only CORS policy would otherwise join the pipeline
         // and the tests would stop describing what ships.
         builder.UseEnvironment(Environments.Production);
 
-        // DbPath and Auth:KeyPath default to /data/*, which AddWatchtowerServices creates eagerly.
+        // DbPath, Auth:KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices
+        // creates eagerly.
         builder.UseSetting("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db"));
         builder.UseSetting("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys"));
+        builder.UseSetting("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs"));
         builder.UseSetting("Watchtower:Auth:BootstrapPassword", AdminPassword);
         foreach (var (key, value) in _settings) builder.UseSetting(key, value);
 
@@ -100,11 +171,37 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             // that genuinely needs the real implementations has to opt out here first.
             services.RemoveAll<ComposeCliService>();
             services.AddSingleton<ComposeCliService>(Compose);
-            services.RemoveAll<CaddyManager>();
-            services.AddSingleton<CaddyManager>(sp => ActivatorUtilities.CreateInstance<RecordingCaddyManager>(sp));
+            // The proxy, at the interface every consumer injects rather than at one provider: the router
+            // it replaces would otherwise resolve whichever backend Proxy:Provider names, and the two
+            // container-based ones talk to Docker or the Cloudflare API on the very calls these tests
+            // trigger. UseRealProxyProvider opts out, for the hosts that exist to exercise the in-process
+            // provider itself; YarpProxyProvider stays registered concretely either way, because
+            // ApplyProxyAsync above drives the real one deliberately.
+            if (!UseRealProxyProvider) {
+                services.RemoveAll<IProxyProvider>();
+                services.AddSingleton<IProxyProvider>(_proxy);
+            }
             services.RemoveAll<DeployQueueService>();
             services.AddSingleton<DeployQueueService>(
                 sp => ActivatorUtilities.CreateInstance<QueuedOnlyDeployQueueService>(sp));
+
+            // The fourth, and the same reasoning: the in-process proxy's forwarder is the one component on
+            // a request path that opens a socket to somewhere else. Substituted for every test rather than
+            // only the proxy ones, so a host whose route table is unexpectedly populated records the
+            // attempt instead of dialling a container alias that does not resolve.
+            // The fifth: DNS. The certificate issuer resolves a host before it opens an order, and the
+            // Routes page probes one on demand — neither should reach a real resolver from a test.
+            services.RemoveAll<DnsPreflight>();
+            services.AddSingleton<DnsPreflight>(Dns);
+
+            if (AcmeTransport is not null) {
+                services.RemoveAll<IAcmeTransportFactory>();
+                services.AddSingleton(AcmeTransport);
+            }
+
+            if (UseRealForwarder) return;
+            services.RemoveAll<IHttpForwarder>();
+            services.AddSingleton<IHttpForwarder>(new RecordingHttpForwarder());
         });
     }
 

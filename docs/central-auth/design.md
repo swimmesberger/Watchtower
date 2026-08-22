@@ -344,9 +344,17 @@ Caddy `forward_auth` sends the original headers (incl. `Cookie`) plus `X-Forward
 5. Subsequent requests hit verify → 200 with identity headers. Apps on other domains repeat only
    steps 3–4 (SSO cookie already present): silent SSO.
 
-## 6. Caddy config changes
+## 6. Proxy config changes
 
-`CaddySite` gains `bool Protected` (+ bypass data as needed); `CaddyConfigBuilder.Build` emits for
+Two providers run this gate in front of an app: the deprecated **Caddy** container, whose generated
+configuration is below, and the **in-process** provider (ADR-0020), which renders exactly the same
+contract as pipeline steps. Both call the same `AccessVerifier`, so they cannot come to different
+verdicts. The **Cloudflare Tunnel** provider is not in this picture at all — there access belongs to
+Zero Trust.
+
+### 6.1 Caddy provider
+
+`ProxySite` gains `bool Protected` (+ bypass data as needed); `CaddyConfigBuilder.Build` emits for
 protected sites (unchanged for `Public` ones):
 
 ```
@@ -388,6 +396,33 @@ upstream `watchtower:8080`), and since §13 one such self-route per realm login 
 also finally gives the Watchtower UI TLS through its own proxy; the published port stays as the
 escape hatch (and is how you recover from a proxy misconfiguration). None of these site blocks is
 ever protected — see §13, the one invariant the projection enforces.
+
+### 6.2 In-process (`yarp`) provider
+
+The same site block, expressed as middleware instead of generated configuration. `YarpHostDispatchMiddleware`
+runs *before* Watchtower's own routing and, for a `Host` in the route table:
+
+1. **Strips** the full ecosystem identity/authz namespace from the inbound request — the same
+   superset the `request_header -…` lines remove, plus `X-Forwarded-Method` and `X-Forwarded-Uri`,
+   which describe a forward-auth hop that does not exist here and are therefore just strings a client
+   wrote. Stripped on *every* route rather than only inside the forwarded branch, so nothing smuggled
+   reaches Watchtower's own endpoints either.
+2. **Serves `/.watchtower/*` locally**, with `X-Forwarded-Host`/`-Proto`/`-For` stamped — the
+   equivalent of the `handle /.watchtower/*` block, and for the same reason: the callback binds the
+   authorization code to the domain it is redeemed on by reading `X-Forwarded-Host`, and it has to
+   answer while the visitor is still anonymous.
+3. **Calls `AccessVerifier` directly** where `forward_auth` would have made an HTTP hop. Same
+   decision core, same verdicts; the real method and URI are used instead of the forwarded ones.
+4. **Sets the identity headers on the outgoing request** instead of having them lifted off a
+   forward-auth response by `copy_headers`, then forwards to `{project}-{service}:{port}` with YARP's
+   `IHttpForwarder`.
+
+A realm login host is dispatched to Watchtower's own pipeline rather than forwarded — forwarding it
+would be forwarding to ourselves — while still getting the HTTPS upgrade the self-route provided, for
+the same reason: a login page reached over plain HTTP would set the session cookie without `Secure`.
+
+`AccessVerifier` is the single decision core both paths share. It was extracted from the
+`/api/access/verify` endpoint precisely so that adding a second transport could not fork the rules.
 
 ## 7. Backend surface
 
@@ -754,7 +789,7 @@ resolving to the system realm decides which login page a visitor sees, not who g
 therefore resolves the realm from the host it was served on and pins `IRealmContext` before touching
 `UserManager`: a login page can only ever authenticate its own population.
 
-`CaddyManager.ProjectSites` generalised from one self-route to N — the configured `Auth:Host` plus
+`ProxySiteProjection.Project` generalised from one self-route to N — the configured `Auth:Host` plus
 every realm's `AuthHost`, deduplicated and configuration-first — and the invariant it enforces is
 stated in one line: **no realm's login host sits behind its own gate.** None of those site blocks is
 ever `Protected`, and an explicit `Route` row for one of those domains still renders (the operator

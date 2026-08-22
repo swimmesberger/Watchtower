@@ -85,6 +85,12 @@ public sealed class ProxyIngressNetworks(
     }
 
     /// <summary>Connects every routed service of every stack — the startup-reconcile sweep.</summary>
+    /// <remarks>
+    /// One target's failure does not stop the sweep. Creating or joining a network is a per-stack
+    /// conversation with the daemon, and a single stack whose network the daemon refuses must not cost
+    /// every stack behind it in the list its upstream hop. A daemon that is unreachable altogether still
+    /// fails every target — the caller decides what that means.
+    /// </remarks>
     public async Task ConnectAllRoutedContainersAsync(string proxyContainer, CancellationToken ct) {
         List<(int StackId, string Project, string Service)> targets;
         await using (var scope = scopeFactory.CreateAsyncScope()) {
@@ -96,7 +102,25 @@ public sealed class ProxyIngressNetworks(
                 .Select(x => new ValueTuple<int, string, string>(x.StackId, x.ComposeProjectName, x.ServiceName))
                 .ToListAsync(ct);
         }
-        foreach (var (stackId, project, service) in targets)
-            await ConnectServiceAsync(stackId, project, service, proxyContainer, ct);
+        var failures = 0;
+        Exception? last = null;
+        foreach (var (stackId, project, service) in targets) {
+            try {
+                await ConnectServiceAsync(stackId, project, service, proxyContainer, ct);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                failures++;
+                last = ex;
+                logger.LogWarning(
+                    ex, "Failed to connect {Project}/{Service} to the ingress network of stack {StackId}.",
+                    project, service, stackId);
+            }
+        }
+
+        // Rethrown once the sweep is done rather than swallowed: the caller logs the one summary line an
+        // operator reads, and "some upstreams have no route" is not something to report as success.
+        if (last is not null)
+            throw new InvalidOperationException(
+                $"{failures} of {targets.Count} routed service(s) could not be joined to their ingress network.",
+                last);
     }
 }
