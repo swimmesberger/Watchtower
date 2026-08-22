@@ -101,6 +101,12 @@ builder.Services.AddWatchtowerServices(builder.Configuration);
 // runtime, and neither the container nor the pipeline is rebuilt for that.
 builder.Services.AddWatchtowerProxyForwarding();
 
+// The in-process reverse proxy's TLS listener (ADR-0017, forthcoming): a second Kestrel endpoint that
+// picks its certificate per connection from the SNI name. Only added where one is configured — the
+// shipped container sets Kestrel__Endpoints__ProxyHttps__Url; development, Aspire and the integration
+// tests never do, so the host they boot is unchanged.
+ProxyHttpsEndpoint.Configure(builder);
+
 // Elarion framework composition:
 //   AddElarion         — every enabled module's handlers, [Service] impls, and source-generated JSON contexts.
 //   AddElarionSession  — the client-capability bootstrap (ADR-0030): module map + [ClientFeatures] flags
@@ -176,6 +182,10 @@ app.UseAcmeHttpChallenge();
 // forwarded to its container instead of entering the pipeline below. Deliberately before
 // UseForwardedHeaders — its scheme decisions have to come from the real connection.
 app.UseYarpHostDispatch();
+
+// Record what the host actually bound, once it has bound it — the only signal the in-process proxy has
+// about its own data plane, since there is no container to inspect.
+ProxyListenerStateInitializer.Register(app);
 
 // First in the pipeline for everything Watchtower serves itself: everything after it — including the
 // cookie issuance in the login endpoint — must see the corrected scheme.

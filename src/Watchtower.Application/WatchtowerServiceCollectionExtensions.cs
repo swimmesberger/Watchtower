@@ -135,6 +135,10 @@ public static class WatchtowerServiceCollectionExtensions {
         var certPath = section.GetValue<string>("Proxy:Yarp:CertPath");
         if (string.IsNullOrWhiteSpace(certPath)) certPath = new YarpProxyOptions().CertPath;
         Directory.CreateDirectory(certPath);
+        // The store opened over that directory. Registered unconditionally (like the rest of the proxy
+        // services) but only ever resolved by the host's HTTPS endpoint, which exists only where one is
+        // configured — so nothing reads the directory in development or under WebApplicationFactory.
+        services.AddSingleton<CertificateStore>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and
