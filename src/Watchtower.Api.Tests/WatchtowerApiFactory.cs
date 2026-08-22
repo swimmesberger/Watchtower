@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Watchtower.Api;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
 using Xunit;
 using Yarp.ReverseProxy.Forwarder;
@@ -64,6 +65,20 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// it is in place before the host is built.
     /// </summary>
     public bool UseRealForwarder { get; init; }
+
+    /// <summary>
+    /// The ACME transport the host runs with. Set to <see cref="FakeAcmeServer.Transport"/> to point
+    /// issuance at an in-process CA; left null the host keeps the real one, which never gets used because
+    /// no test enables the certificate manager's loop.
+    /// </summary>
+    public IAcmeTransportFactory? AcmeTransport { get; init; }
+
+    /// <summary>
+    /// The DNS resolver the host runs with: a stub that answers for everything unless a test says
+    /// otherwise. Substituted for every test, like the compose CLI and the forwarder — a suite that
+    /// queries the developer's real resolver is one that fails differently on a train.
+    /// </summary>
+    public StubDnsPreflight Dns { get; } = new();
 
     /// <summary>The forwarder the host runs with: a double that records instead of connecting.</summary>
     /// <remarks>Throws when the host was built with <see cref="UseRealForwarder"/>.</remarks>
@@ -143,6 +158,16 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             // a request path that opens a socket to somewhere else. Substituted for every test rather than
             // only the proxy ones, so a host whose route table is unexpectedly populated records the
             // attempt instead of dialling a container alias that does not resolve.
+            // The fifth: DNS. The certificate issuer resolves a host before it opens an order, and the
+            // Routes page probes one on demand — neither should reach a real resolver from a test.
+            services.RemoveAll<DnsPreflight>();
+            services.AddSingleton<DnsPreflight>(Dns);
+
+            if (AcmeTransport is not null) {
+                services.RemoveAll<IAcmeTransportFactory>();
+                services.AddSingleton(AcmeTransport);
+            }
+
             if (UseRealForwarder) return;
             services.RemoveAll<IHttpForwarder>();
             services.AddSingleton<IHttpForwarder>(new RecordingHttpForwarder());

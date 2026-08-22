@@ -122,8 +122,16 @@ public static class WatchtowerServiceCollectionExtensions {
         // middleware that reads it is in the pipeline whatever the provider is, and an empty store simply
         // answers 404.
         services.AddSingleton<AcmeHttpChallengeStore>();
-        // Placeholder until the ACME certificate manager lands — only this registration is replaced.
-        services.AddSingleton<IProxyCertificateManager, NoOpProxyCertificateManager>();
+        // A/AAAA resolution, shared by proxy.checkDns and the issuer's preflight so the operator's
+        // "check DNS" button and the certificate machinery cannot come to different answers.
+        services.AddSingleton<DnsPreflight>();
+        // Certificate issuance (ADR-0017): the protocol half, and the background loop that schedules it.
+        // TryAdd on the transport so a test can substitute an in-process CA's message handler.
+        services.TryAddSingleton<IAcmeTransportFactory, AcmeTransportFactory>();
+        services.AddSingleton<CertificateIssuer>();
+        services.AddSingleton<CertificateManager>();
+        services.AddSingleton<IProxyCertificateManager>(sp => sp.GetRequiredService<CertificateManager>());
+        services.AddHostedService(sp => sp.GetRequiredService<CertificateManager>());
         services.AddSingleton<YarpProxyProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();

@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.Http.Features;
+using Watchtower.Application.Services.Acme;
 using Yarp.ReverseProxy.Forwarder;
 
 namespace Watchtower.Api.Tests;
@@ -132,5 +133,35 @@ public sealed class RecordingHttpForwarder : IHttpForwarder {
         context.Response.ContentType = "text/plain";
         await context.Response.WriteAsync(MarkerBody, context.RequestAborted);
         return ForwarderError.None;
+    }
+}
+
+/// <summary>
+/// A resolver with an opinion instead of a network. Answers with one address for every host by default,
+/// which is what lets an issuance test get past the DNS preflight; a test that wants the
+/// <c>awaitingDns</c> branch names the host that must not resolve.
+/// </summary>
+/// <remarks>
+/// Substituted for every test in this assembly rather than only the certificate ones, for the same
+/// reason the compose CLI and the forwarder are: the alternative is a suite whose behaviour depends on
+/// the developer's resolver and on whether <c>*.example.invalid</c> is being hijacked by their ISP.
+/// </remarks>
+public sealed class StubDnsPreflight : DnsPreflight {
+    private readonly HashSet<string> _unresolvable = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The address every resolvable host answers with.</summary>
+    public const string Address = "203.0.113.7";
+
+    /// <summary>Every host this resolver was asked about, in order.</summary>
+    public List<string> Queried { get; } = [];
+
+    /// <summary>Makes <paramref name="hosts"/> resolve to nothing — a domain whose DNS is not pointed here.</summary>
+    public void DoesNotResolve(params string[] hosts) {
+        foreach (var host in hosts) _unresolvable.Add(host);
+    }
+
+    public override Task<IReadOnlyList<string>> ResolveAsync(string host, CancellationToken ct) {
+        lock (Queried) Queried.Add(host);
+        return Task.FromResult<IReadOnlyList<string>>(_unresolvable.Contains(host) ? [] : [Address]);
     }
 }

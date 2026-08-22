@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Modules.Proxy.Handlers;
@@ -13,7 +14,8 @@ public sealed class GetProxyStatus(
     WatchtowerDbContext db,
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
-    YarpListenerState listener)
+    YarpListenerState listener,
+    CertificateManager certificates)
     : IHandler<GetProxyStatus.Query, Result<GetProxyStatus.Response>> {
     public sealed record Query;
 
@@ -34,9 +36,26 @@ public sealed class GetProxyStatus(
         var count = await db.Routes.CountAsync(ct);
         var running = await proxy.IsRunningAsync(ct);
         var proxyOptions = options.CurrentValue.Proxy;
-        var detail = proxyOptions.ResolveProvider() == ProxyProviderKind.Yarp && proxy.Enabled && !listener.HttpsBound
-            ? "HTTPS listener not bound — routes are served over plain HTTP only"
-            : null;
+        var yarp = proxyOptions.ResolveProvider() == ProxyProviderKind.Yarp && proxy.Enabled;
+        var detail = yarp switch {
+            true when !listener.HttpsBound => "HTTPS listener not bound — routes are served over plain HTTP only",
+            // Only while there is something outstanding: "12 of 12 issued" is noise next to a status that
+            // already says the proxy is running.
+            true => CertificateProgress(),
+            _ => null,
+        };
         return new Response(proxy.Enabled, running, count, proxyOptions.ProviderName(), detail);
+    }
+
+    /// <summary>
+    /// How far through issuance the proxy is, or null when there is nothing outstanding. Counted off the
+    /// manager's own view rather than the route rows, so a login host waiting for its certificate is
+    /// included — it has no route row and would otherwise be invisible here.
+    /// </summary>
+    private string? CertificateProgress() {
+        var desired = certificates.Snapshot().Where(s => s.Desired).ToArray();
+        if (desired.Length == 0) return null;
+        var active = desired.Count(s => s.State == "active");
+        return active == desired.Length ? null : $"{active} of {desired.Length} certificates issued";
     }
 }

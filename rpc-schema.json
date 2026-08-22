@@ -4051,6 +4051,98 @@
         ]
       }
     },
+    "proxy.listCertificates": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "certificates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "routeId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "notBefore": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "notAfter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "issuer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nextAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "consecutiveFailures": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "host",
+                "source",
+                "routeId",
+                "state",
+                "notBefore",
+                "notAfter",
+                "issuer",
+                "lastAttemptAt",
+                "lastError",
+                "nextAttemptAt",
+                "consecutiveFailures"
+              ]
+            }
+          }
+        },
+        "required": [
+          "certificates"
+        ]
+      }
+    },
     "proxy.listCloudflareForeignRoutes": {
       "params": {
         "type": "object"
@@ -4211,6 +4303,103 @@
         },
         "required": [
           "routes"
+        ]
+      }
+    },
+    "proxy.renewCertificate": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "certificate": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "routeId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "notBefore": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "notAfter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "issuer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastAttemptAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nextAttemptAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "consecutiveFailures": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "source",
+              "routeId",
+              "state",
+              "notBefore",
+              "notAfter",
+              "issuer",
+              "lastAttemptAt",
+              "lastError",
+              "nextAttemptAt",
+              "consecutiveFailures"
+            ]
+          }
+        },
+        "required": [
+          "certificate"
         ]
       }
     },

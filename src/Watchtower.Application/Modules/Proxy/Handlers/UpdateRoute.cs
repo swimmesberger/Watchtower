@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
 
 namespace Watchtower.Application.Modules.Proxy.Handlers;
 
@@ -19,9 +20,11 @@ public sealed class UpdateRoute(WatchtowerDbContext db, IProxyProvider proxy)
     public sealed record Response(RouteDto Route);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        var domain = RouteMapping.NormalizeDomain(command.Domain);
-        if (domain is null)
-            return AppError.Validation("Domain is required.");
+        // The same rules the certificate machinery applies, at the point the name is typed: a domain a
+        // CA would never issue for is worth refusing here rather than discovering as a route that never
+        // leaves "pending" (Services/Acme/DesiredHosts.cs).
+        if (!DesiredHosts.TryNormalize(command.Domain, out var domain, out var reason))
+            return AppError.Validation(reason);
         if (string.IsNullOrWhiteSpace(command.ServiceName))
             return AppError.Validation("Service name is required.");
         if (command.ContainerPort is < 1 or > 65535)

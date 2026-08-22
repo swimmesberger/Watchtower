@@ -1,5 +1,3 @@
-using Microsoft.Extensions.Logging;
-
 namespace Watchtower.Application.Services.Yarp;
 
 /// <summary>
@@ -24,21 +22,4 @@ public interface IProxyCertificateManager {
     /// and must be told when it did not happen.
     /// </summary>
     Task ForgetHostAsync(string host, CancellationToken ct);
-}
-
-/// <summary>
-/// Accepts the desired-host set and forgets nothing — the placeholder until the ACME certificate
-/// manager lands. Registered as <see cref="IProxyCertificateManager"/> so the provider's lifecycle is
-/// complete and observable now; the registration is replaced, not the callers.
-/// </summary>
-public sealed class NoOpProxyCertificateManager(ILogger<NoOpProxyCertificateManager> logger)
-    : IProxyCertificateManager {
-    public void SetDesiredHosts(IReadOnlyCollection<string> hosts) =>
-        logger.LogDebug(
-            "Certificate management is not wired up yet; ignoring {Count} desired TLS host(s).", hosts.Count);
-
-    public Task ForgetHostAsync(string host, CancellationToken ct) {
-        logger.LogDebug("Certificate management is not wired up yet; nothing held for {Host} to forget.", host);
-        return Task.CompletedTask;
-    }
 }
