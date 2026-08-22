@@ -118,11 +118,27 @@ The `local` provider writes the same layout under a directory *inside the Watcht
 mount a second disk or network share there (e.g. `-v /mnt/backup-disk:/backups`). Backups on the
 same disk as `/data` protect against very little.
 
-## Per-service labels
+## Per-service settings: labels, or the Backups tab
 
-Three compose labels, set on a **service**, refine what a run does. They are read from the running
-containers' labels, so they take effect on the next run after a deploy — no Watchtower setting to
-change.
+Three settings, per **service**, refine what a run does: exclude it, how it is quiesced
+(stop / pause / keep running), and whether it is dumped. They can be set two ways
+([ADR-0020](decisions/0020-backup-service-settings-labels-win-ui-fills-gaps.md)):
+
+- as **compose labels** (below) — infrastructure as code, versioned with the stack, read from the
+  *running* containers so they take effect on the next run after a deploy; or
+- as a **UI override** on the stack's Backups tab → *Services*: the same three knobs per service,
+  stored in Watchtower, for a service that carries no label.
+
+**A label always wins.** The Backups tab shows a labelled knob read-only with the label's text (the
+same rule as env-pinned settings, [ADR-0014](decisions/0014-env-wins-runtime-settings.md)); the
+override fills in only where no label is set, knob by knob. The *Services* table is also the place to
+see what the **next run would actually do** — per container: stop / pause / keep / dump / excluded,
+why, and whether that came from the mount rule, a label or an override — plus the planner's warnings,
+so a typo'd label shows up before 03:30. "Your overrides as compose labels" renders the overrides as a
+snippet to paste into the compose file; paste it, redeploy, clear the overrides, and nothing about
+the run changes — that is how a setting tried out in the UI becomes code.
+
+### The labels
 
 | Label | Values | Effect |
 | --- | --- | --- |

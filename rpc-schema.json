@@ -445,6 +445,181 @@
         ]
       }
     },
+    "backups.previewPlan": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "type": "object",
+            "properties": {
+              "deployed": {
+                "type": "boolean"
+              },
+              "volumes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excludedVolumes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "reason",
+                    "detail"
+                  ]
+                }
+              },
+              "services": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "service": {
+                      "type": "string"
+                    },
+                    "container": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "volumes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "action": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "excludeLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "stopLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "dumpLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "override": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "service": {
+                          "type": "string"
+                        },
+                        "exclude": {
+                          "type": "boolean"
+                        },
+                        "stop": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "dump": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "service",
+                        "exclude",
+                        "stop",
+                        "dump"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "service",
+                    "container",
+                    "state",
+                    "volumes",
+                    "action",
+                    "reason",
+                    "source",
+                    "excludeLabel",
+                    "stopLabel",
+                    "dumpLabel",
+                    "override"
+                  ]
+                }
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "labelSnippet": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "deployed",
+              "volumes",
+              "excludedVolumes",
+              "services",
+              "warnings",
+              "labelSnippet"
+            ]
+          }
+        },
+        "required": [
+          "preview"
+        ]
+      }
+    },
     "backups.restore": {
       "params": {
         "type": "object",
@@ -518,6 +693,81 @@
         },
         "required": [
           "backup"
+        ]
+      }
+    },
+    "backups.setServiceOverride": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "exclude": {
+            "type": "boolean",
+            "default": false
+          },
+          "stop": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "dump": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "stackId",
+          "service"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "override": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "exclude": {
+                "type": "boolean"
+              },
+              "stop": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dump": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "service",
+              "exclude",
+              "stop",
+              "dump"
+            ]
+          }
+        },
+        "required": [
+          "override"
         ]
       }
     },
