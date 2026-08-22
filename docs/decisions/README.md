@@ -38,3 +38,4 @@ live here.
 - [ADR-0016: Stack backups — volume archives to pluggable remote storage](0016-stack-backups.md)
 - [ADR-0017: Database-aware backups — Postgres dumps replace the data-volume snapshot; stops are scoped to the volumes being archived](0017-database-aware-dumps.md)
 - [ADR-0018: Cron-based backup schedule with per-stack overrides, on the Elarion scheduler](0018-cron-backup-schedule.md)
+- [ADR-0019: Backup quiesce — stops run per dependency level with a short grace, and `pause` is a second, crash-consistent mode](0019-pause-quiesce-and-parallel-stops.md)

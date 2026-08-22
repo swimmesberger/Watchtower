@@ -141,4 +141,20 @@ public sealed class BackupNamingAndRetentionTests {
         Assert.Equal("manual · local · keep forever",
             BackupService.RunSummary("manual", stack, backup, stoppedCount: 0));
     }
+
+    [Fact]
+    public void TheAuditSummaryTellsPausedFromStopped() {
+        var backup = new BackupOptions { Provider = "local", RetentionDays = 0, RetentionMaxCount = 0 };
+        var stack = StackWithStops();
+
+        Assert.Equal("manual · local · 2 container(s) paused · keep forever",
+            BackupService.RunSummary("manual", stack, backup, stoppedCount: 0, pausedCount: 2));
+        Assert.Equal("manual · local · 2 container(s) paused, 1 stopped · keep forever",
+            BackupService.RunSummary("manual", stack, backup, stoppedCount: 1, pausedCount: 2));
+
+        // The failure path reports the setting, and a stack set to pause says so.
+        stack.BackupQuiesceMode = Watchtower.Application.Entities.BackupQuiesceMode.Pause;
+        Assert.Equal("manual · local · containers paused · keep forever",
+            BackupService.RunSummary("manual", stack, backup));
+    }
 }

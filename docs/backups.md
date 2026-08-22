@@ -16,7 +16,9 @@ volume ([ADR-0017](decisions/0017-database-aware-dumps.md)).
 What it is **not**: incremental backups, or dumps for engines other than Postgres (the
 `watchtower.backup.dump` label and the manifest's `engine` field are shaped so MySQL/MongoDB can
 follow). Everything that is not a Postgres data volume is a file-level snapshot, taken with the
-containers that mount it stopped.
+containers that mount it **quiesced** — stopped (the default) or, opt-in, paused for the duration of
+the tar ([ADR-0019](decisions/0019-pause-quiesce-and-parallel-stops.md), see
+[Quiesce modes](#quiesce-modes-stop-or-pause)).
 
 ## Setting it up
 
@@ -35,16 +37,19 @@ variables — env vars pin their setting read-only in the UI, see
 | Retention (count) | `WATCHTOWER__BACKUP__RETENTIONMAXCOUNT` | Keep at most N backups per stack; `0` unlimited. **Set this when the schedule runs more than once a day** — the age limit alone keeps runs × days archives. |
 | Encryption passphrase | `WATCHTOWER__BACKUP__ENCRYPTIONPASSPHRASE` | When set, archives are encrypted (see below). |
 | Helper image | `WATCHTOWER__BACKUP__HELPERIMAGE` | Image for the never-started helper container (default `busybox:stable`); any pullable image works. |
+| Stop grace | `WATCHTOWER__BACKUP__STOPTIMEOUTSECONDS` | How long a container *stopped* for the snapshot gets to exit on SIGTERM before SIGKILL (`docker stop -t`). Default `5` (the daemon's own default is 10); clamped to 1 … 300. Not in the UI. A service that needs longer belongs on a dump or on `pause`, not on a longer window. |
 | Provider | `WATCHTOWER__BACKUP__PROVIDER` | `sftp` (default) or `local`. |
 
 Then opt each stack in on its **Backups tab**: include it in the schedule, optionally give it a
 **schedule override** (its own cron expression instead of the instance one), and choose whether its
-**stateful containers are stopped during the snapshot** (default on). "Stateful" means: the
-containers that mount one of the volumes being archived — typically just the database; a stateless
-web or api container that mounts nothing stays up. Dependents are stopped before the services they
-`depends_on` and restarted in the opposite order, and the stop window covers only the local
-snapshot, not the upload. With the switch off nothing is stopped and a write-active volume may be
-captured mid-write. "Back up now" works regardless of the schedule switch.
+**stateful containers are stopped during the snapshot** (the switch; default on) and, if so, **how**
+— the **quiesce mode**: `stop` (default) or `pause`, see [Quiesce modes](#quiesce-modes-stop-or-pause).
+"Stateful" means: the containers that mount one of the volumes being archived — typically just the
+database; a stateless web or api container that mounts nothing stays up. Dependents go down before
+the services they `depends_on` and come back in the opposite order — each dependency level at once,
+so the window is the slowest container of a level rather than the sum — and the window covers only
+the local snapshot, not the upload. With the switch off nothing is touched and a write-active volume
+may be captured mid-write. "Back up now" works regardless of the schedule switch.
 
 Backups run one at a time through a single-flight queue, and every run is recorded in the tab's
 history (status, size, remote path, full log).
@@ -122,7 +127,7 @@ change.
 | Label | Values | Effect |
 | --- | --- | --- |
 | `watchtower.backup.exclude` | `true` | The service's volumes are left out of the archive and it is never stopped. A volume is only excluded when **every** service mounting it is excluded — a volume shared with a non-excluded service is still archived (the run log says so), because dropping it would silently lose the other service's data. A volume no container mounts is always archived. |
-| `watchtower.backup.stop` | `true` / `false` | Overrides the mount-based decision for this service: `false` keeps it running even though it mounts an archived volume (the log then warns that this volume's snapshot is only crash-consistent); `true` stops it although it mounts nothing archived. Does not override the stack's master switch. |
+| `watchtower.backup.stop` | `true` / `false` / `pause` | Overrides the mount-based decision for this service: `false` keeps it running even though it mounts an archived volume (the log then warns that this volume's snapshot is only crash-consistent); `true` **stops** it (also when the stack's quiesce mode is `pause`), even if it mounts nothing archived; `pause` **pauses** it for the snapshot instead of stopping it (crash-consistent, see [Quiesce modes](#quiesce-modes-stop-or-pause)), even if it mounts nothing archived. Does not override the stack's master switch; on restore `pause` reads as `true`. |
 | `watchtower.backup.dump` | `false` / `postgres` | `false` opts a Postgres service out of dumps — its data volume is snapshotted like any other (and it is stopped like any other stateful container). `postgres` marks a service whose image is not in the detection list (see below) as a Postgres to dump. |
 
 Unrecognised values are ignored with a `WARNING:` line in the run log.
@@ -147,6 +152,30 @@ volumes:
 
 Here a run dumps `db` (not stopped), skips `redisdata`, and stops nothing — `api` mounts no
 volume. The `cache` service is excluded from stopping too.
+
+## Quiesce modes: stop or pause
+
+A container that mounts a volume being archived has to hold still while the tar reads it. There are
+two ways to make it, chosen per stack (**Quiesce mode** on the Backups tab, default `stop`) and
+overridable per service with the `watchtower.backup.stop` label
+([ADR-0019](decisions/0019-pause-quiesce-and-parallel-stops.md)):
+
+| Mode | What happens | Consistency | Downtime |
+| --- | --- | --- | --- |
+| `stop` (default) | `docker stop` with a 5 s SIGTERM grace (`WATCHTOWER__BACKUP__STOPTIMEOUTSECONDS`), tar, `docker start`. | **Application-consistent** — the process flushed and exited cleanly. | Stop grace + tar + cold start; the grace is paid once per dependency level, not per container. |
+| `pause` | `docker pause` (cgroup freezer — the processes are suspended in milliseconds, nothing exits, TCP connections stay open), tar, `docker unpause`. | **Crash-consistent only** — whatever the application still held in userspace buffers (a database's unflushed pages, a half-written upload) is *not* in the snapshot; it is the "pulled the plug" state that WAL/redo-log engines recover from on the next start, and that a plain file tree simply reflects as "the file as it was a moment ago". | Tar duration only, typically a few seconds; no restart, clients see a stall rather than a disconnect. |
+
+Use `pause` for file volumes — uploads, media, generated assets — and for services whose restart is
+the expensive part. Keep `stop` (or a per-service `stop: true`) for a database that is **not** dumped
+(MySQL/MariaDB, MongoDB, SQLite inside an app), unless you have verified it recovers cleanly from a
+crash-consistent copy. Postgres is dumped and never quiesced either way.
+
+Whatever the mode, the window covers the local snapshot only, and the run brings everything back
+even when it fails or is cancelled — a stop that fails part-way restarts what was already down, a
+paused container is unpaused in a `finally`. There is a second safety net for pauses: before pausing
+anything, the run records the containers in Watchtower's database, and on every start Watchtower
+unpauses whatever a previous process left paused (a crash mid-window must not leave a stack frozen);
+the event shows up in the audit trail as `reconcile.unpause`.
 
 ## Database-aware dumps (Postgres)
 
@@ -294,15 +323,18 @@ picker lists the old instance's archives as long as the instance name matches it
    order (`depends_on` dependents first; no labels → Docker's order; a cycle → a warning and
    Docker's order). The log prints it.
 2. Each Postgres to be dumped is preflighted (reachability, auth) — still nothing stopped.
-3. If "stop stateful containers" is on, the planned containers are stopped, in order. If a stop
-   fails part-way, what was already stopped is restarted before the run fails.
+3. If "stop stateful containers" is on, the planned containers are quiesced — stopped (5 s SIGTERM
+   grace) or paused, per the stack's quiesce mode and the labels — one dependency level at a time,
+   concurrently within a level. Planned pauses are recorded in the database first (the startup safety
+   net). If a level fails part-way, everything already down is restarted/unpaused before the run fails.
 4. Each Postgres is dumped with `pg_dumpall` into a temp file.
 5. A helper container is *created but never started* with each archived volume mounted read-only;
    the manifest and the dumps are copied in, and the Docker daemon's archive endpoint streams one
    tar out of it (no code executes in the helper). The tar is gzipped (and encrypted) into a spool
    file in the container's temp directory — so the host needs free space for one compressed
    archive (plus the raw dumps, briefly), and the stop window ends here.
-6. Containers restart in reverse stop order, then the spool uploads to the storage provider (to a
+6. Containers come back in reverse level order — stopped ones are restarted, paused ones unpaused,
+   and the pause records are cleared — then the spool uploads to the storage provider (to a
    `.partial` name, renamed on completion — a torn upload never looks like a finished backup).
 7. Retention prunes the stack's remote folder: only files matching Watchtower's own naming pattern
    are considered, and the newest backup is never deleted. Archives are ordered by the
@@ -317,6 +349,8 @@ attached; the next scheduled window simply tries again.
 Every run, restore, retention prune, storage test and configuration change is also recorded in the
 global **Audit** page under the `backups` category — success or failure with the error message. The
 run rows carry the settings in effect at the time (trigger, provider, encryption, how many
-containers were stopped and volumes excluded, how many dumps were taken, retention), so "did last night's backup run, and was it encrypted back then?" is answered by the
-trail even after the configuration has changed since. Retention there is bounded (newest 2000 audit
+containers were paused and how many stopped, how many volumes excluded, how many dumps were taken,
+retention), so "did last night's backup run, and was it encrypted back then?" is answered by the
+trail even after the configuration has changed since. A `reconcile.unpause` row means a previous
+process died inside a pause window and its containers were thawed on the next start. Retention there is bounded (newest 2000 audit
 events per category); the per-stack Backups tab keeps the detailed per-run logs.

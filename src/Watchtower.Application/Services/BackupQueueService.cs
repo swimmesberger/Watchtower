@@ -74,9 +74,23 @@ public class BackupQueueService(
         }
     }
 
+    /// <summary>How often the startup reconcile retries while the daemon is not answering.</summary>
+    internal static readonly TimeSpan ReconcileRetryDelay = TimeSpan.FromSeconds(15);
+
+    /// <summary>How many times the startup reconcile retries before handing over to the per-job attempt.</summary>
+    internal const int ReconcileRetries = 20;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         try {
+            // A previous process may have died inside a pause window (ADR-0019): thaw its containers
+            // before anything else, retrying while the daemon is still coming up. After that every job
+            // re-checks once more — cheap when the table is empty, and it closes the gap if the daemon
+            // was unreachable for the whole startup budget.
+            for (var attempt = 1; !await TryUnpauseLeftoversAsync(stoppingToken) && attempt < ReconcileRetries; attempt++)
+                await Task.Delay(ReconcileRetryDelay, stoppingToken);
+
             await foreach (var job in _channel.Reader.ReadAllAsync(stoppingToken)) {
+                await TryUnpauseLeftoversAsync(stoppingToken);
                 lock (_lock) {
                     // Only remove the backup mapping if it still points at this event (a newer
                     // request may have been queued for the same stack after this one started).
@@ -106,6 +120,22 @@ public class BackupQueueService(
             }
         } catch (OperationCanceledException) {
             // Normal shutdown; interrupted events are swept to 'failed' on the next start.
+        }
+    }
+
+    /// <summary>
+    /// One attempt at <see cref="BackupService.UnpauseLeftoversAsync"/>; false when the engine could not
+    /// be reached, which is the only reason to try again — the table is already empty otherwise.
+    /// </summary>
+    private async Task<bool> TryUnpauseLeftoversAsync(CancellationToken ct) {
+        try {
+            await backupService.UnpauseLeftoversAsync(ct);
+            return true;
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogError(ex, "Could not reconcile containers left paused by an interrupted backup; will retry");
+            return false;
         }
     }
 

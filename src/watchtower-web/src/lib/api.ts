@@ -15,6 +15,7 @@ import type {
   BackupEvent,
   BackupRemoteFile,
   BackupRunAccepted,
+  BackupQuiesceMode,
   BackupStackConfig,
   UpdateBackupConfigRequest,
   Container,
@@ -325,8 +326,9 @@ export const api = {
       enabled: boolean,
       stopContainers: boolean,
       cron: string | null,
+      quiesceMode: BackupQuiesceMode,
     ) =>
-      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron }))
+      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron, quiesceMode }))
         .config as BackupStackConfig,
   },
 

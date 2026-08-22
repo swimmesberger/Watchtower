@@ -926,15 +926,24 @@ export interface BackupEvent {
   finishedAt: string | null
 }
 
+/**
+ * How a stack's stateful containers are quiesced for the snapshot (ADR-0019): `stop` (SIGTERM,
+ * restart afterwards — application-consistent) or `pause` (cgroup freeze for the tar, unpause —
+ * milliseconds of downtime, but only crash-consistent).
+ */
+export type BackupQuiesceMode = 'stop' | 'pause'
+
 /** A stack's backup participation. */
 export interface BackupStackConfig {
   stackId: number
   /** Included in the backup schedule. */
   enabled: boolean
-  /** Stop the stack's containers during the snapshot for consistency (ADR-0016 §2). */
+  /** Quiesce the stack's stateful containers during the snapshot for consistency (ADR-0016 §2). */
   stopContainers: boolean
   /** This stack's schedule override; null follows the instance-wide schedule. */
   cron: string | null
+  /** How unlabelled stateful containers are quiesced when `stopContainers` is on. */
+  quiesceMode: BackupQuiesceMode
 }
 
 export interface BackupRunAccepted {

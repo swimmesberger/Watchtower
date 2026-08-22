@@ -378,13 +378,17 @@
                   "string",
                   "null"
                 ]
+              },
+              "quiesceMode": {
+                "type": "string"
               }
             },
             "required": [
               "stackId",
               "enabled",
               "stopContainers",
-              "cron"
+              "cron",
+              "quiesceMode"
             ]
           }
         },
@@ -536,6 +540,13 @@
               "null"
             ],
             "default": null
+          },
+          "quiesceMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -564,13 +575,17 @@
                   "string",
                   "null"
                 ]
+              },
+              "quiesceMode": {
+                "type": "string"
               }
             },
             "required": [
               "stackId",
               "enabled",
               "stopContainers",
-              "cron"
+              "cron",
+              "quiesceMode"
             ]
           }
         },
