@@ -242,7 +242,7 @@ public sealed class SqliteImporterTests {
     /// storage types EF's SQLite provider used, with ids that are not 1..n so the copy has to carry them
     /// rather than regenerate them.
     /// </summary>
-    private static string WriteLegacyDatabase() {
+    internal static string WriteLegacyDatabase() {
         var path = Path.Combine(Path.GetTempPath(), $"watchtower-legacy-{Guid.NewGuid():N}.db");
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder {
             DataSource = path,

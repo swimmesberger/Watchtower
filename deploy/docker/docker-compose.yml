@@ -9,16 +9,20 @@
 #   3. Set POSTGRES_PASSWORD to something of your own (a .env file next to this one works).
 #   4. docker compose up -d
 #
-# UPGRADING from a Watchtower that stored everything in /data/watchtower.db: bring the postgres
-# service up first, then carry the old database across once, then start normally —
+# UPGRADING from a Watchtower that stored everything in /data/watchtower.db: add the postgres service
+# below, set WATCHTOWER__DATABASE__CONNECTIONSTRING, keep the data volume mounted, and start —
 #
-#   docker compose up -d postgres
-#   docker compose run --rm watchtower --import-sqlite /data/watchtower.db
 #   docker compose up -d
 #
-# The last step also carries /data/auth-keys and /data/proxy-certs into the database, once and
-# automatically — which is what keeps everyone signed in and stops every certificate being re-ordered.
-# Afterwards the data volume holds nothing Watchtower needs. See docs/upgrading.md.
+# There is no import step. The first start finds the old /data/watchtower.db beside an empty PostgreSQL
+# database and carries it across itself, along with /data/auth-keys and /data/proxy-certs — which is what
+# keeps everyone signed in and stops every certificate being re-ordered. Nothing is deleted, so the
+# rollback is redeploying the old image. Afterwards the data volume holds nothing Watchtower needs.
+# For a database kept somewhere other than /data/watchtower.db, import it by hand instead:
+#
+#   docker compose run --rm watchtower --import-sqlite /srv/wherever/watchtower.db
+#
+# See docs/upgrading.md.
 #
 # The UI is served on http://localhost:8080 — the management plane, published on the loopback interface
 # below. Put it behind an authenticating reverse proxy (e.g. Cloudflare Access, Authelia) — Watchtower
@@ -138,8 +142,8 @@ services:
       start_period: 10s
 
 volumes:
-  # Only needed for the upgrade from older versions: the old watchtower.db (for --import-sqlite) and the
-  # legacy /data/auth-keys + /data/proxy-certs files, which the first start imports into PostgreSQL.
+  # Only needed for the upgrade from older versions: the old watchtower.db and the legacy
+  # /data/auth-keys + /data/proxy-certs files, all of which the first start imports into PostgreSQL.
   # Certificates, the ACME account, the signing key and the data-protection key ring now live in the
   # database (ADR-0024); a fresh installation can leave this volume out.
   watchtower-data:

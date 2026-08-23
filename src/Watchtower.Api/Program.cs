@@ -58,9 +58,10 @@ if (args is ["--export-schema", var schemaOutputPath]) {
 }
 
 // ── SQLite import mode ──────────────────────────────────────────────────────────
-// Carries a pre-ADR-0024 installation into PostgreSQL and exits, without starting the web server.
-// Run once, against an empty target, before the first normal start:
-//   docker compose run --rm watchtower --import-sqlite /data/watchtower.db
+// Carries a pre-ADR-0024 installation into PostgreSQL and exits, without starting the web server. Only
+// needed for a database kept somewhere other than /data/watchtower.db, or to retry an automatic import
+// (SqliteAutoImport, below) and see its failure in full. Run against an empty target:
+//   docker compose run --rm watchtower --import-sqlite /srv/wherever/watchtower.db
 if (args is ["--import-sqlite", var sqliteSourcePath]) {
     // A configuration of its own rather than the host builder's: this mode needs one value, and
     // building the host would also register everything that expects the import to have already run.
@@ -100,6 +101,17 @@ builder.Services.ConfigureHttpJsonOptions(o => {
 const string DevCorsPolicy = "watchtower-dev-frontend";
 builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
     p.SetIsOriginAllowed(DevCorsOrigins.IsLoopback).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+
+// The zero-step half of the ADR-0024 upgrade: an empty PostgreSQL database next to a pre-ADR-0024
+// /data/watchtower.db is imported here, once, before anything reads configuration out of the database.
+// Before, and not from InitializeDatabaseAsync, because the settings snapshot taken immediately below is
+// what the pipeline decisions are made from — an import that ran after it would leave the first
+// post-upgrade process running on an empty database's defaults, with `Auth:Enabled` the one that matters.
+// The explicit `--import-sqlite` above is unchanged and remains the path for a file kept anywhere else.
+// Its own logger, because the host's has not been built yet; the providers match the ones configured above.
+using (var startupLogging = LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true)))
+    await SqliteAutoImport.RunAsync(
+        builder.Configuration, startupLogging.CreateLogger("Watchtower.Upgrade"));
 
 // Layer the Elarion settings store into IConfiguration BELOW the environment variables: stored
 // settings live-reload into IOptionsMonitor<WatchtowerOptions> (no restart), but a WATCHTOWER__* env

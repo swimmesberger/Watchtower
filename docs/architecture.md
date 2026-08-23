@@ -92,5 +92,7 @@ PostgreSQL's `xmin` as their EF concurrency token, and a lost race becomes a `Co
 `ConcurrencyConflictDecorator` rather than an unhandled exception; users carry Identity's own
 `ConcurrencyStamp` instead, because the user store reads detached and writes back.
 
-Watchtower stored everything in a SQLite file before ADR-0024. `--import-sqlite <path>` carries such an
-installation across, once — see [upgrading.md](upgrading.md). It is the only SQLite code left.
+Watchtower stored everything in a SQLite file before ADR-0024. The first start that finds one at
+`/data/watchtower.db` beside an empty PostgreSQL database carries it across itself; `--import-sqlite
+<path>` does the same for a file kept elsewhere. Once, either way — see [upgrading.md](upgrading.md). It
+is the only SQLite code left.

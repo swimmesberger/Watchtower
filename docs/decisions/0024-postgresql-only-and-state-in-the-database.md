@@ -87,9 +87,15 @@ exist (see the inventory in docs/multi-node-readiness.md §1).
   real PostgreSQL (Testcontainers locally, the CI service container on GitHub Actions) instead of an
   in-memory SQLite connection. "One container, one volume" is no longer the deployment shape — that
   is the price of a second instance ever being possible.
-- **Upgrading is a step, not a restart**: start the new image with the connection string, run
-  `--import-sqlite /data/watchtower.db` once, then remove the SQLite file. Documented in
-  docs/upgrading.md (new) and the compose comments.
+- **Upgrading is a restart.** Add the `postgres` service, set the connection string, start. The first
+  start that finds an empty PostgreSQL database beside a `/data/watchtower.db` imports it itself, then
+  carries the key and certificate files across in the same start; the operator's only remaining job is
+  deleting the old files once they are satisfied. The import runs before the settings snapshot is taken
+  from the database — otherwise the first post-upgrade process would run on an empty database's defaults
+  while the imported rows said otherwise, and `Auth:Enabled` is among them. `--import-sqlite <path>`
+  remains for a file kept anywhere but the default, and for a deliberate retry after a failure: the
+  automatic path never stops the host, because an unreadable upgrade artefact is a bad reason to
+  restart-loop a deployment. Documented in docs/upgrading.md (new) and the compose comments.
 - **Backups of Watchtower's own state** become a PostgreSQL concern (`pg_dump` or the stack-backup
   machinery against the Watchtower database), not a file copy; ADR-0013's "sqlite" metrics backend
   is renamed `database` and keeps its semantics.
@@ -97,8 +103,8 @@ exist (see the inventory in docs/multi-node-readiness.md §1).
   not part of the proxy card's paths. Pinning it through the environment would freeze the one write
   that tells the other instances anything changed, leaving their route tables to drift with nothing
   reporting it. Same shape as `Watchtower:Proxy:ProviderMigrated` and
-  `Watchtower:Auth:LoginHostsConverted`, and now `Watchtower:Auth:FileStateImported` — the marker the
-  one-shot file import writes.
+  `Watchtower:Auth:LoginHostsConverted`, and now `Watchtower:Auth:FileStateImported` and
+  `Watchtower:Database:SqliteImported` — the markers the two one-shot imports write.
 - **The upgrade carries the files across itself.** On the first start after the upgrade, an existing
   `/data/auth-keys` and `/data/proxy-certs` (or whatever the removed `Auth:KeyPath` /
   `Proxy:Yarp:CertPath` named) are imported into the new tables: the signing key, the data-protection

@@ -4,7 +4,8 @@
 
 Watchtower used to keep everything in one SQLite file at `/data/watchtower.db`. Since
 [ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md) it uses PostgreSQL, and only
-PostgreSQL — the file backend is gone rather than deprecated. Upgrading is one command, run once.
+PostgreSQL — the file backend is gone rather than deprecated. Upgrading is a restart: add a database,
+point Watchtower at it, start. The import runs itself.
 
 You need: the new image, a PostgreSQL server, and the old `/data` volume still attached.
 
@@ -30,39 +31,58 @@ environment:
   WATCHTOWER__DATABASE__CONNECTIONSTRING: "Host=postgres;Database=watchtower;Username=watchtower;Password=..."
 ```
 
-Leave the `watchtower-data` volume mounted. It holds the SQLite file you are about to import, and the
-key and certificate files the same upgrade carries into the database (see step 4).
+Leave the `watchtower-data` volume mounted. It holds the SQLite file about to be imported, and the key
+and certificate files the same start carries into the database (see step 4).
 
-### 3. Import the old database
+### 3. Start
 
 ```bash
-docker compose run --rm watchtower --import-sqlite /data/watchtower.db
+docker compose up -d
 ```
 
-This applies the migrations to the empty PostgreSQL database, then copies every table across and prints
-what it moved:
+That is the whole upgrade. The first start finds an empty PostgreSQL database beside
+`/data/watchtower.db`, applies the migrations, copies every table across and logs what it moved:
 
 ```
-Importing /data/watchtower.db into PostgreSQL.
-Target migrated.
-Imported:
-  realms                                          2
-  stacks                                         14
-  routes                                         19
-  users                                           3
-  elarion_settings                               27
-  deploy_events                                 412
-  ...
-Total: 496 row(s) across 31 table(s).
+info: Empty PostgreSQL database and a legacy SQLite database at /data/watchtower.db: importing it
+      (ADR-0024). The file is not deleted.
+info:   sqlite-import| Imported:
+info:   sqlite-import|   realms                                          2
+info:   sqlite-import|   stacks                                         14
+info:   sqlite-import|   routes                                         19
+info:   sqlite-import|   users                                           3
+info:   sqlite-import|   elarion_settings                               27
+info:   sqlite-import|   deploy_events                                 412
+info:   sqlite-import| Total: 496 row(s) across 31 table(s).
+info: Imported /data/watchtower.db. Check your stacks, routes and accounts, then delete the old file —
+      nothing reads it any more.
 ```
 
-It refuses to run against a database that already holds rows, so a second run is a no-op with a clear
-message rather than a duplicated estate. If it fails, nothing was written: the whole import is one
-transaction. Fix the cause and run it again.
+Three things have to be true for it to run, and all three are checked before a row is written: the
+PostgreSQL database holds nothing but what the migrations seed, the file is there, and this database has
+not been imported into before. A marker records the decision, so leaving the old file mounted for a while
+is safe — it is read once and never again.
+
+**If it fails, Watchtower still starts**, on the empty database, and says so. Nothing was written: the
+whole import is one transaction. An unreadable file is not a reason to leave an instance restarting, and
+the next start tries again once you have fixed it — or run it by hand (below) to see the failure in full.
 
 Types are converted by the *target* column, not guessed from the source: SQLite's `0`/`1` become real
 booleans, and its timestamp text becomes `timestamptz` normalized to UTC. Identity sequences are moved
 past the imported rows, so the next stack you create does not collide with an imported one.
+
+#### Importing by hand
+
+The automatic import only looks at `/data/watchtower.db` (or whatever your old `WATCHTOWER__DBPATH`
+named, which is still honoured for this one upgrade). For a database kept anywhere else, or to retry a
+failed import and read the output directly, run it yourself against the still-empty database:
+
+```bash
+docker compose run --rm watchtower --import-sqlite /srv/wherever/watchtower.db
+```
+
+It refuses to run against a database that already holds rows, so a second run is a no-op with a clear
+message rather than a duplicated estate.
 
 **Columns the model no longer has** are reported as `warning: <table>.<column> exists in the source but
 not in the model — not imported.` and skipped. There is one exception, because its value is
@@ -73,14 +93,9 @@ summary says `converted N legacy realm login host(s)`. A hostname already served
 application routes is left alone with a warning — pick another hostname for that realm afterwards.
 Read the warnings once before you delete the old file.
 
-### 4. Start normally, then clean up
+### 4. Check, then clean up
 
-```bash
-docker compose up -d
-```
-
-The first normal start also carries the **key and certificate files** into the database, once and
-automatically — nothing to run:
+The same start carries the **key and certificate files** into the database, once and automatically:
 
 ```
 info: Imported legacy state into the database: 1 signing key(s), 2 data-protection key(s),
@@ -111,7 +126,9 @@ your next convenient restart.
 - **The metrics backend `sqlite` is now called `database`.** Semantics are unchanged — history is
   persisted in Watchtower's own database. A stored or env-pinned `sqlite` is still accepted and reads
   as `database`, so nothing breaks if you miss it; the UI and new writes use the new name.
-- **`Watchtower:DbPath` / `WATCHTOWER__DBPATH` no longer exist.** A leftover value is ignored.
+- **`Watchtower:DbPath` / `WATCHTOWER__DBPATH` no longer exist.** A leftover value is still read *once*,
+  by the automatic import in step 3, so a deployment that moved its database file is found where the file
+  actually is; after that it is ignored.
 - **`Proxy:Yarp:CertPath` and `Auth:KeyPath` no longer exist either.** Certificates, the ACME account,
   the identity-assertion signing key and the data-protection key ring are rows now. A leftover value
   for either is still read *once*, by the import above, so a deployment that moved those directories

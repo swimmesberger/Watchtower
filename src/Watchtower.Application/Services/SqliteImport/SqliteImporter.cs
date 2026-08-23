@@ -8,12 +8,14 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services.SqliteImport;
 
 /// <summary>
-/// The one-shot upgrade path from the pre-ADR-0024 SQLite file into PostgreSQL:
-/// <c>dotnet Watchtower.Api.dll --import-sqlite /data/watchtower.db</c>.
+/// The one-shot upgrade path from the pre-ADR-0024 SQLite file into PostgreSQL. Run for the operator by
+/// <see cref="SqliteAutoImport"/> on the first start that finds the default file beside an empty
+/// database, and by hand for a file kept anywhere else:
+/// <c>dotnet Watchtower.Api.dll --import-sqlite /srv/wherever/watchtower.db</c>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is the only SQLite code left in Watchtower, and it is a command rather than a runtime mode.
+/// This is the only SQLite code left in Watchtower, and it is a copy rather than a runtime mode.
 /// It is deliberately schema-agnostic: the target's tables, columns, types and foreign keys are read
 /// from <c>information_schema</c> after the PostgreSQL migrations have run, and each SQLite table is
 /// copied column-by-name into its namesake. That means it keeps working as the model evolves — a
@@ -86,7 +88,7 @@ public static class SqliteImporter {
         var schema = await ReadTargetSchemaAsync(target, ct);
         var order = OrderByDependencies(schema);
 
-        var occupied = await FindOccupiedAsync(target, schema, ct);
+        var occupied = await FindOccupiedAsync(target, schema, stopAtFirst: false, ct);
         if (occupied.Count > 0)
             throw new ImportRefusedException(
                 $"the target database already holds data ({string.Join(", ", occupied)}). "
@@ -271,13 +273,28 @@ public static class SqliteImporter {
     }
 
     /// <summary>
+    /// Whether <paramref name="target"/> holds anything the migrations did not put there — the same
+    /// question the import refuses on, asked by <see cref="SqliteAutoImport"/> before it decides that a
+    /// legacy file is this installation's data rather than a leftover. Stops at the first occupied table:
+    /// the caller only wants the verdict, and a full census would count every row of an audit trail on
+    /// every start.
+    /// </summary>
+    public static async Task<bool> HoldsUserDataAsync(NpgsqlConnection target, CancellationToken ct = default) {
+        var schema = await ReadTargetSchemaAsync(target, ct);
+        return (await FindOccupiedAsync(target, schema, stopAtFirst: true, ct)).Count > 0;
+    }
+
+    /// <summary>
     /// Every table that holds a row the migrations did not put there. Named tables rather than a
     /// hand-picked handful, because "is this database in use?" is not a question a fixed list of four
     /// can answer — an instance whose only content is a credential or a backup schedule is still one an
     /// import would trample.
     /// </summary>
     private static async Task<List<string>> FindOccupiedAsync(
-        NpgsqlConnection target, Dictionary<string, TargetTable> schema, CancellationToken ct) {
+        NpgsqlConnection target,
+        Dictionary<string, TargetTable> schema,
+        bool stopAtFirst,
+        CancellationToken ct) {
         var occupied = new List<string>();
         foreach (var table in schema.Keys.OrderBy(n => n, StringComparer.Ordinal)) {
             await using var command = target.CreateCommand();
@@ -285,7 +302,9 @@ public static class SqliteImporter {
             // never-used database reads as empty; anything above that line is real content.
             command.CommandText = $"""SELECT count(*) FROM "{table}" """;
             var count = Convert.ToInt64(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
-            if (count > (SeededTables.Contains(table) ? 1 : 0)) occupied.Add($"{table}: {count} row(s)");
+            if (count <= (SeededTables.Contains(table) ? 1 : 0)) continue;
+            occupied.Add($"{table}: {count} row(s)");
+            if (stopAtFirst) break;
         }
         return occupied;
     }
