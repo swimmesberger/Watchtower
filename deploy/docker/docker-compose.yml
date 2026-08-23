@@ -138,7 +138,9 @@ services:
       start_period: 10s
 
 volumes:
-  # Certificates, the ACME account key and the data-protection key ring — and, until you have run the
-  # import, the old watchtower.db.
+  # Only needed for the upgrade from older versions: the old watchtower.db (for --import-sqlite) and the
+  # legacy /data/auth-keys + /data/proxy-certs files, which the first start imports into PostgreSQL.
+  # Certificates, the ACME account, the signing key and the data-protection key ring now live in the
+  # database (ADR-0024); a fresh installation can leave this volume out.
   watchtower-data:
   watchtower-pg:
