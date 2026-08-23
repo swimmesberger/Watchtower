@@ -3,6 +3,7 @@ using System.Security.Authentication;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Api.Proxy;
 
@@ -13,11 +14,14 @@ namespace Watchtower.Api.Proxy;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The endpoint is defined by <em>configuration</em> (<c>Kestrel:Endpoints:ProxyHttps:Url</c>, set by the
-/// shipped Dockerfile) rather than by a <c>Listen</c> call, for two reasons. It keeps the port an
-/// operator's decision — the container image publishes 8443, a bespoke deployment can move it or leave it
-/// out entirely — and, more importantly, an unconfigured endpoint means the callback below never runs, so
-/// development, the Aspire AppHost and <c>WebApplicationFactory</c> are untouched by all of this.
+/// The endpoint is defined by <em>configuration</em> rather than by a <c>Listen</c> call, and the
+/// configuration it is defined by is
+/// <see cref="ProxyIngressKestrelConfiguration"/>'s projection — which derives the proxy endpoints from
+/// the reverse-proxy settings instead of reading whatever an operator wrote under
+/// <c>Kestrel:Endpoints:ProxyHttps</c>. So the listener follows the provider: it comes up when the
+/// in-process proxy is enabled and goes away when it is disabled or another provider is selected, with no
+/// restart. The section is handed to Kestrel with <c>reloadOnChange: true</c>, which is what makes the
+/// callback below run again each time the endpoint is (re-)added.
 /// </para>
 /// <para>
 /// The TLS hook is <see cref="TlsHandshakeCallbackOptions"/> and not the simpler
@@ -30,64 +34,43 @@ namespace Watchtower.Api.Proxy;
 /// </para>
 /// </remarks>
 internal static class ProxyHttpsEndpoint {
-    /// <summary>The Kestrel endpoint name — <c>Kestrel:Endpoints:ProxyHttps:Url</c>.</summary>
-    public const string EndpointName = "ProxyHttps";
+    /// <summary>The Kestrel endpoint name — <c>Endpoints:ProxyHttps</c> in the projected section.</summary>
+    public const string EndpointName = ProxyIngressKestrelConfiguration.HttpsEndpointName;
 
     /// <summary>
-    /// The plain-HTTP ingress endpoint's name — <c>Kestrel:Endpoints:ProxyHttp:Url</c>. It needs no
-    /// Kestrel code of its own; the default loader binds it. It is named here because the two proxy
-    /// endpoints share the "blank means off" handling below, and because the dispatcher and the ACME
-    /// self-check both have to be able to tell it from the management endpoint.
+    /// The plain-HTTP ingress endpoint's name. It needs no Kestrel code of its own; the loader binds it
+    /// like any other HTTP endpoint. It is named here because the dispatcher and the ACME self-check both
+    /// have to be able to tell it from the management endpoint.
     /// </summary>
-    public const string HttpEndpointName = "ProxyHttp";
-
-    private const string EndpointKey = $"Endpoints:{EndpointName}";
-    private const string UrlKey = $"Kestrel:{EndpointKey}:Url";
+    public const string HttpEndpointName = ProxyIngressKestrelConfiguration.HttpEndpointName;
 
     /// <summary>
-    /// Adds the SNI-served HTTPS endpoint, if one is configured, and takes any blank proxy endpoint out of
-    /// the configuration the Kestrel loader reads. Called before <c>Build()</c>.
+    /// Points Kestrel at the projected section and attaches the SNI callback to its TLS endpoint. Called
+    /// before <c>Build()</c>, unconditionally: whether either ingress listener exists is
+    /// <paramref name="kestrelSection"/>'s decision, now and on every later reload.
     /// </summary>
     /// <remarks>
-    /// Three cases, and the middle one is the reason this does anything at all when the endpoints are off.
+    /// Both halves are unconditional on purpose, because "no proxy endpoints right now" is no longer the
+    /// same as "no proxy endpoints ever":
     /// <list type="bullet">
-    /// <item>No <c>ProxyHttp</c>/<c>ProxyHttps</c> configuration — every non-container deployment. Nothing
-    /// is touched.</item>
-    /// <item>Configured but blank. This is how an operator turns off a variable baked into an image:
-    /// Docker has no way to unset one, only to override it with an empty value. Kestrel's own loader
-    /// rejects an endpoint whose <c>Url</c> is present but empty and fails the host on startup, so the
-    /// section is filtered out of the configuration the loader reads and the endpoint is simply
-    /// absent. Both proxy endpoints get this, independently: turning ingress TLS off is a normal thing to
-    /// do behind another terminator, and turning plain-HTTP ingress off is a normal thing to do when
-    /// nothing publishes 80.</item>
-    /// <item>Configured with a URL — the listener below for <c>ProxyHttps</c>; the default loader for
-    /// <c>ProxyHttp</c>, which is an ordinary HTTP endpoint and needs nothing from us.</item>
+    /// <item>HTTPS configuration support is registered even for a host that starts with nothing bound —
+    /// <c>CreateSlimBuilder</c> leaves it out, and the loader refuses an <c>https://</c> endpoint before
+    /// ever reaching our callback. It has to be in place before the reload that adds one.</item>
+    /// <item>The loader replaces Kestrel's default one even when the projection carries no endpoints at
+    /// all. A section without an <c>Endpoints</c> block leaves the hosting URLs
+    /// (<c>ASPNETCORE_URLS</c>, launchSettings) binding exactly as they did — verified by
+    /// <c>ProxyIngressEndpointReloadTests</c> — so development, Aspire and the integration tests boot
+    /// unchanged while still being able to gain an endpoint later.</item>
     /// </list>
     /// </remarks>
-    public static void Configure(WebApplicationBuilder builder) {
-        var blank = BlankEndpointKeys(builder.Configuration);
-        var url = builder.Configuration[UrlKey];
+    public static void Configure(WebApplicationBuilder builder, IConfiguration kestrelSection) {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(kestrelSection);
 
-        if (string.IsNullOrWhiteSpace(url)) {
-            // Genuinely absent: leave Kestrel's own configuration handling exactly as it is, rather than
-            // replacing the default loader with an equivalent one for no reason.
-            if (blank.Count == 0) return;
-
-            builder.WebHost.ConfigureKestrel((context, kestrel) =>
-                kestrel.Configure(Without(context.Configuration, blank), reloadOnChange: false));
-            return;
-        }
-
-        // The host is built with CreateSlimBuilder, which leaves Kestrel's HTTPS configuration support
-        // out; without this the loader refuses an https:// endpoint before ever reaching our callback.
-        // Only on this path, so nothing about an HTTP-only host changes.
         builder.WebHost.UseKestrelHttpsConfiguration();
 
-        builder.WebHost.ConfigureKestrel((context, kestrel) => {
-            var kestrelConfiguration = blank.Count == 0
-                ? context.Configuration.GetSection("Kestrel")
-                : Without(context.Configuration, blank);
-            var loader = kestrel.Configure(kestrelConfiguration, reloadOnChange: false);
+        builder.WebHost.ConfigureKestrel((_, kestrel) => {
+            var loader = kestrel.Configure(kestrelSection, reloadOnChange: true);
             loader.Endpoint(EndpointName, endpoint => {
                 var services = kestrel.ApplicationServices;
                 var store = services.GetRequiredService<CertificateStore>();
@@ -117,37 +100,13 @@ internal static class ProxyHttpsEndpoint {
                     HandshakeTimeout = TimeSpan.FromSeconds(10),
                 });
 
+                // Logged on every (re-)add, not only at startup: the endpoint now appears and disappears
+                // with the settings, and "when did TLS ingress come up?" is the question this answers.
                 logger.LogInformation(
                     "Proxy HTTPS endpoint {Url} configured; serving {Count} certificate(s) from {CertPath}.",
-                    url, store.Entries.Count, store.RootPath);
+                    endpoint.ConfigSection["Url"], store.Entries.Count, store.RootPath);
             });
         });
-    }
-
-    /// <summary>
-    /// The proxy endpoints that are present in configuration but carry no URL, as section keys relative to
-    /// <c>Kestrel</c> — the endpoints the loader has to be kept from seeing.
-    /// </summary>
-    private static IReadOnlyList<string> BlankEndpointKeys(IConfiguration configuration) => [
-        .. new[] { HttpEndpointName, EndpointName }
-            .Select(name => $"Endpoints:{name}")
-            .Where(key => configuration.GetSection($"Kestrel:{key}").Exists() &&
-                          string.IsNullOrWhiteSpace(configuration[$"Kestrel:{key}:Url"])),
-    ];
-
-    /// <summary>
-    /// The <c>Kestrel</c> section with the named endpoints removed, as a standalone configuration for the
-    /// loader to read. Copied key by key rather than edited in place because a configuration provider has
-    /// no notion of deleting a key — only of supplying one.
-    /// </summary>
-    private static IConfiguration Without(IConfiguration configuration, IReadOnlyList<string> endpointKeys) {
-        var kept = configuration.GetSection("Kestrel")
-            .AsEnumerable(makePathsRelative: true)
-            // Section markers carry no value and are implied by the keys underneath them.
-            .Where(pair => pair.Value is not null)
-            .Where(pair => !endpointKeys.Any(
-                key => pair.Key.StartsWith($"{key}:", StringComparison.OrdinalIgnoreCase)));
-        return new ConfigurationBuilder().AddInMemoryCollection(kept).Build();
     }
 
     /// <summary>

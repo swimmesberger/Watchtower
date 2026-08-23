@@ -134,7 +134,7 @@ public sealed class YarpProxyProviderApplyTests {
 
         // There is no container to inspect — "running" means the listener came up.
         Assert.False(await yarp.Provider.IsRunningAsync(Ct));
-        listener.HttpsBound = true;
+        listener.Update(s => s with { HttpsBound = true });
         Assert.True(await yarp.Provider.IsRunningAsync(Ct));
     }
 

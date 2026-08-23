@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Watchtower.Api;
+using Watchtower.Application.Config;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
@@ -118,29 +119,28 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             UseRealProxyProvider = true,
         };
 
-    /// <summary>The ingress ports a <see cref="WithIngress"/> host pretends to have bound.</summary>
-    public static readonly IReadOnlySet<int> DefaultIngressPorts = new HashSet<int> { 8081, 8443 };
-
     /// <summary>The port a request is treated as having arrived on unless it says otherwise.</summary>
     public const int ManagementPort = 8080;
 
     /// <summary>
     /// A host with the in-process proxy <em>and</em> the shipped image's endpoint split: ingress on
-    /// 8081/8443, management on 8080. <c>TestServer</c> binds nothing and reports no local port, so the
-    /// ports are seeded here and the client names one per request through
-    /// <see cref="CreateApiClient(int?)"/> — the only two things a real Kestrel would have supplied.
+    /// 8081/8443, management on 8080. The ports are not faked — the listener state derives them from the
+    /// reverse-proxy settings exactly as it does in the container, and all this host adds is the
+    /// management endpoint the image configures. <c>TestServer</c> does report no local port, so the client
+    /// names one per request through <see cref="CreateApiClient(int?)"/>.
     /// </summary>
     public static WatchtowerApiFactory WithIngress(params (string Key, string? Value)[] settings) =>
         new([("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", "yarp"), .. settings]) {
             UseRealProxyProvider = true,
-            IngressPorts = DefaultIngressPorts,
+            HasIngress = true,
         };
 
     /// <summary>
-    /// The ingress ports the host's <see cref="YarpListenerState"/> starts with. Empty by default, which is
-    /// the single-listener shape every other test in this assembly runs under.
+    /// Whether this host runs with the ingress/management split. False by default, which is the
+    /// single-listener shape every other test in this assembly runs under — expressed the way an operator
+    /// would express it, by turning both ingress ports off.
     /// </summary>
-    public IReadOnlySet<int> IngressPorts { get; init; } = new HashSet<int>();
+    public bool HasIngress { get; init; }
 
     /// <summary>
     /// Projects the seeded routes into the in-process proxy's routing table, the way a route change or the
@@ -161,6 +161,22 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         builder.UseSetting("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys"));
         builder.UseSetting("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs"));
         builder.UseSetting("Watchtower:Auth:BootstrapPassword", AdminPassword);
+
+        // The listener facts, stated the way the container states them — the ingress endpoints are derived
+        // from these, so a test host says what it wants rather than writing YarpListenerState by hand.
+        // Both ports off is the single-listener shape; HasIngress is the shipped image's split.
+        builder.UseSetting(
+            "Watchtower:Proxy:Yarp:HttpPort",
+            HasIngress ? YarpProxyOptions.DefaultHttpPort.ToString(CultureInfo.InvariantCulture) : "0");
+        builder.UseSetting(
+            "Watchtower:Proxy:Yarp:HttpsPort",
+            HasIngress ? YarpProxyOptions.DefaultHttpsPort.ToString(CultureInfo.InvariantCulture) : "0");
+        if (HasIngress)
+            builder.UseSetting(
+                "Kestrel:Endpoints:Http:Url",
+                string.Create(CultureInfo.InvariantCulture, $"http://+:{ManagementPort}"));
+
+        // Last, so a test that names one of the keys above wins over the defaults.
         foreach (var (key, value) in _settings) builder.UseSetting(key, value);
 
         builder.ConfigureLogging(b => b.SetMinimumLevel(LogLevel.Warning));
@@ -225,17 +241,10 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
                 services.AddSingleton(AcmeTransport);
             }
 
-            // The listener facts a real Kestrel would have recorded at startup. TestServer binds nothing,
-            // so a host that wants the ingress/management split has to be told what it "bound" — and the
-            // per-request half of it, Connection.LocalPort, is supplied by the filter below.
-            if (IngressPorts.Count > 0) {
-                services.RemoveAll<YarpListenerState>();
-                services.AddSingleton(new YarpListenerState {
-                    IngressPorts = IngressPorts,
-                    ManagementPort = ManagementPort,
-                });
+            // The per-request half of the split, which no configuration can supply: TestServer opens no
+            // socket, so Connection.LocalPort is whatever the filter below puts there.
+            if (HasIngress)
                 services.AddSingleton<IStartupFilter>(new TestLocalPortStartupFilter());
-            }
 
             if (UseRealForwarder) return;
             services.RemoveAll<IHttpForwarder>();
@@ -282,10 +291,10 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         // Naming a port on a host that has no ingress ports would set Connection.LocalPort and change
         // nothing, because the dispatcher's ingress rules are all gated on the set being non-empty — so the
         // test would pass while asserting the single-listener behaviour it thought it had opted out of.
-        if (localPort is not null && IngressPorts.Count == 0)
+        if (localPort is not null && !HasIngress)
             throw new InvalidOperationException(
                 $"A local port is only meaningful on a host with ingress ports; build it with "
-                + $"{nameof(WithIngress)}() or set {nameof(IngressPorts)}.");
+                + $"{nameof(WithIngress)}() or set {nameof(HasIngress)}.");
 
         var client = CreateClient(new WebApplicationFactoryClientOptions {
             AllowAutoRedirect = false,

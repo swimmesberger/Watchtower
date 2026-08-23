@@ -508,12 +508,39 @@ public static class ProxyProviderNames {
 /// from an ACME CA — so there is neither a sibling proxy container nor a control network.
 /// </summary>
 public sealed record YarpProxyOptions {
+    /// <summary>The container port the plain-HTTP ingress listener binds unless an operator moves it.</summary>
+    public const int DefaultHttpPort = 8081;
+
+    /// <summary>The container port the TLS ingress listener binds unless an operator moves it.</summary>
+    public const int DefaultHttpsPort = 8443;
+
     /// <summary>
-    /// Directory holding the issued PEM certificates and the ACME account key. Read at bind time
-    /// (the directory is created at startup and the certificate store is opened over it), so it is
+    /// Directory holding the issued PEM certificates and the ACME account key. Read once at startup
+    /// (the directory is created and the certificate store is opened over it), so it is
     /// environment/appsettings-only — not editable from the Settings page.
     /// </summary>
     public string CertPath { get; init; } = "/data/proxy-certs";
+
+    /// <summary>
+    /// The <em>container</em> port the plain-HTTP ingress listener binds — where ACME HTTP-01 validation
+    /// arrives and where the plain half of the proxy is served. Publish it as <c>80:{HttpPort}</c>.
+    /// <c>0</c> turns the listener off, which is what an operator wants when nothing publishes 80 (no
+    /// certificate can then be issued over HTTP-01).
+    /// </summary>
+    /// <remarks>
+    /// A runtime setting, not a bind-time one: the listener follows the reverse-proxy settings, so
+    /// changing this — or disabling the proxy, or switching provider — binds or unbinds the endpoint
+    /// without a restart (ADR-0022 addendum).
+    /// </remarks>
+    public int HttpPort { get; init; } = DefaultHttpPort;
+
+    /// <summary>
+    /// The <em>container</em> port the TLS ingress listener binds — the routed traffic, one certificate
+    /// per SNI name. Publish it as <c>443:{HttpsPort}</c>. <c>0</c> turns the listener off, which is what
+    /// an operator wants behind another TLS terminator. Rebinds at runtime, like
+    /// <see cref="HttpPort"/>.
+    /// </summary>
+    public int HttpsPort { get; init; } = DefaultHttpsPort;
 
     /// <summary>
     /// ACME directory URL of the CA that issues the certificates. Defaults to Let's Encrypt

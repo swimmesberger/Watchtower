@@ -7,6 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Config;
 using Watchtower.Application.Modules.Proxy.Handlers;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
+using Watchtower.Application.Services.Yarp;
 using Xunit;
 
 namespace Watchtower.Application.Tests;
@@ -249,15 +251,130 @@ public sealed class UpdateProxyConfigYarpValidationTests {
             await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, SettingsScope.Global, Ct));
     }
 
+    // ── Ingress ports ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The ports are ordinary runtime settings now — a save moves the listener, no restart. Checked at
+    /// the boundary because the thing that acts on them is Kestrel's endpoint reload, where a bad value
+    /// surfaces as a listener that quietly failed to bind.
+    /// </summary>
+    [Fact]
+    public async Task TheIngressPortsArePersisted() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = 18081, YarpHttpsPort = 18443 });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(18081, result.Value.Config.Yarp.HttpPort);
+        Assert.Equal(18443, result.Value.Config.Yarp.HttpsPort);
+        var settings = host.Services.GetRequiredService<ISettingsManager>();
+        Assert.Equal("18081",
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpHttpPort, SettingsScope.Global, Ct));
+        Assert.Equal("18443",
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpHttpsPort, SettingsScope.Global, Ct));
+    }
+
+    /// <summary>Zero is a real answer — "do not bind that listener" — and has to survive the range check.</summary>
+    [Fact]
+    public async Task PortZeroTurnsAListenerOff() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpHttpsPort = 0 });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, result.Value.Config.Yarp.HttpsPort);
+    }
+
+    [Theory]
+    [InlineData(-1, 8443, "between 1 and 65535")]
+    [InlineData(8081, 70000, "between 1 and 65535")]
+    [InlineData(8443, 8443, "must differ")]
+    public async Task ARefusedPortPair(int http, int https, string expected) {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = http, YarpHttpsPort = https });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(expected, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Both off is not a collision — it is a deployment with no ingress at all.</summary>
+    [Fact]
+    public async Task BothPortsOff_IsNotACollision() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = 0, YarpHttpsPort = 0 });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    /// <summary>
+    /// Taking the management port would put public ingress on the listener Watchtower's own UI is served
+    /// on — and take the UI down with it, from inside the page that made the change.
+    /// </summary>
+    [Fact]
+    public async Task AnIngressPortMayNotBeTheManagementPort() {
+        using var host = AuthTestHost.Start();
+        var listener = new YarpListenerState();
+        listener.Publish(new YarpListenerSnapshot { ManagementPort = 8080 });
+
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = 8080 }, listener);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("must not be the management port (8080)", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Enabling the in-process provider is the moment the stored ports start being acted on, so they are
+    /// checked then too — even though this request supplied neither.
+    /// </summary>
+    [Fact]
+    public async Task EnablingTheProvider_ChecksTheStoredPorts() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:Yarp:HttpsPort", "8081"));
+        var result = await SaveAsync(
+            host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("must differ", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A pinned port is reported, not written — env is the infrastructure-as-code layer.</summary>
+    [Fact]
+    public async Task APinnedPortIsRefused() {
+        using var host = AuthTestHost.Start();
+        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__YARP__HTTPSPORT"]);
+
+        var result = await SaveAsync(host, Command() with { YarpHttpsPort = 18443 }, pins: pins);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("WATCHTOWER__PROXY__YARP__HTTPSPORT", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(WatchtowerSettingPaths.ProxyYarpHttpsPort, GetProxyConfig.ProxyPaths);
+    }
+
+    /// <summary>The audit line names the ports, because changing one moves a listener facing the internet.</summary>
+    [Fact]
+    public async Task TheAuditLineNamesTheIngressPorts() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with {
+            Provider = ProxyProviderNames.Yarp, YarpHttpPort = 18081, YarpHttpsPort = 0,
+        });
+        Assert.True(result.IsSuccess);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuditEvents.SingleAsync(Ct);
+        Assert.Contains("ingress http 18081, https off", row.Detail, StringComparison.Ordinal);
+    }
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     private static UpdateProxyConfig.Command Command() =>
         new(Enabled: false, Provider: ProxyProviderNames.Caddy, AdminEmail: null, CaddyImage: "caddy:2");
 
     private static async Task<Result<UpdateProxyConfig.Response>> SaveAsync(
-        AuthTestHost host, UpdateProxyConfig.Command command) {
+        AuthTestHost host,
+        UpdateProxyConfig.Command command,
+        YarpListenerState? listener = null,
+        EnvironmentSettingPins? pins = null) {
         await using var scope = host.Services.CreateAsyncScope();
-        var handler = ActivatorUtilities.CreateInstance<UpdateProxyConfig>(scope.ServiceProvider);
+        object[] overrides = [.. new object?[] { listener, pins }.OfType<object>()];
+        var handler = ActivatorUtilities.CreateInstance<UpdateProxyConfig>(scope.ServiceProvider, overrides);
         return await handler.HandleAsync(command, Ct);
     }
 

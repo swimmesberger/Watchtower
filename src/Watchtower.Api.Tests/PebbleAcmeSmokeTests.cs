@@ -51,7 +51,7 @@ public sealed class PebbleAcmeSmokeTests {
             ("Watchtower:Proxy:Yarp:AcmeSelfCheckEnabled", "false"),
             ("Watchtower:Proxy:AdminEmail", "ops@example.invalid"));
 
-        factory.Services.GetRequiredService<YarpListenerState>().HttpsBound = true;
+        factory.Services.GetRequiredService<YarpListenerState>().Update(s => s with { HttpsBound = true });
         var certificates = factory.Services.GetRequiredService<CertificateManager>();
         certificates.SetDesiredHosts([Host]);
 

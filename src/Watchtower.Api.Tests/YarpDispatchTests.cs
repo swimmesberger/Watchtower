@@ -492,6 +492,89 @@ public sealed class YarpDispatchTests {
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
     }
 
+    // ── A port that is neither management nor configured ingress ──────────────
+    //
+    // The classification fails closed: with the management port known, everything else is ingress. The
+    // case that matters is a listener the configuration no longer names — Kestrel keeps its existing
+    // endpoints when a rebind fails, so moving an ingress port onto one something else holds leaves the
+    // old port bound and serving under a configuration that has moved on. Read as management, that port
+    // would hand Watchtower's own UI to whoever found it.
+
+    /// <summary>
+    /// An unrouted host on such a port gets the ingress answer — nothing — rather than the management
+    /// plane. This is the whole point of the exclusion rule.
+    /// </summary>
+    [Fact]
+    public async Task UnknownHost_OnAnUnexpectedPort_Is404() {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(9999);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("https://nobody.example.invalid/health", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("", await Body(response));
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>And a routed host on it is forwarded, exactly as it would be on a named ingress port.</summary>
+    [Fact]
+    public async Task RouteHost_OnAnUnexpectedPort_IsForwarded() {
+        using var factory = WatchtowerApiFactory.WithIngress();
+        using var client = factory.CreateApiClient(9999);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AppDomain}/reports", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(RecordingHttpForwarder.MarkerBody, await Body(response));
+    }
+
+    /// <summary>
+    /// A Watchtower route stays the exception there too — it is served on any listener, which is what
+    /// keeps a login host reachable through a listener the configuration has stopped naming.
+    /// </summary>
+    [Fact]
+    public async Task LoginHost_OnAnUnexpectedPort_ReachesWatchtower() {
+        using var factory = IngressLoginHostEstate();
+        using var client = factory.CreateApiClient(9999);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AuthHost}/health", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("healthy", await Body(response), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The rule that keeps development and every single-listener deployment working: with no ingress
+    /// configured at all, no port is ingress — not even one that is not the management port. A dev host
+    /// that also binds an <c>https://</c> hosting URL must not have that second listener read as public.
+    /// </summary>
+    [Theory]
+    [InlineData(5080, 5443)]
+    [InlineData(5080, null)]
+    public void WithNoIngressConfigured_NothingIsIngress(int managementPort, int? otherPort) {
+        var snapshot = new YarpListenerSnapshot { ManagementPort = managementPort };
+
+        Assert.False(YarpHostDispatchMiddleware.IsIngress(snapshot, managementPort));
+        if (otherPort is { } port) Assert.False(YarpHostDispatchMiddleware.IsIngress(snapshot, port));
+    }
+
+    /// <summary>
+    /// And where the management port was never derived — <c>TestServer</c>, the unit hosts — the rule
+    /// falls back to the configured set, which is the behaviour those hosts have always had.
+    /// </summary>
+    [Fact]
+    public void WithNoManagementPort_TheConfiguredSetDecides() {
+        var snapshot = new YarpListenerSnapshot { IngressPorts = new HashSet<int> { 8081, 8443 } };
+
+        Assert.True(YarpHostDispatchMiddleware.IsIngress(snapshot, 8081));
+        Assert.False(YarpHostDispatchMiddleware.IsIngress(snapshot, 9999));
+    }
+
     private static WatchtowerApiFactory IngressLoginHostEstate() => WatchtowerApiFactory.WithIngress(
         ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Auth:Host", AuthHost));
 

@@ -276,6 +276,8 @@ export const api = {
         provider: data.provider,
         adminEmail: data.adminEmail ?? null,
         caddyImage: data.caddyImage,
+        yarpHttpPort: data.yarpHttpPort ?? null,
+        yarpHttpsPort: data.yarpHttpsPort ?? null,
         yarpAcmeDirectoryUrl: data.yarpAcmeDirectoryUrl ?? null,
         yarpAcmeCaBundlePath: data.yarpAcmeCaBundlePath ?? null,
         yarpAcmeEabKeyId: data.yarpAcmeEabKeyId ?? null,

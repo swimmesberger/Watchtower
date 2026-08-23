@@ -466,6 +466,10 @@ export type ProxyProvider = 'caddy' | 'cloudflare' | 'yarp'
 export interface ProxyYarpConfig {
   /** Where issued certificates and the ACME account key live. Bind-time — read-only here. */
   certPath: string
+  /** Container port the plain-HTTP ingress listener binds; 0 turns it off. Applied without a restart. */
+  httpPort: number
+  /** Container port the TLS ingress listener binds; 0 turns it off. Applied without a restart. */
+  httpsPort: number
   acmeDirectoryUrl: string
   /** Extra PEM roots trusted when talking to the ACME directory (an internal CA). */
   acmeCaBundlePath: string | null
@@ -474,7 +478,7 @@ export interface ProxyYarpConfig {
   /** True when an EAB HMAC key is stored — the UI sends a new one only to replace it. */
   hasAcmeEabHmacKey: boolean
   redirectHttpToHttps: boolean
-  /** Runtime state: false means the proxy is serving over plain HTTP only. */
+  /** Runtime state: false means nothing is terminating TLS and routes are served in the clear. */
   httpsListenerBound: boolean
 }
 
@@ -521,6 +525,8 @@ export interface UpdateProxyConfigRequest {
   provider: ProxyProvider
   adminEmail: string | null
   caddyImage: string
+  yarpHttpPort?: number | null
+  yarpHttpsPort?: number | null
   yarpAcmeDirectoryUrl?: string | null
   yarpAcmeCaBundlePath?: string | null
   yarpAcmeEabKeyId?: string | null

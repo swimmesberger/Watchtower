@@ -1,4 +1,5 @@
 using System.Buffers.Text;
+using System.Globalization;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Elarion.Abstractions.Identity;
@@ -35,6 +36,8 @@ public sealed class UpdateProxyConfig(
         string Provider,
         string? AdminEmail,
         string CaddyImage,
+        int? YarpHttpPort = null,
+        int? YarpHttpsPort = null,
         string? YarpAcmeDirectoryUrl = null,
         string? YarpAcmeCaBundlePath = null,
         string? YarpAcmeEabKeyId = null,
@@ -80,6 +83,8 @@ public sealed class UpdateProxyConfig(
         var acmeEabKeyId = Coalesce(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId);
         var acmeEabHmacKey = Coalesce(command.YarpAcmeEabHmacKey, yarp.AcmeEabHmacKey);
         var redirectHttpToHttps = command.YarpRedirectHttpToHttps ?? yarp.RedirectHttpToHttps;
+        var httpPort = command.YarpHttpPort ?? yarp.HttpPort;
+        var httpsPort = command.YarpHttpsPort ?? yarp.HttpsPort;
 
         // A yarp value is checked when this request supplies it, and — supplied or not — whenever this
         // request switches the in-process provider ON, because that is the moment the stored values
@@ -88,6 +93,15 @@ public sealed class UpdateProxyConfig(
         // "switch back to caddy", which are precisely the two things an operator does when the
         // certificate plane is broken.
         var enablingYarp = command.Enabled && provider == ProxyProviderNames.Yarp;
+
+        // The ingress ports are checked whenever this request supplies one, and — supplied or not — when it
+        // switches the in-process provider on, because that is the moment Kestrel is asked to bind them.
+        // Unlike the ACME values these are cheap to check and cannot rot underneath us, but the rule is kept
+        // the same so "disable the proxy" never fails on a value it is about to stop acting on.
+        if ((command.YarpHttpPort is not null || command.YarpHttpsPort is not null || enablingYarp)
+            && ValidateIngressPorts(httpPort, httpsPort, listener.ManagementPort) is { } portError)
+            return AppError.Validation(portError);
+
         if ((command.YarpAcmeDirectoryUrl is not null || enablingYarp)
             && !IsAcceptableAcmeDirectoryUrl(acmeDirectoryUrl))
             // Empty is rejected on purpose: unlike the optional fields below, where empty means "unset",
@@ -139,6 +153,8 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyProvider, provider != proxy.ProviderName());
         Check(WatchtowerSettingPaths.ProxyAdminEmail, !string.Equals(email, proxy.AdminEmail?.Trim() ?? "", StringComparison.Ordinal));
         Check(WatchtowerSettingPaths.ProxyCaddyImage, !string.Equals(image, proxy.CaddyImage.Trim(), StringComparison.Ordinal));
+        Check(WatchtowerSettingPaths.ProxyYarpHttpPort, httpPort != yarp.HttpPort);
+        Check(WatchtowerSettingPaths.ProxyYarpHttpsPort, httpsPort != yarp.HttpsPort);
         Check(WatchtowerSettingPaths.ProxyYarpAcmeDirectoryUrl, Changed(command.YarpAcmeDirectoryUrl, yarp.AcmeDirectoryUrl));
         Check(WatchtowerSettingPaths.ProxyYarpAcmeCaBundlePath, Changed(command.YarpAcmeCaBundlePath, yarp.AcmeCaBundlePath));
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId, Changed(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId));
@@ -159,8 +175,45 @@ public sealed class UpdateProxyConfig(
         if (violations.Count > 0)
             return EnvironmentSettingPins.PinnedError(violations);
 
-        await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyEnabled, command.Enabled ? "true" : "false", ct);
-        await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyProvider, provider, ct);
+        // Write order matters, because every setting write raises a configuration reload of its own and
+        // the ingress listeners follow that configuration. A save that changes several of these settings
+        // is therefore seen by Kestrel as a sequence, and the sequence must never pass through a state the
+        // operator did not ask for:
+        //   * turning ingress ON — ports first, so the listeners only ever appear on the ports this save
+        //     states. The other order would bind the previous (or default) port on the way and move it a
+        //     moment later, publishing a port nobody asked for and failing loudly if something holds it.
+        //   * turning ingress OFF — Enabled/Provider first, so the listeners are gone before the new port
+        //     values land. The other order would briefly bind the new ports on a proxy that is being
+        //     switched off.
+        // "Ingress is on after this save" is the condition, not "Enabled": switching to Caddy takes the
+        // listeners down just as disabling does.
+        var ingressAfterSave = command.Enabled && provider == ProxyProviderNames.Yarp;
+
+        async Task WritePortsAsync() {
+            if (command.YarpHttpPort is not null)
+                await SetUnlessPinnedAsync(
+                    WatchtowerSettingPaths.ProxyYarpHttpPort,
+                    httpPort.ToString(CultureInfo.InvariantCulture), ct);
+            if (command.YarpHttpsPort is not null)
+                await SetUnlessPinnedAsync(
+                    WatchtowerSettingPaths.ProxyYarpHttpsPort,
+                    httpsPort.ToString(CultureInfo.InvariantCulture), ct);
+        }
+
+        async Task WriteProviderAsync() {
+            await SetUnlessPinnedAsync(
+                WatchtowerSettingPaths.ProxyEnabled, command.Enabled ? "true" : "false", ct);
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyProvider, provider, ct);
+        }
+
+        if (ingressAfterSave) {
+            await WritePortsAsync();
+            await WriteProviderAsync();
+        } else {
+            await WriteProviderAsync();
+            await WritePortsAsync();
+        }
+
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyAdminEmail, email, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCaddyImage, image, ct);
         // Proxy:Yarp:CertPath is deliberately absent: it is read at bind time (the directory is created
@@ -214,8 +267,11 @@ public sealed class UpdateProxyConfig(
             + (provider switch {
                 ProxyProviderNames.Cloudflare =>
                     $" · tunnel {tunnelName}" + (managed ? " · managed cloudflared" : ""),
-                // The ACME host, not the whole URL: it is the part that says which CA will be asked.
-                ProxyProviderNames.Yarp => $" · acme {AcmeHost(acmeDirectoryUrl)}",
+                // The ACME host, not the whole URL: it is the part that says which CA will be asked — and
+                // the ingress ports, because changing one rebinds a listener facing the internet.
+                ProxyProviderNames.Yarp =>
+                    $" · acme {AcmeHost(acmeDirectoryUrl)}"
+                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}",
                 _ => $" · image {image}",
             })
             + (secretsUpdated.Count > 0 ? $" · secrets updated: {string.Join(", ", secretsUpdated)}" : ""),
@@ -229,6 +285,8 @@ public sealed class UpdateProxyConfig(
             AdminEmail = email.Length > 0 ? email : null,
             CaddyImage = image,
             Yarp = yarp with {
+                HttpPort = httpPort,
+                HttpsPort = httpsPort,
                 AcmeDirectoryUrl = acmeDirectoryUrl,
                 AcmeCaBundlePath = string.IsNullOrWhiteSpace(acmeCaBundlePath) ? null : acmeCaBundlePath,
                 AcmeEabKeyId = string.IsNullOrWhiteSpace(acmeEabKeyId) ? null : acmeEabKeyId,
@@ -252,6 +310,27 @@ public sealed class UpdateProxyConfig(
         };
         return new Response(ProxyConfigDto.From(echoed, pins, listener.HttpsBound));
     }
+
+    /// <summary>
+    /// Checks the two ingress ports, returning the operator-facing message or null. <c>0</c> is a real
+    /// answer — "do not bind that listener" — so the range check has to admit it; everything else is about
+    /// two listeners not being able to come up at all. The management port is only known once the host has
+    /// derived it, and a collision with it would take the UI down with the listener that stole it.
+    /// </summary>
+    private static string? ValidateIngressPorts(int httpPort, int httpsPort, int? managementPort) {
+        if (httpPort is < 0 or > 65535 || httpsPort is < 0 or > 65535)
+            return "An ingress port must be between 1 and 65535, or 0 to turn that listener off.";
+        if (httpPort != 0 && httpPort == httpsPort)
+            return "The HTTP and HTTPS ingress ports must differ.";
+        if (managementPort is { } management && (httpPort == management || httpsPort == management))
+            return $"An ingress port must not be the management port ({management}) — "
+                + "that is the listener Watchtower's own UI and API are served on.";
+        return null;
+    }
+
+    /// <summary>A port for the audit line, with <c>0</c> spelled out as what it means.</summary>
+    private static string PortLabel(int port) =>
+        port == 0 ? "off" : port.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Checks that the extra ACME trust roots can actually be read, returning the operator-facing

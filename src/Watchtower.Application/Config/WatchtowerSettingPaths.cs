@@ -57,6 +57,8 @@ public static class WatchtowerSettingPaths {
     public const string ProxyAdminEmail = "Watchtower:Proxy:AdminEmail";
     public const string ProxyCaddyImage = "Watchtower:Proxy:CaddyImage";
     public const string ProxyYarpCertPath = "Watchtower:Proxy:Yarp:CertPath";
+    public const string ProxyYarpHttpPort = "Watchtower:Proxy:Yarp:HttpPort";
+    public const string ProxyYarpHttpsPort = "Watchtower:Proxy:Yarp:HttpsPort";
     public const string ProxyYarpAcmeDirectoryUrl = "Watchtower:Proxy:Yarp:AcmeDirectoryUrl";
     public const string ProxyYarpAcmeCaBundlePath = "Watchtower:Proxy:Yarp:AcmeCaBundlePath";
     public const string ProxyYarpAcmeEabKeyId = "Watchtower:Proxy:Yarp:AcmeEabKeyId";

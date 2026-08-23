@@ -28,6 +28,8 @@ public sealed class GetProxyConfig(
         WatchtowerSettingPaths.ProxyAdminEmail,
         WatchtowerSettingPaths.ProxyCaddyImage,
         WatchtowerSettingPaths.ProxyYarpCertPath,
+        WatchtowerSettingPaths.ProxyYarpHttpPort,
+        WatchtowerSettingPaths.ProxyYarpHttpsPort,
         WatchtowerSettingPaths.ProxyYarpAcmeDirectoryUrl,
         WatchtowerSettingPaths.ProxyYarpAcmeCaBundlePath,
         WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId,
@@ -71,6 +73,8 @@ public sealed record ProxyConfigDto(
         CaddyImage: proxy.CaddyImage,
         Yarp: new ProxyYarpConfigDto(
             CertPath: proxy.Yarp.CertPath,
+            HttpPort: proxy.Yarp.HttpPort,
+            HttpsPort: proxy.Yarp.HttpsPort,
             AcmeDirectoryUrl: proxy.Yarp.AcmeDirectoryUrl,
             AcmeCaBundlePath: proxy.Yarp.AcmeCaBundlePath,
             AcmeEabKeyId: proxy.Yarp.AcmeEabKeyId,
@@ -96,12 +100,16 @@ public sealed record ProxyConfigDto(
 /// <summary>
 /// In-process proxy values for the config surface. The EAB HMAC key is a secret and appears only as
 /// <paramref name="HasAcmeEabHmacKey"/>; <paramref name="CertPath"/> is read-only (bind-time).
-/// <paramref name="HttpsListenerBound"/> is runtime state rather than configuration — it is what lets
-/// the Settings page say "enabled, but 443 never came up" instead of looking healthy while every route
-/// is served over plain HTTP.
+/// <paramref name="HttpPort"/> and <paramref name="HttpsPort"/> are the container ports the ingress
+/// listeners bind — editable, and applied without a restart, because the listeners follow these settings
+/// (<c>0</c> means the listener is off). <paramref name="HttpsListenerBound"/> reports whether TLS ingress
+/// is currently configured at all, which is what lets the Settings page say "enabled, but nothing is
+/// terminating TLS" instead of looking healthy while every route is served over plain HTTP.
 /// </summary>
 public sealed record ProxyYarpConfigDto(
     string CertPath,
+    int HttpPort,
+    int HttpsPort,
     string AcmeDirectoryUrl,
     string? AcmeCaBundlePath,
     string? AcmeEabKeyId,
