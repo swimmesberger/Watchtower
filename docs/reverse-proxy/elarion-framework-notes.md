@@ -13,6 +13,16 @@ Verification performed:
   `IClientEventPublisher`. `StreamHub`/`MapElarionStream` appear only in newer `schema-test` package
   READMEs — i.e. they exist in *later* Elarion, not the pinned one.
 
+> **Update (2026-08-23): the pin is now `0.2.6`.** The bump itself was a pure version change — no
+> Watchtower source needed adapting. That clears the version gate on A1 and A3 below: `Elarion.Streams`
+> (ordered/resumable `StreamHub<T>` + `MapElarionStream`, ADR-0052) and the client-event tier
+> (`Elarion.ClientEvents` / `.AspNetCore` / `.PostgreSql`, ADR-0043/0044) are published and installable
+> at `0.2.6`. **Adopting** them is still open work — neither package is referenced yet, so the SSE
+> hand-rolls and the status polling described below are unchanged. The one behaviour change the bump
+> carried is inert here: Elarion's default `[RequirePermission]`/`[RequireRole]` denial message became a
+> generic `"Access denied."` (`AuthorizationOptions.ForbiddenMessageFormat`), and Watchtower declares no
+> such attributes — its gate is `SystemRealmAuthorizer`, which already answered `"Access denied."`.
+
 ---
 
 ## A. Watchtower adoption items (not framework gaps)
@@ -87,8 +97,9 @@ machinery is already there for the day this feature makes auth relevant.
 
 ### Summary
 Corrected takeaway: the two big things I first flagged as missing (non-actor streaming, `[Service]`
-background lifecycles) **already exist in Elarion** — Watchtower is pinned to `0.2.3-preview.79.1` and
-hasn't adopted them (A1–A3, gated on a version bump for streaming/client-events). The only real
+background lifecycles) **already exist in Elarion** — Watchtower was pinned to `0.2.3-preview.79.1` and
+hadn't adopted them (A1–A3). The pin is now `0.2.6`, so the version gate on streaming/client-events is
+gone and only the adoption work remains. The only real
 framework-level papercut is **B1** (schema-export path resolution). This feature is implemented on the
 pinned version using the codebase's existing conventions; the Elarion bump + adoption is a clean,
 separate follow-up.

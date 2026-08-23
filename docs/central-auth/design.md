@@ -8,6 +8,7 @@ work and belongs on the `Realm` entity (§13.8). **§13 (native multi-realm) was
 > Grounded against the current code (Proxy module, `CaddyManager`/`CaddyConfigBuilder`, `Route`
 > entity, host wiring in `Program.cs`) and Elarion `0.2.3-preview.79.1` (authorization API verified
 > against the published docs).
+> Authorization API re-verified unchanged on `0.2.6` (2026-08-23).
 
 ## 1. Goal
 
