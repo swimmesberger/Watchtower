@@ -1,3 +1,4 @@
+using Elarion.Abstractions;
 using Elarion.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -138,5 +139,102 @@ public sealed class AuthConfigSettingsTests {
         // variable's removal — while the editable paths persisted normally.
         Assert.Null(await settings.GetStringAsync(WatchtowerSettingPaths.AuthEnabled, SettingsScope.Global, Ct));
         Assert.Equal("48", await settings.GetStringAsync(WatchtowerSettingPaths.AuthSessionLifetimeHours, SettingsScope.Global, Ct));
+    }
+
+    // -- The effective login host and the Auth:Host collision (ADR-0023) -------------------------
+
+    /// <summary>
+    /// The Settings page writes this response straight into its cache, so a response that reported no
+    /// effective login host would blank the field it had just rendered.
+    /// </summary>
+    [Fact]
+    public async Task TheResponse_EchoesTheEffectiveLoginHost() {
+        using var host = AuthTestHost.Start();
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<UpdateAuthConfig>(scope.ServiceProvider);
+
+        var written = await handler.HandleAsync(
+            new UpdateAuthConfig.Command(
+                Enabled: false, Host: "Fallback.Example.INVALID", SessionLifetimeHours: 12,
+                AbsoluteSessionLifetimeDays: 7),
+            Ct);
+
+        // With no login route designated, the fallback that was just written is the effective host —
+        // read off the command rather than the resolver, whose options snapshot has not reloaded yet.
+        Assert.True(written.IsSuccess);
+        Assert.Equal("fallback.example.invalid", written.Value.EffectiveLoginHost);
+    }
+
+    [Fact]
+    public async Task AnOperatorLoginRoute_WinsOverTheFallbackInTheEchoedHost() {
+        using var host = AuthTestHost.Start();
+        await host.AddWatchtowerRouteAsync("ui.example.invalid", makeLoginRoute: true);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<UpdateAuthConfig>(scope.ServiceProvider);
+
+        var written = await handler.HandleAsync(
+            new UpdateAuthConfig.Command(
+                Enabled: false, Host: "fallback.example.invalid", SessionLifetimeHours: 12,
+                AbsoluteSessionLifetimeDays: 7),
+            Ct);
+
+        Assert.True(written.IsSuccess);
+        Assert.Equal("fallback.example.invalid", written.Value.Host);
+        // The route is the answer whenever there is one; the fallback is only stored.
+        Assert.Equal("ui.example.invalid", written.Value.EffectiveLoginHost);
+    }
+
+    /// <summary>
+    /// <c>Auth:Host</c> answers for the operator realm while it has no login route, so pointing it at a
+    /// hostname a customer realm serves Watchtower on would send operator visitors to a login page that
+    /// cannot admit them and give both populations one token issuer. Refused here because this is the
+    /// only refusable order: a route cannot be created on a hostname that is already routed.
+    /// </summary>
+    [Fact]
+    public async Task AHostClaimedByAnotherRealmsWatchtowerRoute_IsRefused() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<UpdateAuthConfig>(scope.ServiceProvider);
+
+        var result = await handler.HandleAsync(
+            new UpdateAuthConfig.Command(
+                Enabled: false, Host: "LOGIN.acme.INVALID", SessionLifetimeHours: 12,
+                AbsoluteSessionLifetimeDays: 7),
+            Ct);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+        Assert.Contains("acme", result.Error.Message, StringComparison.Ordinal);
+        Assert.NotEqual(0, acme);
+
+        // Nothing was persisted: a refused write must not half-apply.
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsManager>();
+        Assert.Null(await settings.GetStringAsync(WatchtowerSettingPaths.AuthHost, SettingsScope.Global, Ct));
+    }
+
+    /// <summary>
+    /// The operator realm's <em>own</em> Watchtower route is not a collision — it is the same population,
+    /// and the route wins over the fallback anyway. Refusing it would make "designate a route, then tidy
+    /// the fallback to match" impossible.
+    /// </summary>
+    [Fact]
+    public async Task AHostClaimedByTheOperatorRealmsOwnRoute_IsAccepted() {
+        using var host = AuthTestHost.Start();
+        await host.AddWatchtowerRouteAsync("ui.example.invalid", makeLoginRoute: true);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<UpdateAuthConfig>(scope.ServiceProvider);
+
+        var result = await handler.HandleAsync(
+            new UpdateAuthConfig.Command(
+                Enabled: false, Host: "ui.example.invalid", SessionLifetimeHours: 12,
+                AbsoluteSessionLifetimeDays: 7),
+            Ct);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("ui.example.invalid", result.Value.EffectiveLoginHost);
     }
 }

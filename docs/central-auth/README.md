@@ -43,8 +43,8 @@ The recommended path is **Settings → Authentication** in the UI: create an ena
 the Users page first (the page is fully functional while auth is off), flip the toggle, and restart —
 `Auth:Enabled` shapes the request pipeline at startup, so it is the one setting that needs a restart
 (the UI says so). The handler refuses to enable while no enabled admin exists, so the restart cannot
-land on a login page nobody can pass. The login host and session lifetimes are editable there too and
-apply live.
+land on a login page nobody can pass. Session lifetimes are editable there too and apply live; the
+login host is not set on that page any more — see **Exposing Watchtower** below.
 
 Alternatively pin the settings via environment variables — env vars win over UI-edited settings
 ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)), which also means
@@ -55,20 +55,50 @@ the escape hatch if you ever lock yourself out:
 environment:
   WATCHTOWER__AUTH__ENABLED: "true"
   WATCHTOWER__AUTH__BOOTSTRAPPASSWORD: "choose-a-strong-one"   # optional; omit to get a logged random one
-  # Only needed to protect OTHER apps (not required for Watchtower's own login):
-  WATCHTOWER__AUTH__HOST: watchtower.example.com               # the hostname the login page is reachable on
+  # Fallback login host for the operator realm, read only when no Watchtower route is designated as
+  # one (ADR-0023). Normally leave it unset and create a Watchtower route instead:
+  # WATCHTOWER__AUTH__HOST: watchtower.example.com
   # Optional tuning:
   # WATCHTOWER__AUTH__COOKIESECURE: "Auto"                     # Auto | Always | Never (default Auto)
-  # WATCHTOWER__AUTH__KEYPATH: "/data/auth-keys"               # signing + data-protection keys (persist this!)
+  # WATCHTOWER__AUTH__KEYPROTECTIONSECRET: "<32+ random chars>" # encrypt the stored keys at rest (recommended)
   # WATCHTOWER__AUTH__LOGINRATELIMITPERMINUTE: "10"            # per-IP login backstop
   # WATCHTOWER__AUTH__SESSIONLIFETIMEHOURS: "12"               # idle lifetime (sliding)
   # WATCHTOWER__AUTH__ABSOLUTESESSIONLIFETIMEDAYS: "7"         # hard cap regardless of activity
 ```
 
 Protecting **other apps** additionally requires the reverse proxy (`WATCHTOWER__PROXY__ENABLED=true`,
-see [../reverse-proxy/README.md](../reverse-proxy/README.md)) and an `Auth:Host` that is itself a route
-pointing back at Watchtower — the login page has to be reachable through the proxy. Watchtower's **own**
-login works with the proxy off, on its published port.
+see [../reverse-proxy/README.md](../reverse-proxy/README.md)) and a login host — see below. Watchtower's
+**own** login works with the proxy off, on its management port.
+
+### Exposing Watchtower
+
+A protected app redirects anonymous visitors to `https://{loginHost}/login`, so that hostname has to be
+served before forward-auth is useful for anything. Since
+[ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md) that is one step in the Routes
+UI rather than a setting:
+
+1. **Routes → New route.** Under *Serve this domain with*, pick **Watchtower (this instance)**.
+2. Enter the hostname (`watchtower.example.com`), pick the **realm** it serves, and leave **Use as this
+   realm's login host** on.
+3. Point the hostname's DNS at the instance and wait for the route to go `Active` — that is its
+   certificate being issued.
+
+Repeat once per realm: each population logs in on its own host, because the SSO cookie is host-scoped
+and the host *is* the cookie jar. Such a route is always **Public** — Watchtower authenticates its own
+visitors natively, so route access control does not apply, and the database refuses to store a gated
+one. With authentication *disabled*, publishing one exposes the management UI to anyone who can reach
+the domain: turn authentication on first.
+
+`WATCHTOWER__AUTH__HOST` still works, but only as the operator realm's **fallback** — it answers when
+that realm has no login route designated, which is the case where another proxy in front of Watchtower
+terminates the hostname and no route of ours would be served anyway. Settings → Authentication shows the
+effective login host read-only and links to the Routes page.
+
+Upgrading from before ADR-0023 needs no action: each realm's stored auth host becomes a Watchtower route
+during the migration, and a configured `Auth:Host` becomes the operator realm's on the first start
+after it. The second half is recorded in the audit trail as `proxy` / `route.convert`; the migration
+half is not, because a schema migration runs before the audit plumbing exists — the migration history
+is its record.
 
 ### First-run admin bootstrap
 
@@ -128,17 +158,20 @@ ignore this whole section: nothing changes for you.
   and never editable**, because it travels to your applications as the `realm` claim in every forwarded
   assertion; renaming it would silently change what they are told about who your users are. Pick it as
   carefully as you would a database name.
-- **Login host** — the hostname this realm's login page is served on, e.g. `login.acme-corp.com`. Give
-  it a DNS record pointing at the machine running the proxy, exactly as you would for any other route;
-  Watchtower then serves that host itself and obtains a certificate for it on first request. It must be
-  a bare hostname (no scheme, port or path), it must be different from every other realm's, and it may
-  not be the Watchtower login host from `WATCHTOWER__AUTH__HOST` — one hostname resolving to two
-  populations would make "who administers this instance" ambiguous.
+- **Login host** — the hostname this realm's login page is served on, e.g. `login.acme-corp.com`.
+  Typing one here creates a **Watchtower route** for it (ADR-0023) and marks it as the realm's login
+  host; it is the same thing you would create on the Routes page, offered here because it is what a new
+  realm almost always needs. (There is nothing to *pick from* at this point — a Watchtower route belongs
+  to a realm, so none can exist for a realm that does not yet. Picking one comes later, in the realm's
+  edit dialog.) Give it a DNS record pointing at the machine running the proxy, exactly as
+  you would for any other route. It must be a bare hostname (no scheme, port or path) and, being a
+  route domain, cannot already be routed to anything else.
 
 The login host is optional at creation, because DNS usually is not ready yet. A realm without one is a
 perfectly good population that simply cannot be logged into: its protected apps answer `401` instead of
-redirecting anywhere, and a warning in the log says so once. Fill it in later and the login page starts
-working with no other change.
+redirecting anywhere, and a warning in the log says so once. Add one later — from the realm's edit
+dialog, which offers that realm's Watchtower routes — and the login page starts working with no other
+change.
 
 Then place things in the realm: **users** and **groups** are created with a realm (defaulting to
 operator), and a **stack template** — a product category — belongs to exactly one realm. A route's realm
@@ -164,13 +197,15 @@ host-scoped — the host *is* the cookie jar. So:
   the realm's own login host (the operator realm keeps the issuer it always had, so apps already
   verifying tokens are unaffected).
 
-The operator realm is the exception to the host rule: its login page is always served on
-`WATCHTOWER__AUTH__HOST`, never on a host stored against the realm row. Authentication must not need a
-database row to find its own login page, so that field is read-only for the operator realm in the UI.
+The operator realm works the same way as any other: it names one of its Watchtower routes as its login
+host. `WATCHTOWER__AUTH__HOST` is its **fallback**, read only while it names none — the case where
+another proxy in front of Watchtower terminates the hostname, so no route of ours would be served
+anyway.
 
-Each login host is served as an **unprotected** site block that proxies everything to Watchtower — no
-realm's login page may sit behind the gate that redirects to it, or the only way back in would be the
-published port. One consequence worth knowing: `GET /api/proxy/ask` (the on-demand-TLS gate Caddy calls
+Each login host is served as an **unprotected** site — no realm's login page may sit behind the gate
+that redirects to it, or the only way back in would be the management port. That is not a rule the
+projection applies any more but one the database holds: a Watchtower route that is not Public cannot be
+stored, and the access dialog refuses one outright. One consequence worth knowing: `GET /api/proxy/ask` (the on-demand-TLS gate Caddy calls
 to decide whether to issue a certificate for a domain) is reachable on those hosts too, so it now
 answers a bare **404** to anything that arrived through the proxy — the same answer a nonexistent path
 gives, identical for known and unknown domains. Caddy calls it directly, without forwarding headers, and
@@ -312,8 +347,35 @@ The **`Secure`** attribute is where deployments differ, controlled by `WATCHTOWE
   recovery path.
 - **`Never`** — only for a lab/LAN with no TLS anywhere; the cookie then travels in the clear.
 
-The signing and data-protection keys live under `Auth:KeyPath` (default `/data/auth-keys`). **Keep this
-on a persistent volume** — losing it signs everyone out on restart.
+## Where the keys live
+
+The ES256 identity-assertion signing key and the ASP.NET data-protection key ring are **rows in the
+database** ([ADR-0024](../decisions/0024-postgresql-only-and-state-in-the-database.md)), in
+`signing_keys` and `data_protection_keys`. `Auth:KeyPath` and `/data/auth-keys` are gone; an existing
+directory is imported once on the first start after the upgrade, which is what keeps people signed in
+across it ([upgrading.md](../upgrading.md)).
+
+Rows rather than files because a token or cookie minted on one instance has to be readable on every
+other: every instance publishes the same JWKS, stamps the same `kid`, and can read what any of them
+protected.
+
+**Back up the database.** Losing these keys is what signing everyone out looks like now, and it
+invalidates the assertions apps have cached a `kid` for.
+
+Optionally set `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase: the private keys
+are then stored AES-256-GCM encrypted under a key derived from it, so a database dump is not a key
+compromise. That covers the signing key, the certificate keys, the ACME account key **and** the
+data-protection key ring — each ring element is wrapped, so `data_protection_keys` holds no readable
+key material. Keep the secret out of the database and out of the backups of it.
+
+Without it, all of them are stored as the files were — unencrypted — and the host logs one warning at
+startup saying so.
+
+Setting it on an installation that has been running without it is safe and needs no migration step,
+but it is not retroactive in one go: the signing key and the ACME account key are encrypted on the
+next start, certificates as they renew, and the key ring only for keys generated from then on. Ring
+elements written earlier stay plaintext and keep loading — the ring is append-only, and rewriting it
+is how a ring loses keys. Rotate the ring (or accept the wait) if you need every element covered.
 
 ## Login rate limiting
 

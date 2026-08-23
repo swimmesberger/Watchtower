@@ -3,12 +3,14 @@ namespace Watchtower.Application.Config;
 /// <summary>
 /// Strongly-typed configuration options for Watchtower.
 /// Bound from the "Watchtower" section of appsettings.json or environment variables
-/// (e.g. WATCHTOWER__DBPATH, WATCHTOWER__DOCKERAPIVERSION).
+/// (e.g. WATCHTOWER__PUBLICBASEURL, WATCHTOWER__DOCKERAPIVERSION).
 /// </summary>
+/// <remarks>
+/// The database connection string is deliberately not here: it is read once at startup, before the
+/// options system exists, and it is not runtime-switchable. See
+/// <see cref="Persistence.WatchtowerConnectionString"/>.
+/// </remarks>
 public sealed record WatchtowerOptions {
-    /// <summary>Path to the SQLite database file.</summary>
-    public string DbPath { get; init; } = "/data/watchtower.db";
-
     /// <summary>
     /// Docker Engine API version used for all Docker communication.
     /// <list type="bullet">
@@ -85,8 +87,11 @@ public sealed record WatchtowerOptions {
     public MetricsOptions Metrics { get; init; } = new();
 
     /// <summary>
-    /// Built-in reverse proxy (Caddy) settings. Bound from <c>WATCHTOWER__PROXY__*</c>
-    /// (e.g. <c>WATCHTOWER__PROXY__ENABLED=true</c>, <c>WATCHTOWER__PROXY__ADMINEMAIL=…</c>).
+    /// Reverse-proxy settings. Three providers (ADR-0015, ADR-0022): <c>yarp</c> — the in-process
+    /// proxy Watchtower runs itself, and the default; <c>caddy</c> — a sibling Caddy container,
+    /// deprecated and kept for existing installs; <c>cloudflare</c> — a Cloudflare Tunnel.
+    /// Bound from <c>WATCHTOWER__PROXY__*</c> (e.g. <c>WATCHTOWER__PROXY__ENABLED=true</c>,
+    /// <c>WATCHTOWER__PROXY__ADMINEMAIL=…</c>).
     /// </summary>
     public ProxyOptions Proxy { get; init; } = new();
 
@@ -299,9 +304,17 @@ public sealed record AuthOptions {
     public bool Enabled { get; init; } = false;
 
     /// <summary>
-    /// Public hostname of the central login page, e.g. <c>watchtower.example.com</c>. Protected apps
-    /// redirect unauthenticated visitors here, so it must be reachable through the proxy. Optional
-    /// while only Watchtower's own UI is protected.
+    /// <b>Fallback login host for the operator realm</b>, e.g. <c>watchtower.example.com</c>. Since
+    /// ADR-0023 the login host is a <c>Watchtower</c>-target route, and this setting is read only when the
+    /// operator realm has no login route designated. Normally leave it empty and create a Watchtower route
+    /// instead — a route is served, gets a certificate, reports a status and is audited, none of which a
+    /// configuration string can do.
+    /// <para>
+    /// It exists for the one topology where a route cannot help: somebody else's proxy terminates the
+    /// hostname and forwards to Watchtower, so no provider of ours serves it and there is nothing for a row
+    /// to do except carry the name. A non-system realm in that position creates a Watchtower route anyway —
+    /// unserved while our proxy is off, but still where its login address is written down.
+    /// </para>
     /// </summary>
     public string? Host { get; init; }
 
@@ -320,10 +333,18 @@ public sealed record AuthOptions {
     public AuthCookieSecurePolicy CookieSecure { get; init; } = AuthCookieSecurePolicy.Auto;
 
     /// <summary>
-    /// Directory holding the identity-token signing key and the data-protection keys. Must live on a
-    /// persistent volume: losing it signs everyone out on restart.
+    /// Passphrase the private keys in the database are encrypted with at rest — the certificate keys, the
+    /// ACME account key and the identity-assertion signing key (ADR-0024). Set it via
+    /// <c>WATCHTOWER__AUTH__KEYPROTECTIONSECRET</c> and keep it <em>out</em> of the database, which is the
+    /// only way it protects anything: it exists so a database dump does not hand over the keys with it.
+    /// <para>
+    /// Optional. Left unset, keys are stored as the files on the data volume were — unencrypted — and the
+    /// host says so once at startup, so an upgrade stays one decision rather than two. Losing a
+    /// configured secret invalidates sessions and forces certificate reissuance, which is the blast
+    /// radius the old key files already had.
+    /// </para>
     /// </summary>
-    public string KeyPath { get; init; } = "/data/auth-keys";
+    public string? KeyProtectionSecret { get; init; }
 
     /// <summary>
     /// How many <c>POST /api/auth/login</c> attempts one client IP may make per minute before the
@@ -381,10 +402,23 @@ public sealed record CiOptions {
 }
 
 /// <summary>
-/// Settings for the reverse-proxy plane. Two providers exist (ADR-0015): the built-in <b>Caddy</b>
-/// proxy (Watchtower manages a Caddy container publishing host ports 80/443 with automatic TLS) and a
-/// <b>Cloudflare Tunnel</b> (routes are projected into a cloudflared tunnel's ingress rules + DNS via
-/// the Cloudflare API — no host ports, no ACME). Both project the same <c>Route</c> table.
+/// Settings for the reverse-proxy plane. Three providers exist — see ADR-0015 and ADR-0022:
+/// <list type="bullet">
+///   <item><description>
+///     <b><c>yarp</c></b> — the <b>in-process</b> proxy and the default: Watchtower terminates the
+///     ingress ports itself and issues its own certificates over ACME, with no sibling container and
+///     no control network at all.
+///   </description></item>
+///   <item><description>
+///     <b><c>caddy</c></b> — <b>deprecated</b> (ADR-0022), kept for existing installs: Watchtower
+///     manages a sibling Caddy container that publishes host ports 80/443 with automatic TLS.
+///   </description></item>
+///   <item><description>
+///     <b><c>cloudflare</c></b> — a <b>Cloudflare Tunnel</b>: routes are projected into a cloudflared
+///     tunnel's ingress rules + DNS via the Cloudflare API — no host ports, no ACME.
+///   </description></item>
+/// </list>
+/// All three project the same <c>Route</c> table.
 /// Disabled by default so nothing binds ports or spawns containers unless the operator opts in.
 /// </summary>
 public sealed record ProxyOptions {
@@ -395,35 +429,170 @@ public sealed record ProxyOptions {
     public bool Enabled { get; init; } = false;
 
     /// <summary>
-    /// Which proxy backend serves the routes: <c>caddy</c> (default) or <c>cloudflare</c>.
-    /// Unknown values resolve to <c>caddy</c>. Runtime-switchable — switching tears the old
-    /// provider's data plane down and reconciles the new one.
+    /// Which proxy backend serves the routes: <c>yarp</c> (the in-process proxy, default),
+    /// <c>caddy</c> (deprecated) or <c>cloudflare</c>. Unknown values resolve to <c>yarp</c>.
+    /// Runtime-switchable — switching tears the old provider's data plane down and reconciles the new
+    /// one. An instance that already served routes under the pre-ADR-0022 implicit <c>caddy</c>
+    /// default is pinned to <c>caddy</c> once at startup by
+    /// <see cref="Services.ProxyProviderMigration"/>, so an upgrade never switches providers silently.
     /// </summary>
-    public string Provider { get; init; } = "caddy";
+    public string Provider { get; init; } = "yarp";
 
     /// <summary>
     /// Email registered with the ACME CA (Let's Encrypt/ZeroSSL) for expiry notices. Optional but
-    /// recommended. When empty, Caddy issues certificates without an account email. Caddy only.
+    /// recommended. When empty, certificates are issued without an account email. Read by both
+    /// certificate-issuing providers — Caddy and the in-process proxy; ignored by Cloudflare, whose
+    /// edge terminates TLS.
     /// </summary>
     public string? AdminEmail { get; init; }
 
-    /// <summary>Caddy image to run. Defaults to the official <c>caddy:2</c>. Caddy only.</summary>
+    /// <summary>
+    /// Caddy image to run. Defaults to the official <c>caddy:2</c>. Caddy only — and Caddy is
+    /// deprecated (ADR-0022).
+    /// </summary>
     public string CaddyImage { get; init; } = "caddy:2";
+
+    /// <summary>In-process proxy settings. Only used when <see cref="Provider"/> is <c>yarp</c>.</summary>
+    public YarpProxyOptions Yarp { get; init; } = new();
 
     /// <summary>Cloudflare Tunnel settings. Only used when <see cref="Provider"/> is <c>cloudflare</c>.</summary>
     public CloudflareProxyOptions Cloudflare { get; init; } = new();
 
-    /// <summary>The provider <see cref="Provider"/> resolves to (case-insensitive; unknown ⇒ <c>caddy</c>).</summary>
-    public ProxyProviderKind ResolveProvider() =>
-        string.Equals(Provider, "cloudflare", StringComparison.OrdinalIgnoreCase)
-            ? ProxyProviderKind.Cloudflare
-            : ProxyProviderKind.Caddy;
+    /// <summary>
+    /// The provider <see cref="Provider"/> resolves to (case-insensitive; unknown or blank ⇒
+    /// <c>yarp</c>, the default since ADR-0022).
+    /// </summary>
+    public ProxyProviderKind ResolveProvider() {
+        var provider = Provider?.Trim() ?? "";
+        if (string.Equals(provider, ProxyProviderNames.Caddy, StringComparison.OrdinalIgnoreCase))
+            return ProxyProviderKind.Caddy;
+        if (string.Equals(provider, ProxyProviderNames.Cloudflare, StringComparison.OrdinalIgnoreCase))
+            return ProxyProviderKind.Cloudflare;
+        return ProxyProviderKind.Yarp;
+    }
+
+    /// <summary>The canonical wire name of the resolved provider — what the API surfaces and stores.</summary>
+    public string ProviderName() => ProxyProviderNames.From(ResolveProvider());
 }
 
-/// <summary>The two reverse-proxy backends (ADR-0015).</summary>
+/// <summary>The reverse-proxy backends. See ADR-0015 and ADR-0022.</summary>
 public enum ProxyProviderKind {
+    /// <summary>A sibling Caddy container on host ports 80/443. Deprecated by ADR-0022.</summary>
     Caddy,
     Cloudflare,
+    /// <summary>
+    /// The in-process reverse proxy — the default since ADR-0022: Watchtower terminates 80/443 itself,
+    /// no sibling container.
+    /// </summary>
+    Yarp,
+}
+
+/// <summary>
+/// The canonical wire names of the proxy providers — the strings <c>Proxy:Provider</c> is stored as
+/// and the API surfaces. One place so the handlers, the validation message and the settings writer
+/// cannot drift apart.
+/// </summary>
+public static class ProxyProviderNames {
+    public const string Caddy = "caddy";
+    public const string Cloudflare = "cloudflare";
+    public const string Yarp = "yarp";
+
+    /// <summary>
+    /// Every accepted provider name, in the order the Settings page offers them — the default first,
+    /// the deprecated one second.
+    /// </summary>
+    public static readonly string[] All = [Yarp, Caddy, Cloudflare];
+
+    /// <summary>The wire name of a resolved provider kind.</summary>
+    public static string From(ProxyProviderKind kind) => kind switch {
+        ProxyProviderKind.Caddy => Caddy,
+        ProxyProviderKind.Cloudflare => Cloudflare,
+        _ => Yarp,
+    };
+}
+
+/// <summary>
+/// In-process reverse proxy + ACME settings (<c>WATCHTOWER__PROXY__YARP__*</c>), per ADR-0022. Used only
+/// when <see cref="ProxyOptions.Provider"/> is <c>yarp</c>: Watchtower binds 80/443 itself, forwards
+/// to the routed containers over the per-stack ingress networks, and obtains its own certificates
+/// from an ACME CA — so there is neither a sibling proxy container nor a control network.
+/// </summary>
+public sealed record YarpProxyOptions {
+    /// <summary>The container port the plain-HTTP ingress listener binds unless an operator moves it.</summary>
+    public const int DefaultHttpPort = 8081;
+
+    /// <summary>The container port the TLS ingress listener binds unless an operator moves it.</summary>
+    public const int DefaultHttpsPort = 8443;
+
+    /// <summary>
+    /// The <em>container</em> port the plain-HTTP ingress listener binds — where ACME HTTP-01 validation
+    /// arrives and where the plain half of the proxy is served. Publish it as <c>80:{HttpPort}</c>.
+    /// <c>0</c> turns the listener off, which is what an operator wants when nothing publishes 80 (no
+    /// certificate can then be issued over HTTP-01).
+    /// </summary>
+    /// <remarks>
+    /// A runtime setting, not a bind-time one: the listener follows the reverse-proxy settings, so
+    /// changing this — or disabling the proxy, or switching provider — binds or unbinds the endpoint
+    /// without a restart (ADR-0022 addendum).
+    /// </remarks>
+    public int HttpPort { get; init; } = DefaultHttpPort;
+
+    /// <summary>
+    /// The <em>container</em> port the TLS ingress listener binds — the routed traffic, one certificate
+    /// per SNI name. Publish it as <c>443:{HttpsPort}</c>. <c>0</c> turns the listener off, which is what
+    /// an operator wants behind another TLS terminator. Rebinds at runtime, like
+    /// <see cref="HttpPort"/>.
+    /// </summary>
+    public int HttpsPort { get; init; } = DefaultHttpsPort;
+
+    /// <summary>
+    /// ACME directory URL of the CA that issues the certificates. Defaults to Let's Encrypt
+    /// production; point it at the staging directory while testing, or at an internal CA's directory.
+    /// </summary>
+    public string AcmeDirectoryUrl { get; init; } = "https://acme-v02.api.letsencrypt.org/directory";
+
+    /// <summary>
+    /// Path to a PEM bundle of roots trusted <em>in addition</em> to the system trust store when
+    /// talking to the ACME directory. The escape hatch for an internal CA (e.g. step-ca) whose root
+    /// the container does not ship. Optional; unset means system trust only.
+    /// </summary>
+    public string? AcmeCaBundlePath { get; init; }
+
+    /// <summary>
+    /// External Account Binding key id, for CAs that require an account to be bound to an existing
+    /// customer record (ZeroSSL, Sectigo, many internal CAs). Set together with
+    /// <see cref="AcmeEabHmacKey"/> or not at all.
+    /// </summary>
+    public string? AcmeEabKeyId { get; init; }
+
+    /// <summary>
+    /// External Account Binding HMAC key, base64url-encoded as the CA hands it out. Treated as a
+    /// secret — never logged, never echoed to the UI (the config surface reports only whether one is
+    /// stored).
+    /// </summary>
+    public string? AcmeEabHmacKey { get; init; }
+
+    /// <summary>
+    /// How many certificate orders may be in flight at once. Kept low on purpose: ACME CAs rate-limit
+    /// per account, and a first start with many routes would otherwise burn the budget in one burst.
+    /// Environment/appsettings only.
+    /// </summary>
+    public int AcmeMaxConcurrentOrders { get; init; } = 2;
+
+    /// <summary>
+    /// When true (default), the challenge responder is probed over the public hostname before the
+    /// order is submitted, so a domain whose DNS does not point here fails fast as
+    /// <see cref="Entities.RouteStatus.AwaitingDns"/> instead of consuming an ACME failure.
+    /// Environment only — an operator behind a split-horizon DNS may need it off.
+    /// </summary>
+    public bool AcmeSelfCheckEnabled { get; init; } = true;
+
+    /// <summary>
+    /// When true (default), plain HTTP requests for a TLS route are redirected to HTTPS. Turn it off
+    /// when another TLS terminator (a load balancer, a cloud ingress) fronts Watchtower and already
+    /// speaks HTTPS to the client — redirecting again would loop.
+    /// </summary>
+    public bool RedirectHttpToHttps { get; init; } = true;
 }
 
 /// <summary>
@@ -524,15 +693,23 @@ public sealed record CloudflareProxyOptions {
 /// </summary>
 public sealed record MetricsOptions {
     /// <summary>
-    /// <c>sqlite</c> (default) — the in-memory live ring plus SQLite-persisted history with windowed
-    /// retention; <c>memory</c> — the live ring only, nothing written; or <c>influxdb</c> — read from
-    /// an InfluxDB an external collector populates, with the sampler idle so there is a single
-    /// collector. Unknown values resolve to <c>sqlite</c>, matching the default.
+    /// <c>database</c> (default) — the in-memory live ring plus history persisted in Watchtower's own
+    /// PostgreSQL with windowed retention; <c>memory</c> — the live ring only, nothing written; or
+    /// <c>influxdb</c> — read from an InfluxDB an external collector populates, with the sampler idle
+    /// so there is a single collector. Unknown values resolve to <c>database</c>, matching the default.
     /// </summary>
-    public string Backend { get; init; } = "sqlite";
+    /// <remarks>
+    /// The value was <c>sqlite</c> before ADR-0024 replaced the file with PostgreSQL; the semantics did
+    /// not change, only the name of the store, so <see cref="ResolveBackend"/> still accepts it. See
+    /// <see cref="LegacyDatabaseBackendName"/>.
+    /// </remarks>
+    public string Backend { get; init; } = "database";
+
+    /// <summary>The pre-ADR-0024 spelling of <see cref="MetricsBackendKind.Database"/>, still accepted on read.</summary>
+    public const string LegacyDatabaseBackendName = "sqlite";
 
     /// <summary>
-    /// How many days of history the <c>sqlite</c> backend keeps (its rollup tier — see ADR-0013).
+    /// How many days of history the <c>database</c> backend keeps (its rollup tier — see ADR-0013).
     /// Clamped to 1–365 where it is consumed. Ignored by the other backends.
     /// </summary>
     public int RetentionDays { get; init; } = 30;
@@ -540,20 +717,28 @@ public sealed record MetricsOptions {
     /// <summary>InfluxDB connection + schema mapping. Only used when <see cref="Backend"/> is <c>influxdb</c>.</summary>
     public InfluxOptions Influx { get; init; } = new();
 
-    /// <summary>The backend <see cref="Backend"/> resolves to (case-insensitive; unknown ⇒ <c>sqlite</c>).</summary>
+    /// <summary>The backend <see cref="Backend"/> resolves to (case-insensitive; unknown ⇒ <c>database</c>).</summary>
+    /// <remarks>
+    /// The <c>sqlite</c> branch is written out rather than left to the fallback. It resolves to the same
+    /// value today, so the fallback would look sufficient — but it is an <em>alias</em>, not an unknown
+    /// value, and the day the default moves the two must not move together. A stored setting from before
+    /// ADR-0024 has to keep meaning what it meant.
+    /// </remarks>
     public MetricsBackendKind ResolveBackend() =>
         string.Equals(Backend, "memory", StringComparison.OrdinalIgnoreCase) ? MetricsBackendKind.Memory
         : string.Equals(Backend, "influxdb", StringComparison.OrdinalIgnoreCase) ? MetricsBackendKind.Influxdb
-        : MetricsBackendKind.Sqlite;
+        : string.Equals(Backend, LegacyDatabaseBackendName, StringComparison.OrdinalIgnoreCase)
+            ? MetricsBackendKind.Database
+        : MetricsBackendKind.Database;
 
     /// <summary>True when <see cref="Backend"/> selects the InfluxDB reader (case-insensitive).</summary>
     public bool UsesInflux => ResolveBackend() == MetricsBackendKind.Influxdb;
 }
 
-/// <summary>The three metrics backends (ADR-0013): live-only, SQLite-persisted (default), BYO InfluxDB.</summary>
+/// <summary>The three metrics backends (ADR-0013): live-only, database-persisted (default), BYO InfluxDB.</summary>
 public enum MetricsBackendKind {
     Memory,
-    Sqlite,
+    Database,
     Influxdb,
 }
 

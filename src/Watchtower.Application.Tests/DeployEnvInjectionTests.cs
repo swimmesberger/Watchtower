@@ -252,7 +252,7 @@ public sealed class DeployEnvInjectionTests {
     /// </summary>
     /// <remarks>
     /// Deliberately not through <see cref="DeployQueueService.Enqueue"/>: that starts a background
-    /// worker, and waiting on it would mean polling the one SQLite connection the worker is writing
+    /// worker, and waiting on it would mean polling the same database the worker is writing
     /// through. Everything a deploy does out of process is a double, so there is nothing left to wait
     /// for anyway.
     /// </remarks>

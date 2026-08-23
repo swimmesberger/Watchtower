@@ -1,10 +1,7 @@
-using System.Globalization;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -15,21 +12,17 @@ namespace Watchtower.Application.Tests;
 /// <summary>
 /// Covers the realm data model (docs/central-auth/design.md §13): the seeded operator realm, the
 /// per-realm credential space the scoped indexes and <see cref="WatchtowerUserStore"/> together create,
-/// and — the part an upgrade depends on — that the <c>AddRealms</c> migration carries every pre-existing
-/// row into realm 1 instead of dropping it.
+/// and the check constraints and filtered indexes that hold the two route kinds apart.
 /// </summary>
 public sealed class RealmsDataModelTests {
     private const string Password = "correct-horse-battery";
-
-    /// <summary>Domain pattern of the pre-realm template seeded by the upgrade test.</summary>
-    private const string LegacyDomainPattern = "{tenant}.example.invalid";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     // -- The seeded system realm -----------------------------------------------------------------
 
     [Fact]
-    public async Task Migration_SeedsExactlyOneSystemRealm_WithNoAuthHostOfItsOwn() {
+    public async Task Migration_SeedsExactlyOneSystemRealm_WithNoLoginRouteOfItsOwn() {
         using var host = AuthTestHost.Start();
 
         await using var scope = host.Services.CreateAsyncScope();
@@ -40,9 +33,9 @@ public sealed class RealmsDataModelTests {
         Assert.Equal(Realm.SystemRealmId, realm.Id);
         Assert.Equal(Realm.SystemRealmSlug, realm.Slug);
         Assert.Equal(Realm.SystemRealmName, realm.Name);
-        // Never a stored host: the operator login page is found through Watchtower:Auth:Host, so
-        // authentication does not depend on a row to locate itself.
-        Assert.Null(realm.AuthHost);
+        // A fresh install has no routes at all, so the operator realm starts with no login route and
+        // falls back to Watchtower:Auth:Host until one is created (ADR-0023).
+        Assert.Null(realm.LoginRouteId);
     }
 
     [Fact]
@@ -95,7 +88,7 @@ public sealed class RealmsDataModelTests {
     }
 
     [Fact]
-    public async Task LoginHost_IsConfigurationForTheSystemRealm_AndTheRowForAnyOther() {
+    public async Task LoginHost_ComesFromTheLoginRoute_WithAuthHostAsTheSystemRealmsFallback() {
         using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "Watchtower.Example.Invalid"));
         var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
         var pending = await host.AddRealmAsync("pending");
@@ -103,10 +96,135 @@ public sealed class RealmsDataModelTests {
         await using var scope = host.Services.CreateAsyncScope();
         var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
 
-        Assert.Equal("watchtower.example.invalid", realms.LoginHostFor(await realms.SystemRealmAsync(Ct)));
-        Assert.Equal("login.acme.invalid", realms.LoginHostFor((await realms.FindAsync(acme, Ct))!));
-        // Created before its DNS exists: no host, and therefore nowhere to send a challenge.
-        Assert.Null(realms.LoginHostFor((await realms.FindAsync(pending, Ct))!));
+        // No login route on the system realm yet, so the configured fallback answers (ADR-0023).
+        Assert.Equal(
+            "watchtower.example.invalid",
+            await realms.LoginHostForAsync(await realms.SystemRealmAsync(Ct), Ct));
+        Assert.Equal("login.acme.invalid", await realms.LoginHostForAsync((await realms.FindAsync(acme, Ct))!, Ct));
+        // Created before its DNS exists: no login route, no fallback (it is not the system realm), and
+        // therefore nowhere to send a challenge.
+        Assert.Null(await realms.LoginHostForAsync((await realms.FindAsync(pending, Ct))!, Ct));
+    }
+
+    [Fact]
+    public async Task ASystemRealmLoginRoute_TakesPrecedenceOverTheConfiguredFallback() {
+        using var host = AuthTestHost.Start(("Watchtower:Auth:Host", "fallback.example.invalid"));
+        await host.AddWatchtowerRouteAsync("ui.example.invalid", makeLoginRoute: true);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+
+        // The route is the answer whenever there is one; Auth:Host is what fills in while there is not.
+        Assert.Equal("ui.example.invalid", await realms.LoginHostForAsync(await realms.SystemRealmAsync(Ct), Ct));
+    }
+
+    [Fact]
+    public async Task ResolveByHost_ReadsTheWatchtowerRouteTable() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme");
+        // A second Watchtower hostname for the realm, not its login route: which population a visitor
+        // arriving on a hostname belongs to is decided by the route, not by the designation.
+        await host.AddWatchtowerRouteAsync("portal.acme.invalid", acme);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+
+        Assert.Equal(acme, (await realms.ResolveByHostAsync("PORTAL.acme.INVALID", Ct)).Id);
+    }
+
+    [Fact]
+    public async Task ResolveByHost_IgnoresAServiceRouteOnTheSameKindOfName() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+        var template = await host.AddRealmTemplateAsync("shop", acme);
+        await host.AddRouteAsync("app.acme.invalid", AccessMode.Authenticated, template);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
+
+        // A forwarded application's hostname is not a login page, whatever realm the app belongs to —
+        // arriving there is not "sign in to acme", so it falls back like any unrecognised host.
+        Assert.True((await realms.ResolveByHostAsync("app.acme.invalid", Ct)).IsSystem);
+    }
+
+    [Fact]
+    public async Task ARealmStillServingWatchtowerOnAHostname_CannotBeDeletedByTheDatabase() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.Realms.Remove(await db.Realms.SingleAsync(r => r.Id == acme, Ct));
+
+        // Restrict on routes.realm_id: realms.delete refuses first, and the schema refuses regardless —
+        // a realm delete must never take a live public hostname with it (ADR-0023).
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
+    }
+
+    [Fact]
+    public async Task DeletingALoginRoute_LeavesTheRealmWithoutOne_RatherThanFailing() {
+        using var host = AuthTestHost.Start();
+        var acme = await host.AddRealmAsync("acme", "login.acme.invalid");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        await db.Routes.Where(r => r.Domain == "login.acme.invalid").ExecuteDeleteAsync(Ct);
+
+        // ON DELETE SET NULL: removing the hostname is a legitimate act with a visible consequence, not
+        // something the schema refuses.
+        var realm = await db.Realms.AsNoTracking().SingleAsync(r => r.Id == acme, Ct);
+        Assert.Null(realm.LoginRouteId);
+    }
+
+    /// <summary>
+    /// The check constraint, not the handlers: a writer that bypasses <c>proxy.createRoute</c> entirely
+    /// still cannot store the two shapes that would break the model — a Watchtower route that is gated,
+    /// and one that also points at a stack.
+    /// </summary>
+    [Fact]
+    public async Task TheRouteTargetConstraint_RefusesAGatedWatchtowerRoute() {
+        using var host = AuthTestHost.Start();
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.Routes.Add(new Entities.Route {
+            Target = RouteTarget.Watchtower,
+            RealmId = Realm.SystemRealmId,
+            Domain = "ui.example.invalid",
+            ServiceName = string.Empty,
+            AccessMode = AccessMode.Authenticated,
+        });
+
+        var refused = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
+        Assert.IsType<PostgresException>(refused.InnerException);
+    }
+
+    [Fact]
+    public async Task TheRouteTargetConstraint_RefusesAServiceRouteCarryingARealm() {
+        using var host = AuthTestHost.Start();
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var stack = new Stack {
+            Name = "demo", RepositoryUrl = "https://example.invalid/demo.git",
+            ComposeFilePath = "docker-compose.yml", Branch = "main", ComposeProjectName = "demo",
+        };
+        db.Stacks.Add(stack);
+        await db.SaveChangesAsync(Ct);
+
+        db.Routes.Add(new Entities.Route {
+            Target = RouteTarget.Service,
+            StackId = stack.Id,
+            // A service route inherits its realm from its stack's category; a second answer stored here
+            // is exactly the disagreement the model exists to prevent.
+            RealmId = Realm.SystemRealmId,
+            Domain = "app.example.invalid",
+            ServiceName = "web",
+            ContainerPort = 8080,
+        });
+
+        var refused = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
+        Assert.IsType<PostgresException>(refused.InnerException);
     }
 
     // -- Route → realm ---------------------------------------------------------------------------
@@ -181,7 +299,7 @@ public sealed class RealmsDataModelTests {
 
         db.Users.Add(Raw("dana", acme));
         var clash = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
-        Assert.IsType<SqliteException>(clash.InnerException);
+        Assert.IsType<PostgresException>(clash.InnerException);
     }
 
     [Fact]
@@ -237,146 +355,16 @@ public sealed class RealmsDataModelTests {
     }
 
     // -- The upgrade path ------------------------------------------------------------------------
-
-    /// <summary>
-    /// The landmine this whole migration is arranged around: adding a foreign-key column on SQLite makes
-    /// EF rebuild the table from the model snapshot and copy the rows across with an
-    /// <c>INSERT … SELECT</c>. A rebuild that forgot a column would silently drop that column's data, and
-    /// the schema afterwards would still look right. So this migrates a database to the last pre-realm
-    /// migration, writes a row into each affected table by hand, migrates the rest of the way, and reads
-    /// every field back.
-    /// </summary>
-    [Fact]
-    public async Task AddRealms_CarriesExistingRowsIntoTheOperatorRealm_WithNothingLost() {
-        using var connection = new SqliteConnection("DataSource=:memory:");
-        connection.Open();
-
-        await using var db = new WatchtowerDbContext(
-            new DbContextOptionsBuilder<WatchtowerDbContext>()
-                .UseSqlite(connection)
-                .UseSnakeCaseNamingConvention()
-                .Options);
-
-        var migrator = db.GetService<IMigrator>();
-        await migrator.MigrateAsync("AddGroups", Ct);
-
-        // Written as SQL, not through the model: the entities already carry realm_id, and the point is to
-        // produce rows exactly as a pre-realm instance would have. The domain pattern travels as a
-        // parameter because ExecuteSqlRaw runs its text through string.Format, which would read the
-        // literal "{tenant}" placeholder as a format item.
-        await db.Database.ExecuteSqlRawAsync(
-            """
-            INSERT INTO users
-                (user_name, normalized_user_name, email, password_hash, is_admin, disabled,
-                 access_failed_count, lockout_end, security_stamp, concurrency_stamp, created_at)
-            VALUES
-                ('legacy', 'LEGACY', 'legacy@example.invalid', 'hash-value', 1, 0,
-                 3, NULL, 'stamp-s', 'stamp-c', '2026-01-02 03:04:05+00:00');
-            INSERT INTO groups (name, normalized_name, created_at)
-            VALUES ('Legacy Staff', 'LEGACY STAFF', '2026-01-02 03:04:05+00:00');
-            INSERT INTO stack_templates
-                (name, repository_url, compose_file_path, branch, credential_id, domain_pattern,
-                 target_service_name, target_port, created_at)
-            VALUES
-                ('legacy-shop', 'https://example.invalid/shop.git', 'docker-compose.yml', 'main', NULL,
-                 {0}, 'web', 3000, '2026-01-02 03:04:05+00:00');
-            """, [LegacyDomainPattern], Ct);
-
-        await migrator.MigrateAsync(cancellationToken: Ct);
-
-        var realm = await db.Realms.AsNoTracking().SingleAsync(Ct);
-        Assert.True(realm.IsSystem);
-
-        var user = await db.Users.AsNoTracking().SingleAsync(Ct);
-        Assert.Equal(realm.Id, user.RealmId);
-        Assert.Equal("legacy", user.UserName);
-        Assert.Equal("LEGACY", user.NormalizedUserName);
-        Assert.Equal("legacy@example.invalid", user.Email);
-        Assert.Equal("hash-value", user.PasswordHash);
-        Assert.True(user.IsAdmin);
-        Assert.False(user.Disabled);
-        Assert.Equal(3, user.AccessFailedCount);
-        Assert.Null(user.LockoutEnd);
-        Assert.Equal("stamp-s", user.SecurityStamp);
-        Assert.Equal("stamp-c", user.ConcurrencyStamp);
-        Assert.Equal(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero), user.CreatedAt);
-
-        var group = await db.Groups.AsNoTracking().SingleAsync(Ct);
-        Assert.Equal(realm.Id, group.RealmId);
-        Assert.Equal("Legacy Staff", group.Name);
-        Assert.Equal("LEGACY STAFF", group.NormalizedName);
-
-        var template = await db.StackTemplates.AsNoTracking().SingleAsync(Ct);
-        Assert.Equal(realm.Id, template.RealmId);
-        Assert.Equal("legacy-shop", template.Name);
-        Assert.Equal("https://example.invalid/shop.git", template.RepositoryUrl);
-        Assert.Equal("docker-compose.yml", template.ComposeFilePath);
-        Assert.Equal("main", template.Branch);
-        Assert.Null(template.CredentialId);
-        Assert.Equal(LegacyDomainPattern, template.DomainPattern);
-        Assert.Equal("web", template.TargetServiceName);
-        Assert.Equal(3000, template.TargetPort);
-    }
-
-    /// <summary>
-    /// The rollback has to run, not merely compile. On SQLite a foreign key is dropped by rebuilding the
-    /// table, so while the <c>realm_id</c> columns still exist every row is still pointing at realm 1
-    /// through a RESTRICT constraint — removing the <c>realms</c> table before the columns is refused, and
-    /// the migration is then irreversible with no way to notice short of trying it. So this migrates all
-    /// the way up, seeds an operator-realm account, and migrates back down.
-    /// </summary>
-    [Fact]
-    public async Task AddRealms_CanBeRolledBack_WithTheOperatorRealmsRowsIntact() {
-        using var connection = new SqliteConnection("DataSource=:memory:");
-        connection.Open();
-
-        await using var db = new WatchtowerDbContext(
-            new DbContextOptionsBuilder<WatchtowerDbContext>()
-                .UseSqlite(connection)
-                .UseSnakeCaseNamingConvention()
-                .Options);
-
-        var migrator = db.GetService<IMigrator>();
-        await migrator.MigrateAsync(cancellationToken: Ct);
-
-        db.Users.Add(Raw("legacy", Realm.SystemRealmId));
-        db.Groups.Add(new Group {
-            RealmId = Realm.SystemRealmId, Name = "Legacy Staff", NormalizedName = "LEGACY STAFF",
-        });
-        await db.SaveChangesAsync(Ct);
-
-        await migrator.MigrateAsync("AddGroups", Ct);
-
-        // The realm columns and the table are gone…
-        Assert.False(await ColumnExistsAsync(db, "users", "realm_id"));
-        Assert.False(await ColumnExistsAsync(db, "groups", "realm_id"));
-        Assert.False(await ColumnExistsAsync(db, "stack_templates", "realm_id"));
-        Assert.Equal(0, await ScalarAsync(db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'realms'"));
-
-        // …and the operator realm's rows came back with them, under the v1 global unique index.
-        Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM users WHERE normalized_user_name = 'LEGACY'"));
-        Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM groups WHERE normalized_name = 'LEGACY STAFF'"));
-    }
-
-    /// <summary>Whether <paramref name="table"/> currently has <paramref name="column"/>.</summary>
-    private static async Task<bool> ColumnExistsAsync(WatchtowerDbContext db, string table, string column) {
-        // pragma_table_info as a table-valued function: the table name cannot be parameterised in DDL
-        // context, and both arguments here are test literals rather than input.
-        var count = await ScalarAsync(
-            db, $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'");
-        return count > 0;
-    }
-
-    private static async Task<long> ScalarAsync(WatchtowerDbContext db, string sql) {
-        await db.Database.OpenConnectionAsync(Ct);
-        try {
-            await using var command = db.Database.GetDbConnection().CreateCommand();
-            command.CommandText = sql;
-            return Convert.ToInt64(await command.ExecuteScalarAsync(Ct), CultureInfo.InvariantCulture);
-        } finally {
-            await db.Database.CloseConnectionAsync();
-        }
-    }
+    //
+    // Five tests used to live here: two that stepped a database up to the last pre-realm migration and
+    // back down again, and three that did the same for the auth_host -> Watchtower route conversion.
+    // They were about SQLite's table-rebuild behaviour — that adding a foreign-key column regenerates
+    // the table from the model snapshot, and that a rebuild forgetting a column loses its data silently.
+    // ADR-0024 regenerated the migration history for PostgreSQL as a single InitialPostgreSql, so there
+    // is no pre-realm migration to step to and no rebuild to distrust; an existing installation is
+    // carried across by `--import-sqlite`, whose own round-trip test replaces them. What those tests
+    // asserted about the *model* — the check constraints, the filtered unique indexes, the per-realm
+    // credential space, the seeded operator realm — is asserted above, against a real database.
 
     /// <summary>A user row shaped for a direct insert, bypassing <c>UserManager</c> entirely.</summary>
     private static User Raw(string userName, int realmId) => new() {

@@ -26,23 +26,71 @@ internal static class AccessTestEstate {
     private const string Password = "correct-horse-battery";
 
     /// <summary>
-    /// Adds a realm and returns its id. <paramref name="authHost"/> is the login host it claims, or null
-    /// for a realm whose DNS is not ready yet.
+    /// Adds a realm and returns its id. <paramref name="loginDomain"/> also creates the realm's login
+    /// route — the <see cref="RouteTarget.Watchtower"/> row its login page is served on (ADR-0023) —
+    /// while null leaves the realm with no login host, the state of one whose DNS is not ready yet.
     /// </summary>
     public static async Task<int> AddRealmAsync(
-        this AuthTestHost host, string slug, string? authHost = null) {
+        this AuthTestHost host, string slug, string? loginDomain = null) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
         var realm = new Realm {
             Name = slug,
             Slug = slug,
-            AuthHost = authHost,
             CreatedAt = host.Time.GetUtcNow(),
         };
         db.Realms.Add(realm);
-        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        await db.SaveChangesAsync(ct);
+
+        if (loginDomain is not null) {
+            var route = NewWatchtowerRoute(host, loginDomain, realm.Id);
+            db.Routes.Add(route);
+            await db.SaveChangesAsync(ct);
+            realm.LoginRouteId = route.Id;
+            await db.SaveChangesAsync(ct);
+        }
         return realm.Id;
     }
+
+    /// <summary>
+    /// Adds a <see cref="RouteTarget.Watchtower"/> route for <paramref name="realmId"/> and returns it,
+    /// optionally designating it as that realm's login route.
+    /// </summary>
+    public static async Task<Route> AddWatchtowerRouteAsync(
+        this AuthTestHost host,
+        string domain,
+        int realmId = Realm.SystemRealmId,
+        bool makeLoginRoute = false) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
+
+        var route = NewWatchtowerRoute(host, domain, realmId);
+        db.Routes.Add(route);
+        await db.SaveChangesAsync(ct);
+
+        if (makeLoginRoute) {
+            var realm = await db.Realms.SingleAsync(r => r.Id == realmId, ct);
+            realm.LoginRouteId = route.Id;
+            await db.SaveChangesAsync(ct);
+        }
+        return route;
+    }
+
+    /// <summary>The shape the check constraint accepts for a Watchtower route: no stack, a realm, Public.</summary>
+    private static Route NewWatchtowerRoute(AuthTestHost host, string domain, int realmId) => new() {
+        Target = RouteTarget.Watchtower,
+        StackId = null,
+        RealmId = realmId,
+        Domain = domain,
+        ServiceName = string.Empty,
+        ContainerPort = 0,
+        TlsEnabled = true,
+        AccessMode = AccessMode.Public,
+        Status = RouteStatus.Pending,
+        CreatedAt = host.Time.GetUtcNow(),
+    };
 
     /// <summary>
     /// Creates an account through <c>UserManager</c> and returns its id. The realm context is pinned first,
@@ -92,7 +140,12 @@ internal static class AccessTestEstate {
     /// the stack a tenant of that category, which is how a route ends up in a non-system realm.
     /// </summary>
     public static async Task<Route> AddRouteAsync(
-        this AuthTestHost host, string domain, AccessMode mode = AccessMode.Public, int? templateId = null) {
+        this AuthTestHost host,
+        string domain,
+        AccessMode mode = AccessMode.Public,
+        int? templateId = null,
+        string? bypassPaths = null,
+        IdentityHeaderMode identityHeaderMode = IdentityHeaderMode.None) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var ct = TestContext.Current.CancellationToken;
@@ -111,11 +164,14 @@ internal static class AccessTestEstate {
         await db.SaveChangesAsync(ct);
 
         var route = new Route {
+            Target = RouteTarget.Service,
             StackId = stack.Id,
             Domain = domain,
             ServiceName = "web",
             ContainerPort = 8080,
             AccessMode = mode,
+            BypassPaths = bypassPaths,
+            IdentityHeaderMode = identityHeaderMode,
         };
         db.Routes.Add(route);
         await db.SaveChangesAsync(ct);

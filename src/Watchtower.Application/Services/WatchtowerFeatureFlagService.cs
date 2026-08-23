@@ -14,7 +14,7 @@ namespace Watchtower.Application.Services;
 /// <list type="bullet">
 ///   <item><description>
 ///     <c>metrics-history</c> is <b>deployment-scoped</b> — true exactly when the active
-///     <see cref="IMetricsSource"/> backend can answer historical time ranges (the sqlite and influxdb
+///     <see cref="IMetricsSource"/> backend can answer historical time ranges (the database and influxdb
 ///     backends, ADR-0007 as amended by ADR-0013). Evaluated per call against the routed source
 ///     (<see cref="MetricsSourceRouter"/>), so it follows a runtime backend switch
 ///     (<c>metrics.updateConfig</c>) on the next session fetch; runtime-variable availability (e.g.

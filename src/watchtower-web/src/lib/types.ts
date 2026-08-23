@@ -358,8 +358,11 @@ export interface MetricsRange {
   stepSeconds: number
 }
 
-/** The three metrics backends (ADR-0013). */
-export type MetricsBackend = 'memory' | 'sqlite' | 'influxdb'
+/**
+ * The three metrics backends (ADR-0013). `database` was spelled `sqlite` before ADR-0024 replaced the
+ * file with PostgreSQL; the server still accepts the old value on read, but never sends it.
+ */
+export type MetricsBackend = 'memory' | 'database' | 'influxdb'
 
 /** InfluxDB connection values in the config surface. The token never leaves the server. */
 export interface MetricsInfluxConfig {
@@ -375,7 +378,7 @@ export interface MetricsInfluxConfig {
 /** `metrics.getConfig` / `metrics.updateConfig` payload: the effective backend configuration. */
 export interface MetricsConfig {
   backend: MetricsBackend
-  /** History window of the sqlite backend, in days (1–365). */
+  /** History window of the database backend, in days (1–365). */
   retentionDays: number
   historyAvailable: boolean
   influx: MetricsInfluxConfig
@@ -438,12 +441,17 @@ export interface AuthConfig {
   active: boolean
   /** True when `enabled` ≠ `active`: `Auth:Enabled` shapes the pipeline pre-DI, so it needs a restart. */
   restartRequired: boolean
-  /** Central login hostname (bare host, no scheme). */
+  /**
+   * Fallback login hostname for the operator realm (bare host, no scheme). Since ADR-0023 the login host
+   * is normally a `watchtower` route; this is read only while no route is marked as one.
+   */
   host: string | null
   sessionLifetimeHours: number
   absoluteSessionLifetimeDays: number
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
+  /** Where the operator realm actually redirects anonymous visitors now. Read-only; set on Routes. */
+  effectiveLoginHost?: string | null
 }
 
 /** `system.updateAuthConfig` request. */
@@ -454,8 +462,29 @@ export interface UpdateAuthConfigRequest {
   absoluteSessionLifetimeDays: number
 }
 
-/** The two reverse-proxy backends (ADR-0015). */
-export type ProxyProvider = 'caddy' | 'cloudflare'
+/** The reverse-proxy backends. See ADR-0015 and ADR-0022. */
+export type ProxyProvider = 'caddy' | 'cloudflare' | 'yarp'
+
+/**
+ * In-process proxy + ACME values (the EAB HMAC key never leaves the server). Certificates and the ACME
+ * account are rows in the database since ADR-0024, so there is no directory to report.
+ */
+export interface ProxyYarpConfig {
+  /** Container port the plain-HTTP ingress listener binds; 0 turns it off. Applied without a restart. */
+  httpPort: number
+  /** Container port the TLS ingress listener binds; 0 turns it off. Applied without a restart. */
+  httpsPort: number
+  acmeDirectoryUrl: string
+  /** Extra PEM roots trusted when talking to the ACME directory (an internal CA). */
+  acmeCaBundlePath: string | null
+  /** External Account Binding key id, for CAs that require one. */
+  acmeEabKeyId: string | null
+  /** True when an EAB HMAC key is stored — the UI sends a new one only to replace it. */
+  hasAcmeEabHmacKey: boolean
+  redirectHttpToHttps: boolean
+  /** Runtime state: false means nothing is terminating TLS and routes are served in the clear. */
+  httpsListenerBound: boolean
+}
 
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
 export interface ProxyCloudflareConfig {
@@ -485,20 +514,28 @@ export interface ProxyCloudflareConfig {
 export interface ProxyConfig {
   enabled: boolean
   provider: ProxyProvider
-  /** ACME account email for certificate expiry notices (Caddy only). */
+  /** ACME account email for certificate expiry notices (the certificate-issuing providers). */
   adminEmail: string | null
   caddyImage: string
+  yarp: ProxyYarpConfig
   cloudflare: ProxyCloudflareConfig
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
 
-/** `proxy.updateConfig` request. Null cloudflare fields keep the stored values (token included). */
+/** `proxy.updateConfig` request. Null provider fields keep the stored values (secrets included). */
 export interface UpdateProxyConfigRequest {
   enabled: boolean
   provider: ProxyProvider
   adminEmail: string | null
   caddyImage: string
+  yarpHttpPort?: number | null
+  yarpHttpsPort?: number | null
+  yarpAcmeDirectoryUrl?: string | null
+  yarpAcmeCaBundlePath?: string | null
+  yarpAcmeEabKeyId?: string | null
+  yarpAcmeEabHmacKey?: string | null
+  yarpRedirectHttpToHttps?: boolean | null
   cloudflareAccountId?: string | null
   cloudflareZoneId?: string | null
   cloudflareApiToken?: string | null
@@ -518,9 +555,17 @@ export interface UpdateProxyConfigRequest {
 export type RouteStatus = 'pending' | 'awaitingdns' | 'active' | 'error'
 export type DomainKind = 'managed' | 'custom'
 
+/**
+ * What a route's hostname is served by (ADR-0023). `service` forwards it to a container inside a stack;
+ * `watchtower` means this instance serves the hostname itself — its UI and API, and for the realm's login
+ * route, its login page.
+ */
+export type RouteTarget = 'service' | 'watchtower'
+
 export interface Route {
   id: number
-  stackId: number
+  /** Null on a `watchtower` route, which forwards nowhere. */
+  stackId: number | null
   stackName: string | null
   domain: string
   serviceName: string
@@ -533,6 +578,12 @@ export interface Route {
   /** ISO timestamp of the certificate expiry, when known. */
   certNotAfter: string | null
   createdAt: string
+  target: RouteTarget
+  /** The realm a `watchtower` route serves; null on a `service` route. */
+  realmId: number | null
+  realmSlug: string | null
+  /** Whether that realm redirects its anonymous visitors to this hostname. */
+  isLoginRoute: boolean
 }
 
 export interface CreateRouteRequest {
@@ -543,6 +594,12 @@ export interface CreateRouteRequest {
   tlsEnabled: boolean
   isPrimary: boolean
   kind?: DomainKind | null
+  /** Omitted means `service` — the only kind of route that existed before ADR-0023. */
+  target?: RouteTarget | null
+  /** `watchtower` routes only; defaults to the operator realm. */
+  realmId?: number | null
+  /** `watchtower` routes only; omitted means "yes, if the realm has no login host yet". */
+  makeLoginRoute?: boolean | null
 }
 
 export interface UpdateRouteRequest {
@@ -551,6 +608,9 @@ export interface UpdateRouteRequest {
   containerPort: number
   tlsEnabled: boolean
   isPrimary: boolean
+  kind?: DomainKind | null
+  /** `watchtower` routes only: designate (true) or release (false) this realm's login host. */
+  makeLoginRoute?: boolean | null
 }
 
 /**
@@ -598,6 +658,29 @@ export interface RouteAccessView extends RouteAccess {
 export interface DnsCheckResult {
   resolves: boolean
   addresses: string[]
+}
+
+/**
+ * One host's certificate state under the in-process proxy. Every served host has a route row since
+ * ADR-0023, Watchtower's own hostnames included; `source: 'orphan'` is a certificate still on disk for a
+ * host nothing routes to any more.
+ */
+export interface CertificateInfo {
+  host: string
+  /** `route` — a routed domain; `orphan` — nothing routes here any more. */
+  source: 'route' | 'orphan'
+  routeId?: number | null
+  /** `active` means a certificate is being served, whatever the last renewal attempt did. */
+  state: 'none' | 'pending' | 'active' | 'awaitingDns' | 'error'
+  notBefore?: string | null
+  notAfter?: string | null
+  issuer?: string | null
+  lastAttemptAt?: string | null
+  /** Why the last attempt failed. Present alongside `active` when a *renewal* failed. */
+  lastError?: string | null
+  /** When the scheduler will try again — a renewal when healthy, a backoff rung after a failure. */
+  nextAttemptAt?: string | null
+  consecutiveFailures: number
 }
 
 /**
@@ -677,6 +760,8 @@ export interface ProxyStatus {
   caddyRunning: boolean
   routeCount: number
   provider: ProxyProvider
+  /** A provider-specific caveat worth showing next to the status, or null. */
+  providerDetail: string | null
 }
 
 // ── Multi-tenancy (stack templates) ─────────────────────────────────────────
@@ -825,29 +910,36 @@ export interface Realm {
   name: string
   /** URL-safe identifier, chosen at creation and immutable afterwards. */
   slug: string
-  /** The host this realm's login page answers on; null until DNS for it is ready. */
-  authHost: string | null
-  /** The operator realm: renameable, never deletable, and its auth host stays the configured `Auth:Host`. */
+  /** The operator realm: renameable, never deletable, and the only one `Auth:Host` is a fallback for. */
   isSystem: boolean
   userCount: number
   groupCount: number
   templateCount: number
   createdAt: string
+  /** The `watchtower` route this realm's login page is served on; null when it has none (ADR-0023). */
+  loginRouteId: number | null
+  /** That route's domain, or — on the operator realm alone — the configured `Auth:Host` fallback. */
+  loginHost: string | null
 }
 
 export interface CreateRealmRequest {
   name: string
   slug: string
-  authHost?: string | null
+  /**
+   * Creates a `watchtower` route for this hostname and makes it the realm's login host. There is no
+   * "pick an existing route" here on purpose: a `watchtower` route belongs to a realm, so none can exist
+   * for a realm that does not yet. Designating one is `realms.update`'s job.
+   */
+  loginDomain?: string | null
 }
 
 /**
- * A partial update: an omitted field is left alone, so renaming a realm never has to restate its auth
- * host. An empty-string `authHost` clears it — that is how "this realm has no login host yet" is said.
+ * A partial update: an omitted field is left alone, so renaming a realm never has to restate its login
+ * route. A `loginRouteId` of `0` clears it — that is how "this realm has no login host" is said.
  */
 export interface UpdateRealmRequest {
   name?: string | null
-  authHost?: string | null
+  loginRouteId?: number | null
 }
 
 
@@ -947,7 +1039,7 @@ export interface BackupStackConfig {
 }
 
 /**
- * Per-service backup settings configured in the UI (ADR-0020), in the compose labels' own value
+ * Per-service backup settings configured in the UI (ADR-0022), in the compose labels' own value
  * syntax — `exclude` stands in for `watchtower.backup.exclude=true`, `stop` for `watchtower.backup.stop`,
  * `dump` for `watchtower.backup.dump`. A label on the deployed service always wins.
  */
@@ -984,7 +1076,7 @@ export interface BackupServicePreview {
   override?: BackupServiceOverride | null
 }
 
-/** The dry run of a backup for a stack as deployed right now (ADR-0020). */
+/** The dry run of a backup for a stack as deployed right now (ADR-0022). */
 export interface BackupPlanPreview {
   deployed: boolean
   volumes: string[]

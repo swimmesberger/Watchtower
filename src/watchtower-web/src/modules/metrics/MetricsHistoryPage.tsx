@@ -43,7 +43,7 @@ const routeApi = getRouteApi('/metrics/history')
 
 /**
  * The metrics history page (ADR-0007, amended by ADR-0013). A time-range picker over durable host +
- * per-stack utilization, available on the sqlite (default) and influxdb backends. Availability comes
+ * per-stack utilization, available on the database (default) and influxdb backends. Availability comes
  * from the boot capability snapshot's `metrics-history` flag (ADR-0030) via the router context — the
  * nav item is `when`-gated on the same flag, so this page's banner only shows on a direct URL hit with
  * the memory backend active (the Settings save reloads the page, which refreshes the snapshot).

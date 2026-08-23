@@ -1,7 +1,7 @@
 namespace Watchtower.Application.Entities;
 
 /// <summary>
-/// One aggregated per-container utilization sample in the SQLite metrics history (ADR-0013). Same
+/// One aggregated per-container utilization sample in the persisted metrics history (ADR-0013). Same
 /// two-tier layout as <see cref="MetricHostSample"/>. Identity is the container <em>name</em>, not the
 /// Docker id — names survive container recreation, which is what makes a week-long series of a
 /// redeployed service one series (the InfluxDB backend keys by name for the same reason). Only online

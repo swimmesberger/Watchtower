@@ -14,12 +14,14 @@ public sealed class ListActiveDeployments(WatchtowerDbContext db)
     public sealed record Response(IReadOnlyList<ActiveDeploymentDto> Deployments);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        // SQLite can't ORDER BY a DateTimeOffset, so sort client-side (the active set is tiny).
+        // Id breaks ties, so "processing order" stays a total order when a burst shares a timestamp.
         var items = await db.DeployEvents.AsNoTracking()
             .Where(e => e.Status == "queued" || e.Status == "running")
+            .OrderBy(e => e.StartedAt)
+            .ThenBy(e => e.Id)
             .Select(e => new ActiveDeploymentDto(
                 e.Id, e.StackId, e.Stack!.Name, e.Status, e.TriggeredBy, e.StartedAt))
             .ToListAsync(ct);
-        return new Response([.. items.OrderBy(d => d.StartedAt)]);
+        return new Response(items);
     }
 }

@@ -69,6 +69,29 @@ public sealed class AccessAppsTests {
     }
 
     /// <summary>
+    /// The portal names applications a visitor can be sent to. A <see cref="RouteTarget.Watchtower"/>
+    /// route is not one of them (ADR-0023) — it is the page this list is being rendered on, and the
+    /// realm's own login host at that.
+    /// </summary>
+    [Fact]
+    public async Task WatchtowerRoutes_AreNotListedAsApplications() {
+        using var factory = new WatchtowerApiFactory(AuthOn());
+        using var client = factory.CreateApiClient();
+        var acme = await factory.AddRealmAsync("acme", AcmeAuthHost);
+        var shop = await factory.AddTemplateAsync("shop", acme);
+        await factory.AddRouteAsync("one.shop.example.invalid", AccessMode.Authenticated, templateId: shop);
+        // A second Watchtower hostname in the same realm, so the exclusion is about the target and not
+        // about the login-route designation.
+        await factory.AddWatchtowerRouteAsync("portal.acme.invalid", acme);
+
+        var carol = await factory.AddUserAsync("carol", realmId: acme);
+
+        using var doc = await ReadJson(await GetAsync(client, await factory.SsoSessionAsync(carol)));
+
+        Assert.Equal(["one.shop.example.invalid"], Domains(doc));
+    }
+
+    /// <summary>
     /// Alias domains — several names for one service — are one application. The portal says so, naming the
     /// canonical domain once, rather than claiming the visitor has three apps.
     /// </summary>

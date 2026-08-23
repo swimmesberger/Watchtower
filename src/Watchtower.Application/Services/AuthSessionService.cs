@@ -38,6 +38,18 @@ public sealed class AuthSessionService(
     private const int TokenByteLength = 32;
 
     /// <summary>
+    /// The clock, clipped to the resolution the database stores (<see cref="PostgresTime"/>).
+    /// </summary>
+    /// <remarks>
+    /// Every instant this service computes is written to a row and then compared against what comes back
+    /// out of it — <see cref="AuthSession.ExpiresAt"/> against a later <c>now</c>, the renewed expiry
+    /// against <see cref="AuthSession.CreatedAt"/> plus the absolute cap. Reading the clock at a precision
+    /// <c>timestamptz</c> cannot hold would make those comparisons depend on whether the value had made
+    /// the round trip yet, which is not a distinction session lifetime should be able to see.
+    /// </remarks>
+    private DateTimeOffset Now => time.GetUtcNow().ToMicrosecondPrecision();
+
+    /// <summary>
     /// How long a login code stays redeemable. It exists only to survive one redirect hop, so the window
     /// is the round trip and nothing more.
     /// </summary>
@@ -92,7 +104,7 @@ public sealed class AuthSessionService(
         User user, SessionKind kind, int? routeId, TimeSpan? lifetime, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(user);
 
-        var now = time.GetUtcNow();
+        var now = Now;
         await SweepExpiredAsync(now, ct);
 
         var token = NewToken();
@@ -144,7 +156,7 @@ public sealed class AuthSessionService(
             .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == SessionKind.MfaPending, ct);
         if (pending is null) return null;
 
-        if (pending.ExpiresAt <= time.GetUtcNow()) {
+        if (pending.ExpiresAt <= Now) {
             db.AuthSessions.Remove(pending);
             await db.SaveChangesAsync(ct);
             return null;
@@ -219,7 +231,7 @@ public sealed class AuthSessionService(
                 s => s.TokenHash == hash && (s.Kind == SessionKind.Sso || s.Kind == SessionKind.App), ct);
         if (session is null) return null;
 
-        var now = time.GetUtcNow();
+        var now = Now;
         if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
             db.AuthSessions.Remove(session);
             await db.SaveChangesAsync(ct);
@@ -237,10 +249,14 @@ public sealed class AuthSessionService(
         var hash = HashToken(rawToken);
         // The realm rides along with the account: the principal minted from an SSO session carries the
         // realm claim, and the assertion minted from an app session carries the realm's issuer, so both
-        // ends of the session lookup need it and neither should cost a second round trip for it.
+        // ends of the session lookup need it and neither should cost a second round trip for it. The
+        // realm's login route comes too, because the issuer *is* its domain (ADR-0023) — without it
+        // `RealmResolver.LoginHostForAsync` would go back to the database on every verified request
+        // through the proxy, which is the hottest path there is here.
         var session = await db.AuthSessions
             .Include(s => s.User)
             .ThenInclude(u => u!.Realm)
+            .ThenInclude(r => r!.LoginRoute)
             .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == kind, ct);
         if (session is null) return null;
 
@@ -248,7 +264,7 @@ public sealed class AuthSessionService(
         // and deleting it here would let a request to app B sign the visitor out of app A.
         if (routeId is not null && session.RouteId != routeId) return null;
 
-        var now = time.GetUtcNow();
+        var now = Now;
         if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
             // Expired by either clock: drop the row on the way past so a stale cookie stops costing a lookup.
             db.AuthSessions.Remove(session);
@@ -310,7 +326,7 @@ public sealed class AuthSessionService(
         int userId, int routeId, string redirectUri, CancellationToken ct = default) {
         ArgumentException.ThrowIfNullOrWhiteSpace(redirectUri);
 
-        var now = time.GetUtcNow();
+        var now = Now;
         await SweepExpiredCodesAsync(now, ct);
 
         var code = NewToken();
@@ -346,38 +362,24 @@ public sealed class AuthSessionService(
         var claimed = await db.LoginCodes.Where(c => c.Id == code.Id).ExecuteDeleteAsync(ct);
         if (claimed != 1) return null;
 
-        return code.ExpiresAt <= time.GetUtcNow()
+        return code.ExpiresAt <= Now
             ? null
             : new LoginCodeGrant(code.UserId, code.RouteId, code.RedirectUri);
     }
 
     /// <summary>
-    /// Opportunistic sweep of expired codes, riding along with the mint that is already writing. Same
-    /// hand-written-SQL reason as <see cref="SweepExpiredAsync"/>.
+    /// Opportunistic sweep of expired codes, riding along with the mint that is already writing.
     /// </summary>
-    private async Task SweepExpiredCodesAsync(DateTimeOffset now, CancellationToken ct) {
-        var cutoff = now.ToUniversalTime();
-        await db.Database.ExecuteSqlAsync($"DELETE FROM login_codes WHERE expires_at <= {cutoff}", ct);
-    }
+    private Task SweepExpiredCodesAsync(DateTimeOffset now, CancellationToken ct) =>
+        db.LoginCodes.Where(c => c.ExpiresAt <= now).ExecuteDeleteAsync(ct);
 
     /// <summary>
     /// Opportunistic lazy sweep of expired sessions of every kind. Logins are rare and already write, so this
     /// rides along instead of costing a background service (design.md §4) — it is housekeeping, not a control:
     /// <see cref="ValidateAsync"/> decides expiry from the row it just read, never from this having run.
     /// </summary>
-    /// <remarks>
-    /// Hand-written SQL because EF Core's SQLite provider cannot translate a <see cref="DateTimeOffset"/>
-    /// comparison at all (SQLite has no date type; <c>Where(s =&gt; s.ExpiresAt &lt;= now)</c> throws at
-    /// translation time, and so does <c>OrderBy</c>). The stored text is
-    /// <c>yyyy-MM-dd HH:mm:ss.FFFFFFFzzz</c>, which sorts lexicographically as long as every value carries the
-    /// same offset — hence the explicit <see cref="DateTimeOffset.ToUniversalTime"/>, matching the UTC instants
-    /// this service writes. Table and column names mirror <c>AuthSessionConfiguration</c>; a drift there is
-    /// caught by the sweep test rather than silently skipping the delete.
-    /// </remarks>
-    private async Task SweepExpiredAsync(DateTimeOffset now, CancellationToken ct) {
-        var cutoff = now.ToUniversalTime();
-        await db.Database.ExecuteSqlAsync($"DELETE FROM auth_sessions WHERE expires_at <= {cutoff}", ct);
-    }
+    private Task SweepExpiredAsync(DateTimeOffset now, CancellationToken ct) =>
+        db.AuthSessions.Where(s => s.ExpiresAt <= now).ExecuteDeleteAsync(ct);
 
     /// <summary>The value stored in <see cref="AuthSession.TokenHash"/> for a raw cookie token.</summary>
     public static string HashToken(string rawToken) =>

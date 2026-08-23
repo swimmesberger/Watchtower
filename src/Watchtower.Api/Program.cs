@@ -13,9 +13,12 @@ using Microsoft.EntityFrameworkCore;
 using Watchtower.Api;
 using Watchtower.Api.Authentication;
 using Watchtower.Api.Endpoints;
+using Watchtower.Api.Proxy;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.SqliteImport;
+using Watchtower.Application.Services.Yarp;
 
 // ── Coordinator mode ──────────────────────────────────────────────────────────
 // Spawned as a sibling container to perform the actual self-update compose run.
@@ -54,6 +57,24 @@ if (args is ["--export-schema", var schemaOutputPath]) {
     return;
 }
 
+// ── SQLite import mode ──────────────────────────────────────────────────────────
+// Carries a pre-ADR-0024 installation into PostgreSQL and exits, without starting the web server. Only
+// needed for a database kept somewhere other than /data/watchtower.db, or to retry an automatic import
+// (SqliteAutoImport, below) and see its failure in full. Run against an empty target:
+//   docker compose run --rm watchtower --import-sqlite /srv/wherever/watchtower.db
+if (args is ["--import-sqlite", var sqliteSourcePath]) {
+    // A configuration of its own rather than the host builder's: this mode needs one value, and
+    // building the host would also register everything that expects the import to have already run.
+    var importConfiguration = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .AddEnvironmentVariables()
+        .Build();
+    Environment.ExitCode = await SqliteImporter.RunAsync(
+        WatchtowerConnectionString.Resolve(importConfiguration), sqliteSourcePath, Console.Out);
+    return;
+}
+
 var builder = WebApplication.CreateSlimBuilder(args);
 
 // Single-line console logging for clean Docker/Portainer output.
@@ -81,20 +102,56 @@ const string DevCorsPolicy = "watchtower-dev-frontend";
 builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
     p.SetIsOriginAllowed(DevCorsOrigins.IsLoopback).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
+// The zero-step half of the ADR-0024 upgrade: an empty PostgreSQL database next to a pre-ADR-0024
+// /data/watchtower.db is imported here, once, before anything reads configuration out of the database.
+// Before, and not from InitializeDatabaseAsync, because the settings snapshot taken immediately below is
+// what the pipeline decisions are made from — an import that ran after it would leave the first
+// post-upgrade process running on an empty database's defaults, with `Auth:Enabled` the one that matters.
+// The explicit `--import-sqlite` above is unchanged and remains the path for a file kept anywhere else.
+// Its own logger, because the host's has not been built yet; the providers match the ones configured above.
+using (var startupLogging = LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true)))
+    await SqliteAutoImport.RunAsync(
+        builder.Configuration, startupLogging.CreateLogger("Watchtower.Upgrade"));
+
 // Layer the Elarion settings store into IConfiguration BELOW the environment variables: stored
 // settings live-reload into IOptionsMonitor<WatchtowerOptions> (no restart), but a WATCHTOWER__* env
 // var pins its setting — env is the infrastructure-as-code layer and always wins, and the Settings UI
 // disables pinned fields instead of losing to them. The boot snapshot makes the stored values visible
-// to the pre-DI reads below (Auth:Enabled, Auth:KeyPath), which run before the live provider loads.
+// to the pre-DI reads below (Auth:Enabled), which run before the live provider loads.
 // Ordered before AddWatchtowerServices so those same reads inside it see the stored values too.
 builder.AddElarionSettingsConfiguration();
-var settingsDbPath = builder.Configuration.GetValue<string>("Watchtower:DbPath") ?? "/data/watchtower.db";
 RuntimeSettingsLayering.MakeEnvironmentWin(
-    builder.Configuration, RuntimeSettingsLayering.LoadStoredGlobalSettings(settingsDbPath));
+    builder.Configuration,
+    RuntimeSettingsLayering.LoadStoredGlobalSettings(
+        WatchtowerConnectionString.Find(builder.Configuration)));
 
-// Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
-// git service layer, the deploy engine, and the background update checkers.
+// Application infrastructure: strongly-typed options, the PostgreSQL EF Core context, the Docker/
+// compose/git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
+
+// The in-process proxy's request path (ADR-0022): YARP's direct forwarder and the singleton
+// client it forwards on. Registered unconditionally — the proxy provider is switchable from Settings at
+// runtime, and neither the container nor the pipeline is rebuilt for that.
+builder.Services.AddWatchtowerProxyForwarding();
+
+// The configuration Kestrel is built from (ADR-0022, runtime-bound ingress): the host's own Kestrel
+// section with the two proxy endpoints masked out and derived from the reverse-proxy settings instead, so
+// the ingress listeners follow the provider — bound while the in-process proxy is enabled, gone when it is
+// disabled or another provider is selected, with no restart. Built here, after the settings store has been
+// layered in above, because that layer is exactly what it has to be able to see and re-read.
+// The sink is created here rather than resolved, because the projection runs before the container does;
+// ProxyListenerStateInitializer attaches the host's logger to it later and flushes whatever it holds.
+var proxyIngressWarnings = new ProxyIngressWarnings();
+builder.Services.AddSingleton(proxyIngressWarnings);
+var proxyIngressKestrelSection =
+    ProxyIngressKestrelConfiguration.Build(builder.Configuration, proxyIngressWarnings);
+
+// The in-process reverse proxy's TLS listener (ADR-0022): a Kestrel endpoint that picks its certificate
+// per connection from the SNI name. Wired unconditionally — whether it exists at any given moment is the
+// projected section's decision, and a host that starts with no proxy endpoints has to be able to gain one
+// on a later reload. Development, Aspire and the integration tests configure no proxy, so the section
+// carries no proxy endpoints there and they bind exactly as they always did.
+ProxyHttpsEndpoint.Configure(builder, proxyIngressKestrelSection);
 
 // Elarion framework composition:
 //   AddElarion          — every enabled module's handlers, [Service] impls, [ScheduledJob] descriptors,
@@ -150,6 +207,11 @@ if (authEnabled) {
 // self-inflicted denial of service, not an escalation. Only the proto header is processed — X-Forwarded-For
 // and -Host are deliberately left alone so nothing downstream can be fooled about the client address or
 // the host name.
+//
+// None of this governs a request the in-process proxy handles (ADR-0022): that dispatcher runs
+// *before* this middleware, so its scheme decisions come from the real connection rather than from a header
+// a client could write, and it stamps the X-Forwarded-* trio itself on the one thing it hands back to this
+// pipeline — the /.watchtower/* callback and logout served on an app's own domain.
 builder.Services.Configure<ForwardedHeadersOptions>(o => {
     o.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
     // KnownIPNetworks, not the deprecated KnownNetworks (ASPDEPR005).
@@ -162,8 +224,24 @@ var app = builder.Build();
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
 
-// First in the pipeline: everything after it — including the cookie issuance in the login endpoint —
-// must see the corrected scheme.
+// ACME HTTP-01 challenges, for any host and over either scheme (ADR-0022). Ahead of the host
+// dispatcher so a challenge is never forwarded to an upstream and never redirected to HTTPS — the CA calls
+// it over plain HTTP by definition, and either outcome would fail the validation.
+app.UseAcmeHttpChallenge();
+
+// The in-process proxy's host dispatch: a request whose Host is in the route table is access-checked and
+// forwarded to its container instead of entering the pipeline below. Deliberately before
+// UseForwardedHeaders — its scheme decisions have to come from the real connection.
+app.UseYarpHostDispatch();
+
+// Keep the proxy's own view of its listeners in step with that section — the only signal the in-process
+// proxy has about its data plane, since there is no container to inspect. Re-derived on every reload, so
+// enabling the proxy or moving a port updates the dispatcher's ingress rule at the same moment Kestrel
+// rebinds.
+ProxyListenerStateInitializer.Register(app, proxyIngressKestrelSection);
+
+// First in the pipeline for everything Watchtower serves itself: everything after it — including the
+// cookie issuance in the login endpoint — must see the corrected scheme.
 app.UseForwardedHeaders();
 
 // Allow the cross-origin Vite dev server to call the API (development only).
@@ -210,8 +288,6 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
 
     // Idempotent — safe to run every startup.
     await db.Database.MigrateAsync();
-    // WAL improves concurrent read/write; the setting persists in the database file.
-    await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
     // Reset any deploys stuck in 'running'/'queued' from a previous crash.
     await db.DeployEvents
         .Where(e => e.Status == "running" || e.Status == "queued")
@@ -228,6 +304,26 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
             .SetProperty(e => e.FinishedAt, DateTimeOffset.UtcNow)
             .SetProperty(e => e.Output,
                 e => (e.Output ?? "") + "\n[Reset: process restarted while backup was in progress]"));
+
+    // ADR-0022's upgrade guard: an instance that was serving routes under the old implicit `caddy`
+    // default is pinned to caddy once, so the default flip cannot switch a working proxy silently.
+    // Here rather than in a hosted service so the ordering is stated rather than inherited: after the
+    // migration (it reads the routes table) and before app.RunAsync() starts the proxy providers.
+    await scope.ServiceProvider.GetRequiredService<ProxyProviderMigration>().RunAsync();
+
+    // ADR-0023's one-time conversion: a configured Auth:Host becomes the operator realm's Watchtower
+    // route. Here for the same reason and in the same window — after the migration (which converts the
+    // realms' own stored auth hosts and drops the column) and before the providers start, so the first
+    // reconcile already serves the converted hostname.
+    await scope.ServiceProvider.GetRequiredService<LoginHostConversion>().RunAsync();
+
+    // ADR-0024: the proxy/auth plane's state is rows now, so it has to be read before the process
+    // serves anything. This carries a pre-PostgreSQL installation's key and certificate files into the
+    // database (once), fills the SNI map and loads the identity-assertion signing key. Last, and before
+    // app.RunAsync(), because Kestrel starts listening the moment the host runs: a store filled from a
+    // background task would answer "no certificate" to whatever arrived first, which a visitor sees as
+    // a broken site rather than a slow one.
+    await app.Services.InitializeWatchtowerStateAsync();
 }
 
 namespace Watchtower.Api {

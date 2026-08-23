@@ -64,4 +64,26 @@ public sealed class CloudflareIngressProjectionTests {
         var rule = Assert.Single(rules);
         Assert.Equal("http_status:404", rule.Service);
     }
+
+    /// <summary>
+    /// A Watchtower route (ADR-0023) is not something this provider can serve: an ingress rule pointing at
+    /// Watchtower would publish the management plane through the tunnel with no gate in front of it, which
+    /// is precisely what Cloudflare Access exists to do properly. The reconcile marks such a route
+    /// <c>Error</c> and says so; the projection simply never emits a rule for it.
+    /// </summary>
+    [Fact]
+    public void WatchtowerRoutes_AreNotPublishedThroughTheTunnel() {
+        var self = new Route {
+            Target = RouteTarget.Watchtower,
+            RealmId = Realm.SystemRealmId,
+            Domain = "ui.example.com",
+            ServiceName = string.Empty,
+        };
+
+        var rules = CloudflareTunnelProvider.ProjectIngress([
+            self, NewRoute("app.example.com", "shop", "web", 3000),
+        ]);
+
+        Assert.Equal(["app.example.com", null], rules.Select(r => r.Hostname));
+    }
 }

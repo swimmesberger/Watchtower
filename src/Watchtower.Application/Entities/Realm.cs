@@ -6,11 +6,11 @@ namespace Watchtower.Application.Entities;
 /// scope, and the categories (<see cref="StackTemplate"/>s) whose tenants its accounts may enter.
 /// </summary>
 /// <remarks>
-/// Exactly one row is the <see cref="IsSystem"/> realm — the operator population, seeded by the
-/// <c>AddRealms</c> migration, which owns Watchtower's own management surface and is the realm every
-/// pre-realm row was backfilled into. It cannot be deleted, and its login host is <em>always</em> the
-/// configured <c>Watchtower:Auth:Host</c> rather than <see cref="AuthHost"/>: authentication must never
-/// depend on a database row to find the host its own login page is served on.
+/// Exactly one row is the <see cref="IsSystem"/> realm — the operator population, seeded by the model
+/// (<c>RealmConfiguration.HasData</c>), which owns Watchtower's own management surface and is the realm
+/// every realm-less row defaults into. It cannot be deleted, and it is the only realm that falls back to
+/// the configured <c>Watchtower:Auth:Host</c> when it has no <see cref="LoginRouteId"/> — the escape
+/// hatch for an instance fronted by somebody else's proxy (ADR-0023).
 /// <para>
 /// Per-population settings — password policy, lockout, future MFA and federation config — belong on this
 /// entity as they land (design.md §13, seam 3). None of them exist yet; today's are still instance-wide
@@ -19,8 +19,8 @@ namespace Watchtower.Application.Entities;
 /// </remarks>
 public sealed class Realm {
     /// <summary>
-    /// Primary key of the built-in system realm. Seeded with this explicit id by the <c>AddRealms</c>
-    /// migration, which is what lets the realm columns added to existing tables default to it and what
+    /// Primary key of the built-in system realm. Seeded with this explicit id by the model
+    /// (<c>RealmConfiguration.HasData</c>), which is what lets every realm column default to it and what
     /// makes <see cref="Services.IRealmContext"/>'s default a constant rather than a query.
     /// <see cref="Services.RealmResolver"/> is still the authority — it reads the <see cref="IsSystem"/>
     /// row — so nothing but a default ever assumes the number.
@@ -55,12 +55,22 @@ public sealed class Realm {
     public required string Slug { get; set; }
 
     /// <summary>
-    /// Host this realm's login page and <c>__wt_sso</c> cookie live on — the realm's SSO scope, since a
-    /// host-scoped cookie <em>is</em> the cookie jar (design.md §13). Null while DNS is not ready yet:
-    /// protected routes in the realm then fail closed at challenge time rather than redirecting anywhere.
-    /// Always null on the system realm, whose host is the configured <c>Auth:Host</c>.
+    /// The <see cref="RouteTarget.Watchtower"/> route whose domain this realm's login page and
+    /// <c>__wt_sso</c> cookie live on — the realm's SSO scope, since a host-scoped cookie <em>is</em> the
+    /// cookie jar (design.md §13, ADR-0023). Null while the realm has no login host yet: its protected
+    /// routes then fail closed at challenge time rather than redirecting anywhere — except on the system
+    /// realm, which falls back to the configured <c>Auth:Host</c>.
     /// </summary>
-    public string? AuthHost { get; set; }
+    /// <remarks>
+    /// A route rather than a stored hostname, so there is one table of "hostnames this instance answers
+    /// on" and one place per provider that serves them. The foreign key is <c>ON DELETE SET NULL</c>:
+    /// deleting the route is a legitimate act with a visible consequence (the realm has no login host any
+    /// more), not something to refuse, and the handler says so in its response.
+    /// </remarks>
+    public int? LoginRouteId { get; set; }
+
+    /// <summary>Navigation to <see cref="LoginRouteId"/>; loaded where the login host is needed.</summary>
+    public Route? LoginRoute { get; set; }
 
     /// <summary>True for the single built-in operator realm. Set by the migration; never by a handler.</summary>
     public bool IsSystem { get; set; }

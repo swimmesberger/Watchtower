@@ -68,7 +68,9 @@ public sealed class GrantManagement(WatchtowerDbContext db, TimeProvider time)
                 TemplateId = command.TemplateId,
                 StackId = command.StackId,
                 AllowDelete = command.AllowDelete,
-                CreatedAt = time.GetUtcNow(),
+                // Handed straight back in the response and compared against the stored row on every later
+                // upsert of the same pair, so it is read at the precision the row will hold.
+                CreatedAt = time.GetUtcNow().ToMicrosecondPrecision(),
             };
             db.TemplateManagementGrants.Add(grant);
             try {

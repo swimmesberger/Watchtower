@@ -91,7 +91,7 @@ public sealed class TenantDiscoveryService(
 
         // Exactly one issuer, because the context pins the realm: accepting "any realm's" here would let an
         // assertion minted for another population answer a question about this one.
-        var issuers = new[] { signer.IssuerFor(RealmIdentity.From(realm)) };
+        var issuers = new[] { signer.IssuerFor(await realms.IdentityForAsync(realm, ct)) };
         if (!signer.TryValidate(assertion, issuers, audiences, out var userId)) return null;
 
         var account = await db.Users.AsNoTracking()
@@ -125,13 +125,15 @@ public sealed class TenantDiscoveryService(
 
         var stackIds = tenants.Select(t => t.Id).ToList();
         var routes = await db.Routes.AsNoTracking()
-            .Where(r => stackIds.Contains(r.StackId) && r.IsPrimary)
+            .Where(r => r.StackId != null && stackIds.Contains(r.StackId.Value) && r.IsPrimary)
             .ToListAsync(ct);
 
         // One route per tenant, lowest id first: should a stack somehow carry two primary rows, which one
         // decides access must not depend on the order the provider happened to return them in.
         var primary = routes
-            .GroupBy(r => r.StackId)
+            // StackId is non-null on every row here — the query above filtered them — but the compiler
+            // only sees the nullable column, so the key is unwrapped explicitly.
+            .GroupBy(r => r.StackId!.Value)
             .ToDictionary(g => g.Key, g => g.OrderBy(r => r.Id).First());
 
         var accessible = await RouteAccessPolicy.AccessibleRouteIdsAsync(db, [.. primary.Values], userId, ct);

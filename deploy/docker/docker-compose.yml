@@ -1,31 +1,79 @@
 # Example Watchtower deployment.
 #
 # Watchtower talks to the host Docker daemon to inspect containers and run `docker compose`
-# for your stacks, so it needs the Docker socket mounted and permission to use it.
+# for your stacks, so it needs the Docker socket mounted and permission to use it. It stores its own
+# state in PostgreSQL (ADR-0024), which the `postgres` service below provides.
 #
 #   1. Find the host's docker group GID:  getent group docker | cut -d: -f3
 #   2. Put that value in `group_add` below.
-#   3. docker compose up -d
+#   3. Set POSTGRES_PASSWORD to something of your own (a .env file next to this one works).
+#   4. docker compose up -d
 #
-# The UI is served on http://localhost:8080. Put it behind an authenticating reverse proxy
-# (e.g. Cloudflare Access, Authelia) — Watchtower itself has no built-in authentication.
+# UPGRADING from a Watchtower that stored everything in /data/watchtower.db: add the postgres service
+# below, set WATCHTOWER__DATABASE__CONNECTIONSTRING, keep the data volume mounted, and start —
 #
-# Built-in reverse proxy (optional): set WATCHTOWER__PROXY__ENABLED=true and Watchtower manages a
-# Caddy container itself (over the Docker socket) that publishes host ports 80/443, terminates TLS
-# with automatic certificates, and routes the domains you add under "Routes" to services inside your
-# stacks over private per-stack networks. Requirements when enabled:
-#   * host ports 80 and 443 must be free (don't run another proxy on them),
+#   docker compose up -d
+#
+# There is no import step. The first start finds the old /data/watchtower.db beside an empty PostgreSQL
+# database and carries it across itself, along with /data/auth-keys and /data/proxy-certs — which is what
+# keeps everyone signed in and stops every certificate being re-ordered. Nothing is deleted, so the
+# rollback is redeploying the old image. Afterwards the data volume holds nothing Watchtower needs.
+# For a database kept somewhere other than /data/watchtower.db, import it by hand instead:
+#
+#   docker compose run --rm watchtower --import-sqlite /srv/wherever/watchtower.db
+#
+# See docs/upgrading.md.
+#
+# The UI is served on http://localhost:8080 — the management plane, published on the loopback interface
+# below. Put it behind an authenticating reverse proxy (e.g. Cloudflare Access, Authelia) — Watchtower
+# itself has no built-in authentication unless you enable it.
+#
+# Built-in reverse proxy (optional): set WATCHTOWER__PROXY__ENABLED=true and Watchtower terminates TLS
+# in its own process, routing the domains you add under "Routes" to services inside your stacks over
+# private per-stack networks. There is no second container and no control network. Requirements when
+# enabled:
+#   * uncomment the 80:8081 and 443:8443 port mappings below. Port 80 is not optional: ACME HTTP-01
+#     validation is how certificates are issued, and the CA reaches it over plain HTTP. The published
+#     host ports must match the CONTAINER ports the ingress listeners are configured on (8081/8443 by
+#     default — Settings → Reverse proxy, or WATCHTOWER__PROXY__YARP__HTTPPORT / __HTTPSPORT).
+#   * ingress (8081/8443) and the management plane (8080) are separate listeners. A request on an
+#     ingress port whose Host is not a route — or a realm login host — is answered with 404 and never
+#     reaches Watchtower's UI or API. The ingress listeners exist only while the built-in provider is
+#     enabled: turning it on or off binds and unbinds them without a restart.
+#   * point each route's DNS at this host before adding it, so the first issuance can validate.
 #   * set WATCHTOWER__PROXY__ADMINEMAIL for Let's Encrypt expiry notices (recommended).
-# Watchtower creates the caddy_data / caddy_config volumes and the proxy networks automatically —
-# no changes to this file are needed. Leave the flag unset to run your own proxy instead.
-# See docs/reverse-proxy/README.md for details and operational notes.
+# Certificates, the ACME account and the challenge answers are rows in PostgreSQL (ADR-0024), so there
+# is nothing to mount and a second instance serves the same hosts from the same table — exactly one of
+# them orders certificates, elected through a lease row. An internal CA (step-ca, ZeroSSL, …) works too: set
+# WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL, plus __ACMECABUNDLEPATH for its root and the EAB pair if
+# it requires one. See docs/reverse-proxy/yarp.md.
+# Two other providers exist: `caddy` (a sibling Caddy container holding the host's ports 80/443) is
+# DEPRECATED and kept for existing installs — docs/reverse-proxy/caddy.md; `cloudflare` routes through
+# a Cloudflare Tunnel and needs no open ports at all — docs/reverse-proxy/cloudflare.md.
+# Leave the flag unset to run your own proxy instead. Start at docs/reverse-proxy/README.md.
 services:
   watchtower:
     image: swimmes/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # The management plane: Watchtower's own UI and API. Bound to the loopback interface, because this
+      # port answers for every Host name and is the process holding the Docker socket, the database and
+      # every credential. Reach it over a VPN or an SSH tunnel; to reach the UI from the internet, enable
+      # authentication, use the 443 mapping below and create a route in the Routes UI whose target is
+      # "Watchtower (this instance)" for a hostname you control — those are the only names ingress will
+      # serve Watchtower itself on.
+      - "127.0.0.1:8080:8080"
+      # Built-in reverse proxy (opt-in): publish the ingress ports — 80 must be reachable for ACME
+      # HTTP-01, 443 carries the routed traffic. These are separate container ports from 8080 on purpose:
+      # an unknown Host arriving here gets a 404 rather than Watchtower's management plane.
+      # - "80:8081"
+      # - "443:8443"
+      # The management container port is Kestrel__Endpoints__Http__Url (8080; ASPNETCORE_URLS no longer
+      # applies to this image). The ingress container ports are reverse-proxy settings — 8081/8443 by
+      # default, changed under Settings → Reverse proxy or pinned with
+      # WATCHTOWER__PROXY__YARP__HTTPPORT / __HTTPSPORT (0 turns a listener off). Keep the right-hand
+      # side of the mappings above in step with them.
     volumes:
       - watchtower-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -33,24 +81,74 @@ services:
       # - ${HOME}/.docker/config.json:/home/watchtower/.docker/config.json:ro
       # Optional: host CPU/RAM/load on the Dashboard (opt-in) — see docs/host-metrics.md.
       # - /proc:/host/proc:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      WATCHTOWER__DBPATH: /data/watchtower.db
+      # Watchtower's own database (ADR-0024). Required — there is no default and no file fallback.
+      WATCHTOWER__DATABASE__CONNECTIONSTRING: "Host=postgres;Database=${POSTGRES_DB:-watchtower};Username=${POSTGRES_USER:-watchtower};Password=${POSTGRES_PASSWORD:-watchtower}"
       WATCHTOWER__DOCKERAPIVERSION: "1.43"
+      # Encrypts the private keys Watchtower stores in that database — the certificate keys, the ACME
+      # account key, the identity-assertion signing key and the data-protection key ring (ADR-0024).
+      # Optional: without it they are
+      # stored unencrypted, exactly as the PEM files on the data volume used to be, and the log says so
+      # once at startup. Set it to a long random value (`openssl rand -base64 32`) and keep it OUT of
+      # the database and out of your database backups — that is the whole point of it. Losing it once
+      # set signs everyone out and forces every certificate to be reissued.
+      # WATCHTOWER__AUTH__KEYPROTECTIONSECRET: ${WATCHTOWER_KEY_PROTECTION_SECRET:-}
       # Enable the background "update available" checkers (opt-in — generate registry traffic):
       # WATCHTOWER__AUTOCHECKENABLED: "true"
       # WATCHTOWER__STACKCHECKENABLED: "true"
-      # Built-in Caddy reverse proxy (opt-in) — see the header comment. Needs host ports 80/443 free.
+      # Built-in reverse proxy (opt-in) — needs the 80:8081 / 443:8443 port mappings above.
       # WATCHTOWER__PROXY__ENABLED: "true"
       # WATCHTOWER__PROXY__ADMINEMAIL: you@example.com
+      # WATCHTOWER__PROXY__PROVIDER: yarp   # yarp (default) | caddy (deprecated) | cloudflare
+      # WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL: https://acme-v02.api.letsencrypt.org/directory
+      # Ingress container ports (defaults 8081/8443; 0 turns a listener off). Setting them here pins
+      # them — leave unset to keep them editable under Settings → Reverse proxy.
+      # WATCHTOWER__PROXY__YARP__HTTPPORT: "8081"
+      # WATCHTOWER__PROXY__YARP__HTTPSPORT: "8443"
       # Host metrics (opt-in) — needs the /proc mount above; see docs/host-metrics.md.
       # WATCHTOWER_HOST_PROC: /host/proc
-      # Metrics history is ON by default (persisted into the data volume, ~30 days; ADR-0013).
+      # Metrics history is ON by default (persisted in Watchtower's database, ~30 days; ADR-0013).
       # Tune or switch under Settings → Metrics in the UI, or here; see docs/metrics-history.md.
-      # WATCHTOWER__METRICS__BACKEND: sqlite   # sqlite (default) | memory | influxdb
+      # The value was `sqlite` before ADR-0024 and is still accepted; `database` is the name now.
+      # WATCHTOWER__METRICS__BACKEND: database   # database (default) | memory | influxdb
       # WATCHTOWER__METRICS__RETENTIONDAYS: "30"
     # Replace 999 with the host's docker group GID (see the header comment).
     group_add:
       - "999"
 
+  # Watchtower's own database. Not published on a host port: only Watchtower talks to it, over the
+  # compose network. Back it up with `docker compose exec postgres pg_dump -U watchtower watchtower`
+  # (see docs/backups.md) — the stack-backup machinery in the UI backs up *your* stacks, not this.
+  postgres:
+    image: postgres:18-alpine
+    container_name: watchtower-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-watchtower}
+      POSTGRES_USER: ${POSTGRES_USER:-watchtower}
+      # Change this. The default exists so a first `docker compose up` works, not so it ships.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-watchtower}
+    volumes:
+      # postgres:18 moved the mount point up a level (PGDATA is now the versioned
+      # /var/lib/postgresql/18/docker) so pg_upgrade --link can place old and new data directories
+      # side by side for in-place major upgrades. Mounting the old /var/lib/postgresql/data here
+      # would silently NOT persist the data.
+      - watchtower-pg:/var/lib/postgresql
+    healthcheck:
+      # Watchtower migrates on startup, so it must not start before the server accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-watchtower} -d ${POSTGRES_DB:-watchtower}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
 volumes:
+  # Only needed for the upgrade from older versions: the old watchtower.db and the legacy
+  # /data/auth-keys + /data/proxy-certs files, all of which the first start imports into PostgreSQL.
+  # Certificates, the ACME account, the signing key and the data-protection key ring now live in the
+  # database (ADR-0024); a fresh installation can leave this volume out.
   watchtower-data:
+  watchtower-pg:

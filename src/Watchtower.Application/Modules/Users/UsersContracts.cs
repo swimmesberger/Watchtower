@@ -44,11 +44,10 @@ public sealed record UserDto(
 /// guard and the audit trail.
 /// </summary>
 public static class UserMapping {
-    /// <summary>Projects a user for the API. <paramref name="now"/> decides <see cref="UserDto.LockedOut"/>.</summary>
+    /// <summary>Projects an already-loaded user for the API. <paramref name="now"/> decides <see cref="UserDto.LockedOut"/>.</summary>
     /// <remarks>
-    /// Applied after materialization rather than inside the EF projection on purpose: EF Core's SQLite
-    /// provider cannot translate a <see cref="DateTimeOffset"/> comparison at all (SQLite has no date
-    /// type), so <c>u.LockoutEnd &gt; now</c> would throw at translation time.
+    /// For the write handlers, which hold the tracked entity they just saved. The list handler projects
+    /// the same shape in SQL instead — see <c>ListUsers</c>.
     /// </remarks>
     public static UserDto ToDto(User user, DateTimeOffset now) {
         ArgumentNullException.ThrowIfNull(user);

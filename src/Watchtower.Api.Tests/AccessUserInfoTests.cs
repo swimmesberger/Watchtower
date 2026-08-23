@@ -214,7 +214,8 @@ public sealed class AccessUserInfoTests {
             var user = await db.Users.SingleAsync(u => u.Id == userId, Ct);
             // For the account's own realm, which is what verify would have minted it for.
             var realm = await db.Realms.SingleAsync(r => r.Id == user.RealmId, Ct);
-            token = signer.Mint(user, AppDomain, RealmIdentity.From(realm));
+            var realms = sp.GetRequiredService<RealmResolver>();
+            token = signer.Mint(user, AppDomain, await realms.IdentityForAsync(realm, Ct));
         });
         return token;
     }

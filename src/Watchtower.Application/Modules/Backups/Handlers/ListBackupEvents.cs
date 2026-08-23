@@ -19,11 +19,12 @@ public sealed class ListBackupEvents(WatchtowerDbContext db)
             return AppError.NotFound($"Stack {stackId} not found");
 
         var limit = Math.Clamp(query.Limit, 1, 500);
-        // SQLite can't ORDER BY a DateTimeOffset, so sort newest-first client-side (on the
-        // autoincrement id, which orders identically for events created by one process).
+        // Id breaks ties: a stack-wide run writes several events within the same clock tick, and the
+        // limit below only means something over a total order.
         var events = await db.BackupEvents.AsNoTracking()
             .Where(e => query.StackId == null || e.StackId == query.StackId)
-            .OrderByDescending(e => e.Id)
+            .OrderByDescending(e => e.StartedAt)
+            .ThenByDescending(e => e.Id)
             .Take(limit)
             .Select(e => new BackupEventDto(
                 e.Id, e.StackId, e.Stack!.Name, e.TriggeredBy, e.Status, e.RemotePath, e.SizeBytes,

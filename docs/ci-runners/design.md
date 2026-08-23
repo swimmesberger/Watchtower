@@ -61,7 +61,7 @@ with no tokens copied and nothing persisted inside the runner.
   GitHub itself; when a job is queued, GitHub hands it to the runner. Watchtower only
   keeps the desired number of runner slots alive.
 - **GitHub is the source of truth for builds.** Run/job/log data is fetched from the
-  GitHub API on demand (UI polling), not mirrored into SQLite. The only persistent state
+  GitHub API on demand (UI polling), not mirrored into the database. The only persistent state
   is the repo enablement config.
 - **Runner containers are tracked via Docker labels** (like stacks/tenants are), not a DB
   table — state is reconstructable from `ListContainersByLabelsAsync` + the GitHub API

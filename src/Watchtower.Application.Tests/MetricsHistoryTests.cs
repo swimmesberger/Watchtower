@@ -13,8 +13,9 @@ using Xunit;
 namespace Watchtower.Application.Tests;
 
 /// <summary>
-/// Covers the SQLite metrics history (ADR-0013): the minute aggregation and rollup/retention write path
-/// (<see cref="MetricsPersistenceService"/>), the history read path (<see cref="SqliteMetricsSource"/>),
+/// Covers the database-persisted metrics history (ADR-0013): the minute aggregation and rollup/retention
+/// write path (<see cref="MetricsPersistenceService"/>), the history read path
+/// (<see cref="DatabaseMetricsSource"/>),
 /// the runtime backend router (<see cref="MetricsSourceRouter"/>), and the config handlers' validation.
 /// </summary>
 public sealed class MetricsHistoryTests {
@@ -27,7 +28,7 @@ public sealed class MetricsHistoryTests {
 
     [Fact]
     public async Task TicksAggregateIntoOneMinuteRow_FlushedOnTheBoundary() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         host.Time.Now = T0;
         var persistence = host.Services.GetRequiredService<MetricsPersistenceService>();
 
@@ -59,7 +60,7 @@ public sealed class MetricsHistoryTests {
 
     [Fact]
     public async Task OfflineContainersAndUnavailableHost_AreGapsNotZeros() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         host.Time.Now = T0;
         var persistence = host.Services.GetRequiredService<MetricsPersistenceService>();
 
@@ -77,7 +78,7 @@ public sealed class MetricsHistoryTests {
 
     [Fact]
     public async Task Maintain_RollsMinutesUp_AndEnforcesBothWindows() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         host.Time.Now = T0;
         var persistence = host.Services.GetRequiredService<MetricsPersistenceService>();
         var now = T0.ToUnixTimeSeconds();
@@ -141,9 +142,9 @@ public sealed class MetricsHistoryTests {
 
     [Fact]
     public async Task HistoryQuery_BucketsRawRowsToTheRequestedStep() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         host.Time.Now = T0;
-        var source = host.Services.GetRequiredService<SqliteMetricsSource>();
+        var source = host.Services.GetRequiredService<DatabaseMetricsSource>();
         var now = T0.ToUnixTimeSeconds();
         var start = (now - 3600) / 120 * 120; // an hour ago, aligned to the 2-minute step
 
@@ -184,9 +185,9 @@ public sealed class MetricsHistoryTests {
 
     [Fact]
     public async Task HistoryQuery_OlderThanTheRawWindow_ServesTheRollupTier() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         host.Time.Now = T0;
-        var source = host.Services.GetRequiredService<SqliteMetricsSource>();
+        var source = host.Services.GetRequiredService<DatabaseMetricsSource>();
         var now = T0.ToUnixTimeSeconds();
         var start = (now - 7 * 86400L) / 600 * 600; // a week back — raw rows are long gone there
 
@@ -208,20 +209,60 @@ public sealed class MetricsHistoryTests {
         Assert.Equal(77, point.CpuPercent);
     }
 
+    /// <summary>
+    /// The bucket key is <c>t_unix_seconds / step</c>, evaluated by the database rather than in
+    /// process. PostgreSQL's integer division truncates, exactly as C#'s does, so a range that does not
+    /// start on a step boundary still groups by the same boundaries the client-side arithmetic assumes —
+    /// this pins that, because a database that rounded instead would shift every bucket by half a step.
+    /// </summary>
+    [Fact]
+    public async Task HistoryQuery_BucketsByTruncatingIntegerDivision_NotByRounding() {
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
+        host.Time.Now = T0;
+        var source = host.Services.GetRequiredService<DatabaseMetricsSource>();
+        var now = T0.ToUnixTimeSeconds();
+
+        // Deliberately unaligned: the first sample sits 90 seconds into a 120-second bucket, so
+        // truncation puts it in the *earlier* bucket and rounding would put it in the later one.
+        var boundary = (now - 3600) / 120 * 120;
+        var samples = new[] { boundary + 90, boundary + 120, boundary + 150 };
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            foreach (var t in samples)
+                db.MetricHostSamples.Add(new MetricHostSample {
+                    TierSeconds = 60, TUnixSeconds = t, CpuPercent = 10, MemPercent = 1,
+                });
+            await db.SaveChangesAsync(Ct);
+        }
+
+        var readout = await source.GetHostAsync(
+            MetricsWindow.History(
+                DateTimeOffset.FromUnixTimeSeconds(boundary),
+                DateTimeOffset.FromUnixTimeSeconds(boundary + 239),
+                TimeSpan.FromSeconds(120)),
+            Ct);
+
+        // Two buckets, at the truncated boundaries — not three, and not shifted.
+        Assert.Equal(
+            [DateTimeOffset.FromUnixTimeSeconds(boundary), DateTimeOffset.FromUnixTimeSeconds(boundary + 120)],
+            readout.History.Select(h => h.T));
+    }
+
     // ── Router ────────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Router_FollowsTheOptionsAtRuntime_AndDegradesMisconfiguredInflux() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         var monitor = new MutableOptionsMonitor(new WatchtowerOptions());
         var router = new MetricsSourceRouter(
             host.Services.GetRequiredService<InMemoryMetricsSource>(),
-            host.Services.GetRequiredService<SqliteMetricsSource>(),
+            host.Services.GetRequiredService<DatabaseMetricsSource>(),
             monitor,
             NullLoggerFactory.Instance);
 
-        // Default → sqlite, history available.
-        Assert.Equal("sqlite", router.Capabilities.Source);
+        // Default → database, history available.
+        Assert.Equal("database", router.Capabilities.Source);
         Assert.True(router.Capabilities.HistoryAvailable);
 
         monitor.Value = new WatchtowerOptions { Metrics = new MetricsOptions { Backend = "memory" } };
@@ -250,18 +291,35 @@ public sealed class MetricsHistoryTests {
         router.Dispose();
     }
 
+    /// <summary>
+    /// ADR-0024 renamed the persisted backend from <c>sqlite</c> to <c>database</c> without changing what
+    /// it does. An instance that stored the old name must keep its history rather than silently fall back
+    /// to the default — which happens to be the same backend today, and would not be if the default ever
+    /// moved. So the alias is asserted, not inferred from the default.
+    /// </summary>
+    [Fact]
+    public void TheStoredSqliteBackendName_StillResolvesToTheDatabaseBackend() {
+        Assert.Equal(
+            MetricsBackendKind.Database,
+            new MetricsOptions { Backend = MetricsOptions.LegacyDatabaseBackendName }.ResolveBackend());
+        Assert.Equal(MetricsBackendKind.Database, new MetricsOptions { Backend = "SQLite" }.ResolveBackend());
+        // And the values that are not aliases still mean what they say.
+        Assert.Equal(MetricsBackendKind.Memory, new MetricsOptions { Backend = "memory" }.ResolveBackend());
+        Assert.Equal(MetricsBackendKind.Influxdb, new MetricsOptions { Backend = "influxdb" }.ResolveBackend());
+    }
+
     // ── Config handlers ───────────────────────────────────────────────────────
 
     [Fact]
     public async Task UpdateConfig_ValidatesBackendRetentionAndInfluxSettings() {
-        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "sqlite"));
+        using var host = AuthTestHost.Start(("Watchtower:Metrics:Backend", "database"));
         await using var scope = host.Services.CreateAsyncScope();
         var handler = ActivatorUtilities.CreateInstance<UpdateMetricsConfig>(scope.ServiceProvider);
 
         var bad = await handler.HandleAsync(new UpdateMetricsConfig.Command("postgres", 30), Ct);
         Assert.False(bad.IsSuccess);
 
-        var badRetention = await handler.HandleAsync(new UpdateMetricsConfig.Command("sqlite", 0), Ct);
+        var badRetention = await handler.HandleAsync(new UpdateMetricsConfig.Command("database", 0), Ct);
         Assert.False(badRetention.IsSuccess);
 
         // influxdb without connection values must not switch and strand the dashboard.

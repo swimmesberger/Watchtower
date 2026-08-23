@@ -2,24 +2,31 @@ using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Features;
 using Elarion.Abstractions.Identity;
 using Elarion.Authorization;
+using Elarion.Coordination.PostgreSql;
 using Elarion.Identity;
+using Elarion.Scheduling.EntityFrameworkCore;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
+using Elarion.Settings.PostgreSql;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Npgsql;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
 
 /// <summary>
-/// Registers Watchtower's application-layer infrastructure: strongly-typed options, the SQLite
+/// Registers Watchtower's application-layer infrastructure: strongly-typed options, the PostgreSQL
 /// EF Core context, the Docker/compose/git service layer, the deploy engine, and the optional
 /// background update checkers. Elarion handlers and modules are registered separately via
 /// <c>AddElarion</c> in the host.
@@ -37,13 +44,15 @@ public static class WatchtowerServiceCollectionExtensions {
         // configuration layering in Program.cs). TryAdd so tests can substitute a fake environment.
         services.TryAddSingleton<EnvironmentSettingPins>();
 
-        var dbPath = section.GetValue<string>("DbPath") ?? "/data/watchtower.db";
-        var dir = Path.GetDirectoryName(dbPath);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
+        // PostgreSQL is the only database (ADR-0024). One NpgsqlDataSource per process, shared by the
+        // EF context and — from the state-in-the-database phase on — by Elarion's PostgreSQL packages
+        // (role leases, LISTEN/NOTIFY settings propagation), which is why it is a registered singleton
+        // rather than something UseNpgsql(connectionString) builds privately per context.
+        var connectionString = WatchtowerConnectionString.Resolve(config);
+        services.TryAddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).Build());
 
-        services.AddDbContext<WatchtowerDbContext>(o =>
-            o.UseSqlite($"Data Source={dbPath}")
+        services.AddDbContext<WatchtowerDbContext>((sp, o) =>
+            o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>())
              .UseSnakeCaseNamingConvention());
 
         // Stateless infrastructure (no DB) — singletons.
@@ -84,6 +93,27 @@ public static class WatchtowerServiceCollectionExtensions {
         // automation toggles.
         services.AddElarionSettings();
         services.AddElarionSettingsEntityFrameworkCore<WatchtowerDbContext>();
+        // …and its cross-instance change channel (ADR-0024 decision 6). This is what turns a settings
+        // write on one node into an IChangeToken firing on every node — including the internal
+        // Watchtower:Proxy:RoutesVersion key that carries route, realm and certificate changes to the
+        // other instances' route tables and SNI maps. The data source is the one registered above, so
+        // the listener shares the process's connection configuration rather than parsing its own.
+        // The connection-string overload rather than the shared NpgsqlDataSource above, deliberately:
+        // a LISTEN connection is held open for the life of the process, so borrowing one from the pool
+        // the request path uses would permanently shrink it. The package owns and disposes the small
+        // data source it builds for that one connection.
+        services.AddElarionPostgreSqlSettingsChanges(connectionString);
+
+        // Leader election for the roles exactly one instance may play. Today that is certificate
+        // ordering: every instance serves from proxy_certificates, one holds `acme-issuer` and orders
+        // (ADR-0024 decision 5). The same primitive carries the `control` role in the next ADR.
+        services.AddElarionPostgreSqlRoleLease<WatchtowerDbContext>(
+            o => o.RoleName = CertificateManager.IssuerRole);
+
+        // Scheduler occurrence claims, so a [ScheduledJob] — today the backup schedule's minute tick
+        // (ADR-0018) — fires once cluster-wide instead of once per instance. Without this, two instances
+        // would each start the nightly backup of every stack.
+        services.AddElarionSchedulerEntityFrameworkCore<WatchtowerDbContext>();
 
         // Deploy queue — singleton for enqueuing; hosted for graceful shutdown.
         services.AddSingleton<DeployQueueService>();
@@ -94,22 +124,75 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy (ADR-0015) — two providers behind one runtime router, mirroring the metrics
-        // backend (ADR-0007): Caddy (host ports 80/443, automatic TLS) and Cloudflare Tunnel
-        // (cloudflared + the Cloudflare API). Both are registered unconditionally and hosted so the
-        // active one reconciles on startup (each self-gates on Proxy:Enabled + Proxy:Provider);
-        // consumers inject IProxyProvider and the router resolves the selected backend per call, which
-        // is what makes the provider switchable from the Settings page without a restart.
+        // Reverse proxy — ADR-0015, extended by ADR-0022 for the third provider, which is also the
+        // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):
+        // the in-process proxy (Watchtower binds 80/443 itself, no sibling container), Caddy (a sibling
+        // container on host ports 80/443, automatic TLS — deprecated) and
+        // Cloudflare Tunnel (cloudflared + the Cloudflare API). All three are registered unconditionally and
+        // hosted so the active one reconciles on startup (each self-gates on Proxy:Enabled +
+        // Proxy:Provider); consumers inject IProxyProvider and the router resolves the selected backend
+        // per call, which is what makes the provider switchable from the Settings page without a restart.
         // The general audit trail (audit.listEvents). Singleton — its writers are the singleton
         // providers; TryAdd so tests can substitute a recording double.
         services.TryAddSingleton<AuditLog>();
+        // Encrypts the private keys that now live in the database — certificates, the ACME account, the
+        // identity-assertion signing key (ADR-0024). Inert (and says so once) until
+        // Watchtower:Auth:KeyProtectionSecret is set.
+        services.TryAddSingleton<KeyProtector>();
         services.AddSingleton<ProxyIngressNetworks>();
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
         services.AddSingleton<CloudflareApiClient>();
         services.AddSingleton<CloudflareTunnelProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
+        // In-process provider: the routing table and the listener outcome are process state the request
+        // path reads, so both are singletons independent of whether the provider is the active one.
+        services.AddSingleton<ProxyRouteTable>();
+        services.AddSingleton<YarpListenerState>();
+        // Diagnostics for the in-process proxy's listeners (ADR-0022 addendum): a best-effort read of what
+        // the server actually bound, which is what lets the status surface notice a rebind that failed.
+        // (The projection's warning sink is registered by the host instead — it has to exist before the
+        // container does, because the projection is built before Build().)
+        services.AddSingleton<BoundListenerPorts>();
+        services.AddSingleton<RouteStatusUpdater>();
+        // The live HTTP-01 challenge answers — rows since ADR-0024, so the CA's validation request can
+        // land on any instance. Registered unconditionally, like the table above: the middleware that
+        // reads it is in the pipeline whatever the provider is, and an empty table simply answers 404.
+        services.AddSingleton<AcmeHttpChallengeStore>();
+        // The ACME account key, one row per directory URL.
+        services.AddSingleton<AcmeAccountStore>();
+        // How a route, realm or certificate write on this instance reaches the others (ADR-0024
+        // decision 6). A singleton because the watchers it hands out are process-lifetime.
+        services.AddSingleton<ProxyChangeSignal>();
+        // A/AAAA resolution, shared by proxy.checkDns and the issuer's preflight so the operator's
+        // "check DNS" button and the certificate machinery cannot come to different answers.
+        services.AddSingleton<DnsPreflight>();
+        // Certificate issuance (ADR-0022): the protocol half, and the background loop that schedules it.
+        // TryAdd on the transport so a test can substitute an in-process CA's message handler.
+        services.TryAddSingleton<IAcmeTransportFactory, AcmeTransportFactory>();
+        services.AddSingleton<CertificateIssuer>();
+        services.AddSingleton<CertificateManager>();
+        services.AddSingleton<IProxyCertificateManager>(sp => sp.GetRequiredService<CertificateManager>());
+        services.AddHostedService(sp => sp.GetRequiredService<CertificateManager>());
+        services.AddSingleton<YarpProxyProvider>();
+        services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
+        // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0022). Scoped because it
+        // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.
+        services.AddScoped<ProxyProviderMigration>();
+        // The other one-time upgrade step: a configured Auth:Host becomes the system realm's Watchtower
+        // route (ADR-0023). Scoped and run from the same place, and after the migration — which is what
+        // converts the realms' own stored auth hosts.
+        services.AddScoped<LoginHostConversion>();
+        // ADR-0024's: the key and certificate files a pre-PostgreSQL installation left on /data become
+        // rows, once. Scoped like the two above and run from the same place, ahead of both consumers —
+        // see WatchtowerStateInitializer for why the order matters.
+        services.AddScoped<FileStateImport>();
+
+        // The SNI map, cached over the proxy_certificates table (ADR-0024). Registered unconditionally
+        // like the rest of the proxy services; filled by WatchtowerStateInitializer before Kestrel
+        // serves, because the handshake path cannot wait for a query.
+        services.AddSingleton<CertificateStore>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and
@@ -123,14 +206,23 @@ public static class WatchtowerServiceCollectionExtensions {
         //
         // Data protection is REQUIRED here, not a convenience: the host builds with
         // WebApplication.CreateSlimBuilder, which registers none of it. It encrypts the password-reset
-        // tokens today and the session cookies from the next work item on. The key ring is persisted to
-        // Auth:KeyPath — unconditionally, because the default location is per-user and the shipped
-        // container has no home directory, which would make the keys ephemeral and sign everyone out on
-        // every restart. Directory created up front, exactly as DbPath's is above.
-        var keyPath = section.GetValue<string>("Auth:KeyPath");
-        if (string.IsNullOrWhiteSpace(keyPath)) keyPath = new AuthOptions().KeyPath;
-        Directory.CreateDirectory(keyPath);
-        services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+        // tokens and the OIDC correlation/nonce cookies. The key ring is persisted to the database
+        // (ADR-0024) — unconditionally, because the default location is a per-user directory and the
+        // shipped container has no home directory, which would make the keys ephemeral and sign
+        // everyone out on every restart. Rows rather than files because a token or cookie minted on one
+        // instance has to be readable on every other, which is the whole reason the ring moved.
+        services.AddDataProtection().PersistKeysToDbContext<WatchtowerDbContext>();
+        // …and encrypted at rest with the same secret as every other private key, when one is
+        // configured. Registered through the options builder rather than inline because the decision
+        // needs the KeyProtector, which needs the bound options: an unset secret leaves ASP.NET's
+        // default (plaintext elements), which is what keeps a ring written before the secret was
+        // configured readable — those rows carry no encryptedKey wrapper for a decryptor to look up.
+        // Only newly generated keys are encrypted; existing ones are not rewritten, because the key
+        // manager treats the ring as append-only and rewriting it is how a ring loses keys.
+        services.AddOptions<KeyManagementOptions>().Configure<KeyProtector>((keyManagement, protector) => {
+            if (!protector.IsEncrypting) return;
+            keyManagement.XmlEncryptor = new KeyProtectorXmlEncryptor(protector);
+        });
         services.AddIdentityCore<User>(o => {
             // Brute-force protection: 5 failed logins park the account for 15 minutes.
             o.Lockout.AllowedForNewUsers = true;
@@ -160,15 +252,22 @@ public static class WatchtowerServiceCollectionExtensions {
         // the context it writes through. Registered unconditionally — it is inert until something logs in.
         services.AddScoped<AuthSessionService>();
 
+        // The forward-auth decision (design.md §5): may this request enter that app, and as whom. Scoped
+        // like the context it reads through, and registered unconditionally alongside the other auth
+        // services: nothing resolves it while Auth:Enabled is false — the verify endpoint is mapped as a
+        // bare 404 in that mode. Shared with the in-process proxy so the two transports cannot come to
+        // different verdicts — ADR-0022.
+        services.AddScoped<AccessVerifier>();
+
         // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it
         // writes through. Registered unconditionally and inert until an account enrols.
         services.AddScoped<UserMfaService>();
 
         // The ES256 signer behind X-Watchtower-Jwt and the JWKS endpoint (design.md §2.3). Singleton
-        // because the key pair is process-wide state: loading it per request would re-read the PEM on
-        // every proxied request, and generating it per request would produce a different `kid` each time.
-        // Registered unconditionally and lazily — the key file is not touched until the first assertion
-        // is minted or the JWKS is fetched, so a deployment with Auth:Enabled off never creates one.
+        // because the key pair is process-wide state: loading it per request would query on every
+        // proxied request, and generating it per request would produce a different `kid` each time. The
+        // key is a row since ADR-0024, read once by WatchtowerStateInitializer before anything is
+        // served, so every instance mints under the `kid` the JWKS advertises.
         services.AddSingleton<AuthTokenSigner>();
 
         // Who the caller is, and therefore what [assembly: ElarionAuthorizationDefaults] lets through.
@@ -213,7 +312,7 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // CI runners (docs/ci-runners/design.md) — the orchestrator reconciles ephemeral GitHub
         // Actions runner containers for enabled repos; singleton so ci.* handlers can read live
-        // status and wake it after config changes. Idle cost with no repos configured: one SQLite
+        // status and wake it after config changes. Idle cost with no repos configured: one database
         // query + one Docker label query per pass.
         services.AddSingleton<GitHubApiClient>();
         services.AddSingleton<CiRunnerOrchestrator>();
@@ -223,7 +322,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CiToolchainRecorder>();
 
         // Metrics backend (ADR-0007, amended by ADR-0013) — three backends behind one runtime router:
-        // "sqlite" (default) persists windowed history next to the live ring, "memory" keeps the ring
+        // "database" (default) persists windowed history next to the live ring, "memory" keeps the ring
         // only, "influxdb" reads an externally-collected InfluxDB. Everything is registered
         // unconditionally; the router resolves the backend from IOptionsMonitor per call and the sampler
         // re-checks it per tick (idling under influxdb so exactly one collector runs). That is what
@@ -232,7 +331,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<MetricsPersistenceService>();
         services.AddHostedService<MetricsSampler>();
         services.AddSingleton<InMemoryMetricsSource>();
-        services.AddSingleton<SqliteMetricsSource>();
+        services.AddSingleton<DatabaseMetricsSource>();
         services.AddSingleton<IMetricsSource, MetricsSourceRouter>();
 
         // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates every module's
@@ -263,7 +362,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddHostedService<StackUpdateBackgroundService>();
         services.AddHostedService<ImagePruneBackgroundService>();
         // Pull-based deployment — per-stack opt-in (AutoDeployMode), so no global toggle: the
-        // minute tick is a single cheap SQLite query when nothing is configured.
+        // minute tick is a single cheap database query when nothing is configured.
         services.AddHostedService<AutoDeployBackgroundService>();
 
         return services;

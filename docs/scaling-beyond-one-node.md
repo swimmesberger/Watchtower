@@ -3,7 +3,7 @@
 Watchtower is deliberately a **single-host** tool: it registers stacks (a git repo + a compose file),
 clones and `docker compose up -d`s them from a UI or a per-stack webhook, streams logs and deploy
 output, checks registries for newer images, and updates itself. That model buys radical simplicity —
-one Docker daemon, one SQLite file, one image, no cluster to babysit. This document is about the day
+one Docker daemon, one image and the database next to it, no cluster to babysit. This document is about the day
 that stops being enough, and what the stack looks like on the other side.
 
 > **Direction note (2026-08).** [ADR-0010](decisions/0010-target-kubesolo-runtime.md) has since set
@@ -305,7 +305,7 @@ k3s is real Kubernetes with the training wheels of a small distro, but it is **n
 You take on: YAML manifests instead of one compose file; cluster networking (CNI, ingress, DNS) as
 concepts you must understand; a Postgres operator and local-PV/StorageClass lifecycle; etcd backups and
 control-plane upgrades; certificate rotation; and more moving parts (Argo CD, a UI, cert-manager,
-CloudNativePG, maybe Prometheus) that each need care. Watchtower is one container and a SQLite file;
+CloudNativePG, maybe Prometheus) that each need care. Watchtower is a container and a Postgres beside it;
 this is a *platform*. The payoff — HA, rolling deploys, operator-managed Postgres with automated
 failover, drift-correcting GitOps, and a converging ecosystem — is worth it **when you genuinely need
 those things**, and pure overhead when you don't.
@@ -334,7 +334,7 @@ those things**, and pure overhead when you don't.
 | **Storage** | Host volumes (trivial) | No multi-node volumes; NFS/Gluster DIY | Stateless apps: none. Postgres: local disk + CNPG operator (let the DB replicate); RWX only if truly needed |
 | **HA** | None (single host) | Yes, if you solve storage | Yes: 3 embedded-etcd servers + agents, fronted by an external/provider LB so the entry point isn't a SPoF |
 | **Rolling deploys** | No (in-place recreate) | Yes (`deploy.update_config`) | Yes (native, health-gated) |
-| **Ops burden** | Lowest — one container + SQLite | Low-moderate; upgrade choreography (v29 pain) | Highest — a platform to run |
+| **Ops burden** | Lowest — one container + one Postgres | Low-moderate; upgrade choreography (v29 pain) | Highest — a platform to run |
 | **Migration from compose** | — (native) | Very low (stack ≈ compose) | Moderate (kompose→Helm/Kustomize, rework storage) |
 | **Trajectory** | Fits its niche | Maintained to 2030, *not* evolving | Where the ecosystem is converging |
 

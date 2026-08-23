@@ -230,10 +230,6 @@ public sealed partial class MgmtApiService(
     /// <summary>
     /// Lists a managed template's tenants, newest first.
     /// </summary>
-    /// <remarks>
-    /// Ordered by id descending in process: the identity column is monotonic, so it is the same order as
-    /// "newest first", and SQLite cannot sort the <c>DateTimeOffset</c> column that would say so directly.
-    /// </remarks>
     /// <param name="templateId">Template to list, already established as granted.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The template's tenants with their domain and last-deploy status.</returns>
@@ -241,22 +237,24 @@ public sealed partial class MgmtApiService(
         // A tenant is a stack with both a template and a slug; the slug filter is not defensive padding
         // but part of what "tenant" means, and it keeps a slugless row from being reported as one whose
         // slug is the empty string — an identifier no other endpoint here would resolve.
+        // Newest first, with the identity column breaking a shared CreatedAt.
         var stacks = await db.Stacks.AsNoTracking()
             .Where(s => s.TemplateId == templateId && s.TenantSlug != null)
+            .OrderByDescending(s => s.CreatedAt)
+            .ThenByDescending(s => s.Id)
             .Select(s => new { s.Id, s.TenantSlug, s.LastDeployStatus, s.LastDeployedAt, s.CreatedAt })
             .ToListAsync(ct);
 
         var stackIds = stacks.Select(s => s.Id).ToList();
         var domains = await db.Routes.AsNoTracking()
-            .Where(r => stackIds.Contains(r.StackId) && r.IsPrimary)
-            .Select(r => new { r.StackId, r.Domain })
+            .Where(r => r.StackId != null && stackIds.Contains(r.StackId.Value) && r.IsPrimary)
+            .Select(r => new { StackId = r.StackId!.Value, r.Domain })
             .ToListAsync(ct);
         var domainByStack = domains
             .GroupBy(x => x.StackId)
             .ToDictionary(g => g.Key, g => g.First().Domain);
 
         return new MgmtTenantsDto(stacks
-            .OrderByDescending(s => s.Id)
             .Select(s => new MgmtTenantDto(
                 s.TenantSlug!,
                 s.Id,

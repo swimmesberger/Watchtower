@@ -34,7 +34,7 @@ public sealed class Group {
     /// <summary>
     /// Upper-cased form of <see cref="Name"/>, mirroring the <see cref="User.NormalizedUserName"/>
     /// precedent: uniqueness is enforced on <c>(realm_id, normalized_name)</c> so names are
-    /// case-insensitive on SQLite too.
+    /// case-insensitive.
     /// </summary>
     public required string NormalizedName { get; set; }
 

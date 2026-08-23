@@ -25,6 +25,11 @@ into the frontend.**
   `dotnet run --project src/Watchtower.AppHost` starts both and opens the Aspire dashboard.
 - Because Watchtower persists to SQLite ([ADR-0002](0002-sqlite-via-ef-core.md)), **no database container
   is provisioned** — unlike the Postgres-backed Elarion/Swerp AppHosts.
+  > **No longer true (2026-08-23, [ADR-0024](0024-postgresql-only-and-state-in-the-database.md)).**
+  > Watchtower persists to PostgreSQL, so the AppHost provisions one:
+  > `builder.AddPostgres("postgres").WithDataVolume().AddDatabase("watchtower")`, with
+  > `api.WithReference(db).WaitFor(db)`. The AppHost now looks like the Elarion/Swerp ones this bullet
+  > contrasted it with. Everything else in this ADR stands.
 - The frontend derives its API base from `VITE_API_URL`: absolute (cross-origin) under Aspire, and empty
   (same-origin) otherwise — production `wwwroot`, or a standalone `npm run dev` via the Vite proxy. The API
   adds a permissive **development-only** CORS policy so the cross-origin dev server can reach `/rpc`,

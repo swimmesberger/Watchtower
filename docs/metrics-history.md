@@ -2,13 +2,17 @@
 
 Watchtower's metrics come from a **pluggable backend** ([ADR-0007](decisions/0007-pluggable-metrics-backend.md),
 amended by [ADR-0013](decisions/0013-sqlite-metrics-history.md)). Since ADR-0013 history is **on by
-default**: the built-in sampler persists downsampled utilization into Watchtower's own SQLite database,
-so the History view can go back to *when an incident happened* with zero configuration and zero extra
-containers.
+default**: the built-in sampler persists downsampled utilization into Watchtower's own database, so the
+History view can go back to *when an incident happened* with zero configuration and nothing to run
+beyond the database Watchtower already needs.
+
+> The default backend was called `sqlite` until [ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md)
+> moved Watchtower's own state to PostgreSQL. It is now called `database`; the semantics did not change,
+> and the old value is still accepted on read.
 
 | Backend | Source | History | Dependency |
 | --- | --- | --- | --- |
-| `sqlite` (**default**) | in-process sampler → live ring + SQLite | retention window (default 30 days) | none (Docker socket) |
+| `database` (**default**) | in-process sampler → live ring + Watchtower's database | retention window (default 30 days) | none beyond Watchtower's own PostgreSQL |
 | `memory` (opt-in) | in-process sampler → in-memory ring | ~15 min live window, nothing written | none (Docker socket) |
 | `influxdb` (opt-in, BYO) | an external collector → InfluxDB, read back by Watchtower | as long as your bucket retains | the collector + InfluxDB |
 
@@ -24,8 +28,8 @@ Bind via the `Watchtower:Metrics` config section or `WATCHTOWER__METRICS__*` env
 
 | Env | Example | Purpose |
 | --- | --- | --- |
-| `WATCHTOWER__METRICS__BACKEND` | `sqlite` | `sqlite` (default), `memory`, or `influxdb`. |
-| `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `sqlite` backend, 1–365 days. |
+| `WATCHTOWER__METRICS__BACKEND` | `database` | `database` (default), `memory`, or `influxdb`. The pre-ADR-0024 spelling `sqlite` still reads as `database`. |
+| `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `database` backend, 1–365 days. |
 | `WATCHTOWER__METRICS__INFLUX__URL` | `http://influxdb:8086` | InfluxDB v2 base URL. |
 | `WATCHTOWER__METRICS__INFLUX__ORG` | `my-org` | InfluxDB v2 organization. |
 | `WATCHTOWER__METRICS__INFLUX__BUCKET` | `watchtower` | Bucket the collector writes into. |
@@ -37,13 +41,13 @@ The four `INFLUX__*` connection values are required for the `influxdb` backend; 
 `metrics.updateConfig` handler rejects the switch without them, and a backend configured `influxdb` via
 environment with missing values serves `unavailable` (reason `influx-misconfigured`) until fixed.
 
-## The sqlite backend (default)
+## The database backend (default)
 
 How it stores (ADR-0013): the live Dashboard strip still comes from the 10-second in-memory ring; in
 parallel each minute is averaged into one row per series, and minutes older than ~3 days are rolled up
 into 10-minute rows kept for `RETENTIONDAYS`. Older rows are deleted on a background sweep. At default
-settings the steady-state footprint for a few dozen containers is tens of MB inside the existing
-`watchtower.db`.
+settings the steady-state footprint for a few dozen containers is tens of MB inside Watchtower's own
+database — which is worth knowing when you size its volume, and when you `pg_dump` it.
 
 Honest limitations:
 
@@ -129,7 +133,7 @@ If the measurement names or the `gauge` field key differ from the table above, u
 
 The frontend learns whether history is available from the framework's `elarion.session` capability
 snapshot: the Metrics module exposes a **`metrics-history`** client flag (`[ClientFeatures]`, Elarion
-ADR-0030) that is true on the `sqlite` and `influxdb` backends. The flag is evaluated per session fetch
+ADR-0030) that is true on the `database` and `influxdb` backends. The flag is evaluated per session fetch
 against the routed backend, so it follows a runtime switch; the Settings page reloads after a switch
 that changes it, which rebuilds the nav. On the `memory` backend the History item doesn't render, and a
 direct URL hit shows an "enable in Settings" banner.
@@ -138,7 +142,7 @@ direct URL hit shows an "enable in Settings" banner.
 
 Every backend fails soft through the same `available`/`reason` path:
 
-- **`sqlite` query failure** — reason `sqlite-history-error`; the live strip is unaffected.
+- **`database` query failure** — reason `database-history-error`; the live strip is unaffected.
 - **InfluxDB unreachable** — reason `influx-unreachable`; container reads return empty.
 - **InfluxDB selected but connection settings missing** — reason `influx-misconfigured`.
 - **No recent samples** — reason `influx-no-data` (the collector stopped, or the bucket is empty).

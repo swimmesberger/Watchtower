@@ -367,7 +367,7 @@ public sealed class TenantSwitcherTests {
         // "by slug ascending" assertions have something to bite on.
         //
         // With one honest limit worth knowing before trusting them: deleting the sort in
-        // TenantDiscoveryService alone does *not* fail them, because SQLite answers the tenants query from
+        // TenantDiscoveryService alone does *not* fail them, because the database answers the tenants query from
         // the unique (template_id, tenant_slug) index and hands back slug order anyway. What this fixture
         // does catch is the realistic drift — the tenants query acquiring an order of its own, e.g. the
         // `OrderByDescending(s => s.Id)` ("newest first") that the neighbouring ListTenantsAsync uses.
@@ -405,7 +405,8 @@ public sealed class TenantSwitcherTests {
             var user = await db.Users.SingleAsync(u => u.Id == userId, Ct);
             // For the account's own realm, which is what verify would have minted it for.
             var realm = await db.Realms.SingleAsync(r => r.Id == user.RealmId, Ct);
-            token = signer.Mint(user, audience, RealmIdentity.From(realm));
+            var realms = sp.GetRequiredService<RealmResolver>();
+            token = signer.Mint(user, audience, await realms.IdentityForAsync(realm, Ct));
         });
         return token;
     }

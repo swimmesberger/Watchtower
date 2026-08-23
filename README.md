@@ -16,6 +16,16 @@ application framework for module-based handler pipelines with compile-time regis
 hosting. Every operation is a `[Handler]` exposed over JSON-RPC; the React frontend calls a typed
 client generated from the exported schema.
 
+Watchtower also has a **built-in reverse proxy** for putting your stacks on the internet: point a
+domain at a service under *Routes* and it is served with a certificate Watchtower obtains and renews
+itself over ACME — in its own process, with no sibling proxy container to run. Publish `80:8081` and
+`443:8443` and set `WATCHTOWER__PROXY__ENABLED=true`; ingress binds its own container ports, so an
+unknown domain arriving there gets a 404 rather than Watchtower's own UI, which stays on 8080 for you
+to bind privately. A **Cloudflare Tunnel** provider is there for
+hosts that cannot open ports at all, and the older Caddy-container provider stays supported for
+existing installations. See [docs/reverse-proxy/](docs/reverse-proxy/README.md) and
+[ADR-0022](docs/decisions/0022-in-process-yarp-proxy.md).
+
 > Authentication is **opt-in and off by default**, so an upgrade cannot lock you out. Left off,
 > Watchtower is unauthenticated and belongs behind an authenticating reverse proxy (Cloudflare Access,
 > Authelia, oauth2-proxy, …). Set `WATCHTOWER__AUTH__ENABLED=true` to use built-in local accounts
@@ -36,10 +46,12 @@ client generated from the exported schema.
 ## Tech stack
 
 - **Backend:** .NET 10 / ASP.NET Core, [Elarion](https://github.com/swimmesberger/Elarion) modules &
-  handlers, JSON-RPC (`POST /rpc`), EF Core + **SQLite** (single-file, zero external dependencies).
+  handlers, JSON-RPC (`POST /rpc`), EF Core + **PostgreSQL** (ADR-0024).
 - **Frontend:** React 19 + Vite, TanStack Router + Query, Tailwind v4, shadcn/ui. Talks to the backend
   through the generated `@swimmesberger/elarion-jsonrpc-client-generator` client.
-- **Deployment:** a single Docker image bundling the .NET app, the Docker CLI + Compose plugin, and git.
+- **Deployment:** a Docker image bundling the .NET app, the Docker CLI + Compose plugin, and git, plus a
+  PostgreSQL container for Watchtower's own state — see
+  [`deploy/docker/docker-compose.yml`](deploy/docker/docker-compose.yml).
 
 ## How it works
 
@@ -47,8 +59,12 @@ client generated from the exported schema.
 ┌────────────┐   JSON-RPC (/rpc)    ┌───────────────────────────────┐   docker.sock   ┌────────────┐
 │ React SPA  │ ───────────────────► │  Watchtower.Api (ASP.NET)     │ ──────────────► │  Docker    │
 │ (wwwroot)  │   SSE (/api/.../…)   │  Elarion modules + handlers   │  git / compose  │  daemon    │
-└────────────┘ ◄─────────────────── │  EF Core → SQLite (/data)     │ ──────────────► │  + stacks  │
-                                    └───────────────────────────────┘                 └────────────┘
+└────────────┘ ◄─────────────────── │              │                │ ──────────────► │  + stacks  │
+                                    └──────────────┼────────────────┘                 └────────────┘
+                                       EF Core     ▼
+                                    ┌───────────────────────────────┐
+                                    │  PostgreSQL                   │
+                                    └───────────────────────────────┘
 ```
 
 - **JSON-RPC** (`POST /rpc`) serves every CRUD/action operation — see the methods in
@@ -75,11 +91,15 @@ client generated from the exported schema.
 
 See [docs/architecture.md](docs/architecture.md) for the module/handler layout,
 [docs/elarion.md](docs/elarion.md) for how the project consumes the framework,
+[docs/reverse-proxy/](docs/reverse-proxy/README.md) for exposing stacks on public domains (the
+built-in in-process proxy, or a Cloudflare Tunnel),
 [docs/scaling-beyond-one-node.md](docs/scaling-beyond-one-node.md) for what to run when a single host
 is no longer enough (Docker Swarm vs k3s),
 [docs/host-metrics.md](docs/host-metrics.md) for enabling the Dashboard's host CPU/RAM/disk strip,
-[docs/metrics-history.md](docs/metrics-history.md) for the metrics backends (persisted SQLite history by default, BYO InfluxDB opt-in),
-[docs/backups.md](docs/backups.md) for scheduled stack backups — setup, encryption, and **how to restore** — and
+[docs/metrics-history.md](docs/metrics-history.md) for the metrics backends (persisted history by default, BYO InfluxDB opt-in),
+[docs/upgrading.md](docs/upgrading.md) for moving an existing SQLite installation to PostgreSQL,
+[docs/backups.md](docs/backups.md) for scheduled stack backups — setup, encryption, and **how to restore**,
+[docs/contributing.md](docs/contributing.md) for building, testing and migrating locally — and
 [docs/decisions/](docs/decisions/) for the architecture decision records (ADRs).
 
 ## Project structure
@@ -151,14 +171,14 @@ authentication, whatever was configured in the UI.
 
 | Key | Env | Default | Purpose |
 | --- | --- | --- | --- |
-| `DbPath` | `WATCHTOWER__DBPATH` | `/data/watchtower.db` | SQLite database file path. |
+| `Database:ConnectionString` | `WATCHTOWER__DATABASE__CONNECTIONSTRING` | *(required)* | PostgreSQL connection string, e.g. `Host=postgres;Database=watchtower;Username=watchtower;Password=…`. Falls back to `ConnectionStrings:watchtower` (what Aspire injects). No default: Watchtower refuses to start without it. Upgrading from the old `WATCHTOWER__DBPATH`? See [docs/upgrading.md](docs/upgrading.md). |
 | `DockerApiVersion` | `WATCHTOWER__DOCKERAPIVERSION` | `1.43` | Docker Engine API version used for direct calls and `docker compose`. |
 | `PublicBaseUrl` | `WATCHTOWER__PUBLICBASEURL` | *(unset)* | Publicly reachable base URL; injected into every deploy as `WATCHTOWER_URL` — straight into the containers, no compose changes needed — for the [App API](docs/public-app-api.md). |
 | `AutoCheckEnabled` | `WATCHTOWER__AUTOCHECKENABLED` | `false` | Periodically check for a newer Watchtower image. |
 | `StackCheckEnabled` | `WATCHTOWER__STACKCHECKENABLED` | `false` | Periodically check stacks for newer images. |
 | `ImagePruneEnabled` | `WATCHTOWER__IMAGEPRUNEENABLED` | `false` | Periodically remove dangling (untagged) images — `docker image prune -f`, never `-a`. Interval via `WATCHTOWER__IMAGEPRUNEINTERVALMINUTES` (default `1440`). |
-| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `sqlite` | Metrics source: `sqlite` (persisted history), `memory` (live only), or `influxdb` (read an external store). Runtime-switchable under Settings → Metrics — see [docs/metrics-history.md](docs/metrics-history.md). |
-| `Metrics:RetentionDays` | `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `sqlite` backend (1–365 days). |
+| `Metrics:Backend` | `WATCHTOWER__METRICS__BACKEND` | `database` | Metrics source: `database` (history persisted in Watchtower's own database), `memory` (live only), or `influxdb` (read an external store). The pre-ADR-0024 spelling `sqlite` still reads as `database`. Runtime-switchable under Settings → Metrics — see [docs/metrics-history.md](docs/metrics-history.md). |
+| `Metrics:RetentionDays` | `WATCHTOWER__METRICS__RETENTIONDAYS` | `30` | History window of the `database` backend (1–365 days). |
 
 `WATCHTOWER_DOCKER_CONFIG` / `DOCKER_CONFIG` point at a mounted host `config.json` for private pulls.
 

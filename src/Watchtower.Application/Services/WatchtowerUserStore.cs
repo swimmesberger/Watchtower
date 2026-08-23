@@ -1,7 +1,7 @@
 using System.Globalization;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 
@@ -36,12 +36,6 @@ public sealed class WatchtowerUserStore(
     IUserTwoFactorStore<User>,
     IUserAuthenticatorKeyStore<User>,
     IUserTwoFactorRecoveryCodeStore<User> {
-
-    /// <summary>SQLite extended result code <c>SQLITE_CONSTRAINT_UNIQUE</c>.</summary>
-    private const int SqliteConstraintUnique = 2067;
-
-    /// <summary>SQLite extended result code <c>SQLITE_CONSTRAINT_PRIMARYKEY</c>.</summary>
-    private const int SqliteConstraintPrimaryKey = 1555;
 
     // -- Identity --------------------------------------------------------------------------------
 
@@ -349,8 +343,10 @@ public sealed class WatchtowerUserStore(
     /// True only for a violated unique/primary-key index — the one database failure that represents a
     /// domain outcome (a name already taken) rather than a fault worth throwing.
     /// </summary>
+    /// <remarks>
+    /// PostgreSQL reports both a unique index and a primary key as <c>23505 unique_violation</c>, so one
+    /// SQLSTATE covers what SQLite split across two extended result codes.
+    /// </remarks>
     private static bool IsUniqueConstraintViolation(DbUpdateException exception) =>
-        exception.InnerException is SqliteException {
-            SqliteExtendedErrorCode: SqliteConstraintUnique or SqliteConstraintPrimaryKey,
-        };
+        exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 }

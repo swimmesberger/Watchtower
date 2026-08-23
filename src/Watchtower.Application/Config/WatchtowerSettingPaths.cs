@@ -34,11 +34,63 @@ public static class WatchtowerSettingPaths {
     public const string AuthSessionLifetimeHours = "Watchtower:Auth:SessionLifetimeHours";
     public const string AuthAbsoluteSessionLifetimeDays = "Watchtower:Auth:AbsoluteSessionLifetimeDays";
 
+    /// <summary>
+    /// Internal marker: <see cref="Services.LoginHostConversion"/> has already turned this installation's
+    /// configured <c>Auth:Host</c> into a Watchtower route (ADR-0023). Not a user setting — never offered
+    /// in the UI and deliberately not env-pinnable. It exists so an operator who deletes the converted
+    /// route does not find it recreated on the next restart.
+    /// </summary>
+    public const string AuthLoginHostsConverted = "Watchtower:Auth:LoginHostsConverted";
+
+    /// <summary>
+    /// Internal marker: <see cref="Services.FileStateImport"/> has already carried a pre-ADR-0024
+    /// installation's key and certificate files into the database. Not a user setting — never offered in
+    /// the UI and deliberately not env-pinnable. It is what makes the import one-shot: the files are
+    /// never deleted, so without a sentinel every restart would re-read them and undo whatever has
+    /// happened to the rows since.
+    /// </summary>
+    public const string AuthFileStateImported = "Watchtower:Auth:FileStateImported";
+
+    /// <summary>
+    /// Internal marker: <see cref="Services.SqliteImport.SqliteAutoImport"/> has already decided about
+    /// the legacy <c>/data/watchtower.db</c> on this database. Not a user setting — never offered in the
+    /// UI and deliberately not env-pinnable. The file is never deleted by Watchtower, so without a
+    /// sentinel an operator who emptied the estate and restarted would find the old one back.
+    /// </summary>
+    public const string DatabaseSqliteImported = "Watchtower:Database:SqliteImported";
+
     // ── Proxy (proxy.updateConfig) ───────────────────────────────────────────
     public const string ProxyEnabled = "Watchtower:Proxy:Enabled";
     public const string ProxyProvider = "Watchtower:Proxy:Provider";
+
+    /// <summary>
+    /// Internal marker: <see cref="Services.ProxyProviderMigration"/> has already decided whether this
+    /// installation predates ADR-0022's default flip. Not a user setting — never offered in the UI, never
+    /// listed among the proxy card's paths, and deliberately not env-pinnable. It exists because the
+    /// question the migration answers ("did this instance rely on the old implicit caddy default?") stops
+    /// being answerable the moment the instance adds its first route under the new default.
+    /// </summary>
+    public const string ProxyProviderMigrated = "Watchtower:Proxy:ProviderMigrated";
+
+    /// <summary>
+    /// Internal marker: the cross-instance change signal (ADR-0024 decision 6). Every route, realm or
+    /// certificate write stores a fresh random value here, and every instance watches it through the
+    /// settings store's PostgreSQL <c>LISTEN/NOTIFY</c> channel and re-projects its route table and SNI
+    /// map. Not a user setting — never offered in the UI, never listed among the proxy card's paths, and
+    /// deliberately not env-pinnable: an environment variable would pin the value, so the one write that
+    /// tells the other instances something changed would stop taking effect and their route tables would
+    /// silently stop converging.
+    /// </summary>
+    public const string ProxyRoutesVersion = "Watchtower:Proxy:RoutesVersion";
     public const string ProxyAdminEmail = "Watchtower:Proxy:AdminEmail";
     public const string ProxyCaddyImage = "Watchtower:Proxy:CaddyImage";
+    public const string ProxyYarpHttpPort = "Watchtower:Proxy:Yarp:HttpPort";
+    public const string ProxyYarpHttpsPort = "Watchtower:Proxy:Yarp:HttpsPort";
+    public const string ProxyYarpAcmeDirectoryUrl = "Watchtower:Proxy:Yarp:AcmeDirectoryUrl";
+    public const string ProxyYarpAcmeCaBundlePath = "Watchtower:Proxy:Yarp:AcmeCaBundlePath";
+    public const string ProxyYarpAcmeEabKeyId = "Watchtower:Proxy:Yarp:AcmeEabKeyId";
+    public const string ProxyYarpAcmeEabHmacKey = "Watchtower:Proxy:Yarp:AcmeEabHmacKey";
+    public const string ProxyYarpRedirectHttpToHttps = "Watchtower:Proxy:Yarp:RedirectHttpToHttps";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";
     public const string ProxyCloudflareZoneId = "Watchtower:Proxy:Cloudflare:ZoneId";
     public const string ProxyCloudflareApiToken = "Watchtower:Proxy:Cloudflare:ApiToken";

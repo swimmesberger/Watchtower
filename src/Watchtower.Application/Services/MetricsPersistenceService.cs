@@ -9,8 +9,8 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// The write path of the SQLite metrics history (ADR-0013). Fed by <see cref="MetricsSampler"/> once per
-/// tick under the <c>sqlite</c> backend: ticks accumulate in memory and flush as one row per series per
+/// The write path of the database-persisted metrics history (ADR-0013). Fed by <see cref="MetricsSampler"/>
+/// once per tick under the <c>database</c> backend: ticks accumulate in memory and flush as one row per series per
 /// minute; a rate-limited maintenance pass rolls minute rows up into 10-minute rows and enforces the
 /// two deletion windows (72h raw, <c>Metrics:RetentionDays</c> rollup). Maintenance rides the sampler
 /// loop — this codebase deliberately has no separate job scheduler (sweeps ride existing loops, like
@@ -77,7 +77,7 @@ public sealed class MetricsPersistenceService(
         }
     }
 
-    /// <summary>Writes the accumulated minute to SQLite and resets the accumulators.</summary>
+    /// <summary>Writes the accumulated minute to the database and resets the accumulators.</summary>
     private async Task FlushAsync(CancellationToken ct) {
         var bucket = _bucketStart;
         var hostRow = _host.ToRow(RawTierSeconds, bucket);
@@ -94,6 +94,11 @@ public sealed class MetricsPersistenceService(
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             // Overwrite semantics for the (rare) restart-inside-a-minute case: the partial bucket the
             // previous process wrote is replaced rather than colliding with the unique (tier, t) index.
+            // Follow-up (ADR-0024): on PostgreSQL this wants to be one INSERT ... ON CONFLICT DO UPDATE
+            // per table instead of delete-then-insert. Two writers in the same minute — which only a
+            // second instance produces — can currently interleave the delete and the insert; the upsert
+            // makes the write atomic and halves the round trips. Left as-is here because the second
+            // instance does not exist yet and this phase is about the provider, not the write paths.
             await db.MetricHostSamples
                 .Where(x => x.TierSeconds == RawTierSeconds && x.TUnixSeconds == bucket)
                 .ExecuteDeleteAsync(ct);

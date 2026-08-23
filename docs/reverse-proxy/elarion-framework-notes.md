@@ -13,6 +13,16 @@ Verification performed:
   `IClientEventPublisher`. `StreamHub`/`MapElarionStream` appear only in newer `schema-test` package
   READMEs — i.e. they exist in *later* Elarion, not the pinned one.
 
+> **Update (2026-08-23): the pin is now `0.2.6`.** The bump itself was a pure version change — no
+> Watchtower source needed adapting. That clears the version gate on A1 and A3 below: `Elarion.Streams`
+> (ordered/resumable `StreamHub<T>` + `MapElarionStream`, ADR-0052) and the client-event tier
+> (`Elarion.ClientEvents` / `.AspNetCore` / `.PostgreSql`, ADR-0043/0044) are published and installable
+> at `0.2.6`. **Adopting** them is still open work — neither package is referenced yet, so the SSE
+> hand-rolls and the status polling described below are unchanged. The one behaviour change the bump
+> carried is inert here: Elarion's default `[RequirePermission]`/`[RequireRole]` denial message became a
+> generic `"Access denied."` (`AuthorizationOptions.ForbiddenMessageFormat`), and Watchtower declares no
+> such attributes — its gate is `SystemRealmAuthorizer`, which already answered `"Access denied."`.
+
 ---
 
 ## A. Watchtower adoption items (not framework gaps)
@@ -68,13 +78,14 @@ Request (still open, framework side): resolve a relative output against a stable
 root or nearest `Directory.Build.props`), refuse a bare relative path, or print a prominent warning with
 the absolute resolved path vs. the last committed location — so the safe invocation is the default.
 
-### B2. (Low priority) Opt-in EF conventions for common SQLite value shapes
-The EF configs repeat SQLite boilerplate: enums via `HasConversion<string>()` on every property, a
-`string[]`-as-newline-text converter + custom `ValueComparer`, and **client-side** `OrderByDescending`
-because "SQLite can't ORDER BY a DateTimeOffset." Since Elarion already owns the snake-case convention +
-EF generator, opt-in conventions (enum-as-string default, a canonical `string[]` converter, a sortable
-`DateTimeOffset` storage convention for SQLite) would remove copy-pasted code from every SQLite Elarion
-app. EF/SQLite realities, not bugs — just a convenience.
+### B2. (Low priority) Opt-in EF conventions for common value shapes
+The EF configs repeat boilerplate: enums via `HasConversion<string>()` on every property, and a
+`string[]`-as-newline-text converter + custom `ValueComparer`. Since Elarion already owns the snake-case
+convention + EF generator, opt-in conventions (enum-as-string default, a canonical `string[]` converter)
+would remove copy-pasted code from every Elarion app. A convenience, not a bug.
+
+(The third item this note used to list — client-side `OrderByDescending` because "SQLite can't ORDER BY
+a DateTimeOffset" — went away with ADR-0024: on PostgreSQL those sorts are ordinary SQL.)
 
 ## C. Forward-looking (no action)
 When Watchtower becomes the reverse proxy, it's the natural place to also terminate auth (Caddy
@@ -87,8 +98,9 @@ machinery is already there for the day this feature makes auth relevant.
 
 ### Summary
 Corrected takeaway: the two big things I first flagged as missing (non-actor streaming, `[Service]`
-background lifecycles) **already exist in Elarion** — Watchtower is pinned to `0.2.3-preview.79.1` and
-hasn't adopted them (A1–A3, gated on a version bump for streaming/client-events). The only real
+background lifecycles) **already exist in Elarion** — Watchtower was pinned to `0.2.3-preview.79.1` and
+hadn't adopted them (A1–A3). The pin is now `0.2.6`, so the version gate on streaming/client-events is
+gone and only the adoption work remains. The only real
 framework-level papercut is **B1** (schema-export path resolution). This feature is implemented on the
 pinned version using the codebase's existing conventions; the Elarion bump + adoption is a clean,
 separate follow-up.

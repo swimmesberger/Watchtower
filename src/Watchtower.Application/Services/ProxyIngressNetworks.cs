@@ -85,18 +85,45 @@ public sealed class ProxyIngressNetworks(
     }
 
     /// <summary>Connects every routed service of every stack — the startup-reconcile sweep.</summary>
+    /// <remarks>
+    /// One target's failure does not stop the sweep. Creating or joining a network is a per-stack
+    /// conversation with the daemon, and a single stack whose network the daemon refuses must not cost
+    /// every stack behind it in the list its upstream hop. A daemon that is unreachable altogether still
+    /// fails every target — the caller decides what that means.
+    /// </remarks>
     public async Task ConnectAllRoutedContainersAsync(string proxyContainer, CancellationToken ct) {
         List<(int StackId, string Project, string Service)> targets;
         await using (var scope = scopeFactory.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            // Service routes only: a Watchtower route has no stack and no container to join to anything —
+            // the proxy reaches Watchtower on the control network, not on a stack's ingress network.
             targets = await db.Routes.AsNoTracking()
+                .Where(r => r.StackId != null)
                 .Include(r => r.Stack)
-                .Select(r => new { r.StackId, r.Stack!.ComposeProjectName, r.ServiceName })
+                .Select(r => new { StackId = r.StackId!.Value, r.Stack!.ComposeProjectName, r.ServiceName })
                 .Distinct()
                 .Select(x => new ValueTuple<int, string, string>(x.StackId, x.ComposeProjectName, x.ServiceName))
                 .ToListAsync(ct);
         }
-        foreach (var (stackId, project, service) in targets)
-            await ConnectServiceAsync(stackId, project, service, proxyContainer, ct);
+        var failures = 0;
+        Exception? last = null;
+        foreach (var (stackId, project, service) in targets) {
+            try {
+                await ConnectServiceAsync(stackId, project, service, proxyContainer, ct);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                failures++;
+                last = ex;
+                logger.LogWarning(
+                    ex, "Failed to connect {Project}/{Service} to the ingress network of stack {StackId}.",
+                    project, service, stackId);
+            }
+        }
+
+        // Rethrown once the sweep is done rather than swallowed: the caller logs the one summary line an
+        // operator reads, and "some upstreams have no route" is not something to report as success.
+        if (last is not null)
+            throw new InvalidOperationException(
+                $"{failures} of {targets.Count} routed service(s) could not be joined to their ingress network.",
+                last);
     }
 }

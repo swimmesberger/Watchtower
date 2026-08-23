@@ -21,7 +21,7 @@ live here.
 ## Index
 
 - [ADR-0001: Rebuild Watchtower on the Elarion framework](0001-rebuild-on-elarion.md)
-- [ADR-0002: SQLite via EF Core; drop NativeAOT](0002-sqlite-via-ef-core.md)
+- [ADR-0002: SQLite via EF Core; drop NativeAOT](0002-sqlite-via-ef-core.md) — *superseded by ADR-0024*
 - [ADR-0003: JSON-RPC is the primary transport; streaming and webhooks stay plain HTTP](0003-jsonrpc-primary-transport.md)
 - [ADR-0004: Singleton services access EF Core through `IServiceScopeFactory`](0004-singleton-ef-scopes.md)
 - [ADR-0005: Development orchestration with a .NET Aspire AppHost](0005-aspire-dev-orchestration.md)
@@ -40,3 +40,6 @@ live here.
 - [ADR-0018: Cron-based backup schedule with per-stack overrides, on the Elarion scheduler](0018-cron-backup-schedule.md)
 - [ADR-0019: Backup quiesce — stops run per dependency level with a short grace, and `pause` is a second, crash-consistent mode](0019-pause-quiesce-and-parallel-stops.md)
 - [ADR-0020: Per-service backup settings — labels win, UI overrides fill the gaps, and the plan preview shows the effective result](0020-backup-service-settings-labels-win-ui-fills-gaps.md)
+- [ADR-0022: The reverse proxy runs in Watchtower's own process (YARP + ACME), and is the default](0022-in-process-yarp-proxy.md)
+- [ADR-0023: Login hosts are Watchtower self-routes](0023-login-hosts-are-watchtower-self-routes.md)
+- [ADR-0024: PostgreSQL is the only database, and the proxy/auth plane keeps its state in it](0024-postgresql-only-and-state-in-the-database.md)

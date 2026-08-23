@@ -12,27 +12,36 @@ namespace Watchtower.Application.Modules.Realms;
 /// denormalised counter would be one more thing that can disagree with the rows it claims to count.
 /// </summary>
 /// <param name="IsSystem">
-/// True for the built-in operator realm: it cannot be deleted, its slug cannot change, and its login host
-/// is the configured <c>Auth:Host</c> rather than <paramref name="AuthHost"/> (which stays null).
+/// True for the built-in operator realm: it cannot be deleted, its slug cannot change, and it is the only
+/// realm that falls back to the configured <c>Auth:Host</c> when it has no login route.
+/// </param>
+/// <param name="LoginRouteId">
+/// The <see cref="RouteTarget.Watchtower"/> route this realm's login page is served on (ADR-0023), or null
+/// when it has none yet.
+/// </param>
+/// <param name="LoginHost">
+/// The effective login host: the login route's domain, or — on the system realm alone — the configured
+/// <c>Auth:Host</c>. Null when the realm's protected apps have nowhere to redirect anonymous visitors.
 /// </param>
 public sealed record RealmDto(
     int Id,
     string Name,
     string Slug,
-    string? AuthHost,
     bool IsSystem,
     int UserCount,
     int GroupCount,
     int TemplateCount,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    int? LoginRouteId,
+    string? LoginHost);
 
 /// <summary>
-/// The rules every write handler in this module shares: what a realm's name, slug and login host may be,
-/// and the audit trail.
+/// The rules every write handler in this module shares: what a realm's name, slug and login domain may
+/// be, and the audit trail.
 /// </summary>
 public static partial class RealmMapping {
     /// <summary>Longest accepted login host — the DNS limit for a fully-qualified name.</summary>
-    public const int MaxAuthHostLength = 253;
+    public const int MaxLoginHostLength = 253;
 
     /// <summary>
     /// Lowercase DNS-label-ish shape: alphanumerics, single hyphens between them, never leading or
@@ -43,12 +52,18 @@ public static partial class RealmMapping {
     [GeneratedRegex("^[a-z0-9](?:-?[a-z0-9])*$")]
     private static partial Regex SlugPattern();
 
-    /// <summary>Projects a realm for the API.</summary>
-    public static RealmDto ToDto(Realm realm, int userCount, int groupCount, int templateCount) {
+    /// <summary>
+    /// Projects a realm for the API. <paramref name="loginHost"/> is resolved by
+    /// <see cref="RealmResolver.LoginHostForAsync"/> — the caller passes it in so the DTO cannot invent a
+    /// second reading of "where does this population log in".
+    /// </summary>
+    public static RealmDto ToDto(
+        Realm realm, int userCount, int groupCount, int templateCount, string? loginHost) {
         ArgumentNullException.ThrowIfNull(realm);
         return new RealmDto(
-            realm.Id, realm.Name, realm.Slug, realm.AuthHost, realm.IsSystem,
-            userCount, groupCount, templateCount, realm.CreatedAt);
+            realm.Id, realm.Name, realm.Slug, realm.IsSystem,
+            userCount, groupCount, templateCount, realm.CreatedAt,
+            realm.LoginRouteId, loginHost);
     }
 
     /// <summary>Validates a submitted display name and yields its trimmed form, or the refusal.</summary>
@@ -84,36 +99,26 @@ public static partial class RealmMapping {
     }
 
     /// <summary>
-    /// Validates a submitted login host and yields its normalised (lowercased) form, or the refusal.
+    /// Validates a submitted login domain and yields its normalised (lowercased) form, or the refusal.
     /// A blank value yields <see langword="null"/> — a realm may legitimately exist before its DNS does.
     /// </summary>
     /// <remarks>
-    /// A host and nothing else: no scheme, port, path, userinfo or whitespace. The value decides which
-    /// population a visitor arriving on that host authenticates into and becomes the <c>iss</c> of every
-    /// assertion the realm's apps receive, so a value that is not exactly a host name would be a value two
-    /// different parsers could read two different ways. The shape is checked by round-tripping through the
-    /// URI parser and requiring the result to equal the input: anything the parser had to <em>correct</em>
-    /// is rejected rather than accepted in its corrected form.
+    /// Delegated to <see cref="Services.Acme.DesiredHosts.TryNormalize"/>, which is what
+    /// <c>proxy.createRoute</c> applies to the very same string: a login domain <em>is</em> a route domain
+    /// since ADR-0023, so accepting one here that the route handler would refuse would only produce a
+    /// refusal one call later.
     /// </remarks>
-    public static AppError? ValidateAuthHost(string? authHost, out string? normalized) {
+    public static AppError? ValidateLoginDomain(string? loginDomain, out string? normalized) {
         normalized = null;
-        var trimmed = authHost?.Trim();
+        var trimmed = loginDomain?.Trim();
         if (string.IsNullOrEmpty(trimmed)) return null;
 
-        if (trimmed.Length > MaxAuthHostLength)
-            return AppError.Validation($"Auth host must be at most {MaxAuthHostLength} characters.");
+        if (trimmed.Length > MaxLoginHostLength)
+            return AppError.Validation($"Login host must be at most {MaxLoginHostLength} characters.");
+        if (!Services.Acme.DesiredHosts.TryNormalize(trimmed, out var host, out var reason))
+            return AppError.Validation(reason);
 
-        var lowered = trimmed.ToLowerInvariant();
-        var parsed = RouteAccessPolicy.NormalizeForwardedHost(lowered);
-        // NormalizeForwardedHost drops a port and takes the first entry of a comma-separated list, both of
-        // which are the right thing for an attacker-supplied header and the wrong thing for a stored
-        // setting — so the result has to come back unchanged, not merely non-null.
-        if (parsed is null || !string.Equals(parsed, lowered, StringComparison.Ordinal))
-            return AppError.Validation(
-                $"'{trimmed}' is not a host name. Give the bare hostname the realm's login page is " +
-                "served on, with no scheme, port or path.");
-
-        normalized = parsed;
+        normalized = host;
         return null;
     }
 

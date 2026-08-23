@@ -18,8 +18,8 @@ public sealed class ListTenants(WatchtowerDbContext db)
 
         var stackIds = stacks.Select(s => s.Id).ToList();
         var domains = await db.Routes.AsNoTracking()
-            .Where(r => stackIds.Contains(r.StackId) && r.IsPrimary)
-            .Select(r => new { r.StackId, r.Domain })
+            .Where(r => r.StackId != null && stackIds.Contains(r.StackId.Value) && r.IsPrimary)
+            .Select(r => new { StackId = r.StackId!.Value, r.Domain })
             .ToListAsync(ct);
         var domainByStack = domains
             .GroupBy(x => x.StackId)

@@ -2,7 +2,7 @@ namespace Watchtower.Application.Services;
 
 /// <summary>
 /// The read abstraction every <c>metrics.*</c> handler depends on (ADR-0007, amended by ADR-0013).
-/// Backends: the SQLite-persisted default (<see cref="SqliteMetricsSource"/>), the live-only ring
+/// Backends: the database-persisted default (<see cref="DatabaseMetricsSource"/>), the live-only ring
 /// (<see cref="InMemoryMetricsSource"/>), and the BYO InfluxDB reader (<see cref="InfluxMetricsSource"/>).
 /// The registered implementation is <see cref="MetricsSourceRouter"/>, which delegates to whichever
 /// backend the current options select — runtime-switchable, while the sampler's per-tick backend check
@@ -55,6 +55,6 @@ public readonly record struct MetricsWindow {
 /// Static capabilities of the active metrics backend, surfaced to the UI so it can gate the time-range
 /// view and label the data source (ADR-0007).
 /// </summary>
-/// <param name="Source">Backend id: <c>memory</c>, <c>sqlite</c>, or <c>influxdb</c>.</param>
+/// <param name="Source">Backend id: <c>memory</c>, <c>database</c>, or <c>influxdb</c>.</param>
 /// <param name="HistoryAvailable">True when the backend can answer explicit historical ranges.</param>
 public sealed record MetricsCapabilities(string Source, bool HistoryAvailable);

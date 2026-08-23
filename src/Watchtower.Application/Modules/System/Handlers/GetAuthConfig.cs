@@ -17,13 +17,23 @@ namespace Watchtower.Application.Modules.System.Handlers;
 public sealed class GetAuthConfig(
     IOptionsMonitor<WatchtowerOptions> options,
     AuthStartupState startup,
-    EnvironmentSettingPins pins)
+    EnvironmentSettingPins pins,
+    RealmResolver realms)
     : IHandler<GetAuthConfig.Query, Result<GetAuthConfig.Response>> {
     public sealed record Query;
 
     /// <param name="Enabled">The configured value (what the next start will run with).</param>
     /// <param name="Active">Whether the auth pipeline is enforcing in this process right now.</param>
     /// <param name="RestartRequired">True when <paramref name="Enabled"/> ≠ <paramref name="Active"/>.</param>
+    /// <param name="Host">
+    /// The configured <c>Auth:Host</c> — since ADR-0023 a <em>fallback</em> for the operator realm alone,
+    /// used only while no Watchtower route is marked as its login host.
+    /// </param>
+    /// <param name="EffectiveLoginHost">
+    /// Where the operator realm actually sends anonymous visitors right now: its login route's domain, or
+    /// <paramref name="Host"/> when it has none. Null when it has neither, which is when its protected apps
+    /// answer 401 instead of redirecting. Read-only — it is changed on the Routes page, not here.
+    /// </param>
     public sealed record Response(
         bool Enabled,
         bool Active,
@@ -31,7 +41,8 @@ public sealed class GetAuthConfig(
         string? Host,
         int SessionLifetimeHours,
         int AbsoluteSessionLifetimeDays,
-        string[] PinnedPaths);
+        string[] PinnedPaths,
+        string? EffectiveLoginHost = null);
 
     /// <summary>Every path the auth card manages — shared with <see cref="UpdateAuthConfig"/>.</summary>
     internal static readonly string[] AuthPaths = [
@@ -41,16 +52,19 @@ public sealed class GetAuthConfig(
         WatchtowerSettingPaths.AuthAbsoluteSessionLifetimeDays,
     ];
 
-    public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
+    public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var auth = options.CurrentValue.Auth;
-        var response = new Response(
+        // Through the resolver, which is the one place the route-then-fallback reading lives: a second
+        // copy of it here would eventually disagree with what the redirect actually does.
+        var system = await realms.SystemRealmAsync(ct);
+        return new Response(
             Enabled: auth.Enabled,
             Active: startup.Enabled,
             RestartRequired: auth.Enabled != startup.Enabled,
             Host: auth.Host,
             SessionLifetimeHours: auth.SessionLifetimeHours,
             AbsoluteSessionLifetimeDays: auth.AbsoluteSessionLifetimeDays,
-            PinnedPaths: pins.Pinned(AuthPaths));
-        return ValueTask.FromResult<Result<Response>>(response);
+            PinnedPaths: pins.Pinned(AuthPaths),
+            EffectiveLoginHost: await realms.LoginHostForAsync(system, ct));
     }
 }

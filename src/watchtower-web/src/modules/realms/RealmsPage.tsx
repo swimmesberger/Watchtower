@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Building2, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CreateRealmRequest, Realm, UpdateRealmRequest } from '@/lib/types'
+import type { CreateRealmRequest, Realm, Route, UpdateRealmRequest } from '@/lib/types'
 import { timeAgo, absoluteTitle } from '@/lib/format'
 import { toast } from '@/components/ui/use-toast'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,13 @@ import { Banner } from '@/components/ui/banner'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
@@ -76,8 +83,8 @@ export function RealmsPage() {
       setShowCreate(false)
       toast.success(
         `Realm ${realm.name} created.`,
-        realm.authHost
-          ? `Its login page is served on ${realm.authHost}.`
+        realm.loginHost
+          ? `Its login page is served on ${realm.loginHost}.`
           : 'Give it a login host once DNS points at Watchtower — until then nobody can sign in to it.',
       )
     },
@@ -129,9 +136,9 @@ export function RealmsPage() {
       cell: (r) => <span className="font-mono text-[13px] text-text-2">{r.slug}</span>,
     },
     {
-      key: 'authHost',
+      key: 'loginHost',
       header: 'Login host',
-      cell: (r) => <AuthHostCell realm={r} />,
+      cell: (r) => <LoginHostCell realm={r} />,
     },
     {
       key: 'contents',
@@ -281,16 +288,28 @@ function describeContents(realm: Realm): string {
   return parts.length === 0 ? 'empty' : parts.join(' · ')
 }
 
-function AuthHostCell({ realm }: { realm: Realm }) {
-  if (realm.isSystem) {
-    return <span className="text-sm text-text-3">Watchtower’s own host</span>
+/**
+ * Where this realm sends anonymous visitors: the domain of its login route, or — on the operator realm
+ * alone — the configured `Auth:Host` fallback (ADR-0023). The fallback is called out rather than shown as
+ * an ordinary value, because it is the one case where no route is serving the hostname.
+ */
+function LoginHostCell({ realm }: { realm: Realm }) {
+  if (!realm.loginHost) {
+    return (
+      <Badge tone="warn" size="sm">
+        No login host
+      </Badge>
+    )
   }
-  return realm.authHost ? (
-    <span className="font-mono text-[13px] text-text-2">{realm.authHost}</span>
-  ) : (
-    <Badge tone="warn" size="sm">
-      No login host
-    </Badge>
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <span className="font-mono text-[13px] text-text-2">{realm.loginHost}</span>
+      {realm.loginRouteId == null && (
+        <Badge tone="neutral" size="sm">
+          from Auth:Host
+        </Badge>
+      )}
+    </span>
   )
 }
 
@@ -357,7 +376,7 @@ function RealmCard({
         </div>
         <div className="mt-1 truncate font-mono text-[13px] text-text-2">{realm.slug}</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-3">
-          <AuthHostCell realm={realm} />
+          <LoginHostCell realm={realm} />
           <span className="tnum">{describeContents(realm)}</span>
         </div>
       </div>
@@ -369,8 +388,23 @@ function RealmCard({
 /** Client-side hints only — the same rules are enforced by the server, which is what actually refuses. */
 const SLUG_HINT =
   'Lowercase letters, digits and single hyphens. Fixed once created — it is the `realm` claim your apps receive.'
-const AUTH_HOST_HINT =
-  'The bare hostname this realm’s login page is served on, e.g. login.acme.example. No scheme, port or path. Leave empty until DNS points at Watchtower.'
+const LOGIN_DOMAIN_HINT =
+  'The bare hostname this realm’s login page is served on, e.g. login.acme.example. No scheme, port or path. Creates a Watchtower route for it. Leave empty until DNS points at Watchtower.'
+
+/** The value the login-route `<Select>` uses for "none" — Radix Select rejects an empty-string item. */
+const NO_LOGIN_ROUTE = 'none'
+
+/**
+ * The realm's own Watchtower routes — the candidates for its login host (ADR-0023). Read from the route
+ * table rather than from anything realm-shaped, because a login host *is* a route: the picker offers
+ * exactly what `realms.update` would accept, so the cross-realm refusal is something the administrator
+ * never runs into.
+ */
+function useWatchtowerRoutes(realmId: number, enabled: boolean) {
+  const query = useQuery({ queryKey: ['routes'], queryFn: api.proxy.listRoutes, enabled })
+  const routes: Route[] = query.data ?? []
+  return routes.filter((r) => r.target === 'watchtower' && r.realmId === realmId)
+}
 
 function CreateRealmForm({
   saving,
@@ -381,7 +415,7 @@ function CreateRealmForm({
   onCancel: () => void
   onSubmit: (data: CreateRealmRequest) => void
 }) {
-  const [form, setForm] = useState<CreateRealmRequest>({ name: '', slug: '', authHost: '' })
+  const [form, setForm] = useState<CreateRealmRequest>({ name: '', slug: '', loginDomain: '' })
   // The slug follows the name until it is edited on its own — the common case is that they agree, and a
   // slug is immutable, so it is worth making the derived one easy to see before it is committed to.
   const [slugTouched, setSlugTouched] = useState(false)
@@ -398,7 +432,7 @@ function CreateRealmForm({
         onSubmit({
           name: form.name.trim(),
           slug: slug.trim(),
-          authHost: form.authHost?.trim() || null,
+          loginDomain: form.loginDomain?.trim() || null,
         })
       }}
     >
@@ -434,14 +468,16 @@ function CreateRealmForm({
         )}
       </Field>
 
-      <Field label="Login host" hint={AUTH_HOST_HINT}>
+      {/* A hostname rather than a route picker: the realm does not exist yet, so it can own no routes
+          yet either. The server creates the Watchtower route for it and marks it as the login host. */}
+      <Field label="Login host" hint={LOGIN_DOMAIN_HINT}>
         {({ id, describedBy }) => (
           <Input
             id={id}
             aria-describedby={describedBy}
             mono
-            value={form.authHost ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, authHost: e.target.value }))}
+            value={form.loginDomain ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, loginDomain: e.target.value }))}
             placeholder="login.acme.example"
             autoComplete="off"
             spellCheck={false}
@@ -473,7 +509,10 @@ function EditRealmForm({
   onSubmit: (data: UpdateRealmRequest) => void
 }) {
   const [name, setName] = useState(realm.name)
-  const [authHost, setAuthHost] = useState(realm.authHost ?? '')
+  const [loginRouteId, setLoginRouteId] = useState(
+    realm.loginRouteId == null ? NO_LOGIN_ROUTE : String(realm.loginRouteId),
+  )
+  const candidates = useWatchtowerRoutes(realm.id, true)
 
   const canSubmit = name.trim() !== ''
 
@@ -488,10 +527,9 @@ function EditRealmForm({
           // only moves the login host should say so and nothing else, rather than restating the current
           // name as if it were being set.
           name: name.trim() === realm.name ? undefined : name.trim(),
-          // Omitted for the system realm, whose login host is the configured Watchtower:Auth:Host and
-          // which the server refuses to set here. Everywhere else the empty string is what clears it —
-          // omitting would mean "leave alone", which is a different thing.
-          authHost: realm.isSystem ? undefined : authHost.trim(),
+          // 0 is what clears the designation — omitting would mean "leave alone", which is a different
+          // thing (ADR-0023).
+          loginRouteId: loginRouteId === NO_LOGIN_ROUTE ? 0 : Number(loginRouteId),
         })
       }}
     >
@@ -514,25 +552,39 @@ function EditRealmForm({
       <Field
         label="Login host"
         hint={
-          realm.isSystem
-            ? 'The operator realm signs in on Watchtower’s own host, from the configured Watchtower:Auth:Host — it cannot be set here.'
-            : `${AUTH_HOST_HINT} Moving it signs out every session on the old host.`
+          candidates.length === 0
+            ? 'This realm has no Watchtower routes yet. Create one on the Routes page — choose “Watchtower (this instance)” and pick this realm — then come back and designate it here.'
+            : 'One of this realm’s Watchtower routes. Moving it signs out every session on the old host.'
         }
       >
         {({ id, describedBy }) => (
-          <Input
-            id={id}
-            aria-describedby={describedBy}
-            mono
-            value={realm.isSystem ? '' : authHost}
-            onChange={(e) => setAuthHost(e.target.value)}
-            placeholder={realm.isSystem ? 'Watchtower’s own host' : 'login.acme.example'}
-            disabled={realm.isSystem}
-            autoComplete="off"
-            spellCheck={false}
-          />
+          <Select
+            value={loginRouteId}
+            onValueChange={setLoginRouteId}
+            disabled={candidates.length === 0}
+          >
+            <SelectTrigger id={id} aria-describedby={describedBy}>
+              <SelectValue placeholder="No login host" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_LOGIN_ROUTE}>No login host</SelectItem>
+              {candidates.map((r) => (
+                <SelectItem key={r.id} value={String(r.id)}>
+                  {r.domain}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
       </Field>
+
+      {realm.isSystem && realm.loginRouteId == null && realm.loginHost && (
+        <Banner tone="info" title="Currently using the Auth:Host fallback">
+          The operator realm redirects to <span className="font-mono">{realm.loginHost}</span>, taken from
+          the configured <span className="font-mono">Watchtower:Auth:Host</span> because no Watchtower
+          route is designated. Designating one here takes over from it.
+        </Banner>
+      )}
 
       <div className="flex justify-end gap-2 pt-1">
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>

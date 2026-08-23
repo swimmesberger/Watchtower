@@ -59,6 +59,16 @@ public sealed class SetAccess(
         if (route is null)
             return AppError.NotFound($"Route {command.RouteId} not found");
 
+        // A Watchtower route is served by Watchtower, which authenticates its own visitors (ADR-0023).
+        // There is no forward-auth hop to configure, the check constraint refuses anything but Public,
+        // and putting a login page behind the gate that redirects to it is a closed loop. Refused rather
+        // than silently accepted as a no-op: an administrator who thought they had gated a hostname must
+        // find out that they have not.
+        if (route.Target == RouteTarget.Watchtower) {
+            return AppError.Validation(
+                "Watchtower routes use Watchtower's own login; route access control does not apply.");
+        }
+
         // Reject an undefined enum value before touching anything — an unknown value must not be persisted
         // and read back later as something the switch statements cannot map. Both enums are guarded, fail-
         // closed and symmetric; an omitted identity header mode defaults to the safe JWT-only None.

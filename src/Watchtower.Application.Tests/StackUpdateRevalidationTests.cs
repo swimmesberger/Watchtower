@@ -458,7 +458,7 @@ public sealed class StackUpdateRevalidationTests {
 
     /// <summary>
     /// Describes a Docker host — running containers, local images and, for the check path only, a
-    /// registry — without a daemon. Everything else the service does is SQLite, which the test host
+    /// registry — without a daemon. Everything else the service does is database work, which the test host
     /// provides for real.
     /// </summary>
     private sealed class FakeHostStackUpdateService(

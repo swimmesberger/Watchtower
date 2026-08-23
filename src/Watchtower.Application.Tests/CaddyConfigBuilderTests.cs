@@ -19,9 +19,9 @@ public sealed class CaddyConfigBuilderTests {
         // Access control is opt-in per route, and a deployment that never opts in must get byte-for-byte
         // what it got before any of this existed — operators and downstream tooling read this file.
         var sites = new[] {
-            new CaddySite("public.example.invalid", "demo-web", 8080, Tls: true),
-            new CaddySite("plain.example.invalid", "demo-web", 3000, Tls: false),
-            new CaddySite("custom.example.invalid", "demo-web", 8080, Tls: true, OnDemand: true),
+            new ProxySite("public.example.invalid", "demo-web", 8080, Tls: true),
+            new ProxySite("plain.example.invalid", "demo-web", 3000, Tls: false),
+            new ProxySite("custom.example.invalid", "demo-web", 8080, Tls: true, OnDemand: true),
         };
 
         Assert.Equal("""
@@ -59,11 +59,11 @@ public sealed class CaddyConfigBuilderTests {
         // headers, and Watchtower's own self-route (never protected — see CaddyManager). Every protected
         // block strips the *whole* ecosystem authz namespace regardless of its mode; only copy_headers differs.
         var sites = new[] {
-            new CaddySite("public.example.invalid", "demo-web", 8080, Tls: true),
-            new CaddySite("members.example.invalid", "demo-web", 3000, Tls: true, Protected: true),
-            new CaddySite("secret.example.invalid", "other-api", 9000, Tls: true, OnDemand: true,
+            new ProxySite("public.example.invalid", "demo-web", 8080, Tls: true),
+            new ProxySite("members.example.invalid", "demo-web", 3000, Tls: true, Protected: true),
+            new ProxySite("secret.example.invalid", "other-api", 9000, Tls: true, OnDemand: true,
                 Protected: true, Mode: IdentityHeaderMode.Remote),
-            new CaddySite("watchtower.example.invalid", "watchtower", 8080, Tls: true),
+            new ProxySite("watchtower.example.invalid", "watchtower", 8080, Tls: true),
         };
 
         Assert.Equal("""
@@ -157,7 +157,7 @@ public sealed class CaddyConfigBuilderTests {
         "X-Auth-Request-Email X-Auth-Request-Groups")]
     public void EveryMode_StripsTheFullNamespace_AndCopiesOnlyItsOwnSet(IdentityHeaderMode mode, string expectedCopy) {
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
+            [new ProxySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
             Globals);
 
         // The strip set is the full ecosystem namespace in all three modes — nothing a client sends can survive.
@@ -175,7 +175,7 @@ public sealed class CaddyConfigBuilderTests {
     public void GroupHeaders_AreStrippedInEveryMode_AndCopiedBackOnlyByTheModeThatOwnsThem(
         IdentityHeaderMode mode) {
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
+            [new ProxySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true, Mode: mode)],
             Globals);
 
         // The escalation vector this guards: forward_auth's copy_headers governs only the response, so a
@@ -218,7 +218,7 @@ public sealed class CaddyConfigBuilderTests {
         // A low-privilege user on a mode=None route sends `Remote-Groups: admins`. The generated config must
         // neutralize it before the upstream — even though this route forwards nothing but the JWT.
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
+            [new ProxySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
                 Mode: IdentityHeaderMode.None)],
             Globals);
 
@@ -232,7 +232,7 @@ public sealed class CaddyConfigBuilderTests {
     [Fact]
     public void HeaderStripping_PrecedesForwardAuth_ForEveryStrippedHeader() {
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
+            [new ProxySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true,
                 Mode: IdentityHeaderMode.AuthRequest)],
             Globals);
 
@@ -251,7 +251,7 @@ public sealed class CaddyConfigBuilderTests {
     [Fact]
     public void TransportForwardedHeaders_AreNotStripped() {
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true)], Globals);
+            [new ProxySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true)], Globals);
 
         // Caddy sets these legitimately for the upstream; stripping them (via a careless prefix) would break
         // client-IP, scheme and host propagation. The deny-list is enumerated by exact name for this reason.
@@ -263,7 +263,7 @@ public sealed class CaddyConfigBuilderTests {
     [Fact]
     public void ReservedPrefix_IsHandledBeforeTheAuthenticatedBlock() {
         var caddyfile = CaddyConfigBuilder.Build(
-            [new CaddySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true)], Globals);
+            [new ProxySite("app.example.invalid", "demo-web", 8080, Tls: true, Protected: true)], Globals);
 
         // The callback that mints the app session runs while the visitor is still anonymous, so its handler
         // has to be matched before the one that would send them back to the login page.

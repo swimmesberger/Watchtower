@@ -2,7 +2,7 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <!-- Elarion application framework — consumed from NuGet (github.com/swimmesberger/Elarion). -->
-    <ElarionVersion>0.2.3-preview.79.1</ElarionVersion>
+    <ElarionVersion>0.2.6</ElarionVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,16 +16,42 @@
     <PackageVersion Include="Elarion.Settings" Version="$(ElarionVersion)" />
     <PackageVersion Include="Elarion.Settings.EntityFrameworkCore" Version="$(ElarionVersion)" />
     <PackageVersion Include="Elarion.Settings.Configuration" Version="$(ElarionVersion)" />
+    <!-- The cross-instance primitives the proxy/auth plane needs once its state lives in the database
+         (ADR-0024 decisions 5 and 6). All three are PostgreSQL-backed by construction:
+         Coordination.PostgreSql is the `acme-issuer` role lease, Settings.PostgreSql is the
+         LISTEN/NOTIFY change channel that carries Watchtower:Proxy:RoutesVersion, and
+         Scheduling.EntityFrameworkCore claims a [ScheduledJob] occurrence so it runs once
+         cluster-wide rather than once per instance. -->
+    <PackageVersion Include="Elarion.Coordination.PostgreSql" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.Settings.PostgreSql" Version="$(ElarionVersion)" />
+    <PackageVersion Include="Elarion.Scheduling.EntityFrameworkCore" Version="$(ElarionVersion)" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Entity Framework Core — SQLite provider (self-contained single-node persistence) -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9" />
+    <!-- Entity Framework Core — PostgreSQL/Npgsql provider, the only database backend (ADR-0024). -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
+    <!-- Pinned alongside the others rather than left to the transitive graph: the design-time tooling
+         asks for it directly and the Npgsql provider only asks for a floor, so without this the API
+         project and the test project that hosts it resolve different versions of the same assembly —
+         which surfaces at run time as a missing-assembly load failure, not as a build warning. -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageVersion Include="EFCore.NamingConventions" Version="10.0.1" />
-    <!-- Transitive pin: fix GHSA-2m69-gcr7-jv3q (SQLite vuln in the e_sqlite3 native bundled by the
-         SQLite EF Core provider). The native lib package is versioned independently of the managed
+    <!-- The ASP.NET data-protection key ring as rows in the same context (ADR-0024 decision 4), so a
+         cookie or a password-reset token minted on one instance is readable on every other. Elarion has
+         no key-ring helper; the ASP.NET one composes with the existing DbContext. -->
+    <!-- 10.0.11 rather than 10.0.9: Microsoft.AspNetCore.DataProtection drags in
+         System.Security.Cryptography.Xml, and every version of it up to 10.0.9 carries the XML-signature
+         advisories (GHSA-23rf-6693-g89p and four siblings). That floor is also why the EF Core versions
+         above are 10.0.11 — this package requires the matching one. -->
+    <PackageVersion Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" Version="10.0.11" />
+    <!-- SQLite, kept for exactly one thing: the one-shot `import-sqlite` command that carries a
+         pre-ADR-0024 installation into PostgreSQL (Services/SqliteImport). No EF SQLite provider —
+         the importer reads the old file with the raw ADO.NET client and writes through COPY. -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <!-- Transitive pin: fix GHSA-2m69-gcr7-jv3q (SQLite vuln in the e_sqlite3 native bundled with
+         Microsoft.Data.Sqlite). The native lib package is versioned independently of the managed
          SQLitePCLRaw layer and is designed to be bumped on its own. -->
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
   </ItemGroup>
@@ -50,6 +76,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The in-process reverse proxy (ADR-0022, forthcoming). Only the direct-forwarding half is used —
+         IHttpForwarder plus HttpTransformer — not YARP's own config/routing pipeline, because Watchtower
+         already owns the route table and dispatches by Host itself. Referenced by Watchtower.Api alone:
+         the Application layer stays proxy-agnostic, so the projection and the access decision remain
+         testable without a web stack. Pure managed, and the net8 asset runs on net10. -->
+    <PackageVersion Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Test stack (xunit v3). -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
@@ -57,6 +92,10 @@
     <!-- WebApplicationFactory, for exercising the real Program.cs pipeline (auth middleware order,
          endpoint gating, cookie attributes) rather than a hand-rebuilt approximation of it. -->
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <!-- The integration suites run against a real PostgreSQL (ADR-0024). Testcontainers starts one per
+         test run from Docker/Podman; WATCHTOWER_TEST_PG points them at an already-running server
+         instead (CI's service container, or a locally started `podman run postgres`). -->
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.14.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -64,6 +103,8 @@
          Not part of the shipped Docker image. -->
     <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.4.6" />
     <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.4.6" />
+    <!-- The development database: a Postgres container with a data volume (ADR-0024). -->
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
     <!-- Direct pin for the Aspire/DCP transitive dependency vulnerable below MessagePack 2.5.301. -->
     <PackageVersion Include="MessagePack" Version="3.1.7" />
   </ItemGroup>

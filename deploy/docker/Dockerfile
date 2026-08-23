@@ -38,7 +38,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user; /data holds the SQLite database (a named volume).
+# Non-root user. /data no longer holds any state Watchtower needs: since ADR-0024 the keys, the
+# data-protection key ring, the ACME account and the issued certificates are rows in PostgreSQL like
+# everything else, so any instance can serve any host. The mount stays for the one upgrade that needs
+# it — a pre-upgrade watchtower.db until `--import-sqlite` carries it across, and the old
+# /data/auth-keys and /data/proxy-certs until the first normal start imports them
+# (docs/upgrading.md). A fresh install can drop it.
 RUN groupadd -r watchtower && useradd -r -g watchtower watchtower \
     && mkdir -p /data && chown watchtower:watchtower /data
 
@@ -47,8 +52,30 @@ COPY --from=build /app/publish/ ./
 COPY --from=web /repo/src/watchtower-web/dist/ ./wwwroot/
 
 VOLUME /data
-EXPOSE 8080
-ENV ASPNETCORE_URLS=http://+:8080
+
+# The management plane is a Kestrel endpoint baked into the image; the public ingress is not (ADR-0022).
+#   Http       — 8080, the MANAGEMENT plane: Watchtower's own UI and API. Never publish this to the
+#                internet. Bind it to a private interface (127.0.0.1:8080:8080) and reach the UI from
+#                outside through a login host over 443 instead. A named endpoint rather than
+#                ASPNETCORE_URLS, which this image ignores; move it with
+#                Kestrel__Endpoints__Http__Url=http://+:9000.
+#   ProxyHttp  — 8081 by default, plain-HTTP INGRESS: ACME HTTP-01 validation and the plain half of the
+#                proxy. Published as 80:8081.
+#   ProxyHttps — 8443 by default, TLS INGRESS: the reverse proxy's TLS listener, which picks a
+#                certificate per connection from the SNI name. Published as 443:8443.
+# The two ingress listeners are REVERSE-PROXY SETTINGS, not image configuration: they exist only while
+# the built-in provider is active, and their ports are WATCHTOWER__PROXY__YARP__HTTPPORT and
+# __HTTPSPORT (0 turns one off). Enabling the proxy, switching provider or moving a port binds and
+# unbinds them at runtime — no restart. Setting either variable here pins it, like every other
+# WATCHTOWER__* setting; leaving both unset lets the Settings page own them. A stray
+# Kestrel__Endpoints__ProxyHttp__Url / __ProxyHttps__Url — the pre-addendum knob — is ignored: the app
+# masks those keys out of the configuration Kestrel reads.
+# On the ingress endpoints a request whose Host is not a route (or a realm login host) is answered with
+# 404 and never reaches Watchtower's own pipeline. Nothing can reach a listener unless the operator
+# publishes its port — see the commented ingress ports in docker-compose.yml.
+# EXPOSE documents the defaults; the ingress two are only listening while the proxy is on.
+EXPOSE 8080 8081 8443
+ENV Kestrel__Endpoints__Http__Url=http://+:8080
 
 # The docker.sock must be mounted at runtime; grant the watchtower user the host's docker GID
 # (e.g. `group_add: ["999"]` in compose) so it can talk to the daemon.

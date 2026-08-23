@@ -12,6 +12,8 @@
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <!-- The PostgreSQL every test runs against (ADR-0024), unless WATCHTOWER_TEST_PG names one. -->
+    <PackageReference Include="Testcontainers.PostgreSql" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,6 +26,20 @@
          reference is not the alternative — one test assembly referencing another drags its whole test
          collection into this runner. -->
     <Compile Include="..\Watchtower.Application.Tests\TotpCodes.cs" Link="TotpCodes.cs" />
+    <!-- Linked for the same reason: both assemblies need a real PostgreSQL, and two implementations of
+         "start a server, migrate a template, hand out databases" would drift. Each test assembly is its
+         own process, so each gets its own server unless WATCHTOWER_TEST_PG points both at one. -->
+    <Compile Include="..\Watchtower.Application.Tests\PostgresTestServer.cs" Link="PostgresTestServer.cs" />
+    <!-- And again for the acme-issuer lease double (ADR-0024 decision 5): every host in this assembly
+         drops the hosted services, including the heartbeat that acquires the real lease, so without a
+         substitute every one of them would be a non-issuer and the ACME suites would assert on an
+         instance that is deliberately doing nothing. -->
+    <Compile Include="..\Watchtower.Application.Tests\StubRoleLease.cs" Link="StubRoleLease.cs" />
+    <!-- Same reasoning for the throwaway certificate chains: the ingress-reload spike needs a real
+         certificate to complete a real TLS handshake against a real Kestrel. -->
+    <Compile Include="..\Watchtower.Application.Tests\TestCertificates.cs" Link="TestCertificates.cs" />
+    <!-- And for the stand-in settings store both assemblies drive the ingress reload through. -->
+    <Compile Include="..\Watchtower.Application.Tests\ReloadableSettings.cs" Link="ReloadableSettings.cs" />
   </ItemGroup>
 
 </Project>

@@ -32,19 +32,20 @@ public sealed class RealmResolver(
     IOptionsMonitor<WatchtowerOptions> options,
     AuthTokenSigner signer,
     ILogger<RealmResolver> logger) {
-    /// <summary>The built-in operator realm — the <see cref="Realm.IsSystem"/> row, seeded by the migration.</summary>
+    /// <summary>The built-in operator realm — the <see cref="Realm.IsSystem"/> row, seeded by the model.</summary>
     /// <remarks>
     /// Read rather than assumed from <see cref="Realm.SystemRealmId"/>: the constant is what column defaults
     /// point at, this is what decisions are made on.
     /// </remarks>
     public async Task<Realm> SystemRealmAsync(CancellationToken ct) {
         var realm = await db.Realms.AsNoTracking().FirstOrDefaultAsync(r => r.IsSystem, ct);
-        // The migration seeds it and realms.delete refuses to remove it, so its absence is a broken
-        // database rather than a state to recover from — and silently inventing one would put every
-        // account in a realm that is not stored anywhere.
+        // The model seeds it (RealmConfiguration.HasData) and realms.delete refuses to remove it, so its
+        // absence is a broken database rather than a state to recover from — and silently inventing one
+        // would put every account in a realm that is not stored anywhere. Re-running the migrations does
+        // not bring it back either: the row is created once, by the initial migration.
         return realm ?? throw new InvalidOperationException(
-            "The system realm is missing from the database. It is seeded by the AddRealms migration and " +
-            "cannot be deleted; restore the database or re-apply migrations.");
+            "The system realm is missing from the database. It is seeded when the schema is created and " +
+            "cannot be deleted through the API; restore the database from a backup.");
     }
 
     /// <summary>
@@ -52,19 +53,28 @@ public sealed class RealmResolver(
     /// that login host, or the system realm for anything else.
     /// </summary>
     /// <remarks>
-    /// "Anything else" deliberately includes the configured <c>Auth:Host</c>, the published port and bare-IP
-    /// access — see the class remarks. The comparison is over the normalised host
+    /// The host is looked up in the route table: a <see cref="RouteTarget.Watchtower"/> route names the
+    /// realm whose surface it serves (ADR-0023), so the same rows the proxy serves are what decides the
+    /// population. The configured <c>Auth:Host</c> resolves to the system realm — it is that realm's
+    /// fallback login host — and so does everything else: the published port and bare-IP access, see the
+    /// class remarks. The comparison is over the normalised host
     /// (<see cref="RouteAccessPolicy.NormalizeForwardedHost"/>), so a value carrying a port, a path or
-    /// userinfo never matches a realm; it is not a host name, and coercing it into one is exactly how a
+    /// userinfo never matches a route; it is not a host name, and coercing it into one is exactly how a
     /// caller would try to be handed the wrong population's login.
     /// </remarks>
     public async Task<Realm> ResolveByHostAsync(string? host, CancellationToken ct) {
         var normalized = RouteAccessPolicy.NormalizeForwardedHost(host);
         if (normalized is null) return await SystemRealmAsync(ct);
 
-        var realm = await db.Realms.AsNoTracking()
-            .FirstOrDefaultAsync(r => !r.IsSystem && r.AuthHost != null && r.AuthHost.ToLower() == normalized, ct);
-        return realm ?? await SystemRealmAsync(ct);
+        // Plain equality, not lower(domain): the column is written normalized and the parameter arrives
+        // normalized, so this rides the domain index instead of forcing a scan on every login request.
+        var realmId = await db.Routes.AsNoTracking()
+            .Where(r => r.Target == RouteTarget.Watchtower && r.Domain == normalized)
+            .Select(r => r.RealmId)
+            .FirstOrDefaultAsync(ct);
+        if (realmId is { } id && await FindAsync(id, ct) is { } realm) return realm;
+
+        return await SystemRealmAsync(ct);
     }
 
     /// <summary>The realm by id, or <see langword="null"/> when there is no such row.</summary>
@@ -90,38 +100,54 @@ public sealed class RealmResolver(
     /// none yet.
     /// </summary>
     /// <remarks>
-    /// The system realm's host is always the configured <c>Watchtower:Auth:Host</c> and never
-    /// <see cref="Realm.AuthHost"/> (which handlers keep null on it): authentication must not need a
-    /// database row to find its own login page. A non-system realm created before its DNS exists has no
-    /// host, and its protected routes then fail closed at challenge time rather than redirecting somewhere
-    /// arbitrary.
+    /// The realm's <see cref="Realm.LoginRouteId"/> is the answer: one of its
+    /// <see cref="RouteTarget.Watchtower"/> routes, designated as the address protected apps redirect to
+    /// (ADR-0023). A realm created before its DNS exists has none, and its protected routes then fail
+    /// closed at challenge time rather than redirecting somewhere arbitrary.
+    /// <para>
+    /// The system realm — and only the system realm — falls back to the configured
+    /// <c>Watchtower:Auth:Host</c>. That is the "Watchtower sits behind somebody else's proxy" case: no
+    /// provider of ours serves the hostname, so there is nothing for a route row to do except carry the
+    /// name, and an operator who prefers to state it in configuration can. A non-system realm in that
+    /// position creates a Watchtower route instead — unserved while the proxy is off, but still the one
+    /// place its login address is written down.
+    /// </para>
     /// </remarks>
-    public string? LoginHostFor(Realm realm) {
+    public async Task<string?> LoginHostForAsync(Realm realm, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(realm);
-        return realm.IsSystem
-            ? RouteAccessPolicy.NormalizeForwardedHost(options.CurrentValue.Auth.Host)
-            : RouteAccessPolicy.NormalizeForwardedHost(realm.AuthHost);
+
+        // The navigation when it was loaded, a query when it was not: callers reach this from both a
+        // freshly-read realm and one that came out of an AsNoTracking projection.
+        var domain = realm.LoginRoute?.Domain;
+        if (domain is null && realm.LoginRouteId is { } routeId) {
+            domain = await db.Routes.AsNoTracking()
+                .Where(r => r.Id == routeId)
+                .Select(r => r.Domain)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        return RouteAccessPolicy.NormalizeForwardedHost(domain)
+               ?? (realm.IsSystem ? RouteAccessPolicy.NormalizeForwardedHost(options.CurrentValue.Auth.Host) : null);
     }
 
     /// <summary>
-    /// Every non-system realm's non-null <see cref="Realm.AuthHost"/>, lowercased — the extra site blocks
-    /// the proxy has to serve so each realm's login page is reachable
-    /// (<see cref="CaddyManager.ProjectSites"/>).
+    /// The realm as the token signer sees it: its slug, whether it is the operator population, and the
+    /// login host that decides its <c>iss</c> (<see cref="LoginHostForAsync"/>).
     /// </summary>
     /// <remarks>
-    /// The system realm is excluded here exactly as it is in <see cref="ResolveByHostAsync"/>: its login
-    /// host is the configured <c>Auth:Host</c>, which the projection already adds, and a stored one on that
-    /// row would be a second answer neither reads.
+    /// The one place the two halves are put together, so "which issuer does this realm mint under" cannot
+    /// be answered from a stale host by one caller and the current one by another.
     /// </remarks>
-    public async Task<IReadOnlyList<string>> AuthHostsAsync(CancellationToken ct) =>
-        await db.Realms.AsNoTracking()
-            .Where(r => !r.IsSystem && r.AuthHost != null)
-            .Select(r => r.AuthHost!.ToLower())
-            .ToListAsync(ct);
+    public async Task<RealmIdentity> IdentityForAsync(Realm realm, CancellationToken ct) =>
+        RealmIdentity.From(realm, await LoginHostForAsync(realm, ct));
 
-    /// <summary>All realms, ordered by slug.</summary>
+    /// <summary>All realms, ordered by slug, with their login route loaded.</summary>
+    /// <remarks>
+    /// The login route comes along because nearly every caller goes on to ask for the login host, and one
+    /// query with an <c>Include</c> beats one per realm.
+    /// </remarks>
     public async Task<IReadOnlyList<Realm>> ListAsync(CancellationToken ct) =>
-        await db.Realms.AsNoTracking().OrderBy(r => r.Slug).ToListAsync(ct);
+        await db.Realms.AsNoTracking().Include(r => r.LoginRoute).OrderBy(r => r.Slug).ToListAsync(ct);
 
     /// <summary>
     /// Every realm's <c>iss</c>, mapped to the realm it identifies — what a surface that has no realm in
@@ -131,9 +157,9 @@ public sealed class RealmResolver(
     /// <remarks>
     /// One key pair signs every realm's assertions (per-realm keys are not a v1 feature), so the issuer is
     /// the only thing in a token that says which population it is about. Two realms should not be able to
-    /// share one — the login host is unique among realms and the handlers refuse a realm host equal to the
-    /// configured operator one — but <c>Auth:Host</c> is configuration and can be changed <em>after</em> a
-    /// realm has taken that host, which no handler is in a position to refuse. The first realm wins and the
+    /// share one — a login host is a route domain and those are unique, and a realm may only name one of
+    /// <em>its own</em> Watchtower routes — but <c>Auth:Host</c> is configuration and can be pointed at a
+    /// realm's login host <em>after</em> the fact, which no handler is in a position to refuse. The first realm wins and the
     /// collision is logged rather than thrown: the auth path must keep answering, and the loser's tokens
     /// are refused by the caller's own realm check rather than silently accepted as the winner's. The
     /// warning is what turns "one realm's users mysteriously cannot use UserInfo" into a fixable line.
@@ -152,12 +178,12 @@ public sealed class RealmResolver(
         // Stable within each group (OrderByDescending is a stable sort), so the customer realms keep the
         // slug order ListAsync established and only the operator one is lifted out of it.
         foreach (var realm in realms.OrderByDescending(r => r.IsSystem)) {
-            var issuer = signer.IssuerFor(RealmIdentity.From(realm));
+            var issuer = signer.IssuerFor(await IdentityForAsync(realm, ct));
             if (issuers.TryAdd(issuer, realm.Id)) continue;
             logger.LogWarning(
                 "Realms {WinningRealmId} and {LosingRealm} both resolve to the token issuer '{Issuer}', so " +
                 "assertions minted for the second cannot be attributed to it. Change Watchtower:Auth:Host " +
-                "or the realm's auth host so each population has its own.",
+                "or the realm's login route so each population has its own.",
                 issuers[issuer], realm.Slug, issuer);
         }
         return issuers;

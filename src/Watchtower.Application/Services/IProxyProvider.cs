@@ -1,9 +1,11 @@
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// A reverse-proxy backend that projects the <c>routes</c> table onto real ingress (ADR-0015). Two
-/// implementations exist: <see cref="CaddyManager"/> (host ports 80/443, automatic TLS) and
-/// <see cref="CloudflareTunnelProvider"/> (a cloudflared tunnel configured via the Cloudflare API).
+/// A reverse-proxy backend that projects the <c>routes</c> table onto real ingress (ADR-0015). Three
+/// implementations exist: <see cref="CaddyManager"/> (a sibling Caddy container on host ports 80/443,
+/// automatic TLS), <see cref="CloudflareTunnelProvider"/> (a cloudflared tunnel configured via the
+/// Cloudflare API) and <see cref="Yarp.YarpProxyProvider"/> — in-process, Watchtower binds 80/443
+/// itself, per ADR-0022.
 /// Consumers — the deploy queue, tenant teardown, and the <c>proxy.*</c>/<c>realms.*</c> handlers —
 /// inject this interface; <see cref="ProxyProviderRouter"/> resolves the active provider per call from
 /// <c>Proxy:Provider</c>, so the backend is runtime-switchable exactly like the metrics backend

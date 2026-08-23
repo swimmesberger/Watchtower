@@ -91,9 +91,14 @@ public sealed class PipelineGatingTests {
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health", ct)).StatusCode);
 
         // Caddy's on-demand-TLS gate: consulted before any user exists in the request. 400 (not 401) — it
-        // is answering, just without a domain. Who may ask is a separate gate (see ProxyAskTests).
+        // is answering, just without a domain. Who may ask is a separate gate (see ProxyAskTests). Its own
+        // host, with the caddy provider named: the endpoint is mapped only under the provider that asks,
+        // and the default is the in-process one, which holds the route table in memory (ADR-0022).
+        using var caddyFactory = new WatchtowerApiFactory(
+            ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Proxy:Provider", "caddy"));
+        using var caddyClient = caddyFactory.CreateApiClient();
         Assert.Equal(
-            HttpStatusCode.BadRequest, (await client.GetAsync("/api/proxy/ask", ct)).StatusCode);
+            HttpStatusCode.BadRequest, (await caddyClient.GetAsync("/api/proxy/ask", ct)).StatusCode);
 
         // The deploy webhook carries its own per-stack bearer token; a CI runner has no browser session.
         // 404 because no such stack exists — the point is that it is not a 401 from the session gate.

@@ -10,6 +10,8 @@
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.AppHost" />
     <PackageReference Include="Aspire.Hosting.JavaScript" />
+    <!-- The development database (ADR-0024): a Postgres container with a data volume. -->
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" />
     <!-- Direct pin for the Aspire/DCP transitive dependency vulnerable below MessagePack 2.5.301. -->
     <PackageReference Include="MessagePack" />
   </ItemGroup>

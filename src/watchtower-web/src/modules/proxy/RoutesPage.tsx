@@ -1,18 +1,20 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, CloudDownload, ExternalLink, Globe, Lock, Plus, Trash2, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, CloudDownload, ExternalLink, Globe, Lock, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
   AccessMode,
+  CertificateInfo,
   CloudflareForeignRoute,
   CreateRouteRequest,
   IdentityHeaderMode,
   Route,
   RouteAccess,
   RouteStatus,
+  RouteTarget,
 } from '@/lib/types'
 import { LOCAL_USER_ID } from '@/lib/auth'
-import { timeAgo } from '@/lib/format'
+import { absoluteTitle, timeAgo } from '@/lib/format'
 import { useRealms } from '@/hooks/use-realms'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -83,6 +85,11 @@ const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
 ]
 
 const emptyForm = {
+  // What the hostname is served by (ADR-0023). `service` is the default because it is what nearly every
+  // route is; `watchtower` swaps the stack/service/port half of the form for a realm picker.
+  target: 'service' as RouteTarget,
+  realmId: '',
+  makeLoginRoute: true,
   stackId: '',
   domain: '',
   serviceName: '',
@@ -93,7 +100,28 @@ const emptyForm = {
   portManual: false,
 }
 
+/** The two route targets in menu order, with the copy the create form shows for each. */
+const ROUTE_TARGETS: { value: RouteTarget; label: string; description: string }[] = [
+  {
+    value: 'service',
+    label: 'Stack service',
+    description: 'Forward the domain to a container inside one of your stacks.',
+  },
+  {
+    value: 'watchtower',
+    label: 'Watchtower (this instance)',
+    description: "Serve Watchtower's own UI and API on the domain — and, for a realm's login route, its login page.",
+  },
+]
+
 const MANUAL = '__manual__'
+
+/**
+ * Why the Access dialog is unavailable on a Watchtower route, said in one place so the tooltip and the
+ * create form cannot describe the same rule differently.
+ */
+const WATCHTOWER_ACCESS_NOTE =
+  "Watchtower authenticates visitors with its own login — route access control does not apply."
 
 /** localStorage key for the "Found in Cloudflare" card's collapsed state. */
 const FOREIGN_COLLAPSED_KEY = 'watchtower:routes:foreign-collapsed'
@@ -246,6 +274,14 @@ export function RoutesPage() {
 
   const { data: stacks = [] } = useQuery({ queryKey: ['stacks'], queryFn: api.stacks.list })
 
+  // The populations a Watchtower route can serve. Admin-gated like realms.list itself, so a
+  // non-administrator simply sees an empty roster and the Watchtower target defaults to the operator
+  // realm the server would have chosen anyway.
+  const { realms, systemRealmId } = useRealms({ enabled: caps.hasRole('Admin') })
+  const isWatchtowerForm = form.target === 'watchtower'
+  const formRealmId = form.realmId === '' ? systemRealmId : Number(form.realmId)
+  const formRealm = realms.find((r) => r.id === formRealmId)
+
   const selectedStack = stacks.find((s) => String(s.id) === form.stackId)
   const stackProject = selectedStack?.composeProjectName
 
@@ -314,8 +350,11 @@ export function RoutesPage() {
   const remove = useMutation({
     mutationFn: ({ route, removeFromProvider }: { route: Route; removeFromProvider: boolean }) =>
       api.proxy.deleteRoute(route.id, removeFromProvider),
-    onSuccess: (_data, { route, removeFromProvider }) => {
+    onSuccess: (result, { route, removeFromProvider }) => {
       toast.success(removeFromProvider ? `Deleted ${route.domain} and removed it from Cloudflare.` : `Deleted ${route.domain}.`)
+      // Deleting a realm's login host is allowed and has a consequence the operator has to hear about:
+      // that realm's protected apps stop redirecting anywhere until another one is designated.
+      if (result?.warning) toast.error(result.warning)
       qc.invalidateQueries({ queryKey: ['routes'] })
       // An unowned hostname is foreign again (and a removed one is gone) — either way the card changes.
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
@@ -334,14 +373,32 @@ export function RoutesPage() {
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
+    if (!form.domain.trim()) return toast.error('Enter a domain.')
+
+    // A Watchtower route has no stack, no service and no port — the server refuses them rather than
+    // ignoring them, so they are not sent at all.
+    if (isWatchtowerForm) {
+      return create.mutate({
+        target: 'watchtower',
+        realmId: formRealmId,
+        makeLoginRoute: form.makeLoginRoute,
+        stackId: 0,
+        domain: form.domain.trim(),
+        serviceName: '',
+        containerPort: 0,
+        tlsEnabled: isCloudflare || form.tlsEnabled,
+        isPrimary: false,
+      })
+    }
+
     const stackId = Number(form.stackId)
     const containerPort = Number(form.containerPort)
     if (!stackId) return toast.error('Choose a stack.')
-    if (!form.domain.trim()) return toast.error('Enter a domain.')
     if (!form.serviceName.trim()) return toast.error('Enter a service name.')
     if (!containerPort || containerPort < 1 || containerPort > 65535)
       return toast.error('Enter a valid container port (1–65535).')
     create.mutate({
+      target: 'service',
       stackId,
       domain: form.domain.trim(),
       serviceName: form.serviceName.trim(),
@@ -370,16 +427,31 @@ export function RoutesPage() {
     {
       key: 'stack',
       header: 'Stack',
-      cell: (r) => <span className="text-[13px] text-text-2">{r.stackName ?? `#${r.stackId}`}</span>,
+      cell: (r) =>
+        r.target === 'watchtower' ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge tone="brand">Watchtower</Badge>
+            {r.isLoginRoute && (
+              <Tooltip label={`Anonymous visitors to this realm's protected apps are redirected here.`}>
+                <Badge tone="ok">login host ({r.realmSlug ?? `realm ${r.realmId}`})</Badge>
+              </Tooltip>
+            )}
+          </div>
+        ) : (
+          <span className="text-[13px] text-text-2">{r.stackName ?? `#${r.stackId}`}</span>
+        ),
     },
     {
       key: 'target',
       header: 'Target',
-      cell: (r) => (
-        <span className="font-mono text-[13px] text-text-2">
-          {r.serviceName}:{r.containerPort}
-        </span>
-      ),
+      cell: (r) =>
+        r.target === 'watchtower' ? (
+          <span className="text-[13px] text-text-2">this instance</span>
+        ) : (
+          <span className="font-mono text-[13px] text-text-2">
+            {r.serviceName}:{r.containerPort}
+          </span>
+        ),
     },
     {
       key: 'tls',
@@ -404,11 +476,14 @@ export function RoutesPage() {
       cell: (r) => (
         <div className="flex items-center justify-end gap-1">
           {canManageAccess && (
-            <Tooltip label="Access control">
+            <Tooltip label={r.target === 'watchtower' ? WATCHTOWER_ACCESS_NOTE : 'Access control'}>
+              {/* Disabled rather than hidden: an administrator looking for the gate on this hostname
+                  should be told there isn't one, not left wondering where the button went. */}
               <Button
                 size="icon-sm"
                 variant="ghost"
                 aria-label={`Access control for ${r.domain}`}
+                disabled={r.target === 'watchtower'}
                 onClick={() => setAccessRoute(r)}
                 className="text-text-2 hover:text-text"
               >
@@ -446,13 +521,21 @@ export function RoutesPage() {
         </a>
         <Badge tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</Badge>
       </div>
-      <p className="text-[13px] text-text-2">
-        {r.stackName ?? `#${r.stackId}`} ·{' '}
-        <span className="font-mono">
-          {r.serviceName}:{r.containerPort}
-        </span>{' '}
-        · {servesHttps(r) ? 'HTTPS' : 'HTTP'}
-      </p>
+      {r.target === 'watchtower' ? (
+        <div className="flex flex-wrap items-center gap-1.5 text-[13px] text-text-2">
+          <Badge tone="brand">Watchtower</Badge>
+          {r.isLoginRoute && <Badge tone="ok">login host ({r.realmSlug ?? `realm ${r.realmId}`})</Badge>}
+          <span>· {servesHttps(r) ? 'HTTPS' : 'HTTP'}</span>
+        </div>
+      ) : (
+        <p className="text-[13px] text-text-2">
+          {r.stackName ?? `#${r.stackId}`} ·{' '}
+          <span className="font-mono">
+            {r.serviceName}:{r.containerPort}
+          </span>{' '}
+          · {servesHttps(r) ? 'HTTPS' : 'HTTP'}
+        </p>
+      )}
       <div className="flex items-center justify-between border-t border-border pt-3">
         <span className="text-xs text-text-3">created {timeAgo(r.createdAt)}</span>
         <div className="flex items-center gap-1">
@@ -461,6 +544,7 @@ export function RoutesPage() {
               size="icon-sm"
               variant="ghost"
               aria-label={`Access control for ${r.domain}`}
+              disabled={r.target === 'watchtower'}
               onClick={() => setAccessRoute(r)}
               className="text-text-2 hover:text-text"
             >
@@ -487,12 +571,28 @@ export function RoutesPage() {
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-[24px] font-semibold leading-tight tracking-[-0.02em]">Routes</h1>
           {status && (
-            <Badge tone={status.enabled ? (status.caddyRunning ? 'ok' : 'warn') : 'neutral'}>
-              {status.enabled ? (status.caddyRunning ? 'Proxy running' : 'Proxy starting…') : 'Proxy disabled'}
-            </Badge>
+            <>
+              {/* The caveat, not a second status: the badge already says running/starting, and
+                  providerDetail is what that verdict is hiding — "bound over plain HTTP only", or
+                  how far through first issuance the certificates are. */}
+              <Tooltip label={status.providerDetail ?? 'The active provider has nothing to report.'}>
+                <Badge tone={status.enabled ? (status.caddyRunning ? 'ok' : 'warn') : 'neutral'}>
+                  {status.enabled
+                    ? status.caddyRunning
+                      ? 'Proxy running'
+                      : 'Proxy starting…'
+                    : 'Proxy disabled'}
+                </Badge>
+              </Tooltip>
+              {status.providerDetail && (
+                <span className="text-[13px] text-text-2">{status.providerDetail}</span>
+              )}
+            </>
           )}
         </div>
-        <Button variant="primary" onClick={() => setShowForm((v) => !v)} disabled={stacks.length === 0}>
+        {/* No longer gated on there being a stack: a Watchtower route has none, and the very first route
+            an operator creates is often the one that exposes Watchtower itself. */}
+        <Button variant="primary" onClick={() => setShowForm((v) => !v)}>
           {showForm ? <X /> : <Plus />} {showForm ? 'Cancel' : 'New route'}
         </Button>
       </div>
@@ -500,8 +600,10 @@ export function RoutesPage() {
       {status && !status.enabled && (
         <Banner tone="warn" title="Reverse proxy is disabled">
           Routes are saved but not served until the proxy is enabled — flip it under Settings →
-          Reverse proxy (applies immediately). The Caddy provider needs host ports 80 and 443 free;
-          the Cloudflare Tunnel provider needs no open ports.
+          Reverse proxy (applies immediately). The built-in provider needs host ports 80 and 443
+          published to Watchtower's ingress endpoints (<span className="font-mono">80:8081</span>,{' '}
+          <span className="font-mono">443:8443</span>); the Caddy provider needs them free on the
+          host; the Cloudflare Tunnel provider needs no open ports.
         </Banner>
       )}
 
@@ -572,9 +674,43 @@ export function RoutesPage() {
           <CardContent>
             <SectionHeader
               title="New route"
-              description="Point a domain at a service inside a stack. HTTPS is provisioned automatically."
+              description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically."
             />
             <form onSubmit={submit} className="space-y-4">
+              <Field
+                label="Serve this domain with"
+                required
+                hint={ROUTE_TARGETS.find((t) => t.value === form.target)?.description}
+              >
+                {({ id, describedBy }) => (
+                  <Select
+                    value={form.target}
+                    onValueChange={(v) =>
+                      // Switching target invalidates the other half of the form outright: a Watchtower
+                      // route has no stack and a service route has no realm, and carrying either across
+                      // would submit a value the server refuses.
+                      setForm((f) => ({
+                        ...emptyForm,
+                        domain: f.domain,
+                        tlsEnabled: f.tlsEnabled,
+                        target: v as RouteTarget,
+                      }))
+                    }
+                  >
+                    <SelectTrigger id={id} aria-describedby={describedBy}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ROUTE_TARGETS.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </Field>
+
               <Field label="Domain" required hint="e.g. app.example.com — point its DNS at this host">
                 {({ id, describedBy }) => (
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -611,6 +747,56 @@ export function RoutesPage() {
                 </p>
               )}
 
+              {isWatchtowerForm ? (
+                <div className="space-y-4">
+                  <Field
+                    label="Realm"
+                    required
+                    hint="Whose login page and portal this hostname serves."
+                  >
+                    {({ id, describedBy }) => (
+                      <Select
+                        value={String(formRealmId)}
+                        onValueChange={(v) => setForm((f) => ({ ...f, realmId: v }))}
+                      >
+                        <SelectTrigger id={id} aria-describedby={describedBy}>
+                          <SelectValue placeholder="Choose a realm" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {realms.map((r) => (
+                            <SelectItem key={r.id} value={String(r.id)}>
+                              {r.name}
+                              {r.isSystem ? ' (operator)' : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </Field>
+
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <Label htmlFor="route-login-host">Use as this realm's login host</Label>
+                      <p className="mt-1 text-xs text-text-3">
+                        {formRealm?.loginHost
+                          ? `Anonymous visitors to this realm's protected apps are redirected here instead of ${formRealm.loginHost}.`
+                          : "Anonymous visitors to this realm's protected apps are redirected here."}
+                      </p>
+                    </div>
+                    <Switch
+                      id="route-login-host"
+                      checked={form.makeLoginRoute}
+                      onCheckedChange={(on) => setForm((f) => ({ ...f, makeLoginRoute: on }))}
+                    />
+                  </div>
+
+                  <Banner tone="warn" title="This publishes Watchtower">
+                    Serves the Watchtower UI and API on this domain. {WATCHTOWER_ACCESS_NOTE} With
+                    authentication disabled this publishes the management UI to anyone who can reach the
+                    domain — enable authentication first, under Settings → Authentication.
+                  </Banner>
+                </div>
+              ) : (
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Stack" required>
                   {({ id, describedBy }) => (
@@ -692,6 +878,7 @@ export function RoutesPage() {
                   </Field>
                 </div>
               </div>
+              )}
 
               {isCloudflare ? (
                 <p className="text-xs text-text-3">
@@ -754,21 +941,21 @@ export function RoutesPage() {
               title="No routes yet"
               description={
                 stacks.length === 0
-                  ? 'Create a stack first, then add a route to expose one of its services.'
-                  : 'Add a route to expose a service on a domain with automatic HTTPS.'
+                  ? "Add a route to expose Watchtower itself on a domain, or create a stack first and expose one of its services."
+                  : 'Add a route to expose a service — or Watchtower itself — on a domain with automatic HTTPS.'
               }
               action={
-                stacks.length > 0 ? (
-                  <Button variant="primary" onClick={() => setShowForm(true)}>
-                    <Plus /> New route
-                  </Button>
-                ) : undefined
+                <Button variant="primary" onClick={() => setShowForm(true)}>
+                  <Plus /> New route
+                </Button>
               }
             />
           }
           aria-label="Routes"
         />
       )}
+
+      {status?.provider === 'yarp' && <CertificatesCard />}
 
       <ConfirmDialog
         open={pendingDelete != null}
@@ -782,7 +969,17 @@ export function RoutesPage() {
             : 'The proxy will stop serving this domain. The target container keeps running.'
         }
         extra={
-          isCloudflare ? (
+          <>
+            {/* The one delete whose blast radius reaches past the row: a realm with no login host
+                redirects nobody, so its protected apps answer anonymous visitors with 401. */}
+            {pendingDelete?.isLoginRoute && (
+              <Banner tone="warn" title="This realm will have no login host">
+                Anonymous visitors to the protected apps of realm “
+                {pendingDelete.realmSlug ?? pendingDelete.realmId}” will get a 401 instead of the login
+                page until another Watchtower route is marked as its login host.
+              </Banner>
+            )}
+            {isCloudflare ? (
             <div className="flex items-start justify-between gap-4 rounded-md border border-border p-3">
               <div className="min-w-0">
                 <Label htmlFor="route-delete-cf">Also remove from Cloudflare</Label>
@@ -798,7 +995,8 @@ export function RoutesPage() {
                 onCheckedChange={setRemoveFromCloudflare}
               />
             </div>
-          ) : undefined
+            ) : null}
+          </>
         }
         confirmLabel={isCloudflare && removeFromCloudflare ? 'Delete everywhere' : 'Delete'}
         tone="danger"
@@ -813,6 +1011,193 @@ export function RoutesPage() {
         <AccessDialog route={accessRoute} onClose={() => setAccessRoute(null)} />
       )}
     </div>
+  )
+}
+
+// ── Certificates (built-in provider only) ───────────────────────────────────
+
+const CERT_STATE_TONE: Record<CertificateInfo['state'], BadgeTone> = {
+  active: 'ok',
+  error: 'danger',
+  awaitingDns: 'warn',
+  pending: 'neutral',
+  none: 'neutral',
+}
+
+const CERT_STATE_LABEL: Record<CertificateInfo['state'], string> = {
+  active: 'Active',
+  error: 'Error',
+  awaitingDns: 'Awaiting DNS',
+  pending: 'Pending',
+  none: 'None',
+}
+
+const CERT_SOURCE_LABEL: Record<CertificateInfo['source'], string> = {
+  route: 'Route',
+  orphan: 'Orphan',
+}
+
+/** Relative label that also reads forwards, which "expires in 74d" needs and `timeAgo` cannot do. */
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const ms = new Date(iso).getTime() - Date.now()
+  if (Number.isNaN(ms)) return '—'
+  return ms >= 0 ? `in ${humanizeSpan(ms)}` : timeAgo(iso)
+}
+
+function humanizeSpan(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 60) return `${Math.max(minutes, 1)}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
+/**
+ * What the in-process provider holds, per host. It is the only view of the certificate plane there
+ * is: the provider issues for login hosts as well as routes, and keeps a certificate that outlived
+ * its route until it expires — neither of which the route list above can show.
+ */
+function CertificatesCard() {
+  const qc = useQueryClient()
+  const { data: certificates = [], isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['proxy-certificates'],
+    queryFn: api.proxy.listCertificates,
+    // Issuance takes tens of seconds and renewal happens on its own schedule, so the card is worth
+    // keeping fresh while it is open — and cheap: the answer is the manager's in-memory snapshot.
+    refetchInterval: 30_000,
+  })
+
+  const renew = useMutation({
+    mutationFn: (host: string) => api.proxy.renewCertificate(host),
+    onSuccess: (certificate) => {
+      toast.success(`Renewal requested for ${certificate.host}.`)
+      qc.invalidateQueries({ queryKey: ['proxy-certificates'] })
+      // A fresh certificate is what moves a route from pending to active.
+      qc.invalidateQueries({ queryKey: ['routes'] })
+      qc.invalidateQueries({ queryKey: ['proxy-status'] })
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to request renewal.'),
+  })
+
+  const columns: DataListColumn<CertificateInfo>[] = [
+    {
+      key: 'host',
+      header: 'Host',
+      cell: (c) => (
+        <div className="min-w-0">
+          <span className="block truncate font-medium text-text">{c.host}</span>
+          {c.lastError && (
+            <span className="block truncate text-xs text-danger" title={c.lastError}>
+              {c.lastError}
+            </span>
+          )}
+        </div>
+      ),
+    },
+    { key: 'source', header: 'Source', cell: (c) => CERT_SOURCE_LABEL[c.source] },
+    {
+      key: 'state',
+      header: 'State',
+      cell: (c) => <Badge tone={CERT_STATE_TONE[c.state]}>{CERT_STATE_LABEL[c.state]}</Badge>,
+    },
+    {
+      key: 'notAfter',
+      header: 'Expires',
+      cell: (c) => (
+        <span className="text-text-2" title={absoluteTitle(c.notAfter)}>
+          {relativeTime(c.notAfter)}
+        </span>
+      ),
+    },
+    {
+      key: 'nextAttempt',
+      header: 'Next attempt',
+      cell: (c) => (
+        <span className="text-text-2" title={absoluteTitle(c.nextAttemptAt)}>
+          {relativeTime(c.nextAttemptAt)}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (c) => (
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={renew.isPending && renew.variables === c.host}
+          onClick={() => renew.mutate(c.host)}
+        >
+          <RefreshCw /> Renew now
+        </Button>
+      ),
+    },
+  ]
+
+  const renderCard = (c: CertificateInfo) => (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <span className="min-w-0 truncate font-medium text-text">{c.host}</span>
+        <Badge tone={CERT_STATE_TONE[c.state]}>{CERT_STATE_LABEL[c.state]}</Badge>
+      </div>
+      <p className="text-[13px] text-text-2">
+        {CERT_SOURCE_LABEL[c.source]} · expires{' '}
+        <span title={absoluteTitle(c.notAfter)}>{relativeTime(c.notAfter)}</span> · next attempt{' '}
+        <span title={absoluteTitle(c.nextAttemptAt)}>{relativeTime(c.nextAttemptAt)}</span>
+      </p>
+      {c.lastError && <p className="text-[13px] text-danger">{c.lastError}</p>}
+      <div className="flex justify-end border-t border-border pt-3">
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={renew.isPending && renew.variables === c.host}
+          onClick={() => renew.mutate(c.host)}
+        >
+          <RefreshCw /> Renew now
+        </Button>
+      </div>
+    </div>
+  )
+
+  return (
+    <Card>
+      <CardContent>
+        <SectionHeader
+          title="Certificates"
+          description="Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then."
+        />
+        {isError ? (
+          <Banner
+            tone="danger"
+            title="Couldn’t load certificates"
+            action={
+              <Button variant="link" onClick={() => refetch()}>
+                Retry
+              </Button>
+            }
+          >
+            {(error as Error)?.message ?? 'An unexpected error occurred.'}
+          </Banner>
+        ) : (
+          <DataList
+            items={certificates}
+            getKey={(c) => c.host}
+            columns={columns}
+            renderCard={renderCard}
+            skeletonRows={isLoading ? 3 : undefined}
+            emptyState={
+              <p className="text-[13px] text-text-2">
+                No certificates yet. One is ordered per TLS route and per realm login host as soon as
+                the proxy is enabled.
+              </p>
+            }
+            aria-label="Certificates"
+          />
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

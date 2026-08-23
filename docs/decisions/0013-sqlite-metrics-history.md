@@ -6,6 +6,12 @@
   and the InfluxDB reader stay; the "SQLite persistence rejected", "only the selected backend's
   machinery is registered", and "switching requires a restart" decisions are superseded.
 
+> **Renamed by [ADR-0024](0024-postgresql-only-and-state-in-the-database.md) (2026-08-23).** The backend
+> this ADR calls `sqlite` is now called `database`, because Watchtower's own database is PostgreSQL.
+> Nothing else changed: the same sampler writes the same two tiers into the same tables, and it is still
+> the default. The old value is still accepted on read, so a stored or env-pinned `sqlite` keeps working;
+> read every `sqlite` below as `database`.
+
 ## Context
 
 ADR-0007 gave Watchtower two metrics backends: the zero-dependency in-memory ring (default, ~15 min,

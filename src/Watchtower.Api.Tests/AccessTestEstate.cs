@@ -20,21 +20,71 @@ namespace Watchtower.Api.Tests;
 internal static class AccessTestEstate {
     private const string Password = "correct-horse-battery";
 
-    /// <summary>Adds a realm and returns its id. A null <paramref name="authHost"/> models "DNS not ready".</summary>
+    /// <summary>
+    /// Adds a realm and returns its id. <paramref name="loginDomain"/> also creates and designates the
+    /// realm's login route (ADR-0023); null models "DNS not ready", where the realm has no login host.
+    /// </summary>
     public static async Task<int> AddRealmAsync(
-        this WatchtowerApiFactory factory, string slug, string? authHost = null) {
+        this WatchtowerApiFactory factory, string slug, string? loginDomain = null) {
         var realmId = 0;
         await factory.WithScopeAsync(async sp => {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
-            var realm = new Realm {
-                Name = slug, Slug = slug, AuthHost = authHost, CreatedAt = DateTimeOffset.UtcNow,
-            };
+            var ct = TestContext.Current.CancellationToken;
+            var realm = new Realm { Name = slug, Slug = slug, CreatedAt = DateTimeOffset.UtcNow };
             db.Realms.Add(realm);
-            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            await db.SaveChangesAsync(ct);
+
+            if (loginDomain is not null) {
+                var route = NewWatchtowerRoute(loginDomain, realm.Id);
+                db.Routes.Add(route);
+                await db.SaveChangesAsync(ct);
+                realm.LoginRouteId = route.Id;
+                await db.SaveChangesAsync(ct);
+            }
             realmId = realm.Id;
         });
         return realmId;
     }
+
+    /// <summary>
+    /// Adds a <see cref="RouteTarget.Watchtower"/> route and returns its id, optionally designating it as
+    /// <paramref name="realmId"/>'s login route.
+    /// </summary>
+    public static async Task<int> AddWatchtowerRouteAsync(
+        this WatchtowerApiFactory factory,
+        string domain,
+        int realmId = Realm.SystemRealmId,
+        bool makeLoginRoute = false) {
+        var routeId = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var ct = TestContext.Current.CancellationToken;
+            var route = NewWatchtowerRoute(domain, realmId);
+            db.Routes.Add(route);
+            await db.SaveChangesAsync(ct);
+            if (makeLoginRoute) {
+                var realm = await db.Realms.SingleAsync(r => r.Id == realmId, ct);
+                realm.LoginRouteId = route.Id;
+                await db.SaveChangesAsync(ct);
+            }
+            routeId = route.Id;
+        });
+        return routeId;
+    }
+
+    /// <summary>The shape the check constraint accepts for a Watchtower route: no stack, a realm, Public.</summary>
+    private static Route NewWatchtowerRoute(string domain, int realmId) => new() {
+        Target = RouteTarget.Watchtower,
+        StackId = null,
+        RealmId = realmId,
+        Domain = domain,
+        ServiceName = string.Empty,
+        ContainerPort = 0,
+        TlsEnabled = true,
+        AccessMode = AccessMode.Public,
+        Status = RouteStatus.Pending,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
 
     /// <summary>Adds a category in <paramref name="realmId"/> — how a route ends up in a non-system realm.</summary>
     public static async Task<int> AddTemplateAsync(
@@ -93,6 +143,7 @@ internal static class AccessTestEstate {
             await db.SaveChangesAsync(ct);
 
             var route = new Route {
+                Target = RouteTarget.Service,
                 StackId = stack.Id,
                 Domain = domain,
                 ServiceName = "web",
@@ -128,6 +179,7 @@ internal static class AccessTestEstate {
 
             var existing = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, ct);
             var added = new Route {
+                Target = RouteTarget.Service,
                 StackId = existing.StackId,
                 Domain = domain,
                 ServiceName = serviceName ?? existing.ServiceName,

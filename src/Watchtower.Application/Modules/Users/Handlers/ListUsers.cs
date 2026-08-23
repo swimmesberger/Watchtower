@@ -25,17 +25,17 @@ public sealed class ListUsers(WatchtowerDbContext db, TimeProvider time)
     public sealed record Response(IReadOnlyList<UserDto> Users);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        // Materialize first: the lockout flag is a DateTimeOffset comparison, which EF Core's SQLite
-        // provider cannot translate (see UserMapping.ToDto). The table is an operator roster — tens of
-        // rows, not a page-worthy dataset.
         var accounts = db.Users.AsNoTracking().AsQueryable();
         if (query.RealmId is { } realmId) accounts = accounts.Where(u => u.RealmId == realmId);
 
+        var now = time.GetUtcNow();
         var users = await accounts
             .OrderBy(u => u.UserName)
+            .Select(u => new UserDto(
+                u.Id, u.UserName, u.Email, u.IsAdmin, u.Disabled,
+                u.LockoutEnd != null && u.LockoutEnd > now,
+                u.TwoFactorEnabled, u.RealmId, u.CreatedAt))
             .ToListAsync(ct);
-
-        var now = time.GetUtcNow();
-        return new Response([.. users.Select(u => UserMapping.ToDto(u, now))]);
+        return new Response(users);
     }
 }

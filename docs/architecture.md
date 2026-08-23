@@ -58,7 +58,7 @@ Streaming and externally-facing operations stay as plain HTTP (`Watchtower.Api/E
 Handlers are request-scoped and inject `WatchtowerDbContext` directly. The **singletons** —
 `DeployQueueService`, `SelfUpdateService`, `StackUpdateService`, and the background services — must not
 capture a scoped `DbContext`, so they open short-lived scopes through `IServiceScopeFactory` for each
-unit of work (the pre-Elarion code opened a raw SQLite connection per call; this is the EF equivalent).
+unit of work (the pre-Elarion code opened a raw database connection per call; this is the EF equivalent).
 Settings (`app_settings`) are accessed through the scoped `SettingsStore`.
 
 ## Self-update
@@ -79,7 +79,20 @@ startup reconciles the coordinator's exit code instead. See `Services/SelfUpdate
 
 ## Persistence
 
-SQLite via EF Core (`Microsoft.EntityFrameworkCore.Sqlite`), snake_case columns, WAL enabled at startup.
-The schema is created by the `InitialCreate` migration (applied on startup via `MigrateAsync`), and any
-deploys left `running`/`queued` by a crash are reset to `failed`. Entities keep integer identity keys to
-preserve the API contract.
+PostgreSQL via EF Core (`Npgsql.EntityFrameworkCore.PostgreSQL`), snake_case columns
+([ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md)). One `NpgsqlDataSource`
+singleton is shared by the context and, later, by Elarion's PostgreSQL packages. The connection string
+comes from `Watchtower:Database:ConnectionString`, falling back to `ConnectionStrings:watchtower` so
+Aspire's `WithReference` works; there is no default, and a missing one is a startup error.
+
+The schema is created by the `InitialPostgreSql` migration (applied on startup via `MigrateAsync`), and
+any deploys left `running`/`queued` by a crash are reset to `failed`. Entities keep integer identity keys
+to preserve the API contract. Rows several writers can meet on — realms, stacks, routes, groups — carry
+PostgreSQL's `xmin` as their EF concurrency token, and a lost race becomes a `Conflict` result through
+`ConcurrencyConflictDecorator` rather than an unhandled exception; users carry Identity's own
+`ConcurrencyStamp` instead, because the user store reads detached and writes back.
+
+Watchtower stored everything in a SQLite file before ADR-0024. The first start that finds one at
+`/data/watchtower.db` beside an empty PostgreSQL database carries it across itself; `--import-sqlite
+<path>` does the same for a file kept elsewhere. Once, either way — see [upgrading.md](upgrading.md). It
+is the only SQLite code left.

@@ -3874,6 +3874,27 @@
               "string",
               "null"
             ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "makeLoginRoute": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -3896,7 +3917,10 @@
                 "type": "integer"
               },
               "stackId": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "stackName": {
                 "type": [
@@ -3941,6 +3965,24 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "target": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realmSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isLoginRoute": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -3956,7 +3998,11 @@
               "status",
               "statusDetail",
               "certNotAfter",
-              "createdAt"
+              "createdAt",
+              "target",
+              "realmId",
+              "realmSlug",
+              "isLoginRoute"
             ]
           }
         },
@@ -3986,6 +4032,13 @@
         "properties": {
           "id": {
             "type": "integer"
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -4080,6 +4133,51 @@
               "caddyImage": {
                 "type": "string"
               },
+              "yarp": {
+                "type": "object",
+                "properties": {
+                  "httpPort": {
+                    "type": "integer"
+                  },
+                  "httpsPort": {
+                    "type": "integer"
+                  },
+                  "acmeDirectoryUrl": {
+                    "type": "string"
+                  },
+                  "acmeCaBundlePath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "acmeEabKeyId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasAcmeEabHmacKey": {
+                    "type": "boolean"
+                  },
+                  "redirectHttpToHttps": {
+                    "type": "boolean"
+                  },
+                  "httpsListenerBound": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "httpPort",
+                  "httpsPort",
+                  "acmeDirectoryUrl",
+                  "acmeCaBundlePath",
+                  "acmeEabKeyId",
+                  "hasAcmeEabHmacKey",
+                  "redirectHttpToHttps",
+                  "httpsListenerBound"
+                ]
+              },
               "cloudflare": {
                 "type": "object",
                 "properties": {
@@ -4159,6 +4257,7 @@
               "provider",
               "adminEmail",
               "caddyImage",
+              "yarp",
               "cloudflare",
               "pinnedPaths"
             ]
@@ -4191,7 +4290,10 @@
                 "type": "integer"
               },
               "stackId": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "stackName": {
                 "type": [
@@ -4236,6 +4338,24 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "target": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realmSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isLoginRoute": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -4251,7 +4371,11 @@
               "status",
               "statusDetail",
               "certNotAfter",
-              "createdAt"
+              "createdAt",
+              "target",
+              "realmId",
+              "realmSlug",
+              "isLoginRoute"
             ]
           }
         },
@@ -4278,13 +4402,112 @@
           },
           "provider": {
             "type": "string"
+          },
+          "providerDetail": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "enabled",
           "caddyRunning",
           "routeCount",
-          "provider"
+          "provider",
+          "providerDetail"
+        ]
+      }
+    },
+    "proxy.listCertificates": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "certificates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "routeId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "notBefore": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "notAfter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "issuer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nextAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "consecutiveFailures": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "host",
+                "source",
+                "routeId",
+                "state",
+                "notBefore",
+                "notAfter",
+                "issuer",
+                "lastAttemptAt",
+                "lastError",
+                "nextAttemptAt",
+                "consecutiveFailures"
+              ]
+            }
+          }
+        },
+        "required": [
+          "certificates"
         ]
       }
     },
@@ -4381,7 +4604,10 @@
                   "type": "integer"
                 },
                 "stackId": {
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "stackName": {
                   "type": [
@@ -4426,6 +4652,24 @@
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "realmId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "realmSlug": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "isLoginRoute": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -4441,13 +4685,114 @@
                 "status",
                 "statusDetail",
                 "certNotAfter",
-                "createdAt"
+                "createdAt",
+                "target",
+                "realmId",
+                "realmSlug",
+                "isLoginRoute"
               ]
             }
           }
         },
         "required": [
           "routes"
+        ]
+      }
+    },
+    "proxy.renewCertificate": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "certificate": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "routeId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "notBefore": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "notAfter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "issuer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastAttemptAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nextAttemptAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "consecutiveFailures": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "source",
+              "routeId",
+              "state",
+              "notBefore",
+              "notAfter",
+              "issuer",
+              "lastAttemptAt",
+              "lastError",
+              "nextAttemptAt",
+              "consecutiveFailures"
+            ]
+          }
+        },
+        "required": [
+          "certificate"
         ]
       }
     },
@@ -4570,6 +4915,55 @@
           "caddyImage": {
             "type": "string"
           },
+          "yarpHttpPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpHttpsPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeDirectoryUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeCaBundlePath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeEabKeyId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpAcmeEabHmacKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpRedirectHttpToHttps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
           "cloudflareAccountId": {
             "type": [
               "string",
@@ -4683,6 +5077,51 @@
               "caddyImage": {
                 "type": "string"
               },
+              "yarp": {
+                "type": "object",
+                "properties": {
+                  "httpPort": {
+                    "type": "integer"
+                  },
+                  "httpsPort": {
+                    "type": "integer"
+                  },
+                  "acmeDirectoryUrl": {
+                    "type": "string"
+                  },
+                  "acmeCaBundlePath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "acmeEabKeyId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hasAcmeEabHmacKey": {
+                    "type": "boolean"
+                  },
+                  "redirectHttpToHttps": {
+                    "type": "boolean"
+                  },
+                  "httpsListenerBound": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "httpPort",
+                  "httpsPort",
+                  "acmeDirectoryUrl",
+                  "acmeCaBundlePath",
+                  "acmeEabKeyId",
+                  "hasAcmeEabHmacKey",
+                  "redirectHttpToHttps",
+                  "httpsListenerBound"
+                ]
+              },
               "cloudflare": {
                 "type": "object",
                 "properties": {
@@ -4762,6 +5201,7 @@
               "provider",
               "adminEmail",
               "caddyImage",
+              "yarp",
               "cloudflare",
               "pinnedPaths"
             ]
@@ -4793,6 +5233,20 @@
           },
           "isPrimary": {
             "type": "boolean"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "makeLoginRoute": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -4814,7 +5268,10 @@
                 "type": "integer"
               },
               "stackId": {
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "stackName": {
                 "type": [
@@ -4859,6 +5316,24 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "target": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "realmSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "isLoginRoute": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -4874,7 +5349,11 @@
               "status",
               "statusDetail",
               "certNotAfter",
-              "createdAt"
+              "createdAt",
+              "target",
+              "realmId",
+              "realmSlug",
+              "isLoginRoute"
             ]
           }
         },
@@ -4893,7 +5372,7 @@
           "slug": {
             "type": "string"
           },
-          "authHost": {
+          "loginDomain": {
             "type": [
               "string",
               "null"
@@ -4921,12 +5400,6 @@
               "slug": {
                 "type": "string"
               },
-              "authHost": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "isSystem": {
                 "type": "boolean"
               },
@@ -4942,18 +5415,31 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "loginRouteId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "loginHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "id",
               "name",
               "slug",
-              "authHost",
               "isSystem",
               "userCount",
               "groupCount",
               "templateCount",
-              "createdAt"
+              "createdAt",
+              "loginRouteId",
+              "loginHost"
             ]
           }
         },
@@ -5007,12 +5493,6 @@
                 "slug": {
                   "type": "string"
                 },
-                "authHost": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
                 "isSystem": {
                   "type": "boolean"
                 },
@@ -5028,18 +5508,31 @@
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "loginRouteId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "loginHost": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "id",
                 "name",
                 "slug",
-                "authHost",
                 "isSystem",
                 "userCount",
                 "groupCount",
                 "templateCount",
-                "createdAt"
+                "createdAt",
+                "loginRouteId",
+                "loginHost"
               ]
             }
           }
@@ -5063,9 +5556,9 @@
             ],
             "default": null
           },
-          "authHost": {
+          "loginRouteId": {
             "type": [
-              "string",
+              "integer",
               "null"
             ],
             "default": null
@@ -5090,12 +5583,6 @@
               "slug": {
                 "type": "string"
               },
-              "authHost": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "isSystem": {
                 "type": "boolean"
               },
@@ -5111,18 +5598,31 @@
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "loginRouteId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "loginHost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "id",
               "name",
               "slug",
-              "authHost",
               "isSystem",
               "userCount",
               "groupCount",
               "templateCount",
-              "createdAt"
+              "createdAt",
+              "loginRouteId",
+              "loginHost"
             ]
           }
         },
@@ -6697,6 +7197,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "effectiveLoginHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -6887,6 +7394,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "effectiveLoginHost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [

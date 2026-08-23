@@ -61,8 +61,10 @@ public static class StackProjectNames {
     /// <returns>True when the name is already taken by a different stack.</returns>
     public static Task<bool> IsTakenAsync(
         WatchtowerDbContext db, string projectName, int? excludeStackId, CancellationToken ct) {
-        // ToLower() (not StringComparison, which SQLite cannot translate) mirrors how the codebase
-        // already does case-insensitive matching, e.g. the route-domain lookup.
+        // ToLower() on both sides rather than StringComparison, which EF cannot translate. Unlike the
+        // route domain, this column is not stored normalized (a compose project name is shown back to the
+        // operator as they typed it), so the expression index ix_stacks_compose_project_name_lower —
+        // added by the initial migration — is what keeps this an index lookup.
         var lowered = projectName.ToLowerInvariant();
         return db.Stacks.AnyAsync(
             s => s.ComposeProjectName.ToLower() == lowered
