@@ -9,7 +9,7 @@ The feature is **opt-in**. While it is off, routes are stored and nothing is ser
 
 | Provider | What it is | Guide |
 | --- | --- | --- |
-| **`yarp`** (default) | Watchtower terminates 80/443 in its own process and issues its own certificates over ACME. No second container. Ingress is on its own container ports (`80:8081`, `443:8443`), separate from the management endpoint on 8080. | [yarp.md](yarp.md) |
+| **`yarp`** (default) | Watchtower terminates 80/443 in its own process and issues its own certificates over ACME. No second container. Ingress is on its own container ports (`80:8081`, `443:8443` by default — a reverse-proxy setting, bound only while this provider is enabled), separate from the management endpoint on 8080. | [yarp.md](yarp.md) |
 | `caddy` *(deprecated)* | A sibling Caddy container Watchtower manages, holding the host's ports 80/443. Kept for existing installs. | [caddy.md](caddy.md) |
 | `cloudflare` | A Cloudflare Tunnel: outbound only, no open ports, TLS at Cloudflare's edge, access gated by Zero Trust. | [cloudflare.md](cloudflare.md) |
 
@@ -101,7 +101,7 @@ A worked example. One instance, authentication on, the `yarp` provider, the mana
 
 `realms`: system (login route → 1), acme (login route → 3). Settings: `Proxy:Enabled=true`,
 `Provider=yarp`, `Auth:Enabled=true`, `Auth:Host` **empty**. Ports: `127.0.0.1:8080:8080` (management,
-private), `80:8081`, `443:8443`.
+private), `80:8081`, `443:8443` — the ingress container ports being the yarp defaults.
 
 What each request does:
 

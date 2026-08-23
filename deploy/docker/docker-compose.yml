@@ -29,10 +29,13 @@
 # private per-stack networks. There is no second container and no control network. Requirements when
 # enabled:
 #   * uncomment the 80:8081 and 443:8443 port mappings below. Port 80 is not optional: ACME HTTP-01
-#     validation is how certificates are issued, and the CA reaches it over plain HTTP.
+#     validation is how certificates are issued, and the CA reaches it over plain HTTP. The published
+#     host ports must match the CONTAINER ports the ingress listeners are configured on (8081/8443 by
+#     default — Settings → Reverse proxy, or WATCHTOWER__PROXY__YARP__HTTPPORT / __HTTPSPORT).
 #   * ingress (8081/8443) and the management plane (8080) are separate listeners. A request on an
 #     ingress port whose Host is not a route — or a realm login host — is answered with 404 and never
-#     reaches Watchtower's UI or API.
+#     reaches Watchtower's UI or API. The ingress listeners exist only while the built-in provider is
+#     enabled: turning it on or off binds and unbinds them without a restart.
 #   * point each route's DNS at this host before adding it, so the first issuance can validate.
 #   * set WATCHTOWER__PROXY__ADMINEMAIL for Let's Encrypt expiry notices (recommended).
 # Certificates, the ACME account and the challenge answers are rows in PostgreSQL (ADR-0024), so there
@@ -62,9 +65,11 @@ services:
       # an unknown Host arriving here gets a 404 rather than Watchtower's management plane.
       # - "80:8081"
       # - "443:8443"
-      # The container's own ports are set by Kestrel__Endpoints__Http__Url (8080),
-      # Kestrel__Endpoints__ProxyHttp__Url (8081) and Kestrel__Endpoints__ProxyHttps__Url (8443);
-      # ASPNETCORE_URLS no longer applies to this image.
+      # The management container port is Kestrel__Endpoints__Http__Url (8080; ASPNETCORE_URLS no longer
+      # applies to this image). The ingress container ports are reverse-proxy settings — 8081/8443 by
+      # default, changed under Settings → Reverse proxy or pinned with
+      # WATCHTOWER__PROXY__YARP__HTTPPORT / __HTTPSPORT (0 turns a listener off). Keep the right-hand
+      # side of the mappings above in step with them.
     volumes:
       - watchtower-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -95,6 +100,10 @@ services:
       # WATCHTOWER__PROXY__ADMINEMAIL: you@example.com
       # WATCHTOWER__PROXY__PROVIDER: yarp   # yarp (default) | caddy (deprecated) | cloudflare
       # WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL: https://acme-v02.api.letsencrypt.org/directory
+      # Ingress container ports (defaults 8081/8443; 0 turns a listener off). Setting them here pins
+      # them — leave unset to keep them editable under Settings → Reverse proxy.
+      # WATCHTOWER__PROXY__YARP__HTTPPORT: "8081"
+      # WATCHTOWER__PROXY__YARP__HTTPSPORT: "8443"
       # Host metrics (opt-in) — needs the /proc mount above; see docs/host-metrics.md.
       # WATCHTOWER_HOST_PROC: /host/proc
       # Metrics history is ON by default (persisted in Watchtower's database, ~30 days; ADR-0013).

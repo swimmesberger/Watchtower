@@ -29,9 +29,9 @@ internal sealed class AcmeEstate(FakeAcmeServer ca, WatchtowerApiFactory factory
     /// A running CA and a Watchtower host pointed at it.
     /// </summary>
     /// <param name="httpsBound">
-    /// What <see cref="YarpListenerState.HttpsBound"/> says. True by default: under <c>TestServer</c>
-    /// nothing binds a socket at all, so the flag has to be set by hand — and the reconcile loop refuses
-    /// to issue certificates that could not be served.
+    /// Whether TLS ingress is configured — the reconcile loop refuses to issue certificates that could not
+    /// be served. Expressed the way an operator expresses it, by the ingress port setting, since the
+    /// listeners follow the reverse-proxy settings; <c>false</c> is the port turned off.
     /// </param>
     /// <param name="selfCheck">
     /// Whether the issuer probes its own challenge responder before telling the CA to validate. Off by
@@ -51,11 +51,12 @@ internal sealed class AcmeEstate(FakeAcmeServer ca, WatchtowerApiFactory factory
             ("Watchtower:Proxy:Yarp:AcmeDirectoryUrl", ca.DirectoryUrl),
             ("Watchtower:Proxy:Yarp:AcmeSelfCheckEnabled", selfCheck ? "true" : "false"),
             ("Watchtower:Proxy:AdminEmail", "ops@example.invalid"),
+            .. httpsBound ? [] : new[] { ("Watchtower:Proxy:Yarp:HttpsPort", (string?)"0") },
             .. settings,
-        ]) { AcmeTransport = ca.Transport, UseRealProxyProvider = true };
+        ]) { AcmeTransport = ca.Transport, UseRealProxyProvider = true, HasIngress = true };
 
-        // Touching Services builds the host, which is what makes the handler below exist.
-        factory.Services.GetRequiredService<YarpListenerState>().HttpsBound = httpsBound;
+        // Touching Services builds the host, which is also what derives the listener state above.
+        _ = factory.Services;
         // The other half of the loop: the CA validates by fetching through Watchtower's real pipeline, so
         // the challenge middleware, the host dispatch and the HTTPS redirect are all under test.
         ca.ChallengeTransport = factory.Server.CreateHandler();

@@ -4136,6 +4136,12 @@
               "yarp": {
                 "type": "object",
                 "properties": {
+                  "httpPort": {
+                    "type": "integer"
+                  },
+                  "httpsPort": {
+                    "type": "integer"
+                  },
                   "acmeDirectoryUrl": {
                     "type": "string"
                   },
@@ -4162,6 +4168,8 @@
                   }
                 },
                 "required": [
+                  "httpPort",
+                  "httpsPort",
                   "acmeDirectoryUrl",
                   "acmeCaBundlePath",
                   "acmeEabKeyId",
@@ -4907,6 +4915,20 @@
           "caddyImage": {
             "type": "string"
           },
+          "yarpHttpPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "yarpHttpsPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
           "yarpAcmeDirectoryUrl": {
             "type": [
               "string",
@@ -5058,6 +5080,12 @@
               "yarp": {
                 "type": "object",
                 "properties": {
+                  "httpPort": {
+                    "type": "integer"
+                  },
+                  "httpsPort": {
+                    "type": "integer"
+                  },
                   "acmeDirectoryUrl": {
                     "type": "string"
                   },
@@ -5084,6 +5112,8 @@
                   }
                 },
                 "required": [
+                  "httpPort",
+                  "httpsPort",
                   "acmeDirectoryUrl",
                   "acmeCaBundlePath",
                   "acmeEabKeyId",

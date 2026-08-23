@@ -2,19 +2,18 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
 using Watchtower.Api.Proxy;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
+using Watchtower.Application.Tests;
 using Xunit;
 
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// What the in-process proxy's host wiring does when there is no listener to speak of. Everything phase
-/// 4 adds to <c>Program.cs</c> is conditional on a Kestrel endpoint the test host never configures, and
-/// the point here is that "conditional" really means inert: the app still boots, the certificate store
-/// still opens over its directory, and the proxy honestly reports that nothing is bound.
+/// What the in-process proxy's host wiring does when there is no listener to speak of, and how the
+/// listener facts follow the projected Kestrel section once there is. Everything the proxy reports about
+/// its own data plane comes from that derivation — there is no container to inspect.
 /// </summary>
 public sealed class ProxyListenerStateTests {
     [Fact]
@@ -23,8 +22,8 @@ public sealed class ProxyListenerStateTests {
         using var client = factory.CreateApiClient();
         var ct = TestContext.Current.CancellationToken;
 
-        // The listener-state initializer runs on ApplicationStarted, which the first request forces.
-        // TestServer exposes no address feature at all, and that has to be a shrug rather than a crash.
+        // The listener state is derived before the host is even built, and TestServer binding nothing has
+        // to be a shrug rather than a crash.
         var health = await client.GetAsync("/health", ct);
         Assert.True(health.IsSuccessStatusCode);
 
@@ -53,42 +52,34 @@ public sealed class ProxyListenerStateTests {
         Assert.Null(store.SelectContext("app.example.invalid"));
     }
 
-    // ── Which bound port is ingress, and which is management ──────────────────
+    // ── Which port is ingress, and which is management ────────────────────────
 
     /// <summary>
-    /// The shipped image's shape. A bound address is only a port; what makes 8081 and 8443 ingress and 8080
-    /// the management plane is the <c>Kestrel:Endpoints:*</c> names they were configured under, which is why
-    /// the derivation reads both.
+    /// The shipped image's shape. A port on its own says nothing; what makes 8081 and 8443 ingress and 8080
+    /// the management plane is the <c>Endpoints:*</c> names they are projected under, which is why the
+    /// derivation reads the section rather than a list of ports.
     /// </summary>
     [Fact]
-    public void IngressPorts_AreTheBoundProxyEndpoints() {
-        var state = new YarpListenerState();
+    public void IngressPorts_AreTheProjectedProxyEndpoints() {
+        var snapshot = ProxyListenerStateInitializer.Derive(ShippedEndpoints(), hostingUrls: null);
 
-        ProxyListenerStateInitializer.Apply(
-            state,
-            ["http://[::]:8080", "http://[::]:8081", "https://[::]:8443"],
-            ShippedEndpoints(),
-            NullLogger.Instance);
-
-        Assert.Equal([8081, 8443], state.IngressPorts.Order());
-        Assert.Equal(8080, state.ManagementPort);
-        Assert.True(state.HttpsBound);
+        Assert.Equal([8081, 8443], snapshot.IngressPorts.Order());
+        Assert.Equal(8080, snapshot.ManagementPort);
+        Assert.True(snapshot.HttpsBound);
     }
 
     /// <summary>
-    /// A port that is configured but never came up is not ingress. The rule the dispatcher applies has to
-    /// describe listeners that exist — refusing hosts on the strength of a listener that failed to bind
-    /// would refuse them on the endpoint that is actually serving them.
+    /// TLS ingress turned off — the operator set the port to 0, or another terminator fronts Watchtower.
+    /// The plain-HTTP endpoint is still ingress, and the proxy says HTTPS is not there.
     /// </summary>
     [Fact]
-    public void APortThatNeverBound_IsNotIngress() {
-        var state = new YarpListenerState();
+    public void WithoutTheTlsEndpoint_OnlyThePlainPortIsIngress() {
+        var snapshot = ProxyListenerStateInitializer.Derive(
+            Section(("Endpoints:Http:Url", "http://+:8080"), ("Endpoints:ProxyHttp:Url", "http://+:8081")),
+            hostingUrls: null);
 
-        ProxyListenerStateInitializer.Apply(
-            state, ["http://[::]:8080", "http://[::]:8081"], ShippedEndpoints(), NullLogger.Instance);
-
-        Assert.Equal([8081], state.IngressPorts.Order());
-        Assert.False(state.HttpsBound);
+        Assert.Equal([8081], snapshot.IngressPorts.Order());
+        Assert.False(snapshot.HttpsBound);
     }
 
     /// <summary>
@@ -97,112 +88,122 @@ public sealed class ProxyListenerStateTests {
     /// </summary>
     [Fact]
     public void LocalHttpAddress_PrefersTheIngressHttpEndpoint() {
-        var state = new YarpListenerState();
+        var snapshot = ProxyListenerStateInitializer.Derive(ShippedEndpoints(), hostingUrls: null);
 
-        ProxyListenerStateInitializer.Apply(
-            state,
-            ["http://[::]:8080", "http://[::]:8081", "https://[::]:8443"],
-            ShippedEndpoints(),
-            NullLogger.Instance);
-
-        // Wildcard rewritten to something this process can dial, port preserved.
-        Assert.Equal("http://127.0.0.1:8081", state.LocalHttpAddress);
+        // The wildcard bind is rewritten into something this process can dial, port preserved.
+        Assert.Equal("http://127.0.0.1:8081", snapshot.LocalHttpAddress);
     }
 
     /// <summary>Without an ingress HTTP endpoint it is the management listener, as it always was.</summary>
     [Fact]
     public void LocalHttpAddress_FallsBackToTheManagementEndpoint() {
-        var state = new YarpListenerState();
-        var configuration = Configuration(("Kestrel:Endpoints:Http:Url", "http://+:8080"));
+        var snapshot = ProxyListenerStateInitializer.Derive(
+            Section(("Endpoints:Http:Url", "http://+:8080")), hostingUrls: null);
 
-        ProxyListenerStateInitializer.Apply(state, ["http://[::]:8080"], configuration, NullLogger.Instance);
-
-        Assert.Equal("http://127.0.0.1:8080", state.LocalHttpAddress);
-        Assert.Empty(state.IngressPorts);
-        Assert.Equal(8080, state.ManagementPort);
+        Assert.Equal("http://127.0.0.1:8080", snapshot.LocalHttpAddress);
+        Assert.Empty(snapshot.IngressPorts);
+        Assert.Equal(8080, snapshot.ManagementPort);
     }
 
     /// <summary>
-    /// No address feature at all — <c>TestServer</c>, or a server that exposes none. The configured URLs are
-    /// the only evidence there is, and an operator who published <c>80:8081</c> is owed the ingress rule
-    /// whether or not the server chose to describe itself.
+    /// A host with no named endpoints at all — development, Aspire, <c>ASPNETCORE_URLS</c>. Its single
+    /// listener is the management plane by definition, and there is no ingress to separate from it.
     /// </summary>
     [Fact]
-    public void WithNoAddressFeature_ThePortsComeFromConfiguration() {
-        var state = new YarpListenerState();
+    public void WithNoEndpoints_TheManagementPortComesFromTheHostingUrls() {
+        var snapshot = ProxyListenerStateInitializer.Derive(
+            Section(), hostingUrls: "http://localhost:5080;https://localhost:5443");
 
-        ProxyListenerStateInitializer.Apply(state, addresses: null, ShippedEndpoints(), NullLogger.Instance);
-
-        Assert.Equal([8081, 8443], state.IngressPorts.Order());
-        Assert.Equal(8080, state.ManagementPort);
+        Assert.Empty(snapshot.IngressPorts);
+        Assert.Equal(5080, snapshot.ManagementPort);
+        Assert.Equal("http://127.0.0.1:5080", snapshot.LocalHttpAddress);
+        Assert.False(snapshot.HttpsBound);
     }
 
-    /// <summary>
-    /// And where the configuration names nothing either, the state is left alone rather than overwritten
-    /// with an empty derivation — which is what keeps a host whose listener state was seeded elsewhere
-    /// (the test factory, an Aspire run) from being flattened on startup.
-    /// </summary>
+    /// <summary>And with nothing to go on at all, the state says so rather than inventing a port.</summary>
     [Fact]
-    public void WithNothingConfigured_TheSeededPortsSurvive() {
-        var state = new YarpListenerState { IngressPorts = new HashSet<int> { 8081 }, ManagementPort = 8080 };
+    public void WithNothingConfigured_NothingIsClaimed() {
+        var snapshot = ProxyListenerStateInitializer.Derive(Section(), hostingUrls: null);
 
-        ProxyListenerStateInitializer.Apply(
-            state, addresses: null, Configuration(), NullLogger.Instance);
-
-        Assert.Equal([8081], state.IngressPorts.Order());
-        Assert.Equal(8080, state.ManagementPort);
+        Assert.Empty(snapshot.IngressPorts);
+        Assert.Null(snapshot.ManagementPort);
+        Assert.Null(snapshot.LocalHttpAddress);
     }
 
+    // ── Following the settings at runtime ─────────────────────────────────────
+
     /// <summary>
-    /// The seed is in place the moment the initializer is registered — before <c>ApplicationStarted</c>,
-    /// which fires only after every hosted service has started. Kestrel accepts connections on the ingress
-    /// ports throughout that window, and an empty <c>IngressPorts</c> there is not a missing diagnostic: it
-    /// is the fall-through rule in force on ports published to the internet, on every restart, for as long
-    /// as the slowest hosted service takes.
+    /// The facts are in place before the host has started — not after <c>ApplicationStarted</c>, which
+    /// fires only once every hosted service has. Kestrel accepts connections on the ingress ports
+    /// throughout that window, and an empty <c>IngressPorts</c> there is not a missing diagnostic: it is
+    /// the dispatcher's fall-through rule in force on ports published to the internet.
     /// </summary>
     [Fact]
-    public async Task Register_SeedsThePortsBeforeTheHostEverStarts() {
+    public async Task Register_DerivesThePortsBeforeTheHostEverStarts() {
         var builder = WebApplication.CreateSlimBuilder();
-        builder.Configuration.AddInMemoryCollection([
-            new KeyValuePair<string, string?>("Kestrel:Endpoints:Http:Url", "http://+:8080"),
-            new KeyValuePair<string, string?>("Kestrel:Endpoints:ProxyHttp:Url", "http://+:8081"),
-            new KeyValuePair<string, string?>("Kestrel:Endpoints:ProxyHttps:Url", "https://+:8443"),
-        ]);
+        builder.Configuration.AddInMemoryCollection(Settings(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Kestrel:Endpoints:Http:Url", "http://+:8080")));
         builder.Services.AddSingleton<YarpListenerState>();
+        builder.Services.AddSingleton<ProxyIngressWarnings>();
         await using var app = builder.Build();
+        var section = ProxyIngressKestrelConfiguration.Build(app.Configuration);
 
-        ProxyListenerStateInitializer.Register(app);
+        ProxyListenerStateInitializer.Register(app, section);
 
         // Nothing has started, nothing has bound, and the rule is already in force.
         var state = app.Services.GetRequiredService<YarpListenerState>();
         Assert.Equal([8081, 8443], state.IngressPorts.Order());
         Assert.Equal(8080, state.ManagementPort);
+        Assert.True(state.HttpsBound);
     }
 
     /// <summary>
-    /// And the bind narrows the seed rather than sitting alongside it: a configured endpoint that never
-    /// came up stops being ingress once the server has said what it bound.
+    /// And the state follows the settings afterwards, through the subscription rather than through a
+    /// second call: a settings write is what an operator actually does, and the chain that has to survive
+    /// it runs settings → root reload → projection → this state. Turning the proxy off takes the ingress
+    /// ports with it, which is the whole point of the endpoints being derived rather than baked into the
+    /// image.
     /// </summary>
     [Fact]
-    public void TheBoundAddresses_NarrowTheSeed() {
-        var state = new YarpListenerState();
-        var configuration = ShippedEndpoints();
-        ProxyListenerStateInitializer.Seed(state, configuration);
+    public async Task TheStateFollowsASettingsWrite() {
+        var settings = new ReloadableSettings(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Kestrel:Endpoints:Http:Url", "http://+:8080"));
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Configuration.Sources.Clear();
+        ((IConfigurationBuilder)builder.Configuration).Add(settings);
+        builder.Services.AddSingleton<YarpListenerState>();
+        builder.Services.AddSingleton<ProxyIngressWarnings>();
+        await using var app = builder.Build();
+        var section = ProxyIngressKestrelConfiguration.Build(app.Configuration);
+
+        ProxyListenerStateInitializer.Register(app, section);
+        var state = app.Services.GetRequiredService<YarpListenerState>();
         Assert.Equal([8081, 8443], state.IngressPorts.Order());
 
-        ProxyListenerStateInitializer.Apply(
-            state, ["http://[::]:8080", "http://[::]:8081"], configuration, NullLogger.Instance);
+        // Nothing calls Apply here — the write is the only input.
+        settings.Publish(
+            ("Watchtower:Proxy:Enabled", "false"), ("Kestrel:Endpoints:Http:Url", "http://+:8080"));
 
-        Assert.Equal([8081], state.IngressPorts.Order());
+        Assert.Empty(state.IngressPorts);
+        Assert.False(state.HttpsBound);
+        Assert.Equal(8080, state.ManagementPort);
+        Assert.Equal("http://127.0.0.1:8080", state.LocalHttpAddress);
     }
 
-    private static IConfiguration ShippedEndpoints() => Configuration(
-        ("Kestrel:Endpoints:Http:Url", "http://+:8080"),
-        ("Kestrel:Endpoints:ProxyHttp:Url", "http://+:8081"),
-        ("Kestrel:Endpoints:ProxyHttps:Url", "https://+:8443"));
+    /// <summary>The shipped image's projected section: management on 8080, ingress on 8081/8443.</summary>
+    private static IConfiguration ShippedEndpoints() => Section(
+        ("Endpoints:Http:Url", "http://+:8080"),
+        ("Endpoints:ProxyHttp:Url", "http://+:8081"),
+        ("Endpoints:ProxyHttps:Url", "https://+:8443"));
 
-    private static IConfiguration Configuration(params (string Key, string Value)[] pairs) =>
-        new ConfigurationBuilder()
-            .AddInMemoryCollection(pairs.Select(p => new KeyValuePair<string, string?>(p.Key, p.Value)))
-            .Build();
+    /// <summary>A stand-in for the projected section — keys are relative to <c>Kestrel</c>.</summary>
+    private static IConfiguration Section(params (string Key, string Value)[] pairs) =>
+        new ConfigurationBuilder().AddInMemoryCollection(Settings(pairs)).Build();
+
+    private static IEnumerable<KeyValuePair<string, string?>> Settings(params (string Key, string Value)[] pairs) =>
+        pairs.Select(p => new KeyValuePair<string, string?>(p.Key, p.Value));
 }

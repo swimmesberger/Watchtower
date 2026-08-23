@@ -35,7 +35,8 @@ namespace Watchtower.Api.Proxy;
 /// </para>
 /// <para>
 /// <b>Ingress and management are different listeners.</b> The dispatch is by host <em>and</em> by local
-/// port (<see cref="YarpListenerState.IngressPorts"/>). On an ingress port a host nobody routed gets a
+/// port — see <see cref="IsIngress"/> for which port counts as which and why the rule is stated by
+/// exclusion. On an ingress port a host nobody routed gets a
 /// bare 404 rather than falling through, because falling through on a port published to the internet is
 /// how <c>http://&lt;public-ip&gt;/</c> ends up serving the management plane — the login page with
 /// authentication on, the whole UI with it off. The mirror rule holds on the management port: a routed
@@ -72,6 +73,60 @@ public sealed class YarpHostDispatchMiddleware(
     /// <summary>Caddy's <c>forward_auth</c> hop header for the original URI. Meaningless in process.</summary>
     private const string ForwardedUriHeader = "X-Forwarded-Uri";
 
+    /// <summary>
+    /// Whether a connection arrived on public ingress rather than on the management plane. This is a
+    /// security decision, so it is stated by <em>exclusion</em>: once we know which port the management
+    /// plane is on, everything else is ingress.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The matrix, in order:
+    /// </para>
+    /// <list type="table">
+    /// <listheader>
+    ///   <term>Management port / ingress ports</term><description>Verdict</description>
+    /// </listheader>
+    /// <item>
+    ///   <term>no ingress ports configured</term>
+    ///   <description><b>Never ingress.</b> The in-process proxy is off, or both its ports are, so there
+    ///   is no public plane to separate from — this is the single-listener shape, and it includes every
+    ///   development host, the Aspire AppHost and a Caddy or Cloudflare deployment. Refusing hosts here
+    ///   would refuse them everywhere. Checked first, so a dev host that also binds an
+    ///   <c>https://</c> hosting URL does not have that second listener read as ingress.</description>
+    /// </item>
+    /// <item>
+    ///   <term>management port known, ingress configured</term>
+    ///   <description><b>Ingress unless it is the management port.</b> Fail closed: a port we did not
+    ///   expect is treated as public, not as the management plane.</description>
+    /// </item>
+    /// <item>
+    ///   <term>management port unknown</term>
+    ///   <description>Fall back to the configured ingress set. Only reachable where the state was never
+    ///   derived from a real projection — <c>TestServer</c> and the unit hosts — because a projection
+    ///   that derives ingress always carries a management endpoint with it.</description>
+    /// </item>
+    /// </list>
+    /// <para>
+    /// The exclusion rule is what makes a <em>stale</em> listener safe. Kestrel keeps its existing
+    /// endpoints when a rebind fails, so moving an ingress port onto one something else holds leaves the
+    /// old port bound and serving while configuration no longer names it. Under the old set-membership
+    /// rule that port became "management" and an unrouted host on it fell through to Watchtower's own UI —
+    /// the exact exposure the endpoint split exists to prevent. Under this rule it stays ingress.
+    /// </para>
+    /// <para>
+    /// The cost is that any <em>other</em> endpoint an operator adds to <c>Kestrel:Endpoints:*</c> counts
+    /// as ingress too: unknown hosts get a 404 there and only routed hosts are served. That is the safe
+    /// default — the failure is a listener that serves less than intended, not one that serves the
+    /// management plane to the internet.
+    /// </para>
+    /// </remarks>
+    internal static bool IsIngress(YarpListenerSnapshot listeners, int localPort) {
+        if (listeners.IngressPorts.Count == 0) return false;
+        return listeners.ManagementPort is { } management
+            ? localPort != management
+            : listeners.IngressPorts.Contains(localPort);
+    }
+
     public async Task InvokeAsync(HttpContext context) {
         ArgumentNullException.ThrowIfNull(context);
         var request = context.Request;
@@ -85,11 +140,13 @@ public sealed class YarpHostDispatchMiddleware(
         // table is case-insensitive.
         var host = request.Host.Host.TrimEnd('.');
 
-        // Which listener did this arrive on? The ingress endpoints (ProxyHttp, ProxyHttps) are the ones an
-        // operator publishes to the world; the management endpoint carries Watchtower's own UI and API and
-        // is meant to be bound to a private interface. The Host header cannot answer this and neither can
-        // the scheme — only the local port can, which is why the listener state records it.
-        var isIngress = listener.IngressPorts.Contains(context.Connection.LocalPort);
+        // Which listener did this arrive on? The Host header cannot answer this and neither can the
+        // scheme — only the local port can, which is why the listener state records it. One reading of the
+        // facts for the whole request: they change at runtime (the ingress endpoints follow the
+        // reverse-proxy settings), and deciding "is this ingress?" against one snapshot and "is there
+        // ingress at all?" against another is how a request gets judged by a state that never existed.
+        var listeners = listener.Current;
+        var isIngress = IsIngress(listeners, context.Connection.LocalPort);
 
         if (!table.Current.TryGet(host, out var row)) {
             // On ingress, a host nobody routed is a stranger: a scanner on the public IP, or a domain
@@ -124,9 +181,10 @@ public sealed class YarpHostDispatchMiddleware(
         // A routed application's host, arriving on the management endpoint. Half-serving it there — the
         // access check and the forward, on a port whose whole point is that it is not ingress — is a second
         // way in that nobody published, so it gets the same nothing an unrouted host gets on ingress.
-        // Guarded by there being ingress at all: a deployment that turned both proxy endpoints off has one
-        // listener, and refusing routes on it would refuse them everywhere.
-        if (!isIngress && listener.IngressPorts.Count > 0) {
+        // The IngressPorts guard is redundant with IsIngress above (nothing is ingress when the set is
+        // empty, so !isIngress would otherwise refuse routes on a single-listener host) and kept as the
+        // statement of that rule where it is being relied on.
+        if (!isIngress && listeners.IngressPorts.Count > 0) {
             NotFound(context);
             return;
         }

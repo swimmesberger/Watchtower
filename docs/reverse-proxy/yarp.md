@@ -12,13 +12,20 @@ For what all three providers share, start at [README.md](README.md).
 
 ## Ports: ingress is not the management plane
 
-The image binds **three** named Kestrel endpoints, and the split is load-bearing rather than tidy.
+Watchtower binds **three** listeners when the built-in proxy is on, and the split is load-bearing
+rather than tidy.
 
 | Container port | Endpoint | What it is | Publish it as |
 | --- | --- | --- | --- |
-| 8080 | `Http` | **Management plane** — Watchtower's own UI, `/rpc` and `/api/*`. Answers for every host name. | `127.0.0.1:8080:8080` — a private interface, never the internet |
-| 8081 | `ProxyHttp` | **Ingress, plain HTTP** — ACME HTTP-01 validation and the plain half of the proxy | `80:8081` |
-| 8443 | `ProxyHttps` | **Ingress, TLS** — the routed traffic, one certificate per SNI name | `443:8443` |
+| 8080 | `Http` | **Management plane** — Watchtower's own UI, `/rpc` and `/api/*`. Answers for every host name. Set in the image (`Kestrel__Endpoints__Http__Url`). | `127.0.0.1:8080:8080` — a private interface, never the internet |
+| 8081 (default) | `ProxyHttp` | **Ingress, plain HTTP** — ACME HTTP-01 validation and the plain half of the proxy. Setting: **Ingress HTTP port**. | `80:8081` |
+| 8443 (default) | `ProxyHttps` | **Ingress, TLS** — the routed traffic, one certificate per SNI name. Setting: **Ingress HTTPS port**. | `443:8443` |
+
+The two ingress listeners are **reverse-proxy settings, not image configuration**: they exist only
+while the built-in provider is enabled, and their container ports are editable under **Settings →
+Reverse proxy** (or pinned with `WATCHTOWER__PROXY__YARP__HTTPPORT` / `__HTTPSPORT`). Setting a port
+to `0` turns that listener off. Whatever you publish on the host side has to match the container port
+the listener is actually on.
 
 On the ingress ports a request whose `Host` is **not** in the route table is answered with a bare
 **404** — no body, no redirect, nothing that says what else is here. The one Watchtower hostname
@@ -47,23 +54,48 @@ services:
       WATCHTOWER__PROXY__ENABLED: "true"
       WATCHTOWER__PROXY__ADMINEMAIL: you@example.com   # recommended, for expiry notices
       # WATCHTOWER__PROXY__PROVIDER: yarp              # the default; state it only to be explicit
+      # WATCHTOWER__PROXY__YARP__HTTPPORT: "8081"      # the defaults; setting them here pins them
+      # WATCHTOWER__PROXY__YARP__HTTPSPORT: "8443"
 ```
 
 **Port 80 is not optional.** HTTP-01 is the only challenge type this implements, and the CA reaches
 the challenge responder over plain HTTP on port 80 by definition. Without it no certificate is ever
 issued.
 
-The container-side ports come from `Kestrel__Endpoints__Http__Url` (8080),
-`Kestrel__Endpoints__ProxyHttp__Url` (8081) and `Kestrel__Endpoints__ProxyHttps__Url` (8443), all set
-in the image. To move one, override that variable by name — **`ASPNETCORE_URLS` does not apply to this
-image** and Kestrel ignores it with a warning. Setting either proxy variable to an empty value turns
-that ingress listener off: blank `ProxyHttps` is what you want when something else terminates TLS in
-front of Watchtower, and blank `ProxyHttp` when nothing publishes 80 (no certificate will be issued
-then). With **both** blank there is no ingress at all, and the single remaining endpoint serves routes
-and the UI together, as it did before the split.
+The management port comes from `Kestrel__Endpoints__Http__Url` (8080), set in the image; to move it,
+override that variable by name — **`ASPNETCORE_URLS` does not apply to this image** and Kestrel
+ignores it with a warning.
 
-Everything except the three `Kestrel__*` variables is editable at runtime under
-**Settings → Reverse proxy**, and applies immediately. Env vars win over the UI
+Outside the image — a bare `dotnet run`, a systemd unit, the Aspire AppHost — there is usually no named
+endpoint at all, and Kestrel binds `ASPNETCORE_URLS` instead. That only works while *nothing* is
+configured, and enabling the proxy configures something. So when the proxy is on, Watchtower promotes
+the first plain-`http://` hosting URL into the management endpoint for you; the management listener
+stays exactly where it was. With the proxy off nothing is touched.
+
+An ingress port set to the management port is refused rather than bound (it would be a duplicate bind,
+and it would make the management port ingress — which is precisely what the split exists to prevent).
+Watchtower logs a warning and leaves that one listener off.
+
+The two ingress ports are settings: **Ingress HTTP port** and **Ingress HTTPS port** in the yarp block
+of Settings → Reverse proxy, or `WATCHTOWER__PROXY__YARP__HTTPPORT` / `__HTTPSPORT`. `0` turns a
+listener off — HTTPS off is what you want when something else terminates TLS in front of Watchtower,
+HTTP off when nothing publishes 80 (no certificate will be issued then). With **both** off there is no
+ingress at all, and the single remaining endpoint serves routes and the UI together, as it did before
+the split.
+
+### Switching at runtime
+
+Nothing here needs a restart. Enabling the proxy binds the ingress listeners; disabling it, or
+switching to `caddy` or `cloudflare`, unbinds them; changing a port rebinds that one. The management
+endpoint is untouched throughout, so the Settings page you made the change on stays reachable, and a
+request already being served on a listener that is going away runs to completion before the socket
+closes. A Caddy or Cloudflare deployment carries no ingress listener at all.
+
+`Kestrel__Endpoints__ProxyHttp__Url` and `Kestrel__Endpoints__ProxyHttps__Url` were the knob before
+this; they are **ignored** now, so a stale value left in a compose file does nothing.
+
+Everything except `Kestrel__Endpoints__Http__Url` is editable at runtime under **Settings → Reverse
+proxy**, and applies immediately. Env vars win over the UI
 ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)): a setting supplied that way shows as
 pinned and read-only until the variable is removed.
 
@@ -253,8 +285,8 @@ WATCHTOWER__PROXY__YARP__REDIRECTHTTPTOHTTPS: "false"
 ```
 
 Left on, Watchtower would redirect a request that already arrived over HTTPS at the edge, and the
-visitor would loop. Consider turning the TLS listener off entirely in that setup
-(`Kestrel__Endpoints__ProxyHttps__Url=`), since nothing reaches it.
+visitor would loop. Consider turning the TLS listener off entirely in that setup — **Ingress HTTPS
+port** to `0` — since nothing reaches it.
 
 ## Watching it work
 
@@ -275,15 +307,40 @@ route's status detail on the Routes page and the host's row in the Certificates 
 means the name does not resolve here, `Error` carries the CA's own words. Plain HTTP will still
 answer.
 
-**The status badge says "HTTPS listener not bound".** Kestrel never brought the TLS endpoint up.
-Check `Kestrel__Endpoints__ProxyHttps__Url` — an empty value disables it deliberately — and the
-container log for a bind failure. Routes still resolve and are served, but over plain HTTP only, which
-is exactly the state this caveat exists to make visible.
+**The status says "HTTPS ingress disabled (port 0)".** That is a setting, not a failure — someone set
+**Ingress HTTPS port** to `0`. Give it 8443 (or whatever you publish 443 onto) and the listener comes
+up immediately. Routes resolve and are served meanwhile, but over plain HTTP only.
 
-**Nothing reaches the proxy at all.** Confirm `80:8081` and `443:8443` are published on Watchtower's
-container (`docker port watchtower`) and that nothing else on the host holds 80 or 443. If you are
-upgrading from a mapping of `80:8080`, that is the change: 8080 is the management plane now, and 8081
-is plain-HTTP ingress.
+**A port is already in use.** This behaves differently depending on *when* it happens, and the
+difference matters.
+
+- **At startup it is fatal.** Kestrel throws `IOException: Failed to bind to address http://+:8443:
+  address already in use` out of its start-up path and the process exits. In Docker that is a
+  crash-loop: `docker logs watchtower` has the line.
+- **On a runtime change it is not.** When you move an ingress port from the Settings page and the new
+  port is taken, Kestrel logs the failure at **Critical**, *keeps the listeners it already had*, and the
+  process carries on serving. Nothing else changes — the management endpoint is untouched.
+
+The second case is the one that bites, because it looks fine. The Settings page will report the new
+port, traffic will keep arriving on the **old** one, and the instance will **crash-loop at the next
+restart or self-update**, when that same bind is attempted from the fatal path. Watchtower notices what
+it can: the proxy status shows `ingress port 8443 failed to bind — see the logs` when the server is not
+listening on a port the configuration asks for. **After changing an ingress port, check the status and
+the container log before walking away.** Pick a free container port under Settings → Reverse proxy and
+republish it on the host side to match.
+
+The old listener is not a hole while it lasts. Watchtower decides what is ingress by exclusion — while
+the proxy is on, every port except the management one is ingress — so the stranded listener keeps
+answering unknown hosts with a 404 rather than turning into a second management endpoint. The same rule
+means **any extra endpoint you add to `Kestrel:Endpoints:*` is treated as ingress** while the proxy is
+on: it serves routed hostnames and Watchtower's own, and 404s everything else. To move the management
+plane, change `Kestrel__Endpoints__Http__Url` rather than adding a second endpoint.
+
+**Nothing reaches the proxy at all.** Confirm the proxy is enabled and the built-in provider selected
+— the ingress listeners exist only then. Then confirm `80:8081` and `443:8443` are published on
+Watchtower's container (`docker port watchtower`), that the right-hand sides match the configured
+ingress ports, and that nothing else on the host holds 80 or 443. If you are upgrading from a mapping
+of `80:8080`, that is the change: 8080 is the management plane now, and 8081 is plain-HTTP ingress.
 
 **A domain you added answers 404 instead of your app.** The request reached the management endpoint
 rather than ingress — `80:8080` instead of `80:8081`, or a browser going straight to `:8080`. Routes

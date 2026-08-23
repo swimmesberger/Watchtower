@@ -134,7 +134,8 @@ public sealed class AcmeFailurePathTests {
         await using var estate = await AcmeEstate.StartAsync(selfCheck: true);
         // Port 1 on loopback: nothing listens there, which is what an unbound or unreachable HTTP
         // listener looks like from inside the process.
-        estate.Factory.Services.GetRequiredService<YarpListenerState>().LocalHttpAddress = "http://127.0.0.1:1";
+        estate.Factory.Services.GetRequiredService<YarpListenerState>()
+            .Update(s => s with { LocalHttpAddress = "http://127.0.0.1:1" });
         await estate.AddRouteAsync(Host);
 
         var outcome = await estate.Certificates.RenewNowAsync(Host, Ct);

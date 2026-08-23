@@ -149,6 +149,11 @@ public static class WatchtowerServiceCollectionExtensions {
         // path reads, so both are singletons independent of whether the provider is the active one.
         services.AddSingleton<ProxyRouteTable>();
         services.AddSingleton<YarpListenerState>();
+        // Diagnostics for the in-process proxy's listeners (ADR-0022 addendum): a best-effort read of what
+        // the server actually bound, which is what lets the status surface notice a rebind that failed.
+        // (The projection's warning sink is registered by the host instead — it has to exist before the
+        // container does, because the projection is built before Build().)
+        services.AddSingleton<BoundListenerPorts>();
         services.AddSingleton<RouteStatusUpdater>();
         // The live HTTP-01 challenge answers — rows since ADR-0024, so the CA's validation request can
         // land on any instance. Registered unconditionally, like the table above: the middleware that

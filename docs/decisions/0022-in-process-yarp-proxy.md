@@ -56,7 +56,9 @@ question rather than the routing.
    plain per-SNI certificate selector: that hands chain building to `SslStream` at handshake time,
    which resolves intermediates per connection and can reach out to build a chain. The endpoint is a
    named one because the callback attaches per listener; it exists only where it is configured, so
-   development, Aspire and the integration tests boot the host unchanged.
+   development, Aspire and the integration tests boot the host unchanged. *(What "configured" means
+   changed in the addendum below: the endpoint is derived from the reverse-proxy settings rather than
+   read from the environment.)*
 
 4. **A hand-written RFC 8555 client, HTTP-01 only.** TLS-ALPN-01 is not implementable on Kestrel (it
    needs the ALPN callback to swap in a throwaway certificate for the `acme-tls/1` protocol, which
@@ -93,9 +95,9 @@ question rather than the routing.
    port a host that is not in the route table gets a bare **404**, and the only Watchtower hostname
    ingress will serve is a realm's **login host**. The mirror rule holds on the management port — a
    routed application's host is refused there too, so ingress traffic cannot be half-served on the
-   endpoint an operator kept private. Setting either proxy endpoint's URL to an empty value turns that
-   listener off, and with no ingress bound at all the single remaining endpoint serves everything, as
-   before.
+   endpoint an operator kept private. Turning an ingress port off (`0`) removes that listener, and with
+   no ingress at all the single remaining endpoint serves everything, as before. *The two ingress
+   endpoints are reverse-proxy settings rather than image configuration — see the addendum.*
 
 9. **`/api/proxy/ask` answers only under the `caddy` provider.** It is a route-existence oracle that
    exists for Caddy's on-demand-TLS module; the in-process proxy holds the route table in memory and
@@ -159,10 +161,133 @@ question rather than the routing.
   something. A self-signed placeholder was considered and rejected — a browser warning that resolves
   itself minutes later teaches operators to click through warnings. Operator-uploaded certificates
   are out of scope for the same round; both are follow-ups.
-- **Development and the test suite are unaffected.** The TLS endpoint exists only where
-  `Kestrel__Endpoints__ProxyHttps__Url` is configured, which is the shipped image and nothing else;
-  the host-dispatch middleware costs one failed dictionary lookup per request while the provider is
+- **Development and the test suite are unaffected.** The TLS endpoint exists only where the
+  reverse-proxy settings ask for it, which no development, Aspire or integration-test host does; the
+  host-dispatch middleware costs one failed dictionary lookup per request while the provider is
   inactive.
 - **`ASPNETCORE_URLS` no longer applies to this image.** Configured Kestrel endpoints override it, and
   Kestrel ignores it with a warning. Deployments that moved the port that way must set
   `Kestrel__Endpoints__Http__Url` instead.
+
+## Addendum (2026-08-23): runtime-bound ingress endpoints
+
+### Context
+
+Decision 8 gave the proxy its own listeners but left them as *image* configuration: the Dockerfile set
+`Kestrel__Endpoints__ProxyHttp__Url` and `Kestrel__Endpoints__ProxyHttps__Url`, Kestrel bound both at
+startup whether or not the in-process provider was active, and the only way to turn one off was to
+override the baked-in variable with an empty value — a hack, because Docker cannot unset a variable and
+Kestrel's loader rejects an endpoint whose `Url` is present but blank, so the app had to filter the
+blank endpoint out before the loader saw it. Three things followed. A Caddy or Cloudflare deployment
+carried an idle TLS listener it had no use for. Enabling the proxy from Settings — a runtime switch in
+every other respect — produced "HTTPS listener not bound, restart needed". And the ports were the one
+part of the reverse-proxy configuration an operator could not see or change in the Settings UI.
+
+Kestrel supports endpoint reload: `KestrelServerOptions.Configure(section, reloadOnChange: true)`
+watches the section's change token and binds, unbinds and rebinds the `Kestrel:Endpoints:*` it finds.
+The Elarion settings store is already a reloadable configuration source layered under the environment
+(ADR-0014). The two compose.
+
+### Decision
+
+**The ingress listeners follow the reverse-proxy settings at runtime.** They exist if and only if
+`Proxy:Enabled` **and** `Provider == yarp` **and** the port in question is non-zero — and the ports are
+ordinary yarp settings, `Watchtower:Proxy:Yarp:HttpPort` (default 8081) and `HttpsPort` (default 8443),
+editable in the yarp block of Settings → Reverse proxy and pinnable like any other.
+
+- **One projected configuration decides it.** `ProxyIngressKestrelConfiguration.Build(root)` returns the
+  configuration Kestrel is handed: everything under the host's `Kestrel` section *except*
+  `Endpoints:ProxyHttp*`, plus the two proxy endpoints **derived** from the settings above. Kestrel gets
+  it with `reloadOnChange: true`; the projection subscribes to the root configuration's reload token and
+  raises its own only when the projected key set actually changed, so an unrelated settings write cannot
+  rebind a public listener. `ProxyListenerStateInitializer` subscribes to the same token, which is what
+  keeps the dispatcher's ingress rule and Kestrel's listeners describing one moment.
+- **Stray `Kestrel__Endpoints__ProxyHttp*` values are masked, not honoured.** They were the old knob and
+  may still be in an operator's compose file; a stale one would fight the derivation and a blank one
+  would fail the host on startup. Masking them retires the "blank means off" filter along with it.
+- **An ingress port equal to the management port is refused, not bound.** `HTTPPORT=8080` against the
+  shipped image is a reachable mistake, and it would be two endpoints on one port (a duplicate bind)
+  *and* the management port classified as ingress — the exact confusion the endpoint split exists to
+  prevent, where an unrouted host stops reaching the UI. The projection drops that one endpoint, leaves
+  the other alone and warns once through `ProxyIngressWarnings`, which buffers until the host's logger
+  exists because the projection is built before the container is.
+- **A host with no `Kestrel:Endpoints:Http` gets its hosting URL promoted into one.** Kestrel binds
+  `ASPNETCORE_URLS` / `UseUrls` only while *no* endpoint is configured; the moment ingress adds one they
+  are overridden with a warning. A bare `dotnet run`, systemd or Aspire host that enabled the proxy
+  would therefore lose its management listener at the next start. When — and only when — the projection
+  derives ingress, the first plain-HTTP hosting URL is projected as `Endpoints:Http:Url`. With the proxy
+  off nothing is projected at all, so development is untouched.
+- **Every value read out of configuration is treated as possibly wrong.** An unparseable
+  `Proxy:Enabled` is `false` and an unparseable port is *off* rather than the shipped default: this runs
+  before the host exists, so a typo would otherwise be a stack trace at startup, and binding a public
+  port the operator did not name is the worse way to read one.
+- **`ProxyHttpsEndpoint.Configure` is unconditional.** `UseKestrelHttpsConfiguration()` is registered
+  even when nothing is bound (`CreateSlimBuilder` omits it, and the loader refuses an `https://`
+  endpoint before reaching our callback — it has to be in place before the reload that adds one), and
+  the loader replaces Kestrel's default one even when the projection carries no endpoints at all.
+- **`YarpListenerState` publishes an immutable snapshot.** Four facts that used to be written once at
+  startup now change together at runtime, and a request judged by the new ingress ports and the old
+  management port would be judged by a state that never existed. One volatile swap, read once per
+  request.
+- **The state is configuration truth, and the `ApplicationStarted` narrowing is gone.** It used to seed
+  from configuration and then narrow to the addresses the server reported. There is no "the addresses
+  changed" event to hang that on any more, and configuration is the wider — therefore safe — reading:
+  no request can arrive on a port nothing is listening to, whereas a bound port missing from
+  `IngressPorts` is the dispatcher's fall-through rule in force on a public port. A bind that fails is
+  Kestrel's log line.
+
+### What the spike showed
+
+A real Kestrel on loopback, driven through the real projection with an in-memory stand-in for the
+settings store (`ProxyIngressEndpointReloadTests`):
+
+- with the proxy off, only the management endpoint accepts connections;
+- flipping `Proxy:Enabled` brings both ingress ports up within a second, the TLS one served by our SNI
+  callback (a real handshake against a generated chain);
+- switching `Provider` to `caddy` takes both down again while the management endpoint never stops
+  serving — which is what keeps the Settings page that made the change reachable;
+- **the named endpoint's callback runs again on every re-add**, so the certificate store really is
+  re-attached to the new listener (asserted with a counter, and by a second handshake);
+- **a request already in flight on a listener being unbound completes.** The endpoint stops accepting
+  new connections; the ones it has drain. Turning the proxy off does not cut off responses mid-write;
+- handing Kestrel a section with no `Endpoints` block does **not** suppress the hosting URLs, so
+  `ASPNETCORE_URLS`, launchSettings and Aspire bind exactly as they did.
+
+### Consequences
+
+- **Breaking:** `Kestrel__Endpoints__ProxyHttp__Url` and `Kestrel__Endpoints__ProxyHttps__Url` are no
+  longer the knob. They are gone from the image and ignored where an operator still sets them. The
+  ports are `WATCHTOWER__PROXY__YARP__HTTPPORT` / `__HTTPSPORT`, or the Settings page. Published host
+  ports are unchanged for anyone on the defaults (`80:8081`, `443:8443`).
+- Enabling, disabling or switching the provider binds and unbinds the ingress listeners with no
+  restart. "HTTPS listener not bound — restart needed" is gone from the UI and the docs.
+- A Caddy or Cloudflare deployment carries no ingress listener at all.
+- **A bind failure is fatal at startup and survivable on reload, and the asymmetry is a trap.** At
+  startup Kestrel rethrows (`IOException: Failed to bind to address …`) and the process exits — in
+  Docker, a crash-loop. On a reload it logs at Critical, **keeps the endpoints it already had** and
+  carries on. So moving an ingress port at runtime onto a port something else holds looks successful:
+  the Settings page reports the new port, traffic keeps arriving on the old one, and the instance
+  crash-loops at the next restart or self-update. `GetProxyStatus.ProviderDetail` therefore compares
+  `IngressPorts` against Kestrel's `IServerAddressesFeature` and says `ingress port {n} failed to bind
+  — see the logs`. That comparison is **diagnostics only**: the dispatcher keeps acting on the
+  configured set, because a configured-but-unbound port costs nothing (no request can arrive on it)
+  while a bound port missing from `IngressPorts` would put the management plane on a public listener.
+  The docs tell operators to check the status and the log after changing a port.
+- **The dispatcher classifies by exclusion, and therefore fails closed.** Once the management port is
+  known, a connection is ingress unless it arrived *on that port* — rather than ingress only if its port
+  is in the configured set. The configured set is kept for status and diagnostics, and as the fallback
+  where no management port was ever derived (`TestServer`, the unit hosts). One rule precedes both: with
+  **no ingress configured at all** nothing is ingress, which is the single-listener shape — the proxy
+  off, both ports off, Caddy, Cloudflare, every development host — where refusing hosts would refuse
+  them everywhere.
+  - This is what makes a *stale* listener safe. A failed rebind leaves the old ingress port bound and
+    serving under a configuration that has moved on; set membership would have called that port
+    management and served Watchtower's own UI on it to anyone who found it. Exclusion keeps it ingress:
+    unknown hosts get a 404, routed hosts are forwarded, Watchtower's own routes are still served.
+  - The cost is that **any other endpoint an operator adds to `Kestrel:Endpoints:*` counts as ingress**
+    while the proxy is on: unknown hosts 404 there and only routed hosts and Watchtower's own hostnames
+    are served. That is the safe direction — a listener that serves less than intended, rather than one
+    that serves the management plane to the internet. An operator who wants a second management listener
+    should move `Kestrel__Endpoints__Http__Url` instead of adding one.
+- `Kestrel__Endpoints__Http__Url` still owns the management port, and `ASPNETCORE_URLS` still does not
+  apply to the shipped image.

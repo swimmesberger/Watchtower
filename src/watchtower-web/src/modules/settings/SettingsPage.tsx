@@ -648,7 +648,7 @@ function MetricsCard() {
 
 /** Complete, so a stored provider always has a label to render — including one not offered below. */
 const PROVIDER_LABELS: Record<ProxyProvider, string> = {
-  yarp: 'Built-in (in-process, ports 80/443)',
+  yarp: 'Built-in (in-process, terminates 80/443)',
   caddy: 'Caddy container (deprecated)',
   cloudflare: 'Cloudflare Tunnel (no open ports)',
 }
@@ -661,6 +661,9 @@ interface ProxyDraft {
   provider: ProxyProvider
   adminEmail: string
   caddyImage: string
+  /** Container ports the ingress listeners bind; empty or 0 turns one off. */
+  yarpHttpPort: string
+  yarpHttpsPort: string
   yarpAcmeDirectoryUrl: string
   yarpAcmeCaBundlePath: string
   yarpAcmeEabKeyId: string
@@ -688,6 +691,8 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     provider: config.provider,
     adminEmail: config.adminEmail ?? '',
     caddyImage: config.caddyImage,
+    yarpHttpPort: String(config.yarp.httpPort),
+    yarpHttpsPort: String(config.yarp.httpsPort),
     yarpAcmeDirectoryUrl: config.yarp.acmeDirectoryUrl,
     yarpAcmeCaBundlePath: config.yarp.acmeCaBundlePath ?? '',
     yarpAcmeEabKeyId: config.yarp.acmeEabKeyId ?? '',
@@ -706,6 +711,12 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     cfAccessGroupIds: config.cloudflare.accessGroupIds,
     cfAccessReusablePolicyIds: config.cloudflare.accessReusablePolicyIds,
   }
+}
+
+/** A port field on the wire: an empty or unparseable field is the listener turned off. */
+function portValue(raw: string): number {
+  const port = Number.parseInt(raw.trim(), 10)
+  return Number.isFinite(port) && port > 0 ? port : 0
 }
 
 function ProxyCard() {
@@ -732,6 +743,9 @@ function ProxyCard() {
         // let a stale CA bundle path — a file that vanished across a remount, say — refuse the very two
         // saves an operator reaches for when the certificate plane is broken: "disable the proxy" and
         // "switch back to caddy". Omitted, the stored values are simply kept.
+        // An empty field means the listener is off, which is what 0 says on the wire.
+        yarpHttpPort: next.provider === 'yarp' ? portValue(next.yarpHttpPort) : null,
+        yarpHttpsPort: next.provider === 'yarp' ? portValue(next.yarpHttpsPort) : null,
         yarpAcmeDirectoryUrl: next.provider === 'yarp' ? next.yarpAcmeDirectoryUrl.trim() : null,
         yarpAcmeCaBundlePath: next.provider === 'yarp' ? next.yarpAcmeCaBundlePath.trim() : null,
         yarpAcmeEabKeyId: next.provider === 'yarp' ? next.yarpAcmeEabKeyId.trim() : null,
@@ -911,23 +925,80 @@ function ProxyCard() {
             {form.provider === 'yarp' && (
               <div className="flex flex-col gap-4">
                 {form.enabled && data && !data.yarp.httpsListenerBound && (
-                  <Banner tone="warn" title="HTTPS listener not bound">
-                    Routes resolve and are served, but over plain HTTP only. The listener's port comes
-                    from <span className="font-mono">Kestrel__Endpoints__ProxyHttps__Url</span> in the
-                    image and has to be published — map <span className="font-mono">443:8443</span> on
-                    Watchtower's container (and <span className="font-mono">80:8081</span>, which ACME
-                    HTTP-01 validation needs).
+                  <Banner tone="warn" title="No HTTPS ingress">
+                    {data.yarp.httpsPort === 0 ? (
+                      <>
+                        Routes resolve and are served, but over plain HTTP only — the TLS ingress port is
+                        set to 0. Give it a port below (8443 is the default) and publish it on
+                        Watchtower's container as <span className="font-mono">443:8443</span>, alongside{' '}
+                        <span className="font-mono">80:8081</span>, which ACME HTTP-01 validation needs.
+                      </>
+                    ) : (
+                      <>
+                        The TLS ingress listener is not bound, so routes are served over plain HTTP only.
+                        Check the container log for a bind failure on port{' '}
+                        <span className="font-mono">{data.yarp.httpsPort}</span>, and that it is published
+                        as <span className="font-mono">443:{data.yarp.httpsPort}</span> on Watchtower's
+                        container.
+                      </>
+                    )}
                   </Banner>
                 )}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Ingress HTTP port"
+                    hint="Container port for plain-HTTP ingress — ACME HTTP-01 validation and the plain half of the proxy. Publish it as 80:<port>. 0 turns the listener off. Changes apply immediately: Kestrel rebinds."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          type="number"
+                          min={0}
+                          max={65535}
+                          placeholder="8081"
+                          value={form.yarpHttpPort}
+                          onChange={e => set('yarpHttpPort', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Yarp:HttpPort')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Yarp:HttpPort') && (
+                          <PinnedNote path="Watchtower:Proxy:Yarp:HttpPort" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                  <Field
+                    label="Ingress HTTPS port"
+                    hint="Container port for the routed traffic, one certificate per SNI name. Publish it as 443:<port>. 0 turns TLS ingress off — for when something else terminates TLS in front. Changes apply immediately: Kestrel rebinds."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          type="number"
+                          min={0}
+                          max={65535}
+                          placeholder="8443"
+                          value={form.yarpHttpsPort}
+                          onChange={e => set('yarpHttpsPort', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Yarp:HttpsPort')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Yarp:HttpsPort') && (
+                          <PinnedNote path="Watchtower:Proxy:Yarp:HttpsPort" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
                 <Field
-                  label="HTTPS listener"
-                  hint="Published as 443:8443 on Watchtower's container; the port itself comes from Kestrel__Endpoints__ProxyHttps__Url in the image."
+                  label="TLS ingress listener"
+                  hint="Follows the port above — no restart needed."
                 >
                   {({ id }) => (
                     <p id={id} className="text-[13px] text-text-2">
                       {data?.yarp.httpsListenerBound
-                        ? 'Bound'
-                        : 'Not bound — routes are served over plain HTTP only'}
+                        ? 'Configured'
+                        : 'Off — routes are served over plain HTTP only'}
                     </p>
                   )}
                 </Field>

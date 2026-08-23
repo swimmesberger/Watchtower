@@ -18,6 +18,7 @@ using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.SqliteImport;
+using Watchtower.Application.Services.Yarp;
 
 // ── Coordinator mode ──────────────────────────────────────────────────────────
 // Spawned as a sibling container to perform the actual self-update compose run.
@@ -121,11 +122,24 @@ builder.Services.AddWatchtowerServices(builder.Configuration);
 // runtime, and neither the container nor the pipeline is rebuilt for that.
 builder.Services.AddWatchtowerProxyForwarding();
 
-// The in-process reverse proxy's TLS listener (ADR-0022): a second Kestrel endpoint that
-// picks its certificate per connection from the SNI name. Only added where one is configured — the
-// shipped container sets Kestrel__Endpoints__ProxyHttps__Url; development, Aspire and the integration
-// tests never do, so the host they boot is unchanged.
-ProxyHttpsEndpoint.Configure(builder);
+// The configuration Kestrel is built from (ADR-0022, runtime-bound ingress): the host's own Kestrel
+// section with the two proxy endpoints masked out and derived from the reverse-proxy settings instead, so
+// the ingress listeners follow the provider — bound while the in-process proxy is enabled, gone when it is
+// disabled or another provider is selected, with no restart. Built here, after the settings store has been
+// layered in above, because that layer is exactly what it has to be able to see and re-read.
+// The sink is created here rather than resolved, because the projection runs before the container does;
+// ProxyListenerStateInitializer attaches the host's logger to it later and flushes whatever it holds.
+var proxyIngressWarnings = new ProxyIngressWarnings();
+builder.Services.AddSingleton(proxyIngressWarnings);
+var proxyIngressKestrelSection =
+    ProxyIngressKestrelConfiguration.Build(builder.Configuration, proxyIngressWarnings);
+
+// The in-process reverse proxy's TLS listener (ADR-0022): a Kestrel endpoint that picks its certificate
+// per connection from the SNI name. Wired unconditionally — whether it exists at any given moment is the
+// projected section's decision, and a host that starts with no proxy endpoints has to be able to gain one
+// on a later reload. Development, Aspire and the integration tests configure no proxy, so the section
+// carries no proxy endpoints there and they bind exactly as they always did.
+ProxyHttpsEndpoint.Configure(builder, proxyIngressKestrelSection);
 
 // Elarion framework composition:
 //   AddElarion          — every enabled module's handlers, [Service] impls, [ScheduledJob] descriptors,
@@ -208,9 +222,11 @@ app.UseAcmeHttpChallenge();
 // UseForwardedHeaders — its scheme decisions have to come from the real connection.
 app.UseYarpHostDispatch();
 
-// Record what the host actually bound, once it has bound it — the only signal the in-process proxy has
-// about its own data plane, since there is no container to inspect.
-ProxyListenerStateInitializer.Register(app);
+// Keep the proxy's own view of its listeners in step with that section — the only signal the in-process
+// proxy has about its data plane, since there is no container to inspect. Re-derived on every reload, so
+// enabling the proxy or moving a port updates the dispatcher's ingress rule at the same moment Kestrel
+// rebinds.
+ProxyListenerStateInitializer.Register(app, proxyIngressKestrelSection);
 
 // First in the pipeline for everything Watchtower serves itself: everything after it — including the
 // cookie issuance in the login endpoint — must see the corrected scheme.

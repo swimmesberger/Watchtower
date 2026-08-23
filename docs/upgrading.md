@@ -117,6 +117,13 @@ your next convenient restart.
   for either is still read *once*, by the import above, so a deployment that moved those directories
   is imported from where its files actually are; after that it is ignored. The read-only "certificate
   directory" field is gone from Settings → Reverse proxy, because there is nothing for it to name.
+- **`Kestrel__Endpoints__ProxyHttp__Url` and `Kestrel__Endpoints__ProxyHttps__Url` are no longer the
+  ingress ports.** They are gone from the shipped image and ignored where one is still set. The ports
+  are `WATCHTOWER__PROXY__YARP__HTTPPORT` / `__HTTPSPORT`, or the yarp block of Settings → Reverse
+  proxy, and the listeners exist only while the built-in provider is enabled — bound, unbound and moved
+  without a restart. Published host ports are unchanged on the defaults (`80:8081`, `443:8443`), and
+  `Kestrel__Endpoints__Http__Url` still owns the management port. See
+  [docs/reverse-proxy/yarp.md](reverse-proxy/yarp.md#switching-at-runtime).
 - **Private keys in the database can be encrypted at rest.** Set
   `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase and keep it out of the database
   and out of your database backups. It covers the certificate keys, the ACME account key, the
