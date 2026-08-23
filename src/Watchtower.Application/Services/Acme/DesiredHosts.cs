@@ -10,7 +10,7 @@ public readonly record struct HostSetDiff(IReadOnlyList<string> Added, IReadOnly
 }
 
 /// <summary>
-/// Normalizes and validates the host names the in-process proxy asks for certificates for — ADR-0020.
+/// Normalizes and validates the host names the in-process proxy asks for certificates for — ADR-0022.
 /// Pure and static, so the rules can be read and tested in one place instead of being rediscovered at
 /// each of the three points that need them (route validation, the desired-host set, the certificate
 /// store's directory names).
@@ -61,7 +61,7 @@ public static class DesiredHosts {
             return false;
         }
         if (value.Contains('*')) {
-            // Wildcards need DNS-01, which needs write access to the operator's zone — see ADR-0020.
+            // Wildcards need DNS-01, which needs write access to the operator's zone — see ADR-0022.
             rejectReason = "Wildcard domains are not supported; list each host name explicitly.";
             return false;
         }

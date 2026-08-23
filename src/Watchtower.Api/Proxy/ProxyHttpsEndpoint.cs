@@ -7,7 +7,7 @@ using Watchtower.Application.Services.Acme;
 namespace Watchtower.Api.Proxy;
 
 /// <summary>
-/// The in-process reverse proxy's TLS listener — ADR-0020. A dedicated Kestrel endpoint that
+/// The in-process reverse proxy's TLS listener — ADR-0022. A dedicated Kestrel endpoint that
 /// picks its certificate per connection from the SNI name, so one process can terminate TLS for every
 /// routed domain without a certificate being known at startup.
 /// </summary>

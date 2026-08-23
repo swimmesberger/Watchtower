@@ -56,7 +56,7 @@ environment:
   WATCHTOWER__AUTH__ENABLED: "true"
   WATCHTOWER__AUTH__BOOTSTRAPPASSWORD: "choose-a-strong-one"   # optional; omit to get a logged random one
   # Fallback login host for the operator realm, read only when no Watchtower route is designated as
-  # one (ADR-0021). Normally leave it unset and create a Watchtower route instead:
+  # one (ADR-0023). Normally leave it unset and create a Watchtower route instead:
   # WATCHTOWER__AUTH__HOST: watchtower.example.com
   # Optional tuning:
   # WATCHTOWER__AUTH__COOKIESECURE: "Auto"                     # Auto | Always | Never (default Auto)
@@ -74,7 +74,7 @@ see [../reverse-proxy/README.md](../reverse-proxy/README.md)) and a login host �
 
 A protected app redirects anonymous visitors to `https://{loginHost}/login`, so that hostname has to be
 served before forward-auth is useful for anything. Since
-[ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md) that is one step in the Routes
+[ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md) that is one step in the Routes
 UI rather than a setting:
 
 1. **Routes → New route.** Under *Serve this domain with*, pick **Watchtower (this instance)**.
@@ -94,7 +94,7 @@ that realm has no login route designated, which is the case where another proxy 
 terminates the hostname and no route of ours would be served anyway. Settings → Authentication shows the
 effective login host read-only and links to the Routes page.
 
-Upgrading from before ADR-0021 needs no action: each realm's stored auth host becomes a Watchtower route
+Upgrading from before ADR-0023 needs no action: each realm's stored auth host becomes a Watchtower route
 during the migration, and a configured `Auth:Host` becomes the operator realm's on the first start
 after it. The second half is recorded in the audit trail as `proxy` / `route.convert`; the migration
 half is not, because a schema migration runs before the audit plumbing exists — the migration history
@@ -159,7 +159,7 @@ ignore this whole section: nothing changes for you.
   assertion; renaming it would silently change what they are told about who your users are. Pick it as
   carefully as you would a database name.
 - **Login host** — the hostname this realm's login page is served on, e.g. `login.acme-corp.com`.
-  Typing one here creates a **Watchtower route** for it (ADR-0021) and marks it as the realm's login
+  Typing one here creates a **Watchtower route** for it (ADR-0023) and marks it as the realm's login
   host; it is the same thing you would create on the Routes page, offered here because it is what a new
   realm almost always needs. (There is nothing to *pick from* at this point — a Watchtower route belongs
   to a realm, so none can exist for a realm that does not yet. Picking one comes later, in the realm's

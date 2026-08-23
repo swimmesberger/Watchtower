@@ -439,7 +439,7 @@ export interface AuthConfig {
   /** True when `enabled` ≠ `active`: `Auth:Enabled` shapes the pipeline pre-DI, so it needs a restart. */
   restartRequired: boolean
   /**
-   * Fallback login hostname for the operator realm (bare host, no scheme). Since ADR-0021 the login host
+   * Fallback login hostname for the operator realm (bare host, no scheme). Since ADR-0023 the login host
    * is normally a `watchtower` route; this is read only while no route is marked as one.
    */
   host: string | null
@@ -459,7 +459,7 @@ export interface UpdateAuthConfigRequest {
   absoluteSessionLifetimeDays: number
 }
 
-/** The reverse-proxy backends. See ADR-0015 and ADR-0020. */
+/** The reverse-proxy backends. See ADR-0015 and ADR-0022. */
 export type ProxyProvider = 'caddy' | 'cloudflare' | 'yarp'
 
 /** In-process proxy + ACME values (the EAB HMAC key never leaves the server). */
@@ -546,7 +546,7 @@ export type RouteStatus = 'pending' | 'awaitingdns' | 'active' | 'error'
 export type DomainKind = 'managed' | 'custom'
 
 /**
- * What a route's hostname is served by (ADR-0021). `service` forwards it to a container inside a stack;
+ * What a route's hostname is served by (ADR-0023). `service` forwards it to a container inside a stack;
  * `watchtower` means this instance serves the hostname itself — its UI and API, and for the realm's login
  * route, its login page.
  */
@@ -584,7 +584,7 @@ export interface CreateRouteRequest {
   tlsEnabled: boolean
   isPrimary: boolean
   kind?: DomainKind | null
-  /** Omitted means `service` — the only kind of route that existed before ADR-0021. */
+  /** Omitted means `service` — the only kind of route that existed before ADR-0023. */
   target?: RouteTarget | null
   /** `watchtower` routes only; defaults to the operator realm. */
   realmId?: number | null
@@ -652,7 +652,7 @@ export interface DnsCheckResult {
 
 /**
  * One host's certificate state under the in-process proxy. Every served host has a route row since
- * ADR-0021, Watchtower's own hostnames included; `source: 'orphan'` is a certificate still on disk for a
+ * ADR-0023, Watchtower's own hostnames included; `source: 'orphan'` is a certificate still on disk for a
  * host nothing routes to any more.
  */
 export interface CertificateInfo {
@@ -906,7 +906,7 @@ export interface Realm {
   groupCount: number
   templateCount: number
   createdAt: string
-  /** The `watchtower` route this realm's login page is served on; null when it has none (ADR-0021). */
+  /** The `watchtower` route this realm's login page is served on; null when it has none (ADR-0023). */
   loginRouteId: number | null
   /** That route's domain, or — on the operator realm alone — the configured `Auth:Host` fallback. */
   loginHost: string | null
@@ -1008,15 +1008,73 @@ export interface BackupEvent {
   finishedAt: string | null
 }
 
+/**
+ * How a stack's stateful containers are quiesced for the snapshot (ADR-0019): `stop` (SIGTERM,
+ * restart afterwards — application-consistent) or `pause` (cgroup freeze for the tar, unpause —
+ * milliseconds of downtime, but only crash-consistent).
+ */
+export type BackupQuiesceMode = 'stop' | 'pause'
+
 /** A stack's backup participation. */
 export interface BackupStackConfig {
   stackId: number
   /** Included in the backup schedule. */
   enabled: boolean
-  /** Stop the stack's containers during the snapshot for consistency (ADR-0016 §2). */
+  /** Quiesce the stack's stateful containers during the snapshot for consistency (ADR-0016 §2). */
   stopContainers: boolean
   /** This stack's schedule override; null follows the instance-wide schedule. */
   cron: string | null
+  /** How unlabelled stateful containers are quiesced when `stopContainers` is on. */
+  quiesceMode: BackupQuiesceMode
+}
+
+/**
+ * Per-service backup settings configured in the UI (ADR-0022), in the compose labels' own value
+ * syntax — `exclude` stands in for `watchtower.backup.exclude=true`, `stop` for `watchtower.backup.stop`,
+ * `dump` for `watchtower.backup.dump`. A label on the deployed service always wins.
+ */
+export interface BackupServiceOverride {
+  service: string
+  exclude: boolean
+  /** Omitted on the wire when not set. */
+  stop?: 'true' | 'false' | 'pause' | null
+  /** Omitted on the wire when not set. */
+  dump?: 'false' | 'postgres' | null
+}
+
+/** What the next backup run would do with one container. */
+export type BackupServiceAction = 'stop' | 'pause' | 'keep' | 'dump' | 'excluded' | 'notRunning'
+
+/** Where a per-service decision came from: the mount rule / stack default, a compose label, or a UI override. */
+export type BackupSettingSource = 'default' | 'label' | 'override'
+
+/** One row of the backup plan preview. */
+export interface BackupServicePreview {
+  service: string
+  /** Absent for an override whose service is not deployed right now. */
+  container?: string | null
+  state: 'running' | 'not running' | 'absent' | string
+  volumes: string[]
+  action: BackupServiceAction
+  reason: string
+  source: BackupSettingSource
+  /** The raw compose labels; omitted on the wire when the service carries none. */
+  excludeLabel?: string | null
+  stopLabel?: string | null
+  dumpLabel?: string | null
+  /** Omitted on the wire when the service has no override. */
+  override?: BackupServiceOverride | null
+}
+
+/** The dry run of a backup for a stack as deployed right now (ADR-0022). */
+export interface BackupPlanPreview {
+  deployed: boolean
+  volumes: string[]
+  excludedVolumes: { name: string; reason: 'label' | 'dump'; detail: string }[]
+  services: BackupServicePreview[]
+  warnings: string[]
+  /** The UI overrides rendered as compose labels to paste; omitted when there are none. */
+  labelSnippet?: string | null
 }
 
 export interface BackupRunAccepted {

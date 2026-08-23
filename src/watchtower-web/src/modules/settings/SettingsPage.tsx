@@ -1993,7 +1993,7 @@ function AuthCard() {
             </label>
 
             {/* Read-only, and first: this is what the operator realm's protected apps actually redirect
-                to. It comes from the Watchtower route marked as the login host (ADR-0021); the field
+                to. It comes from the Watchtower route marked as the login host (ADR-0023); the field
                 below is only the fallback used while there is none. */}
             <Field
               label="Operator login host (effective)"

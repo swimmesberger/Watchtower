@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted. §1's stop ordering is amended by [ADR-0019](0019-pause-quiesce-and-parallel-stops.md):
+stops now run per dependency level (concurrently within a level) with a 5 s grace, and `pause` is a
+second, crash-consistent quiesce mode beside `stop`.
 
 ## Context
 

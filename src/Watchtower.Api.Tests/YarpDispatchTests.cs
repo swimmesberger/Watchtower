@@ -16,7 +16,7 @@ using Xunit;
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// Host dispatch for the in-process proxy (ADR-0020): which requests leave for a container,
+/// Host dispatch for the in-process proxy (ADR-0022): which requests leave for a container,
 /// which ones stay with Watchtower, and what the upstream is told about the one that left.
 /// </summary>
 /// <remarks>
@@ -161,7 +161,7 @@ public sealed class YarpDispatchTests {
         await factory.AddRouteAsync(AppDomain, AccessMode.Public);
         await factory.ApplyProxyAsync();
 
-        // The login host is a Watchtower route in the table (ADR-0021 — the configured Auth:Host was
+        // The login host is a Watchtower route in the table (ADR-0023 — the configured Auth:Host was
         // converted into one at startup) and so is marked Local: Watchtower serves it itself, and
         // forwarding it would be forwarding to ourselves.
         var response = await client.GetAsync($"https://{AuthHost}/health", Ct);
@@ -191,7 +191,7 @@ public sealed class YarpDispatchTests {
 
     /// <summary>
     /// A Watchtower route created outright rather than converted from configuration, and in a customer
-    /// realm rather than the operator one — the ordinary way one comes into existence (ADR-0021). It is
+    /// realm rather than the operator one — the ordinary way one comes into existence (ADR-0023). It is
     /// served in process just the same: which realm's login page a hostname carries is an auth question,
     /// and "who serves this hostname" is not.
     /// </summary>

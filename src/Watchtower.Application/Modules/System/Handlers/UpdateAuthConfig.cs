@@ -46,7 +46,7 @@ public sealed class UpdateAuthConfig(
 
     /// <param name="EffectiveLoginHost">
     /// Where the operator realm actually redirects anonymous visitors after this write — its login
-    /// route's domain, or <paramref name="Host"/> when it has none (ADR-0021). Echoed for the same
+    /// route's domain, or <paramref name="Host"/> when it has none (ADR-0023). Echoed for the same
     /// reason every other field here is: the Settings page writes this response straight into its
     /// cache, and a response that omitted it would blank the field it just rendered.
     /// </param>
@@ -70,7 +70,7 @@ public sealed class UpdateAuthConfig(
         if (host.Length > 0 && (host.Contains("://", StringComparison.Ordinal) || host.Contains('/') || host.Contains(' ')))
             return AppError.Validation("Host must be a bare hostname (e.g. watchtower.example.com) — no scheme, path or spaces.");
 
-        // The one collision the fallback can still cause (ADR-0021). Auth:Host answers for the operator
+        // The one collision the fallback can still cause (ADR-0023). Auth:Host answers for the operator
         // realm while it has no login route of its own, so pointing it at a hostname a *customer* realm
         // serves Watchtower on would send operator-realm visitors to that realm's login page — a page
         // that cannot admit them — and make both populations mint under the same token issuer, which

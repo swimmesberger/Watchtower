@@ -5,11 +5,11 @@ using Watchtower.Application.Services.Acme;
 namespace Watchtower.Application.Modules.Proxy.Handlers;
 
 /// <summary>
-/// What the in-process proxy holds, or is trying to hold, per host — ADR-0020.
+/// What the in-process proxy holds, or is trying to hold, per host — ADR-0022.
 /// </summary>
 /// <param name="Source">
 /// Where the host comes from: <c>route</c> for a domain in the route table — Watchtower's own hostnames
-/// included, since ADR-0021 made those rows like any other — or <c>orphan</c> for a certificate still on
+/// included, since ADR-0023 made those rows like any other — or <c>orphan</c> for a certificate still on
 /// disk that nothing routes to.
 /// </param>
 /// <param name="State">One of <c>none</c>, <c>pending</c>, <c>active</c>, <c>awaitingDns</c>, <c>error</c>.</param>

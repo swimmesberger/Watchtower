@@ -93,7 +93,7 @@ public sealed class PipelineGatingTests {
         // Caddy's on-demand-TLS gate: consulted before any user exists in the request. 400 (not 401) — it
         // is answering, just without a domain. Who may ask is a separate gate (see ProxyAskTests). Its own
         // host, with the caddy provider named: the endpoint is mapped only under the provider that asks,
-        // and the default is the in-process one, which holds the route table in memory (ADR-0020).
+        // and the default is the in-process one, which holds the route table in memory (ADR-0022).
         using var caddyFactory = new WatchtowerApiFactory(
             ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Proxy:Provider", "caddy"));
         using var caddyClient = caddyFactory.CreateApiClient();

@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Non-root user; /data holds the SQLite database and, when the built-in reverse proxy is enabled, the
 # issued certificates and the ACME account key under /data/proxy-certs — so both survive a recreate in
-# the same named volume, with no second mount to declare (ADR-0020).
+# the same named volume, with no second mount to declare (ADR-0022).
 RUN groupadd -r watchtower && useradd -r -g watchtower watchtower \
     && mkdir -p /data && chown watchtower:watchtower /data
 
@@ -51,7 +51,7 @@ COPY --from=web /repo/src/watchtower-web/dist/ ./wwwroot/
 VOLUME /data
 
 # Three Kestrel endpoints, named so each can be configured on its own — and, more to the point, so the
-# management plane and the public ingress are different listeners (ADR-0020):
+# management plane and the public ingress are different listeners (ADR-0022):
 #   Http       — 8080, the MANAGEMENT plane: Watchtower's own UI and API. Never publish this to the
 #                internet. Bind it to a private interface (127.0.0.1:8080:8080) and reach the UI from
 #                outside through a login host over 443 instead.

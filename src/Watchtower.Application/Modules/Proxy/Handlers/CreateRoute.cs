@@ -12,7 +12,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// Creates a route. A <see cref="RouteTarget.Service"/> route (the default) maps a domain to a service
 /// inside a stack: it is persisted, the target service container is joined to the edge network, and the
 /// proxy is reloaded. A <see cref="RouteTarget.Watchtower"/> route maps a domain to <em>this instance</em>
-/// (ADR-0021) — no stack, no upstream, and optionally the realm's login host. The proxy work is a no-op
+/// (ADR-0023) — no stack, no upstream, and optionally the realm's login host. The proxy work is a no-op
 /// when the reverse proxy is disabled.
 /// </summary>
 [Handler("proxy.createRoute")]
@@ -20,7 +20,7 @@ public sealed class CreateRoute(
     WatchtowerDbContext db, IProxyProvider proxy, IOptionsMonitor<WatchtowerOptions> options)
     : IHandler<CreateRoute.Command, Result<CreateRoute.Response>> {
     /// <param name="Target">
-    /// <c>service</c> (the default, and what a client predating ADR-0021 means by saying nothing) or
+    /// <c>service</c> (the default, and what a client predating ADR-0023 means by saying nothing) or
     /// <c>watchtower</c>.
     /// </param>
     /// <param name="RealmId">

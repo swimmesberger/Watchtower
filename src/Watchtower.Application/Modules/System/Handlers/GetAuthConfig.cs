@@ -26,7 +26,7 @@ public sealed class GetAuthConfig(
     /// <param name="Active">Whether the auth pipeline is enforcing in this process right now.</param>
     /// <param name="RestartRequired">True when <paramref name="Enabled"/> ≠ <paramref name="Active"/>.</param>
     /// <param name="Host">
-    /// The configured <c>Auth:Host</c> — since ADR-0021 a <em>fallback</em> for the operator realm alone,
+    /// The configured <c>Auth:Host</c> — since ADR-0023 a <em>fallback</em> for the operator realm alone,
     /// used only while no Watchtower route is marked as its login host.
     /// </param>
     /// <param name="EffectiveLoginHost">

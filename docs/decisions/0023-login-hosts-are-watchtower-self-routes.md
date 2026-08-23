@@ -1,8 +1,8 @@
-# ADR-0021: Login hosts are Watchtower self-routes
+# ADR-0023: Login hosts are Watchtower self-routes
 
 - Status: Accepted
 - Date: 2026-08-23
-- Related: [ADR-0020](0020-in-process-yarp-proxy.md) (the in-process proxy this extends),
+- Related: [ADR-0022](0022-in-process-yarp-proxy.md) (the in-process proxy this extends),
   [ADR-0015](0015-proxy-provider-abstraction.md) (the provider seam both ride on),
   [docs/central-auth/design.md](../central-auth/design.md) §11 (the bootstrap problem) and §13 (realms),
   [docs/reverse-proxy/README.md](../reverse-proxy/README.md) (the operator guide).
@@ -125,7 +125,7 @@ What each request does:
   `app.example.com` mints `__wt_access` → forwarded to `myapp-web:3000` with `X-Watchtower-Jwt`.
 - `https://crm.acme.com/` anonymous → realm acme → 302 to `https://login.acme.com/login`.
 - `http://watchtower.example.com/` on port 80 → 302 to https.
-- `http://<public-ip>/` → 404: an unknown host on ingress is a stranger (ADR-0020).
+- `http://<public-ip>/` → 404: an unknown host on ingress is a stranger (ADR-0022).
 - `http://nas.lan:8080/` → the management UI, on the port the operator bound privately.
 
 All five rows get ACME certificates and show their status on the Routes page. Deleting row 1 is allowed

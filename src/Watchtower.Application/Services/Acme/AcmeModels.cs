@@ -75,7 +75,7 @@ public sealed record AcmeAuthorization {
 }
 
 /// <summary>
-/// One challenge (RFC 8555 §8). Watchtower answers <c>http-01</c> only — see ADR-0020: TLS-ALPN-01
+/// One challenge (RFC 8555 §8). Watchtower answers <c>http-01</c> only — see ADR-0022: TLS-ALPN-01
 /// cannot be implemented on Kestrel, whose <c>SslClientHelloInfo</c> exposes no ALPN protocol list, and
 /// DNS-01 would need write credentials for every operator's zone.
 /// </summary>

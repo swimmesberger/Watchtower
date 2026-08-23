@@ -7,10 +7,10 @@ namespace Watchtower.Application.Tests;
 
 /// <summary>
 /// Covers <c>ProxySiteProjection.Project</c> — which routes end up behind access control, and which
-/// hostnames Watchtower serves itself (docs/central-auth/design.md §6, §11; ADR-0021).
+/// hostnames Watchtower serves itself (docs/central-auth/design.md §6, §11; ADR-0023).
 /// </summary>
 /// <remarks>
-/// Since ADR-0021 there is no synthesis here at all: <c>Local</c> is derived from
+/// Since ADR-0023 there is no synthesis here at all: <c>Local</c> is derived from
 /// <see cref="RouteTarget.Watchtower"/> and from nothing else, so the tests that used to describe a
 /// login host appearing out of configuration now describe a row appearing as a site.
 /// </remarks>
@@ -44,7 +44,7 @@ public sealed class ProxySiteProjectionTests {
         Assert.True(Site(sites, "secret.example.invalid").Protected);
     }
 
-    // ── Watchtower routes (ADR-0021) ──────────────────────────────────────────
+    // ── Watchtower routes (ADR-0023) ──────────────────────────────────────────
 
     [Fact]
     public void AWatchtowerRoute_IsServedByWatchtowerItself_AndIsNeverProtected() {
@@ -126,7 +126,7 @@ public sealed class ProxySiteProjectionTests {
             new AuthOptions { Enabled = true, Host = SelfHost });
 
         // Auth:Host is a redirect address for the operator realm, not a statement that this instance
-        // serves that hostname (ADR-0021). Serving it takes a route row.
+        // serves that hostname (ADR-0023). Serving it takes a route row.
         Assert.Single(sites);
         Assert.DoesNotContain(sites, s => s.Domain == SelfHost);
     }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using Watchtower.Application.Entities;
 
 namespace Watchtower.Application.Services;
 
@@ -17,7 +18,7 @@ namespace Watchtower.Application.Services;
 /// The compose replica number (<c>com.docker.compose.container-number</c>), 1 when absent. Only used to
 /// order the replicas of one service deterministically.
 /// </param>
-/// <param name="IsRunning">Whether the engine reported the container as running. Only running containers can be stopped.</param>
+/// <param name="IsRunning">Whether the engine reported the container as running. Only running containers can be quiesced.</param>
 /// <param name="VolumeNames">Distinct named volumes this container mounts, in the engine's order.</param>
 /// <param name="DependsOn">Service names this container's service declares a dependency on, in label order.</param>
 /// <param name="ExcludeLabel">Raw <c>watchtower.backup.exclude</c> value, or null when absent.</param>
@@ -26,6 +27,11 @@ namespace Watchtower.Application.Services;
 /// Raw <c>watchtower.backup.dump</c> value, or null when absent. Carried but not interpreted here — the
 /// database-aware dump policy reads it and hands the planner its decision back as
 /// <see cref="BackupPlanRequest.KeepRunningContainerIds"/> / <see cref="BackupPlanRequest.ExcludeVolumes"/>.
+/// </param>
+/// <param name="Override">
+/// The per-service settings configured in Watchtower's UI for this container's service, or null. They
+/// fill in for a label that is <em>absent</em> and never beat one that is present (ADR-0020) — read
+/// them through <see cref="Exclude"/>, <see cref="Stop"/> and <see cref="Dump"/>, which apply that rule.
 /// </param>
 public sealed record BackupContainer(
     string Id,
@@ -37,15 +43,36 @@ public sealed record BackupContainer(
     IReadOnlyList<string> DependsOn,
     string? ExcludeLabel = null,
     string? StopLabel = null,
-    string? DumpLabel = null) {
+    string? DumpLabel = null,
+    BackupServiceOverride? Override = null) {
+
+    /// <summary>The effective <c>watchtower.backup.exclude</c> value and where it comes from.</summary>
+    public BackupSetting Exclude => Resolve(ExcludeLabel, Override?.Exclude == true ? "true" : null);
+
+    /// <summary>The effective <c>watchtower.backup.stop</c> value and where it comes from.</summary>
+    public BackupSetting Stop => Resolve(StopLabel, Override?.Stop);
+
+    /// <summary>The effective <c>watchtower.backup.dump</c> value and where it comes from.</summary>
+    public BackupSetting Dump => Resolve(DumpLabel, Override?.Dump);
+
+    /// <summary>The label wins; the override fills a gap; otherwise there is no setting at all.</summary>
+    private static BackupSetting Resolve(string? label, string? overrideValue) =>
+        label is not null ? new(label, BackupSettingSource.Label)
+        : overrideValue is not null ? new(overrideValue, BackupSettingSource.Override)
+        : new(null, BackupSettingSource.Default);
 
     /// <summary>
     /// Projects a container as the engine listed it. Tolerates a null <c>Labels</c>/<c>Mounts</c> array
     /// and a container without names, both of which the daemon may report.
     /// </summary>
     /// <param name="container">One entry of <c>GET /containers/json</c> for the compose project.</param>
+    /// <param name="overrides">
+    /// The stack's per-service UI overrides by service name, if any — attached to the container whose
+    /// compose service matches.
+    /// </param>
     /// <returns>The planner's view of that container.</returns>
-    public static BackupContainer FromDocker(DockerContainerInfo container) {
+    public static BackupContainer FromDocker(
+        DockerContainerInfo container, IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) {
         var labels = container.Labels;
         var name = container.Names?.FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))?.TrimStart('/');
         if (string.IsNullOrEmpty(name))
@@ -58,12 +85,11 @@ public sealed record BackupContainer(
             if (!volumes.Contains(mount.Name, StringComparer.Ordinal)) volumes.Add(mount.Name);
         }
 
+        var service = Label(BackupPlan.ComposeServiceLabel) is { } s && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
         return new BackupContainer(
             container.Id,
             name,
-            Label(BackupPlan.ComposeServiceLabel) is { } service && !string.IsNullOrWhiteSpace(service)
-                ? service.Trim()
-                : null,
+            service,
             int.TryParse(Label(BackupPlan.ComposeContainerNumberLabel), NumberStyles.Integer,
                 CultureInfo.InvariantCulture, out var number) ? number : 1,
             string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase),
@@ -71,7 +97,8 @@ public sealed record BackupContainer(
             ParseDependsOn(Label(BackupPlan.ComposeDependsOnLabel)),
             Label(BackupPlan.ExcludeLabel),
             Label(BackupPlan.StopLabel),
-            Label(BackupPlan.DumpLabel));
+            Label(BackupPlan.DumpLabel),
+            service is not null && overrides is not null && overrides.TryGetValue(service, out var o) ? o : null);
 
         string? Label(string key) => labels is not null && labels.TryGetValue(key, out var value) ? value : null;
     }
@@ -97,7 +124,37 @@ public sealed record BackupContainer(
     }
 }
 
-/// <summary>Why a running container is left up instead of being stopped for the snapshot.</summary>
+/// <summary>Where an effective per-service backup setting came from (ADR-0020).</summary>
+public enum BackupSettingSource {
+    /// <summary>Nothing was configured for the service — the mount rule / stack default decided.</summary>
+    Default,
+
+    /// <summary>A <c>watchtower.backup.*</c> compose label on the service (infrastructure as code).</summary>
+    Label,
+
+    /// <summary>A per-service override configured in Watchtower's UI, filling in for an absent label.</summary>
+    Override,
+}
+
+/// <summary>One effective per-service setting: the value (label syntax) and where it came from.</summary>
+/// <param name="Value">The value in label syntax (<c>"true"</c>, <c>"pause"</c>, <c>"postgres"</c>…), or null when unset.</param>
+/// <param name="Source">Where it came from; <see cref="BackupSettingSource.Default"/> when <paramref name="Value"/> is null.</param>
+public sealed record BackupSetting(string? Value, BackupSettingSource Source);
+
+/// <summary>
+/// The per-service settings an operator configures in the UI instead of (or before) writing labels —
+/// one value per label, in the label's own syntax, so the two surfaces describe the same thing and an
+/// override can be promoted to compose labels verbatim. Null means "no override for this setting".
+/// </summary>
+/// <param name="Exclude">True stands in for <c>watchtower.backup.exclude=true</c>.</param>
+/// <param name="Stop"><c>"true"</c>, <c>"false"</c> or <c>"pause"</c>, standing in for <c>watchtower.backup.stop</c>.</param>
+/// <param name="Dump"><c>"false"</c> or <c>"postgres"</c>, standing in for <c>watchtower.backup.dump</c>.</param>
+public sealed record BackupServiceOverride(bool Exclude = false, string? Stop = null, string? Dump = null) {
+    /// <summary>True when nothing is set — such an override is not worth a row.</summary>
+    public bool IsEmpty => !Exclude && Stop is null && Dump is null;
+}
+
+/// <summary>Why a running container is left up instead of being quiesced for the snapshot.</summary>
 public enum BackupKeepReason {
     /// <summary>It mounts none of the volumes being archived, so stopping it would be pure downtime.</summary>
     NoPlannedMount,
@@ -111,7 +168,7 @@ public enum BackupKeepReason {
     /// <summary>The caller asked for it to stay up (a database whose dump is taken while it runs).</summary>
     CallerRequested,
 
-    /// <summary>The stack's "stop containers" switch is off, so nothing is stopped at all.</summary>
+    /// <summary>The stack's "stop containers" switch is off, so nothing is quiesced at all.</summary>
     MasterSwitchOff,
 }
 
@@ -140,8 +197,27 @@ public sealed record ExcludedBackupVolume(string Name, BackupVolumeExclusionReas
 /// True when it mounts at least one volume the run does touch — the case worth warning about, because
 /// the snapshot of that volume is then only crash-consistent.
 /// </param>
+/// <param name="Source">
+/// Where the keep decision came from: the label or the UI override for
+/// <see cref="BackupKeepReason.StopLabel"/> and <see cref="BackupKeepReason.Excluded"/>,
+/// <see cref="BackupSettingSource.Default"/> for every other reason.
+/// </param>
 public sealed record KeptBackupContainer(
-    BackupContainer Container, BackupKeepReason Reason, bool MountsPlannedVolume);
+    BackupContainer Container, BackupKeepReason Reason, bool MountsPlannedVolume,
+    BackupSettingSource Source = BackupSettingSource.Default);
+
+/// <summary>One container the run takes out of service for the snapshot, and how.</summary>
+/// <param name="Container">The container.</param>
+/// <param name="Mode">
+/// <see cref="BackupQuiesceMode.Stop"/> (SIGTERM, restart afterwards) or
+/// <see cref="BackupQuiesceMode.Pause"/> (cgroup freeze, unpause afterwards — crash-consistent).
+/// </param>
+/// <param name="Source">
+/// Where the decision came from: the label or the UI override when one selected the container or its
+/// mode, <see cref="BackupSettingSource.Default"/> when the mount rule and the stack default did.
+/// </param>
+public sealed record BackupQuiesceStep(
+    BackupContainer Container, BackupQuiesceMode Mode, BackupSettingSource Source = BackupSettingSource.Default);
 
 /// <summary>The inputs <see cref="BackupPlan.Create(BackupPlanRequest)"/> decides from.</summary>
 /// <param name="Containers">
@@ -162,11 +238,21 @@ public sealed record KeptBackupContainer(
 /// when both apply, because it is the operator's own instruction.
 /// </param>
 /// <param name="StopAllRunning">
-/// Stop every running container, not only the ones that mount a planned volume — what a restore
+/// Quiesce every running container, not only the ones that mount a planned volume — what a restore
 /// needs while it replays a database dump: a stateless service that merely talks to the database
 /// would otherwise reconnect between the session terminate and <c>DROP DATABASE</c>, and
 /// <c>--clean</c> would merge into the old database instead of replacing it. Excluded services,
 /// caller-kept containers and an explicit <see cref="BackupPlan.StopLabel"/><c>=false</c> still win.
+/// </param>
+/// <param name="QuiesceMode">
+/// The stack's default for containers the mount rule (or <see cref="StopAllRunning"/>) selects and
+/// that carry no explicit <see cref="BackupPlan.StopLabel"/> value. <c>stop: true</c> always stops
+/// and <c>stop: pause</c> always pauses, whatever this says.
+/// </param>
+/// <param name="ForceStop">
+/// Every quiesced container is <em>stopped</em>, whatever the stack default or its label says — a
+/// restore extracts into the volumes, and a paused process resuming over replaced files is no
+/// better than a running one. A <c>stop: pause</c> label then still means "quiesce it", just by stopping.
 /// </param>
 public sealed record BackupPlanRequest(
     IReadOnlyList<BackupContainer> Containers,
@@ -174,32 +260,42 @@ public sealed record BackupPlanRequest(
     bool StopContainers,
     IReadOnlySet<string>? KeepRunningContainerIds = null,
     IReadOnlyDictionary<string, string>? ExcludeVolumes = null,
-    bool StopAllRunning = false);
+    bool StopAllRunning = false,
+    BackupQuiesceMode QuiesceMode = BackupQuiesceMode.Stop,
+    bool ForceStop = false);
 
 /// <summary>
-/// Which volumes one backup (or restore) run touches and which containers it stops for them, computed
+/// Which volumes one backup (or restore) run touches and which containers it quiesces for them, computed
 /// by <see cref="Create(BackupPlanRequest)"/>. Pure: it performs no I/O and holds no engine handle, so
 /// every decision the run makes is testable without a daemon.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The rule that replaced "stop everything" is <em>mount scoping</em>: a container is stopped when it
+/// The rule that replaced "stop everything" is <em>mount scoping</em>: a container is quiesced when it
 /// mounts a volume this run is about to read or overwrite. For the usual stateless-api + frontend +
 /// database stack that is the database alone, so the stateless tier keeps serving traffic through the
 /// snapshot. Two per-service compose labels override the decision where the author knows better —
 /// <see cref="ExcludeLabel"/> drops a service's volumes from the run entirely and never stops it, and
-/// <see cref="StopLabel"/> forces the stop decision either way.
+/// <see cref="StopLabel"/> forces the decision either way (<c>true</c> stops, <c>false</c> keeps,
+/// <c>pause</c> freezes instead of stopping).
 /// </para>
 /// <para>
-/// Stops and restarts follow Compose's own <c>depends_on</c> graph: dependents stop first and
-/// dependencies restart first, so an api is never left talking to a database that is already down (or
-/// not yet up). When no dependency is declared — or the graph has a cycle — the engine's listing order
-/// is used unchanged, which is exactly what the pre-label implementation did.
+/// Quiescing follows Compose's own <c>depends_on</c> graph: dependents go down first and dependencies
+/// come back first, so an api is never left talking to a database that is already down (or not yet
+/// up). The set is grouped into <see cref="Levels"/> — containers with no ordering constraint between
+/// them — so the executor can take a whole level down at once and shorten the window to the slowest
+/// container of each level rather than the sum. When no dependency is declared, everything is one
+/// level; a cycle cannot be ordered at all, so each container becomes its own level in the engine's
+/// listing order, which is exactly what the pre-label implementation did.
 /// </para>
 /// </remarks>
 /// <param name="Volumes">The volumes the run touches, sorted <see cref="StringComparer.Ordinal"/>.</param>
 /// <param name="Excluded">The candidate volumes that were dropped, sorted by name.</param>
-/// <param name="Stop">The containers to stop, in the order to stop them.</param>
+/// <param name="Levels">
+/// The containers to quiesce, grouped by dependency level in the order to take them down: every
+/// container of level <c>i</c> may go down concurrently, and only once level <c>i</c> is down may
+/// level <c>i+1</c> follow. Resuming runs the levels in reverse.
+/// </param>
 /// <param name="Keep">The running containers left up, in the engine's order.</param>
 /// <param name="Warnings">
 /// Operator-facing lines, deterministic and free of the "WARNING: " prefix — the caller owns how it
@@ -208,15 +304,21 @@ public sealed record BackupPlanRequest(
 public sealed record BackupPlan(
     IReadOnlyList<string> Volumes,
     IReadOnlyList<ExcludedBackupVolume> Excluded,
-    IReadOnlyList<BackupContainer> Stop,
+    IReadOnlyList<IReadOnlyList<BackupQuiesceStep>> Levels,
     IReadOnlyList<KeptBackupContainer> Keep,
     IReadOnlyList<string> Warnings) {
 
     /// <summary>Per-service label dropping the service's volumes from the archive and never stopping it.</summary>
     public const string ExcludeLabel = "watchtower.backup.exclude";
 
-    /// <summary>Per-service label overriding the mount-based stop decision (<c>"true"</c> / <c>"false"</c>).</summary>
+    /// <summary>
+    /// Per-service label overriding the mount-based decision: <c>"true"</c> (stop), <c>"false"</c> (keep
+    /// running) or <c>"pause"</c> (freeze instead of stopping; crash-consistent).
+    /// </summary>
     public const string StopLabel = "watchtower.backup.stop";
+
+    /// <summary>The <see cref="StopLabel"/> value selecting <see cref="BackupQuiesceMode.Pause"/>.</summary>
+    public const string StopLabelPause = "pause";
 
     /// <summary>Per-service label opting a database service in or out of a logical dump.</summary>
     public const string DumpLabel = "watchtower.backup.dump";
@@ -231,11 +333,17 @@ public sealed record BackupPlan(
     public const string ComposeContainerNumberLabel = "com.docker.compose.container-number";
 
     /// <summary>
-    /// The full stop set in restart order — dependencies first. A caller that actually stopped only a
-    /// prefix of <see cref="Stop"/> must reverse what it stopped instead, so it never starts a
-    /// container it did not take down.
+    /// The full quiesce set flattened — <see cref="Levels"/> in order — i.e. a valid sequential
+    /// take-down order: dependents first, dependencies last.
     /// </summary>
-    public IReadOnlyList<BackupContainer> RestartOrder => [.. Stop.Reverse()];
+    public IReadOnlyList<BackupQuiesceStep> Quiesce { get; } = [.. Levels.SelectMany(level => level)];
+
+    /// <summary>
+    /// The full quiesce set in resume order — dependencies first. A caller that actually took down only
+    /// a prefix of <see cref="Levels"/> must reverse what it took down instead, so it never starts a
+    /// container it did not stop.
+    /// </summary>
+    public IReadOnlyList<BackupQuiesceStep> ResumeOrder => [.. Quiesce.Reverse()];
 
     /// <summary>Convenience overload projecting the engine's container list through <see cref="BackupContainer.FromDocker"/>.</summary>
     /// <param name="containers">Every container of the compose project, any state, engine order.</param>
@@ -243,7 +351,10 @@ public sealed record BackupPlan(
     /// <param name="stopContainers">The stack's "stop containers" master switch.</param>
     /// <param name="keepRunning">Container ids the caller needs left running.</param>
     /// <param name="excludeVolumes">Volume name → reason detail for volumes captured another way.</param>
-    /// <param name="stopAllRunning">Stop every running container, not only the volume writers (restore with dumps).</param>
+    /// <param name="stopAllRunning">Quiesce every running container, not only the volume writers (restore with dumps).</param>
+    /// <param name="quiesceMode">The stack's default quiesce mode for unlabelled containers.</param>
+    /// <param name="forceStop">Stop everything that is quiesced, labels and default notwithstanding (restore).</param>
+    /// <param name="overrides">The stack's per-service UI overrides by service name (ADR-0020).</param>
     /// <returns>The plan.</returns>
     public static BackupPlan Create(
         IReadOnlyList<DockerContainerInfo> containers,
@@ -251,85 +362,119 @@ public sealed record BackupPlan(
         bool stopContainers,
         IReadOnlySet<string>? keepRunning = null,
         IReadOnlyDictionary<string, string>? excludeVolumes = null,
-        bool stopAllRunning = false) =>
+        bool stopAllRunning = false,
+        BackupQuiesceMode quiesceMode = BackupQuiesceMode.Stop,
+        bool forceStop = false,
+        IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) =>
         Create(new BackupPlanRequest(
-            [.. containers.Select(BackupContainer.FromDocker)], volumes, stopContainers,
-            keepRunning, excludeVolumes, stopAllRunning));
+            [.. containers.Select(c => BackupContainer.FromDocker(c, overrides))], volumes, stopContainers,
+            keepRunning, excludeVolumes, stopAllRunning, quiesceMode, forceStop));
 
     /// <summary>Applies the mount-scoping, label and ordering rules to one run's inputs.</summary>
     /// <remarks>
-    /// The stop decision, first match wins:
+    /// The quiesce decision, first match wins:
     /// <list type="number">
-    /// <item>the master switch is off — nothing is stopped, and <see cref="StopLabel"/><c>=true</c> does
+    /// <item>the master switch is off — nothing is touched, and <see cref="StopLabel"/><c>=true</c> does
     /// not override it, because the switch is the operator's "never touch my containers";</item>
     /// <item>the service is excluded — an excluded service is outside the run entirely;</item>
     /// <item>the caller needs it running (its data is dumped rather than snapshotted);</item>
     /// <item><see cref="StopLabel"/><c>=false</c> — an explicit "this one tolerates a hot snapshot";</item>
-    /// <item><see cref="StopLabel"/><c>=true</c> — an explicit stop even for a service that mounts nothing;</item>
+    /// <item><see cref="StopLabel"/><c>=true</c> / <c>=pause</c> — an explicit stop (or pause) even for a
+    /// service that mounts nothing;</item>
     /// <item>the caller asked for every running container (<see cref="BackupPlanRequest.StopAllRunning"/>);</item>
     /// <item>it mounts one of the volumes being archived;</item>
     /// <item>otherwise it is left running.</item>
     /// </list>
-    /// A label value that is neither <c>"true"</c> nor <c>"false"</c> is reported and treated as absent
-    /// rather than guessed at — the same reasoning as <see cref="EnvInjectionPlan"/>: both guesses are
-    /// wrong in a way the operator cannot see from the outside.
+    /// A quiesced container is stopped or paused: the label decides where it says so, the stack's
+    /// <see cref="BackupPlanRequest.QuiesceMode"/> otherwise, and <see cref="BackupPlanRequest.ForceStop"/>
+    /// overrides both. A label value that is none of the recognised words is reported and treated as
+    /// absent rather than guessed at — the same reasoning as <see cref="EnvInjectionPlan"/>: both guesses
+    /// are wrong in a way the operator cannot see from the outside.
     /// </remarks>
     /// <param name="request">The project's containers, the candidate volumes and the caller's overrides.</param>
     /// <returns>The plan, deterministic for any input order.</returns>
     public static BackupPlan Create(BackupPlanRequest request) {
         var labelWarnings = new SortedSet<string>(StringComparer.Ordinal);
         var excluded = new Dictionary<string, bool>(StringComparer.Ordinal);
-        var stopLabels = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var stopLabels = new Dictionary<string, StopDirective>(StringComparer.Ordinal);
         foreach (var container in request.Containers) {
-            if (ParseLabel(container, ExcludeLabel, container.ExcludeLabel, labelWarnings) is { } exclude)
+            // The effective value: the label where present, else the UI override (ADR-0020).
+            if (ParseLabel(container, ExcludeLabel, container.Exclude.Value, labelWarnings) is { } exclude)
                 excluded[container.Id] = exclude;
-            if (ParseLabel(container, StopLabel, container.StopLabel, labelWarnings) is { } stopping)
-                stopLabels[container.Id] = stopping;
+            if (ParseStopLabel(container, container.Stop.Value, labelWarnings) is { } directive)
+                stopLabels[container.Id] = directive;
         }
 
         var policyWarnings = new SortedSet<string>(StringComparer.Ordinal);
         var (volumes, exclusions) = ResolveVolumes(request, excluded, policyWarnings);
         var planned = new HashSet<string>(volumes, StringComparer.Ordinal);
 
-        var stop = new List<BackupContainer>();
+        var quiesce = new List<BackupQuiesceStep>();
         var keep = new List<KeptBackupContainer>();
         foreach (var container in request.Containers) {
             if (!container.IsRunning) continue;
             var isExcluded = excluded.GetValueOrDefault(container.Id);
             var mountsPlanned = container.VolumeNames.Any(planned.Contains);
-            var reason = KeepReason(request, container, isExcluded, stopLabels, mountsPlanned);
+            var directive = stopLabels.TryGetValue(container.Id, out var labelled) ? labelled : (StopDirective?)null;
+            var reason = KeepReason(request, container, isExcluded, directive, mountsPlanned);
             if (reason is { } kept) {
-                if (kept == BackupKeepReason.Excluded && stopLabels.GetValueOrDefault(container.Id))
+                if (kept == BackupKeepReason.Excluded && directive is StopDirective.Stop or StopDirective.Pause)
                     policyWarnings.Add(
-                        $"{Describe(container)} is labelled both {ExcludeLabel}=true and {StopLabel}=true "
+                        $"{Describe(container)} is labelled both {ExcludeLabel}=true and {StopLabel}="
+                        + $"{(directive == StopDirective.Pause ? StopLabelPause : "true")} "
                         + "— the exclusion wins and it is left running.");
-                keep.Add(new KeptBackupContainer(container, kept, mountsPlanned));
+                var source = kept switch {
+                    BackupKeepReason.Excluded => container.Exclude.Source,
+                    BackupKeepReason.StopLabel => container.Stop.Source,
+                    _ => BackupSettingSource.Default,
+                };
+                keep.Add(new KeptBackupContainer(container, kept, mountsPlanned, source));
             } else {
-                stop.Add(container);
+                var (mode, source) = ModeFor(request, container, directive);
+                quiesce.Add(new BackupQuiesceStep(container, mode, source));
             }
         }
 
         var orderWarnings = new List<string>();
-        var ordered = OrderForStop(stop, orderWarnings);
+        var levels = OrderForQuiesce(quiesce, orderWarnings);
 
         return new BackupPlan(
-            volumes, exclusions, ordered, keep,
+            volumes, exclusions, levels, keep,
             [.. labelWarnings, .. policyWarnings, .. orderWarnings]);
     }
 
-    /// <summary>The stop rule, returning null when the container is to be stopped.</summary>
+    /// <summary>What a <see cref="StopLabel"/> value asks for.</summary>
+    private enum StopDirective { Keep, Stop, Pause }
+
+    /// <summary>The quiesce rule, returning null when the container is to be quiesced.</summary>
     private static BackupKeepReason? KeepReason(
         BackupPlanRequest request,
         BackupContainer container,
         bool isExcluded,
-        Dictionary<string, bool> stopLabels,
+        StopDirective? directive,
         bool mountsPlanned) {
         if (!request.StopContainers) return BackupKeepReason.MasterSwitchOff;
         if (isExcluded) return BackupKeepReason.Excluded;
         if (request.KeepRunningContainerIds?.Contains(container.Id) == true) return BackupKeepReason.CallerRequested;
-        if (stopLabels.TryGetValue(container.Id, out var stop)) return stop ? null : BackupKeepReason.StopLabel;
+        if (directive is { } labelled) return labelled == StopDirective.Keep ? BackupKeepReason.StopLabel : null;
         if (request.StopAllRunning) return null;
         return mountsPlanned ? null : BackupKeepReason.NoPlannedMount;
+    }
+
+    /// <summary>
+    /// How a quiesced container goes down — the label/override where explicit, the stack default
+    /// otherwise — and where that came from. A forced stop keeps the source: the label still selected the
+    /// container, the restore merely refuses to pause it.
+    /// </summary>
+    private static (BackupQuiesceMode Mode, BackupSettingSource Source) ModeFor(
+        BackupPlanRequest request, BackupContainer container, StopDirective? directive) {
+        var source = directive is null ? BackupSettingSource.Default : container.Stop.Source;
+        if (request.ForceStop) return (BackupQuiesceMode.Stop, source);
+        return directive switch {
+            StopDirective.Pause => (BackupQuiesceMode.Pause, source),
+            StopDirective.Stop => (BackupQuiesceMode.Stop, source),
+            _ => (request.QuiesceMode, source),
+        };
     }
 
     /// <summary>
@@ -377,36 +522,50 @@ public sealed record BackupPlan(
     }
 
     /// <summary>
-    /// Orders the stop set along Compose's dependency graph — dependents first, dependencies last, so a
-    /// reversal of this list is a valid start order. Edges pointing at services this run is not stopping
-    /// are dropped: they impose no constraint on a container that stays up.
+    /// Orders the quiesce set along Compose's dependency graph and groups it into levels — dependents
+    /// first, dependencies last, so the reversed levels are a valid resume order. Edges pointing at
+    /// services this run is not quiescing are dropped: they impose no constraint on a container that
+    /// stays up.
     /// </summary>
     /// <remarks>
     /// Kahn's algorithm over services, dependency-first, taking the alphabetically smallest ready
     /// service each round so the result depends on the graph rather than on the engine's listing order.
-    /// A cycle cannot be ordered at all, so the whole set falls back to the engine's order — the
-    /// pre-<c>depends_on</c> behaviour, which is wrong for the cycle but no worse than any alternative.
-    /// Containers without a compose service are stopped first and restarted last, since nothing can
-    /// declare a dependency on them.
+    /// A service's level is its distance from the top of the dependent chain: a service nothing (in the
+    /// quiesce set) depends on is level 0, its dependencies level 1, and so on — the longest dependent
+    /// path decides, so a service is never taken down before everything that needs it. Within a level
+    /// the reversed Kahn order is kept, within one service the highest replica number goes first.
+    /// A cycle cannot be ordered at all, so the whole set falls back to the engine's order, one
+    /// container per level — the pre-<c>depends_on</c> behaviour, which is wrong for the cycle but no
+    /// worse than any alternative. Containers without a compose service sit in level 0 (quiesced first,
+    /// resumed last), since nothing can declare a dependency on them.
     /// </remarks>
-    private static IReadOnlyList<BackupContainer> OrderForStop(
-        List<BackupContainer> stopping, List<string> warnings) {
-        if (stopping.Count == 0) return [];
+    private static IReadOnlyList<IReadOnlyList<BackupQuiesceStep>> OrderForQuiesce(
+        List<BackupQuiesceStep> quiescing, List<string> warnings) {
+        if (quiescing.Count == 0) return [];
 
         var services = new HashSet<string>(
-            stopping.Select(c => c.Service).OfType<string>(), StringComparer.Ordinal);
+            quiescing.Select(s => s.Container.Service).OfType<string>(), StringComparer.Ordinal);
         var pending = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        foreach (var container in stopping) {
-            if (container.Service is not { } service) continue;
+        foreach (var step in quiescing) {
+            if (step.Container.Service is not { } service) continue;
             if (!pending.TryGetValue(service, out var deps))
                 pending[service] = deps = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var dependency in container.DependsOn)
+            foreach (var dependency in step.Container.DependsOn)
                 if (services.Contains(dependency) && !string.Equals(dependency, service, StringComparison.Ordinal))
                     deps.Add(dependency);
         }
-        // No declared dependency inside the stop set: keep the engine's order untouched, exactly as
-        // before depends_on was consulted at all.
-        if (pending.Values.All(d => d.Count == 0)) return stopping;
+        // No declared dependency inside the quiesce set: nothing constrains the order, so the whole set
+        // is one level, kept in the engine's order.
+        if (pending.Values.All(d => d.Count == 0)) return [quiescing];
+
+        // Dependents per service, for the level computation below — before Kahn consumes `pending`.
+        var dependents = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var (service, deps) in pending)
+            foreach (var dependency in deps) {
+                if (!dependents.TryGetValue(dependency, out var list))
+                    dependents[dependency] = list = [];
+                list.Add(service);
+            }
 
         var order = new List<string>(pending.Count);
         var ready = new SortedSet<string>(
@@ -427,21 +586,37 @@ public sealed record BackupPlan(
             warnings.Add(
                 $"circular depends_on between services {string.Join(", ", pending.Keys.OrderBy(s => s, StringComparer.Ordinal))} "
                 + "— falling back to the engine's container order for this run.");
-            return stopping;
+            return [.. quiescing.Select(step => (IReadOnlyList<BackupQuiesceStep>)[step])];
         }
 
-        // Dependency-first above; stopping runs the other way round. Within one service the highest
-        // replica number goes down first, so replica 1 is the last to stop and the first to come back.
-        var ordered = new List<BackupContainer>(stopping.Count);
-        ordered.AddRange(stopping.Where(c => c.Service is null));
+        // Level = 1 + the deepest level among the dependents; walking the dependency-first order
+        // backwards visits every dependent before the service it depends on.
+        var level = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var i = order.Count - 1; i >= 0; i--) {
             var service = order[i];
-            ordered.AddRange(stopping
-                .Where(c => string.Equals(c.Service, service, StringComparison.Ordinal))
-                .OrderByDescending(c => c.ContainerNumber)
-                .ThenByDescending(c => c.DisplayName, StringComparer.Ordinal));
+            var depth = 0;
+            if (dependents.TryGetValue(service, out var list))
+                foreach (var dependent in list)
+                    depth = Math.Max(depth, level[dependent] + 1);
+            level[service] = depth;
         }
-        return ordered;
+
+        // Dependency-first above; quiescing runs the other way round. Within one service the highest
+        // replica number goes down first, so replica 1 is the last to stop and the first to come back.
+        var ordered = new List<(BackupQuiesceStep Step, int Level)>(quiescing.Count);
+        ordered.AddRange(quiescing.Where(s => s.Container.Service is null).Select(s => (s, 0)));
+        for (var i = order.Count - 1; i >= 0; i--) {
+            var service = order[i];
+            ordered.AddRange(quiescing
+                .Where(s => string.Equals(s.Container.Service, service, StringComparison.Ordinal))
+                .OrderByDescending(s => s.Container.ContainerNumber)
+                .ThenByDescending(s => s.Container.DisplayName, StringComparer.Ordinal)
+                .Select(s => (s, level[service])));
+        }
+        return [.. ordered
+            .GroupBy(e => e.Level)
+            .OrderBy(g => g.Key)
+            .Select(g => (IReadOnlyList<BackupQuiesceStep>)[.. g.Select(e => e.Step)])];
     }
 
     /// <summary>
@@ -457,6 +632,21 @@ public sealed record BackupPlan(
         warnings.Add(
             $"{Describe(container)} has an unrecognized {key} value '{value}' — expected \"true\" or "
             + "\"false\"; ignoring it.");
+        return null;
+    }
+
+    /// <summary>
+    /// Reads the <see cref="StopLabel"/>: <c>true</c>/<c>false</c> as <see cref="ParseLabel"/> does, plus
+    /// <c>pause</c> (same tolerance for casing and whitespace); anything else is reported and ignored.
+    /// </summary>
+    private static StopDirective? ParseStopLabel(
+        BackupContainer container, string? value, SortedSet<string> warnings) {
+        if (value is null) return null;
+        if (bool.TryParse(value, out var parsed)) return parsed ? StopDirective.Stop : StopDirective.Keep;
+        if (string.Equals(value.Trim(), StopLabelPause, StringComparison.OrdinalIgnoreCase)) return StopDirective.Pause;
+        warnings.Add(
+            $"{Describe(container)} has an unrecognized {StopLabel} value '{value}' — expected \"true\", "
+            + $"\"false\" or \"{StopLabelPause}\"; ignoring it.");
         return null;
     }
 

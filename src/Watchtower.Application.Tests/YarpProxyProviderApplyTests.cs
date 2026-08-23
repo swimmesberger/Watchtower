@@ -38,7 +38,7 @@ public sealed class YarpProxyProviderApplyTests {
         await yarp.Provider.ApplyAsync(Ct);
 
         // Three rows: two application routes and the realm's login route. The configured Auth:Host adds
-        // nothing — since ADR-0021 a served hostname is a row, and Auth:Host is only a redirect address.
+        // nothing — since ADR-0023 a served hostname is a row, and Auth:Host is only a redirect address.
         var snapshot = yarp.Table.Current;
         Assert.Equal(3, snapshot.Count);
         Assert.True(snapshot.TryGet("app.example.invalid", out var app));
@@ -81,7 +81,7 @@ public sealed class YarpProxyProviderApplyTests {
         // Nothing is pending for a route that is served over plain HTTP.
         Assert.Null(byDomain["plain.example.invalid"]);
         // The login host reports its provisioning state like every other row — the whole point of
-        // ADR-0021 is that "is my login page's certificate issued yet?" has an answer on the Routes page.
+        // ADR-0023 is that "is my login page's certificate issued yet?" has an answer on the Routes page.
         Assert.Equal("Waiting for a certificate", byDomain["acme.example.invalid"]);
     }
 

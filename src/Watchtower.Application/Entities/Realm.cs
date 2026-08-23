@@ -10,7 +10,7 @@ namespace Watchtower.Application.Entities;
 /// <c>AddRealms</c> migration, which owns Watchtower's own management surface and is the realm every
 /// pre-realm row was backfilled into. It cannot be deleted, and it is the only realm that falls back to
 /// the configured <c>Watchtower:Auth:Host</c> when it has no <see cref="LoginRouteId"/> — the escape
-/// hatch for an instance fronted by somebody else's proxy (ADR-0021).
+/// hatch for an instance fronted by somebody else's proxy (ADR-0023).
 /// <para>
 /// Per-population settings — password policy, lockout, future MFA and federation config — belong on this
 /// entity as they land (design.md §13, seam 3). None of them exist yet; today's are still instance-wide
@@ -57,7 +57,7 @@ public sealed class Realm {
     /// <summary>
     /// The <see cref="RouteTarget.Watchtower"/> route whose domain this realm's login page and
     /// <c>__wt_sso</c> cookie live on — the realm's SSO scope, since a host-scoped cookie <em>is</em> the
-    /// cookie jar (design.md §13, ADR-0021). Null while the realm has no login host yet: its protected
+    /// cookie jar (design.md §13, ADR-0023). Null while the realm has no login host yet: its protected
     /// routes then fail closed at challenge time rather than redirecting anywhere — except on the system
     /// realm, which falls back to the configured <c>Auth:Host</c>.
     /// </summary>

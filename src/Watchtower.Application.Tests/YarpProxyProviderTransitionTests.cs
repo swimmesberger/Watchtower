@@ -14,7 +14,7 @@ namespace Watchtower.Application.Tests;
 public sealed class YarpProxyProviderTransitionTests {
     private static readonly ProxyOptions DisabledYarp = new() { Enabled = false, Provider = "yarp" };
     private static readonly ProxyOptions EnabledYarp = new() { Enabled = true, Provider = "yarp" };
-    // Named explicitly: since ADR-0020 the unstated default is yarp, so `new() { Enabled = true }` is the
+    // Named explicitly: since ADR-0022 the unstated default is yarp, so `new() { Enabled = true }` is the
     // in-process provider and would make the two "switch to Caddy" cases below assert nothing at all.
     private static readonly ProxyOptions EnabledCaddy = new() { Enabled = true, Provider = "caddy" };
     private static readonly ProxyOptions EnabledCloudflare = new() { Enabled = true, Provider = "cloudflare" };

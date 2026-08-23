@@ -290,7 +290,7 @@ function describeContents(realm: Realm): string {
 
 /**
  * Where this realm sends anonymous visitors: the domain of its login route, or — on the operator realm
- * alone — the configured `Auth:Host` fallback (ADR-0021). The fallback is called out rather than shown as
+ * alone — the configured `Auth:Host` fallback (ADR-0023). The fallback is called out rather than shown as
  * an ordinary value, because it is the one case where no route is serving the hostname.
  */
 function LoginHostCell({ realm }: { realm: Realm }) {
@@ -395,7 +395,7 @@ const LOGIN_DOMAIN_HINT =
 const NO_LOGIN_ROUTE = 'none'
 
 /**
- * The realm's own Watchtower routes — the candidates for its login host (ADR-0021). Read from the route
+ * The realm's own Watchtower routes — the candidates for its login host (ADR-0023). Read from the route
  * table rather than from anything realm-shaped, because a login host *is* a route: the picker offers
  * exactly what `realms.update` would accept, so the cross-realm refusal is something the administrator
  * never runs into.
@@ -528,7 +528,7 @@ function EditRealmForm({
           // name as if it were being set.
           name: name.trim() === realm.name ? undefined : name.trim(),
           // 0 is what clears the designation — omitting would mean "leave alone", which is a different
-          // thing (ADR-0021).
+          // thing (ADR-0023).
           loginRouteId: loginRouteId === NO_LOGIN_ROUTE ? 0 : Number(loginRouteId),
         })
       }}

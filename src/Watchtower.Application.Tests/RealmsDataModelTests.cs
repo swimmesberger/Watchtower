@@ -41,7 +41,7 @@ public sealed class RealmsDataModelTests {
         Assert.Equal(Realm.SystemRealmSlug, realm.Slug);
         Assert.Equal(Realm.SystemRealmName, realm.Name);
         // A fresh install has no routes at all, so the operator realm starts with no login route and
-        // falls back to Watchtower:Auth:Host until one is created (ADR-0021).
+        // falls back to Watchtower:Auth:Host until one is created (ADR-0023).
         Assert.Null(realm.LoginRouteId);
     }
 
@@ -103,7 +103,7 @@ public sealed class RealmsDataModelTests {
         await using var scope = host.Services.CreateAsyncScope();
         var realms = scope.ServiceProvider.GetRequiredService<RealmResolver>();
 
-        // No login route on the system realm yet, so the configured fallback answers (ADR-0021).
+        // No login route on the system realm yet, so the configured fallback answers (ADR-0023).
         Assert.Equal(
             "watchtower.example.invalid",
             await realms.LoginHostForAsync(await realms.SystemRealmAsync(Ct), Ct));
@@ -164,7 +164,7 @@ public sealed class RealmsDataModelTests {
         db.Realms.Remove(await db.Realms.SingleAsync(r => r.Id == acme, Ct));
 
         // Restrict on routes.realm_id: realms.delete refuses first, and the schema refuses regardless —
-        // a realm delete must never take a live public hostname with it (ADR-0021).
+        // a realm delete must never take a live public hostname with it (ADR-0023).
         await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync(Ct));
     }
 
@@ -483,7 +483,7 @@ public sealed class RealmsDataModelTests {
         Assert.Equal(1, await ScalarAsync(db, "SELECT COUNT(*) FROM groups WHERE normalized_name = 'LEGACY STAFF'"));
     }
 
-    // -- ADR-0021: auth_host → Watchtower route --------------------------------------------------
+    // -- ADR-0023: auth_host → Watchtower route --------------------------------------------------
 
     /// <summary>
     /// The conversion the <c>ConvertLoginHostsToRoutes</c> migration carries. It has to happen inside a
@@ -502,7 +502,7 @@ public sealed class RealmsDataModelTests {
         await migrator.MigrateAsync("AddBackupCronSchedule", Ct);
 
         // Two realms with a stored host, one without, and a service route on an unrelated domain — the
-        // pre-ADR-0021 shape exactly as an upgraded instance would hold it.
+        // pre-ADR-0023 shape exactly as an upgraded instance would hold it.
         await db.Database.ExecuteSqlRawAsync(
             """
             INSERT INTO realms (name, slug, auth_host, is_system, created_at) VALUES

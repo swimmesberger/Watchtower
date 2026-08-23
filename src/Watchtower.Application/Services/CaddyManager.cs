@@ -321,7 +321,7 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
         var routes = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
             .ToListAsync(ct);
-        // Watchtower's own hostnames are rows in that table like any other (ADR-0021); the projection
+        // Watchtower's own hostnames are rows in that table like any other (ADR-0023); the projection
         // points them at `watchtower:8080` on the control network, which is where Caddy already sends the
         // forward-auth and callback traffic of every protected site.
         return ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);

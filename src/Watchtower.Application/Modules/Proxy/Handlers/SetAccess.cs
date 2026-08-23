@@ -59,7 +59,7 @@ public sealed class SetAccess(
         if (route is null)
             return AppError.NotFound($"Route {command.RouteId} not found");
 
-        // A Watchtower route is served by Watchtower, which authenticates its own visitors (ADR-0021).
+        // A Watchtower route is served by Watchtower, which authenticates its own visitors (ADR-0023).
         // There is no forward-auth hop to configure, the check constraint refuses anything but Public,
         // and putting a login page behind the gate that redirects to it is a closed loop. Refused rather
         // than silently accepted as a no-op: an administrator who thought they had gated a hostname must

@@ -22,7 +22,7 @@ internal static class AccessTestEstate {
 
     /// <summary>
     /// Adds a realm and returns its id. <paramref name="loginDomain"/> also creates and designates the
-    /// realm's login route (ADR-0021); null models "DNS not ready", where the realm has no login host.
+    /// realm's login route (ADR-0023); null models "DNS not ready", where the realm has no login host.
     /// </summary>
     public static async Task<int> AddRealmAsync(
         this WatchtowerApiFactory factory, string slug, string? loginDomain = null) {

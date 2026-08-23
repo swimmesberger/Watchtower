@@ -212,6 +212,41 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("backup_events", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.BackupPausedContainer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ContainerId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("container_id");
+
+                    b.Property<string>("ContainerName")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("container_name");
+
+                    b.Property<DateTimeOffset>("PausedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("paused_at");
+
+                    b.Property<string>("StackName")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("stack_name");
+
+                    b.HasKey("Id")
+                        .HasName("pk_backup_paused_containers");
+
+                    b.HasIndex("ContainerId")
+                        .HasDatabaseName("ix_backup_paused_containers_container_id");
+
+                    b.ToTable("backup_paused_containers", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.CiRepo", b =>
                 {
                     b.Property<int>("Id")
@@ -836,6 +871,13 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("INTEGER")
                         .HasColumnName("backup_enabled");
 
+                    b.Property<string>("BackupQuiesceMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("Stop")
+                        .HasColumnName("backup_quiesce_mode");
+
                     b.Property<bool>("BackupStopContainers")
                         .HasColumnType("INTEGER")
                         .HasColumnName("backup_stop_containers");
@@ -924,6 +966,44 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_stacks_template_id_tenant_slug");
 
                     b.ToTable("stacks", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.StackBackupServiceOverride", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Dump")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("dump");
+
+                    b.Property<bool>("Exclude")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("exclude");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("service");
+
+                    b.Property<int>("StackId")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("stack_id");
+
+                    b.Property<string>("Stop")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("stop");
+
+                    b.HasKey("Id")
+                        .HasName("pk_stack_backup_service_overrides");
+
+                    b.HasIndex("StackId", "Service")
+                        .IsUnique()
+                        .HasDatabaseName("ix_stack_backup_service_overrides_stack_id_service");
+
+                    b.ToTable("stack_backup_service_overrides", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackEnvVar", b =>
@@ -1432,6 +1512,18 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("Credential");
 
                     b.Navigation("Template");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.StackBackupServiceOverride", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Stack", "Stack")
+                        .WithMany()
+                        .HasForeignKey("StackId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_stack_backup_service_overrides_stacks_stack_id");
+
+                    b.Navigation("Stack");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackEnvVar", b =>

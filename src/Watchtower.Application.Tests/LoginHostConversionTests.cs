@@ -10,7 +10,7 @@ using Xunit;
 namespace Watchtower.Application.Tests;
 
 /// <summary>
-/// The half of ADR-0021's conversion that the migration cannot do: a configured
+/// The half of ADR-0023's conversion that the migration cannot do: a configured
 /// <c>Watchtower:Auth:Host</c> becomes the operator realm's login route.
 /// </summary>
 /// <remarks>

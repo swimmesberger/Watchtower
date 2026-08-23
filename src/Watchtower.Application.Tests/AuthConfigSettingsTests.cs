@@ -141,7 +141,7 @@ public sealed class AuthConfigSettingsTests {
         Assert.Equal("48", await settings.GetStringAsync(WatchtowerSettingPaths.AuthSessionLifetimeHours, SettingsScope.Global, Ct));
     }
 
-    // -- The effective login host and the Auth:Host collision (ADR-0021) -------------------------
+    // -- The effective login host and the Auth:Host collision (ADR-0023) -------------------------
 
     /// <summary>
     /// The Settings page writes this response straight into its cache, so a response that reported no

@@ -15,6 +15,9 @@ import type {
   BackupEvent,
   BackupRemoteFile,
   BackupRunAccepted,
+  BackupPlanPreview,
+  BackupQuiesceMode,
+  BackupServiceOverride,
   BackupStackConfig,
   UpdateBackupConfigRequest,
   Container,
@@ -251,7 +254,7 @@ export const api = {
         makeLoginRoute: data.makeLoginRoute ?? null,
       })).route as Route,
     // Returns the server's response rather than swallowing it: deleting a realm's login host succeeds
-    // and carries a `warning` the caller has to show (ADR-0021).
+    // and carries a `warning` the caller has to show (ADR-0023).
     deleteRoute: async (id: number, removeFromProvider = false) =>
       (await rpc('proxy.deleteRoute', { id, removeFromProvider })) as { id: number; warning?: string | null },
     checkDns: async (domain: string) =>
@@ -341,9 +344,19 @@ export const api = {
       enabled: boolean,
       stopContainers: boolean,
       cron: string | null,
+      quiesceMode: BackupQuiesceMode,
     ) =>
-      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron }))
+      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron, quiesceMode }))
         .config as BackupStackConfig,
+    previewPlan: async (stackId: number) =>
+      (await rpc('backups.previewPlan', { stackId })).preview as BackupPlanPreview,
+    setServiceOverride: async (
+      stackId: number,
+      service: string,
+      override: { exclude: boolean; stop: string | null; dump: string | null },
+    ) =>
+      (await rpc('backups.setServiceOverride', { stackId, service, ...override }))
+        .override as BackupServiceOverride | null,
   },
 
   templates: {

@@ -66,7 +66,7 @@ public sealed class CloudflareIngressProjectionTests {
     }
 
     /// <summary>
-    /// A Watchtower route (ADR-0021) is not something this provider can serve: an ingress rule pointing at
+    /// A Watchtower route (ADR-0023) is not something this provider can serve: an ingress rule pointing at
     /// Watchtower would publish the management plane through the tunnel with no gate in front of it, which
     /// is precisely what Cloudflare Access exists to do properly. The reconcile marks such a route
     /// <c>Error</c> and says so; the projection simply never emits a rule for it.

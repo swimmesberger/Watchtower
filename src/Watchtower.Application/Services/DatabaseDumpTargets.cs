@@ -76,12 +76,14 @@ public static class DatabaseDumpTargets {
     /// the one database would be a round-trip per service on every single run.
     /// </summary>
     /// <param name="projectContainers">Every container of the compose project, any state.</param>
+    /// <param name="overrides">The stack's per-service UI overrides by service name (ADR-0020).</param>
     /// <returns>The running containers the label/image rule selects, in the engine's order.</returns>
     public static IReadOnlyList<DockerContainerInfo> Candidates(
-        IReadOnlyList<DockerContainerInfo> projectContainers) => [
+        IReadOnlyList<DockerContainerInfo> projectContainers,
+        IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) => [
         .. projectContainers.Where(c =>
             string.Equals(c.State, "running", StringComparison.OrdinalIgnoreCase)
-            && Classify(BackupContainer.FromDocker(c), c.Image).Engine is not null),
+            && Classify(BackupContainer.FromDocker(c, overrides), c.Image).Engine is not null),
     ];
 
     /// <summary>
@@ -94,14 +96,16 @@ public static class DatabaseDumpTargets {
     /// official image's default and resolves to <see cref="DefaultDataDirectory"/>.
     /// </param>
     /// <param name="log">Receives operator-facing lines, <c>WARNING: </c> prefix included.</param>
+    /// <param name="overrides">The stack's per-service UI overrides by service name (ADR-0020).</param>
     /// <returns>The dump targets, ordered by service name.</returns>
     public static IReadOnlyList<DumpTarget> Select(
         IReadOnlyList<DockerContainerInfo> projectContainers,
         IReadOnlyDictionary<string, string?> pgDataByContainerId,
-        Action<string> log) {
+        Action<string> log,
+        IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) {
         var targets = new List<DumpTarget>();
         foreach (var info in projectContainers) {
-            var container = BackupContainer.FromDocker(info);
+            var container = BackupContainer.FromDocker(info, overrides);
             var name = Describe(container);
             var (engine, warning) = Classify(container, info.Image);
             if (warning is not null) log(warning);
@@ -143,33 +147,38 @@ public static class DatabaseDumpTargets {
     /// opt-out wins over any detection; an explicitly named engine wins over the image; otherwise the
     /// image decides. A label value that is none of the above is reported and the image decides — the
     /// operator meant <em>something</em>, and silently doing nothing would look identical to a service
-    /// that was never labelled.
+    /// that was never labelled. The "label" is the effective setting: the compose label where present,
+    /// else the UI override (ADR-0020) — the log line names which.
     /// </summary>
     /// <returns>The engine to dump with (null for "not a dump target") and a line to log, if any.</returns>
     private static (DumpEngine? Engine, string? Warning) Classify(BackupContainer container, string image) {
         var name = Describe(container);
-        if (bool.TryParse(container.ExcludeLabel, out var excluded) && excluded) return (null, null);
+        if (bool.TryParse(container.Exclude.Value, out var excluded) && excluded) return (null, null);
 
-        var label = container.DumpLabel?.Trim().ToLowerInvariant();
+        var setting = container.Dump;
+        var label = setting.Value?.Trim().ToLowerInvariant();
         if (label is { Length: > 0 }) {
+            var raw = setting.Value!.Trim();
+            var where = setting.Source == BackupSettingSource.Override
+                ? $"UI override dump={raw}"
+                : $"{BackupPlan.DumpLabel}={raw}";
             if (OptOutValues.Contains(label))
-                return (null, $"{name} opted out of dumps ({BackupPlan.DumpLabel}={container.DumpLabel!.Trim()}) "
-                    + "— snapshotting its volume(s) instead.");
+                return (null, $"{name} opted out of dumps ({where}) — snapshotting its volume(s) instead.");
             if (PostgresValues.Contains(label)) return (DumpEngine.Postgres, null);
             if (OptInValues.Contains(label))
                 return IsPostgresImage(image)
                     ? (DumpEngine.Postgres, null)
-                    : (null, $"WARNING: {name} is labelled {BackupPlan.DumpLabel}={container.DumpLabel!.Trim()} but "
+                    : (null, $"WARNING: {name} is labelled {where} but "
                         + $"'{image}' is not a recognized database image — name the engine "
                         + $"({BackupPlan.DumpLabel}=postgres) to dump it anyway; snapshotting its volume(s) instead.");
             return IsPostgresImage(image)
                 ? (DumpEngine.Postgres,
                     $"WARNING: {name} has an unrecognized {BackupPlan.DumpLabel} value "
-                    + $"'{container.DumpLabel!.Trim()}' — expected \"postgres\", \"true\" or \"false\"; "
+                    + $"'{raw}' — expected \"postgres\", \"true\" or \"false\"; "
                     + "going by its image instead.")
                 : (null,
                     $"WARNING: {name} has an unrecognized {BackupPlan.DumpLabel} value "
-                    + $"'{container.DumpLabel!.Trim()}' — expected \"postgres\", \"true\" or \"false\"; ignoring it.");
+                    + $"'{raw}' — expected \"postgres\", \"true\" or \"false\"; ignoring it.");
         }
 
         return (IsPostgresImage(image) ? DumpEngine.Postgres : null, null);

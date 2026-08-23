@@ -23,7 +23,7 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
     /// <param name="Warning">
     /// What the deletion cost beyond the row itself, or <see langword="null"/> when it cost nothing.
     /// Today that is one thing: the route was a realm's login host, so that realm now has none and its
-    /// protected apps answer anonymous visitors with 401 instead of a login redirect (ADR-0021).
+    /// protected apps answer anonymous visitors with 401 instead of a login redirect (ADR-0023).
     /// </param>
     public sealed record Command(int Id, bool RemoveFromProvider = false);
     public sealed record Response(int Id, string? Warning = null);

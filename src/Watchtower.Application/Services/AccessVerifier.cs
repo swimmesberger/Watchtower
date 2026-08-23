@@ -83,7 +83,7 @@ public abstract record AccessDecision {
 /// The forward-auth decision itself (docs/central-auth/design.md §5): given a request's host, path, cookie
 /// and shape, may it enter — and as whom? Lives here rather than in the endpoint because two transports have
 /// to reach the same verdict: Caddy's <c>forward_auth</c> hop to <c>GET /api/access/verify</c>, and the
-/// in-process proxy, which asks this service directly (see ADR-0020). A second implementation
+/// in-process proxy, which asks this service directly (see ADR-0022). A second implementation
 /// of "may this request pass" would be a hole, not a bug — the same reasoning that puts
 /// <see cref="RouteAccessPolicy"/> in one place.
 /// </summary>
@@ -174,7 +174,7 @@ public sealed class AccessVerifier(
     /// <remarks>
     /// The login host is <em>the route's realm's</em> (docs/central-auth/design.md §13): the domain of the
     /// realm's login <see cref="Route"/>, falling back to the configured <c>Auth:Host</c> on the system
-    /// realm only (ADR-0021) — so a visitor is only ever sent to the login page of the population that could
+    /// realm only (ADR-0023) — so a visitor is only ever sent to the login page of the population that could
     /// actually admit them. A realm with no login route yet has no host, and its routes then fail closed
     /// with a bare 401 rather than redirecting somewhere arbitrary, exactly as an instance with no
     /// <c>Auth:Host</c> already did.

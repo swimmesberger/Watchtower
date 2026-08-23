@@ -9,7 +9,7 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services.Yarp;
 
 /// <summary>
-/// The in-process reverse proxy — ADR-0020. Watchtower terminates 80/443 itself and
+/// The in-process reverse proxy — ADR-0022. Watchtower terminates 80/443 itself and
 /// forwards to the routed containers, instead of managing a sibling proxy container. It is the third
 /// <see cref="IProxyProvider"/> behind <see cref="ProxyProviderRouter"/> and self-gates exactly like
 /// the other two — every method no-ops unless the proxy is enabled and <c>yarp</c> is selected.
@@ -226,7 +226,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var routes = await db.Routes.AsNoTracking().Include(r => r.Stack).ToListAsync(ct);
-            // Watchtower's own hostnames are rows in that table like any other (ADR-0021), and the
+            // Watchtower's own hostnames are rows in that table like any other (ADR-0023), and the
             // projection marks them Local; the dispatch middleware hands those to Watchtower's own
             // pipeline instead of forwarding them.
             var sites = ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);

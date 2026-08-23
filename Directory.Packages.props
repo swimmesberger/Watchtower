@@ -50,7 +50,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The in-process reverse proxy (ADR-0020, forthcoming). Only the direct-forwarding half is used —
+    <!-- The in-process reverse proxy (ADR-0022, forthcoming). Only the direct-forwarding half is used —
          IHttpForwarder plus HttpTransformer — not YARP's own config/routing pipeline, because Watchtower
          already owns the route table and dispatches by Host itself. Referenced by Watchtower.Api alone:
          the Application layer stays proxy-agnostic, so the projection and the access decision remain

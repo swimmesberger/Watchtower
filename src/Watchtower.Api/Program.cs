@@ -97,12 +97,12 @@ RuntimeSettingsLayering.MakeEnvironmentWin(
 // git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
 
-// The in-process proxy's request path (ADR-0020): YARP's direct forwarder and the singleton
+// The in-process proxy's request path (ADR-0022): YARP's direct forwarder and the singleton
 // client it forwards on. Registered unconditionally — the proxy provider is switchable from Settings at
 // runtime, and neither the container nor the pipeline is rebuilt for that.
 builder.Services.AddWatchtowerProxyForwarding();
 
-// The in-process reverse proxy's TLS listener (ADR-0020): a second Kestrel endpoint that
+// The in-process reverse proxy's TLS listener (ADR-0022): a second Kestrel endpoint that
 // picks its certificate per connection from the SNI name. Only added where one is configured — the
 // shipped container sets Kestrel__Endpoints__ProxyHttps__Url; development, Aspire and the integration
 // tests never do, so the host they boot is unchanged.
@@ -163,7 +163,7 @@ if (authEnabled) {
 // and -Host are deliberately left alone so nothing downstream can be fooled about the client address or
 // the host name.
 //
-// None of this governs a request the in-process proxy handles (ADR-0020): that dispatcher runs
+// None of this governs a request the in-process proxy handles (ADR-0022): that dispatcher runs
 // *before* this middleware, so its scheme decisions come from the real connection rather than from a header
 // a client could write, and it stamps the X-Forwarded-* trio itself on the one thing it hands back to this
 // pipeline — the /.watchtower/* callback and logout served on an app's own domain.
@@ -179,7 +179,7 @@ var app = builder.Build();
 // Apply migrations, enable WAL, and recover deploys interrupted by a previous crash.
 await InitializeDatabaseAsync(app);
 
-// ACME HTTP-01 challenges, for any host and over either scheme (ADR-0020). Ahead of the host
+// ACME HTTP-01 challenges, for any host and over either scheme (ADR-0022). Ahead of the host
 // dispatcher so a challenge is never forwarded to an upstream and never redirected to HTTPS — the CA calls
 // it over plain HTTP by definition, and either outcome would fail the validation.
 app.UseAcmeHttpChallenge();
@@ -260,13 +260,13 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
             .SetProperty(e => e.Output,
                 e => (e.Output ?? "") + "\n[Reset: process restarted while backup was in progress]"));
 
-    // ADR-0020's upgrade guard: an instance that was serving routes under the old implicit `caddy`
+    // ADR-0022's upgrade guard: an instance that was serving routes under the old implicit `caddy`
     // default is pinned to caddy once, so the default flip cannot switch a working proxy silently.
     // Here rather than in a hosted service so the ordering is stated rather than inherited: after the
     // migration (it reads the routes table) and before app.RunAsync() starts the proxy providers.
     await scope.ServiceProvider.GetRequiredService<ProxyProviderMigration>().RunAsync();
 
-    // ADR-0021's one-time conversion: a configured Auth:Host becomes the operator realm's Watchtower
+    // ADR-0023's one-time conversion: a configured Auth:Host becomes the operator realm's Watchtower
     // route. Here for the same reason and in the same window — after the migration (which converts the
     // realms' own stored auth hosts and drops the column) and before the providers start, so the first
     // reconcile already serves the converted hostname.

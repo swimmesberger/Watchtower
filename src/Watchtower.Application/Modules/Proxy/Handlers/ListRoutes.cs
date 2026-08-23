@@ -18,7 +18,7 @@ public sealed class ListRoutes(WatchtowerDbContext db)
             .ToListAsync(ct);
 
         // One query for the whole table rather than a navigation per row: "is this route a realm's login
-        // host" is a fact about the realms table (ADR-0021), and there are only ever a handful of realms.
+        // host" is a fact about the realms table (ADR-0023), and there are only ever a handful of realms.
         var loginRouteIds = await db.Realms.AsNoTracking()
             .Where(r => r.LoginRouteId != null)
             .Select(r => r.LoginRouteId!.Value)

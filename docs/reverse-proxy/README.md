@@ -14,13 +14,13 @@ The feature is **opt-in**. While it is off, routes are stored and nothing is ser
 | `cloudflare` | A Cloudflare Tunnel: outbound only, no open ports, TLS at Cloudflare's edge, access gated by Zero Trust. | [cloudflare.md](cloudflare.md) |
 
 Background: [ADR-0015](../decisions/0015-proxy-provider-abstraction.md) (the provider seam) and
-[ADR-0020](../decisions/0020-in-process-yarp-proxy.md) (the in-process provider and the default flip).
+[ADR-0022](../decisions/0022-in-process-yarp-proxy.md) (the in-process provider and the default flip).
 
 ## The route table is the source of truth
 
 A **route** is a domain plus a target. The target is either a **stack service** — a compose service in
 one of your stacks and a container port — or **Watchtower itself**, which is how this instance's own UI
-and login pages get their hostnames ([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md),
+and login pages get their hostnames ([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md),
 and "Exposing Watchtower itself" below). You add them in the **Routes** UI (`/routes`); every provider is
 a projection of that one table, so switching providers does not mean re-entering anything. Each route
 also carries its **access mode** (Public / Authenticated / Restricted) and, for the two
@@ -50,7 +50,7 @@ need `ports:` in their own compose files.
 
 Note what this means for the built-in provider: **Watchtower's own container joins every ingress
 network**, because it *is* the proxy. That is a deliberate exposure change from the Caddy topology —
-see the consequences section of [ADR-0020](../decisions/0020-in-process-yarp-proxy.md).
+see the consequences section of [ADR-0022](../decisions/0022-in-process-yarp-proxy.md).
 
 ## Choosing a provider
 
@@ -68,7 +68,7 @@ Environment variables win over the UI ([ADR-0014](../decisions/0014-env-wins-run
 setting supplied that way shows as pinned and read-only on the Settings page until the variable is
 removed.
 
-**Upgrading from before ADR-0020:** an instance that has routes and never named a provider is pinned
+**Upgrading from before ADR-0022:** an instance that has routes and never named a provider is pinned
 to `caddy` once, at the first start after the upgrade — it keeps running exactly as it did, and the
 change is logged and recorded in the audit trail. Fresh installations get the built-in provider, and
 an internal marker written on that first start makes sure they are never pinned later, once they have
@@ -126,7 +126,7 @@ hostnames, which is all the auth path needs. For the operator realm you may inst
 `WATCHTOWER__AUTH__HOST`, which is read **only** when the operator realm has no login route designated.
 Prefer a route: a route is served, gets a certificate, reports a status and is audited.
 
-**Upgrading from before ADR-0021:** every realm's stored auth host becomes a Watchtower route during the
+**Upgrading from before ADR-0023:** every realm's stored auth host becomes a Watchtower route during the
 migration, and a configured `Auth:Host` becomes the operator realm's on the first start after it.
 Neither ever re-points a hostname that already serves an application. The `Auth:Host` half is recorded
 in the audit trail as `proxy` / `route.convert`; the migration half is not — it is a schema migration,

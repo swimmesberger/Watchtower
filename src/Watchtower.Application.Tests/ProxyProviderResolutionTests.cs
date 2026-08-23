@@ -11,7 +11,7 @@ namespace Watchtower.Application.Tests;
 /// </summary>
 public sealed class ProxyProviderResolutionTests {
     /// <summary>
-    /// The default since ADR-0020. An upgrade never reaches this: an instance that was serving routes
+    /// The default since ADR-0022. An upgrade never reaches this: an instance that was serving routes
     /// under the old implicit <c>caddy</c> default has the provider written into its settings store once
     /// by <c>ProxyProviderMigration</c>, so the value is stated by the time it is read here.
     /// </summary>

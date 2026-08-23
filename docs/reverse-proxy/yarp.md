@@ -1,6 +1,6 @@
 # Built-in reverse proxy (in-process) — operator guide
 
-The default provider since [ADR-0020](../decisions/0020-in-process-yarp-proxy.md). Watchtower binds
+The default provider since [ADR-0022](../decisions/0022-in-process-yarp-proxy.md). Watchtower binds
 the ingress ports itself, terminates TLS with certificates it obtains from an ACME CA, and forwards
 each request to the routed container over that stack's private ingress network. There is **no second
 container, no control network and no admin API** — the proxy is Watchtower.
@@ -111,7 +111,7 @@ on every port, because the CA does not get to choose which listener it reaches.
 ### Watchtower routes
 
 A route whose target is **Watchtower (this instance)** rather than a stack service
-([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md)) is the branch marked above:
+([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md)) is the branch marked above:
 the request takes Watchtower's ordinary pipeline — SPA, `/rpc`, `/api/*` and all — instead of being
 forwarded anywhere. Forwarding it would be forwarding to ourselves. It is the one kind of host served
 on **both** listeners: through ingress because that is how the UI and the login page are reachable from

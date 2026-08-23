@@ -35,7 +35,7 @@ public sealed class ListRealms(WatchtowerDbContext db, RealmResolver realms)
         var byRealm = counts.ToDictionary(c => c.RealmId);
 
         // The login host comes through the resolver rather than off the row: it is the login route's
-        // domain with the system realm's Auth:Host fallback behind it (ADR-0021), and that reading lives
+        // domain with the system realm's Auth:Host fallback behind it (ADR-0023), and that reading lives
         // in exactly one place. `ListAsync` includes the route, so merging it costs no query per realm.
         var listed = new List<RealmDto>(counts.Count);
         foreach (var realm in await realms.ListAsync(ct)) {

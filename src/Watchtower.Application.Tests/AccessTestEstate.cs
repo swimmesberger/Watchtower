@@ -27,7 +27,7 @@ internal static class AccessTestEstate {
 
     /// <summary>
     /// Adds a realm and returns its id. <paramref name="loginDomain"/> also creates the realm's login
-    /// route — the <see cref="RouteTarget.Watchtower"/> row its login page is served on (ADR-0021) —
+    /// route — the <see cref="RouteTarget.Watchtower"/> row its login page is served on (ADR-0023) —
     /// while null leaves the realm with no login host, the state of one whose DNS is not ready yet.
     /// </summary>
     public static async Task<int> AddRealmAsync(

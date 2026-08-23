@@ -24,7 +24,7 @@ unknown domain arriving there gets a 404 rather than Watchtower's own UI, which 
 to bind privately. A **Cloudflare Tunnel** provider is there for
 hosts that cannot open ports at all, and the older Caddy-container provider stays supported for
 existing installations. See [docs/reverse-proxy/](docs/reverse-proxy/README.md) and
-[ADR-0020](docs/decisions/0020-in-process-yarp-proxy.md).
+[ADR-0022](docs/decisions/0022-in-process-yarp-proxy.md).
 
 > Authentication is **opt-in and off by default**, so an upgrade cannot lock you out. Left off,
 > Watchtower is unauthenticated and belongs behind an authenticating reverse proxy (Cloudflare Access,

@@ -52,7 +52,8 @@ public sealed class BackupService(
     /// <summary>Runs the backup for an event created by <see cref="BackupQueueService.Enqueue"/>.</summary>
     public async Task ExecuteBackupAsync(int backupEventId, CancellationToken ct) {
         var output = new StringBuilder();
-        void Log(string line) => output.AppendLine(line);
+        // Locked: a dependency level is quiesced concurrently, and its tasks all log.
+        void Log(string line) { lock (output) output.AppendLine(line); }
 
         int stackId;
         string triggeredBy;
@@ -81,7 +82,7 @@ public sealed class BackupService(
             // The audit row carries the settings the run operated under, so "was it encrypted back
             // then?" is answered by the trail, not by today's configuration.
             await audit.RecordAsync(AuditCategory, "run", stack.Name,
-                $"{RunSummary(triggeredBy, stack, backup, result.StoppedCount, result.ExcludedVolumeCount)}"
+                $"{RunSummary(triggeredBy, stack, backup, result.StoppedCount, result.ExcludedVolumeCount, result.PausedCount)}"
                 + $" · {result.VolumeCount} volume(s)"
                 + (result.DumpCount > 0 ? $" · {result.DumpCount} dump(s)" : "")
                 + $", {result.SizeBytes} bytes → {result.RemotePath}",
@@ -108,17 +109,22 @@ public sealed class BackupService(
     /// it cannot vouch for.
     /// </param>
     /// <param name="excludedVolumeCount">How many candidate volumes were left out of the archive.</param>
+    /// <param name="pausedCount">How many containers the run paused rather than stopped (ADR-0019).</param>
     internal static string RunSummary(
-        string trigger, Stack stack, BackupOptions backup, int? stoppedCount = null, int excludedVolumeCount = 0) {
+        string trigger, Stack stack, BackupOptions backup, int? stoppedCount = null, int excludedVolumeCount = 0,
+        int pausedCount = 0) {
         var provider = backup.ResolveProvider() == BackupProviderKind.Local ? "local" : "sftp";
-        var stopped = stoppedCount switch {
-            null => stack.BackupStopContainers ? " · containers stopped" : "",
-            > 0 => $" · {stoppedCount} container(s) stopped",
+        var quiesced = (stoppedCount, pausedCount) switch {
+            (null, _) when !stack.BackupStopContainers => "",
+            (null, _) => stack.BackupQuiesceMode == BackupQuiesceMode.Pause ? " · containers paused" : " · containers stopped",
+            ( > 0, > 0) => $" · {pausedCount} container(s) paused, {stoppedCount} stopped",
+            (_, > 0) => $" · {pausedCount} container(s) paused",
+            ( > 0, _) => $" · {stoppedCount} container(s) stopped",
             _ => "",
         };
         return $"{trigger} · {provider}"
             + (string.IsNullOrEmpty(backup.EncryptionPassphrase) ? "" : " · encrypted")
-            + stopped
+            + quiesced
             + (excludedVolumeCount > 0 ? $" · {excludedVolumeCount} volume(s) excluded" : "")
             + $" · {RetentionSummary(backup)}";
     }
@@ -141,7 +147,8 @@ public sealed class BackupService(
     /// </summary>
     public async Task ExecuteRestoreAsync(int backupEventId, string fileName, CancellationToken ct) {
         var output = new StringBuilder();
-        void Log(string line) => output.AppendLine(line);
+        // Locked: a dependency level is quiesced concurrently, and its tasks all log.
+        void Log(string line) { lock (output) output.AppendLine(line); }
 
         Stack? stack;
         using (var scope = scopeFactory.CreateScope()) {
@@ -271,10 +278,13 @@ public sealed class BackupService(
             // With dumps to replay, everything running goes down, not only the volume writers: a
             // stateless api that merely talks to the database would reconnect between the session
             // terminate and DROP DATABASE, and --clean would merge into the old database.
+            // Always a real stop, never a pause: a process thawed over files that were replaced
+            // underneath it is no better off than one that kept running through the extraction.
             var plan = Plan(containers, targets, stopContainers: true, log,
                 keepRunning: new HashSet<string>(
                     dumpPlan.Replays.Select(r => r.ContainerId), StringComparer.Ordinal),
-                stopAllRunning: dumpPlan.Replays.Count > 0);
+                stopAllRunning: dumpPlan.Replays.Count > 0,
+                forceStop: true);
             foreach (var excluded in plan.Excluded)
                 log(excluded.Reason == BackupVolumeExclusionReason.Label
                     ? $"WARNING: archive volume '{excluded.Name}' is excluded by {BackupPlan.ExcludeLabel} "
@@ -289,7 +299,7 @@ public sealed class BackupService(
                 log($"WARNING: {kept.Container.DisplayName} mounts a restored volume but "
                     + $"{RestoreKeepReason(kept.Reason)} — extracting underneath it may corrupt the result.");
 
-            var stopped = await StopPlannedContainersAsync(plan, log, ct);
+            var stopped = await QuiescePlannedContainersAsync(plan, stack, backup, log, ct);
             try {
                 // 9. Wipe + extract, unless the archive is dumps only.
                 if (plan.Volumes.Count > 0) {
@@ -305,12 +315,12 @@ public sealed class BackupService(
                 await ReplayDumpsAsync(dumpPlan, connections, spoolPath, replaySpools, encrypted, backup, log, ct);
             } finally {
                 // 11. Back up in dependency order, whatever happened above.
-                await RestartContainersAsync(stopped, log);
+                await ResumeContainersAsync(stopped, log);
             }
 
             return new RunResult(
-                relativePath, sizeBytes, plan.Volumes.Count, stopped.Count, plan.Excluded.Count,
-                dumpPlan.Replays.Count);
+                relativePath, sizeBytes, plan.Volumes.Count, stopped.StoppedCount, plan.Excluded.Count,
+                dumpPlan.Replays.Count, stopped.PausedCount);
         } finally {
             foreach (var path in replaySpools.Append(spoolPath)) {
                 try {
@@ -436,7 +446,7 @@ public sealed class BackupService(
 
     private sealed record RunResult(
         string RemotePath, long SizeBytes, int VolumeCount, int StoppedCount = 0, int ExcludedVolumeCount = 0,
-        int DumpCount = 0);
+        int DumpCount = 0, int PausedCount = 0);
 
     /// <summary>One completed database dump, as the manifest records it (ADR-0017).</summary>
     /// <param name="Service">The compose service the dump was taken from — its identity on restore.</param>
@@ -465,29 +475,12 @@ public sealed class BackupService(
         var takenAt = DateTimeOffset.UtcNow;
         var encrypted = !string.IsNullOrEmpty(backup.EncryptionPassphrase);
 
-        // 1. The stack's candidate volumes, by compose project label, and its containers.
-        var candidates = (await docker.ListVolumesAsync(ct))
-            .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
-            .Select(v => v.Name)
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToList();
-        var containers = await ListProjectContainersAsync(project, ct);
-
-        // 2. Which databases are captured as a logical dump instead of a file snapshot. They keep
-        // running (a dump is consistent without stopping anything) and their data volume leaves the
-        // archive, because the dump is the better copy of exactly that content.
-        var dumpTargets = await SelectDumpTargetsAsync(containers, log, ct);
+        // 1–3. Volumes, containers, dump targets and the plan — the same preparation the Backups tab
+        // previews, so what the operator saw there is what runs here.
+        var (candidates, containers, dumpTargets, plan, _, _) = await PrepareAsync(stack, log, ct);
         if (candidates.Count == 0 && dumpTargets.Count == 0)
             throw new InvalidOperationException(
                 $"No volumes found for compose project '{project}'. Has the stack been deployed?");
-
-        // 3. Narrow the volumes to what the labels allow, and work out who has to go down for them.
-        var dumpCovered = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var target in dumpTargets.Where(t => t.DataVolume is not null))
-            dumpCovered[target.DataVolume!] = $"covered by the '{target.Service}' dump";
-        var plan = Plan(containers, candidates, stack.BackupStopContainers, log,
-            keepRunning: new HashSet<string>(dumpTargets.Select(t => t.ContainerId), StringComparer.Ordinal),
-            excludeVolumes: dumpCovered);
         foreach (var excluded in plan.Excluded)
             log(excluded.Reason == BackupVolumeExclusionReason.Label
                 ? $"Excluding volume '{excluded.Name}' — only mounted by excluded {excluded.Detail}."
@@ -520,7 +513,7 @@ public sealed class BackupService(
         var spoolPath = Path.Combine(Path.GetTempPath(), $"watchtower-{fileName}.spool");
         var dumpSpools = new List<string>();
         try {
-            var stopped = await StopPlannedContainersAsync(plan, log, ct);
+            var stopped = await QuiescePlannedContainersAsync(plan, stack, backup, log, ct);
             var dumps = new List<BackupDumpEntry>();
             try {
                 // The dumps are taken inside the stop window, so the SQL and the file snapshots
@@ -552,7 +545,7 @@ public sealed class BackupService(
                     if (!ReferenceEquals(sink, spool)) await sink.DisposeAsync(); // flush final cipher block
                 }
             } finally {
-                await RestartContainersAsync(stopped, log);
+                await ResumeContainersAsync(stopped, log);
             }
 
             var sizeBytes = new FileInfo(spoolPath).Length;
@@ -568,7 +561,8 @@ public sealed class BackupService(
 
             await ApplyRetentionAsync(storage, directory, backup, log, ct);
             return new RunResult(
-                relativePath, sizeBytes, volumes.Count, stopped.Count, plan.Excluded.Count, dumps.Count);
+                relativePath, sizeBytes, volumes.Count, stopped.StoppedCount, plan.Excluded.Count, dumps.Count,
+                stopped.PausedCount);
         } finally {
             foreach (var path in dumpSpools.Append(spoolPath)) {
                 try {
@@ -597,9 +591,12 @@ public sealed class BackupService(
     /// round-trip per service on every run.
     /// </summary>
     private async Task<IReadOnlyList<DumpTarget>> SelectDumpTargetsAsync(
-        IReadOnlyList<DockerContainerInfo> containers, Action<string> log, CancellationToken ct) {
+        IReadOnlyList<DockerContainerInfo> containers,
+        IReadOnlyDictionary<string, BackupServiceOverride> overrides,
+        Action<string> log,
+        CancellationToken ct) {
         var pgData = new Dictionary<string, string?>(StringComparer.Ordinal);
-        foreach (var candidate in DatabaseDumpTargets.Candidates(containers)) {
+        foreach (var candidate in DatabaseDumpTargets.Candidates(containers, overrides)) {
             try {
                 var details = await docker.InspectContainerAsync(candidate.Id, ct);
                 pgData[candidate.Id] = (details.Config.Env ?? [])
@@ -612,7 +609,7 @@ public sealed class BackupService(
                 logger.LogWarning(ex, "Failed to inspect dump candidate {ContainerId}", candidate.Id);
             }
         }
-        return DatabaseDumpTargets.Select(containers, pgData, log);
+        return DatabaseDumpTargets.Select(containers, pgData, log, overrides);
     }
 
     /// <summary>
@@ -622,6 +619,77 @@ public sealed class BackupService(
     private Task<IReadOnlyList<DockerContainerInfo>> ListProjectContainersAsync(
         string project, CancellationToken ct) =>
         docker.ListContainersByLabelsAsync([$"{ComposeProjectLabel}={project}"], ct);
+
+    /// <summary>Everything a run decides before it touches a container — also what the Backups tab previews.</summary>
+    /// <param name="Candidates">The project's volumes, sorted.</param>
+    /// <param name="Containers">The project's containers, every state.</param>
+    /// <param name="DumpTargets">The databases captured as dumps.</param>
+    /// <param name="Plan">The plan.</param>
+    /// <param name="Overrides">The stack's per-service UI overrides by service name.</param>
+    /// <param name="DumpLog">What the dump policy logged while selecting targets.</param>
+    internal sealed record BackupPreparation(
+        IReadOnlyList<string> Candidates,
+        IReadOnlyList<DockerContainerInfo> Containers,
+        IReadOnlyList<DumpTarget> DumpTargets,
+        BackupPlan Plan,
+        IReadOnlyDictionary<string, BackupServiceOverride> Overrides,
+        IReadOnlyList<string> DumpLog);
+
+    /// <summary>
+    /// Steps 1–3 of a run: the stack's candidate volumes (by compose project label) and containers, the
+    /// databases captured as a logical dump instead of a file snapshot — they keep running and their data
+    /// volume leaves the archive, because the dump is the better copy of exactly that content — and the
+    /// plan that narrows the volumes to what the labels and overrides allow and works out who goes down
+    /// for them. Shared by the run and the preview on purpose: one code path, one answer.
+    /// </summary>
+    internal async Task<BackupPreparation> PrepareAsync(Stack stack, Action<string> log, CancellationToken ct) {
+        var project = stack.ComposeProjectName;
+        var overrides = await LoadOverridesAsync(stack.Id, ct);
+        var candidates = (await docker.ListVolumesAsync(ct))
+            .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
+            .Select(v => v.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+        var containers = await ListProjectContainersAsync(project, ct);
+
+        var dumpLog = new List<string>();
+        var dumpTargets = await SelectDumpTargetsAsync(containers, overrides, line => { dumpLog.Add(line); log(line); }, ct);
+
+        var dumpCovered = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var target in dumpTargets.Where(t => t.DataVolume is not null))
+            dumpCovered[target.DataVolume!] = $"covered by the '{target.Service}' dump";
+        var plan = Plan(containers, candidates, stack.BackupStopContainers, log,
+            keepRunning: new HashSet<string>(dumpTargets.Select(t => t.ContainerId), StringComparer.Ordinal),
+            excludeVolumes: dumpCovered,
+            quiesceMode: stack.BackupQuiesceMode,
+            overrides: overrides);
+        return new BackupPreparation(candidates, containers, dumpTargets, plan, overrides, dumpLog);
+    }
+
+    /// <summary>
+    /// The dry run the Backups tab shows (ADR-0020): what the next run would do with every container of
+    /// the stack as deployed right now, and why. Read-only — it lists and inspects, never stops.
+    /// </summary>
+    public async Task<BackupPlanPreview> PreviewPlanAsync(Stack stack, CancellationToken ct) {
+        var prep = await PrepareAsync(stack, _ => { }, ct);
+        return BackupPlanPreview.Build(
+            [.. prep.Containers.Select(c => BackupContainer.FromDocker(c, prep.Overrides))],
+            prep.Plan, prep.DumpTargets, prep.Overrides, prep.DumpLog,
+            stack.BackupStopContainers, stack.BackupQuiesceMode);
+    }
+
+    /// <summary>The stack's per-service UI overrides, keyed by service name.</summary>
+    private async Task<IReadOnlyDictionary<string, BackupServiceOverride>> LoadOverridesAsync(int stackId, CancellationToken ct) {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var rows = await db.StackBackupServiceOverrides.AsNoTracking()
+            .Where(o => o.StackId == stackId)
+            .ToListAsync(ct);
+        return rows.ToDictionary(
+            o => o.Service,
+            o => new BackupServiceOverride(o.Exclude, o.Stop, o.Dump),
+            StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// Turns the project's containers, the candidate volumes and the stack's master switch into a
@@ -633,6 +701,9 @@ public sealed class BackupService(
     /// <param name="log">The run output.</param>
     /// <param name="keepRunning">Containers the run needs left up — the databases it dumps.</param>
     /// <param name="excludeVolumes">Volumes captured another way, name → reason detail.</param>
+    /// <param name="stopAllRunning">Quiesce every running container (restore with dumps).</param>
+    /// <param name="quiesceMode">The stack's default quiesce mode for unlabelled containers.</param>
+    /// <param name="forceStop">Stop everything that is quiesced, labels and default notwithstanding (restore).</param>
     private static BackupPlan Plan(
         IReadOnlyList<DockerContainerInfo> containers,
         IReadOnlyList<string> volumes,
@@ -640,62 +711,229 @@ public sealed class BackupService(
         Action<string> log,
         IReadOnlySet<string>? keepRunning = null,
         IReadOnlyDictionary<string, string>? excludeVolumes = null,
-        bool stopAllRunning = false) {
-        var plan = BackupPlan.Create(containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning);
+        bool stopAllRunning = false,
+        BackupQuiesceMode quiesceMode = BackupQuiesceMode.Stop,
+        bool forceStop = false,
+        IReadOnlyDictionary<string, BackupServiceOverride>? overrides = null) {
+        var plan = BackupPlan.Create(
+            containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning, quiesceMode, forceStop,
+            overrides);
         foreach (var warning in plan.Warnings) log($"WARNING: {warning}");
         return plan;
     }
 
     /// <summary>
-    /// Stops what the plan selected, in the plan's order; returns the containers actually stopped, in
-    /// that same order, so the caller can bring exactly those back.
+    /// What a run actually took down, level by level in the order it happened — the exact set
+    /// <see cref="ResumeContainersAsync"/> brings back, so a run that failed part-way never starts a
+    /// container it did not stop.
     /// </summary>
-    /// <remarks>
-    /// A stop that fails part-way through restarts what is already down before rethrowing. Without that,
-    /// a daemon hiccup on the third of five containers would leave the first two stopped with nobody
-    /// holding their list — the stack would stay half-down until an operator noticed.
-    /// </remarks>
-    private async Task<IReadOnlyList<BackupContainer>> StopPlannedContainersAsync(
-        BackupPlan plan, Action<string> log, CancellationToken ct) {
-        if (plan.Stop.Count > 0 || plan.Keep.Count > 0)
-            log($"Stopping {plan.Stop.Count} of {plan.Stop.Count + plan.Keep.Count} running container(s)"
-                + (plan.Stop.Count > 0 ? $": {string.Join(", ", plan.Stop.Select(c => c.DisplayName))}" : "")
-                + (plan.Keep.Count > 0
-                    ? $"; leaving {string.Join(", ", plan.Keep.Select(k => k.Container.DisplayName))} up"
-                    : "")
-                + ".");
-
-        var stopped = new List<BackupContainer>(plan.Stop.Count);
-        try {
-            foreach (var container in plan.Stop) {
-                log($"Stopping {container.DisplayName} for a consistent snapshot");
-                await docker.StopContainerAsync(container.Id, ct);
-                stopped.Add(container);
-            }
-        } catch {
-            await RestartContainersAsync(stopped, log);
-            throw;
-        }
-        return stopped;
+    /// <param name="Levels">The quiesced steps, grouped as <see cref="BackupPlan.Levels"/> were, minus the steps that failed.</param>
+    /// <param name="RecordedPauseIds">
+    /// The container ids <see cref="RecordPausesAsync"/> wrote to the safety-net table for this run —
+    /// the planned pauses, whether or not each was reached. Cleared on resume for every container that
+    /// is not left paused.
+    /// </param>
+    internal sealed record QuiescedContainers(
+        IReadOnlyList<IReadOnlyList<BackupQuiesceStep>> Levels,
+        IReadOnlyCollection<string> RecordedPauseIds) {
+        public int Count => Levels.Sum(level => level.Count);
+        public int StoppedCount => Levels.Sum(level => level.Count(s => s.Mode == BackupQuiesceMode.Stop));
+        public int PausedCount => Levels.Sum(level => level.Count(s => s.Mode == BackupQuiesceMode.Pause));
     }
 
     /// <summary>
-    /// Restarts what <see cref="StopPlannedContainersAsync"/> stopped, in reverse — the stop order runs
-    /// dependents-first, so reversing it starts dependencies first. Not cancellable: containers must
-    /// come back even when the run was aborted, and a restart failure is reported but never masks the
-    /// primary outcome.
+    /// Takes down what the plan selected — each dependency level at once, levels in order — and returns
+    /// exactly what went down so the caller can bring it back.
     /// </summary>
-    private async Task RestartContainersAsync(IReadOnlyList<BackupContainer> stopped, Action<string> log) {
-        for (var i = stopped.Count - 1; i >= 0; i--) {
-            var container = stopped[i];
+    /// <remarks>
+    /// <para>
+    /// Within a level nothing depends on anything else, so its stops and pauses are issued concurrently:
+    /// the window for a level is its slowest container, not the sum. Stops carry the short
+    /// <see cref="BackupOptions.StopTimeoutSeconds"/> (<c>?t=</c>) rather than the daemon's 10 s, and a
+    /// pause is a cgroup freeze that returns in milliseconds.
+    /// </para>
+    /// <para>
+    /// A level that fails part-way resumes what is already down — across all levels so far — before
+    /// rethrowing. Without that, a daemon hiccup on the third of five containers would leave the first
+    /// two stopped with nobody holding their list, and a paused one frozen: the stack would stay
+    /// half-down until an operator noticed. The pauses are additionally written to
+    /// <see cref="BackupPausedContainer"/> <em>before</em> they happen, so a Watchtower that dies inside
+    /// the window can thaw them on its next start (<see cref="UnpauseLeftoversAsync"/>).
+    /// </para>
+    /// </remarks>
+    internal async Task<QuiescedContainers> QuiescePlannedContainersAsync(
+        BackupPlan plan, Stack stack, BackupOptions backup, Action<string> log, CancellationToken ct) {
+        var stopping = plan.Quiesce.Where(s => s.Mode == BackupQuiesceMode.Stop).Select(s => s.Container.DisplayName).ToList();
+        var pausing = plan.Quiesce.Where(s => s.Mode == BackupQuiesceMode.Pause).Select(s => s.Container.DisplayName).ToList();
+        if (plan.Quiesce.Count > 0 || plan.Keep.Count > 0)
+            log($"Quiescing {plan.Quiesce.Count} of {plan.Quiesce.Count + plan.Keep.Count} running container(s)"
+                + (stopping.Count > 0 ? $": stopping {string.Join(", ", stopping)}" : "")
+                + (pausing.Count > 0 ? $"{(stopping.Count > 0 ? ";" : ":")} pausing {string.Join(", ", pausing)}" : "")
+                + (plan.Keep.Count > 0
+                    ? $"; leaving {string.Join(", ", plan.Keep.Select(k => k.Container.DisplayName))} up"
+                    : "")
+                + (plan.Levels.Count > 1 ? $" — {plan.Levels.Count} dependency levels" : "")
+                + ".");
+
+        // The safety net is written first, outside the window: a crash after this line and before the
+        // pause leaves a row whose container is not paused, which the reconcile simply drops.
+        var recorded = await RecordPausesAsync(plan, stack, ct);
+        var stopTimeout = backup.ResolveStopTimeoutSeconds();
+        var levels = new List<IReadOnlyList<BackupQuiesceStep>>(plan.Levels.Count);
+        try {
+            foreach (var level in plan.Levels) {
+                var tasks = level.Select(step => QuiesceOneAsync(step, stopTimeout, log, ct)).ToList();
+                try {
+                    await Task.WhenAll(tasks);
+                } finally {
+                    // Whatever did go down in this level is remembered, even when a sibling failed.
+                    var done = tasks.Where(t => t.IsCompletedSuccessfully).Select(t => t.Result).ToList();
+                    if (done.Count > 0) levels.Add(done);
+                }
+            }
+        } catch {
+            await ResumeContainersAsync(new QuiescedContainers(levels, recorded), log);
+            throw;
+        }
+        return new QuiescedContainers(levels, recorded);
+    }
+
+    /// <summary>One step of a level: the stop (with the short timeout) or the pause.</summary>
+    private async Task<BackupQuiesceStep> QuiesceOneAsync(
+        BackupQuiesceStep step, int stopTimeoutSeconds, Action<string> log, CancellationToken ct) {
+        var container = step.Container;
+        if (step.Mode == BackupQuiesceMode.Pause) {
+            log($"Pausing {container.DisplayName} for a crash-consistent snapshot");
+            await docker.PauseContainerAsync(container.Id, ct);
+        } else {
+            log($"Stopping {container.DisplayName} for a consistent snapshot (SIGTERM, {stopTimeoutSeconds} s grace)");
+            await docker.StopContainerAsync(container.Id, stopTimeoutSeconds, ct);
+        }
+        return step;
+    }
+
+    /// <summary>
+    /// Brings back what <see cref="QuiescePlannedContainersAsync"/> took down, levels in reverse — the
+    /// quiesce order runs dependents-first, so reversing it starts dependencies first — and, within a
+    /// level, concurrently. Not cancellable: containers must come back even when the run was aborted,
+    /// and a failure here is reported but never masks the primary outcome. Finally the safety-net rows
+    /// are cleared for every container that is not left paused; a container whose unpause failed keeps
+    /// its row, so the next start retries it.
+    /// </summary>
+    internal async Task ResumeContainersAsync(QuiescedContainers quiesced, Action<string> log) {
+        var stillPaused = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = quiesced.Levels.Count - 1; i >= 0; i--) {
+            await Task.WhenAll(quiesced.Levels[i].Select(async step => {
+                var container = step.Container;
+                try {
+                    if (step.Mode == BackupQuiesceMode.Pause) {
+                        await docker.UnpauseContainerAsync(container.Id, CancellationToken.None);
+                        log($"Unpaused {container.DisplayName}");
+                    } else {
+                        await docker.StartContainerAsync(container.Id, CancellationToken.None);
+                        log($"Restarted {container.DisplayName}");
+                    }
+                } catch (Exception ex) {
+                    if (step.Mode == BackupQuiesceMode.Pause) lock (stillPaused) stillPaused.Add(container.Id);
+                    var verb = step.Mode == BackupQuiesceMode.Pause ? "unpause" : "restart";
+                    log($"WARNING: failed to {verb} {container.DisplayName}: {ex.Message}");
+                    logger.LogError(ex, "Failed to {Verb} container {ContainerId} after backup", verb, container.Id);
+                }
+            }));
+        }
+        if (quiesced.RecordedPauseIds.Count > 0)
+            await ForgetPausesAsync(quiesced.RecordedPauseIds.Where(id => !stillPaused.Contains(id)).ToList());
+    }
+
+    /// <summary>Writes the run's planned pauses to the safety-net table; returns the ids written.</summary>
+    private async Task<IReadOnlyCollection<string>> RecordPausesAsync(BackupPlan plan, Stack stack, CancellationToken ct) {
+        var pauses = plan.Quiesce.Where(s => s.Mode == BackupQuiesceMode.Pause).ToList();
+        if (pauses.Count == 0) return [];
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        db.BackupPausedContainers.AddRange(pauses.Select(s => new BackupPausedContainer {
+            ContainerId = s.Container.Id,
+            ContainerName = s.Container.DisplayName,
+            StackName = stack.Name,
+            PausedAt = now,
+        }));
+        await db.SaveChangesAsync(ct);
+        return [.. pauses.Select(s => s.Container.Id)];
+    }
+
+    /// <summary>Clears the safety-net rows of containers that are running again (or never were paused).</summary>
+    private async Task ForgetPausesAsync(IReadOnlyCollection<string> containerIds) {
+        if (containerIds.Count == 0) return;
+        try {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            await db.BackupPausedContainers
+                .Where(p => containerIds.Contains(p.ContainerId))
+                .ExecuteDeleteAsync(CancellationToken.None);
+        } catch (Exception ex) {
+            // Harmless leftovers: the next start inspects them, finds them running, and drops them.
+            logger.LogWarning(ex, "Failed to clear the paused-container safety net after a backup");
+        }
+    }
+
+    /// <summary>
+    /// The startup half of the pause safety net: unpauses every container a previous process paused
+    /// for a backup and did not get to unpause (crash, SIGKILL, power loss mid-window), then clears the
+    /// table. A container that is not paused any more — the run died before pausing it, or someone
+    /// resumed it by hand — is forgotten; one that no longer exists likewise.
+    /// </summary>
+    /// <returns>How many containers were unpaused.</returns>
+    /// <exception cref="Exception">
+    /// Rethrown from the engine when a container could not be inspected or unpaused; its row stays so
+    /// the caller can retry — a frozen stack is exactly the state this must not give up on.
+    /// </exception>
+    public async Task<int> UnpauseLeftoversAsync(CancellationToken ct) {
+        List<BackupPausedContainer> rows;
+        using (var scope = scopeFactory.CreateScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            rows = await db.BackupPausedContainers.AsNoTracking().OrderBy(p => p.Id).ToListAsync(ct);
+        }
+        if (rows.Count == 0) return 0;
+
+        var unpaused = new List<BackupPausedContainer>();
+        var settled = new List<int>();
+        Exception? failure = null;
+        foreach (var row in rows) {
             try {
-                await docker.StartContainerAsync(container.Id, CancellationToken.None);
-                log($"Restarted {container.DisplayName}");
-            } catch (Exception ex) {
-                log($"WARNING: failed to restart {container.DisplayName}: {ex.Message}");
-                logger.LogError(ex, "Failed to restart container {ContainerId} after backup", container.Id);
+                string? status;
+                try {
+                    status = (await docker.InspectContainerAsync(row.ContainerId, ct)).State?.Status;
+                } catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound) {
+                    status = null; // gone — nothing left to thaw
+                }
+                if (string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase)) {
+                    await docker.UnpauseContainerAsync(row.ContainerId, ct);
+                    logger.LogWarning(
+                        "Unpaused container {ContainerName} of stack {StackName}: a previous process paused it for a backup at {PausedAt:O} and did not resume it",
+                        row.ContainerName, row.StackName, row.PausedAt);
+                    unpaused.Add(row);
+                }
+                settled.Add(row.Id);
+            } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
+                logger.LogError(ex, "Could not reconcile paused container {ContainerName} ({ContainerId})", row.ContainerName, row.ContainerId);
+                failure ??= ex;
             }
         }
+
+        if (settled.Count > 0) {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            await db.BackupPausedContainers.Where(p => settled.Contains(p.Id)).ExecuteDeleteAsync(ct);
+        }
+        if (unpaused.Count > 0)
+            await audit.RecordAsync(AuditCategory, "reconcile.unpause",
+                string.Join(", ", unpaused.Select(r => r.StackName).Distinct(StringComparer.Ordinal)),
+                $"unpaused {unpaused.Count} container(s) left paused by an interrupted backup: "
+                + string.Join(", ", unpaused.Select(r => r.ContainerName)),
+                ct: CancellationToken.None);
+        if (failure is not null) throw failure;
+        return unpaused.Count;
     }
 
     private async Task ApplyRetentionAsync(

@@ -3,7 +3,7 @@
 > Status: Phase 1 implemented on branch `wt/watchtower-central-auth-84057b` (WI-1..WI-6). Phase 2 has begun: **groups + group-based grants are implemented** (`Groups` module, group subjects on `RouteAccessGrant`, group forwarding in the JWT and the per-mode ecosystem headers); OIDC upstream and template policy inheritance remain future work. **§4's MFA was designed and built on
 2026-08-19**: TOTP with recovery codes, self-service in every realm, an administrative reset, and
 break-glass clearing the second factor along with the password — per-realm *enforcement* is still future
-work and belongs on the `Realm` entity (§13.8). **§13 (native multi-realm) was designed and built on 2026-08-10** — realms, per-realm credential spaces and login hosts, the realm access invariant and the operator-realm-only management surface all ship; **ADR-0021 (2026-08-23) revised how a login host is stored**, from `Realm.AuthHost` to a `Watchtower`-target route the realm designates. §12 (product-branded login pages/themes) is designed, not implemented.
+work and belongs on the `Realm` entity (§13.8). **§13 (native multi-realm) was designed and built on 2026-08-10** — realms, per-realm credential spaces and login hosts, the realm access invariant and the operator-realm-only management surface all ship; **ADR-0023 (2026-08-23) revised how a login host is stored**, from `Realm.AuthHost` to a `Watchtower`-target route the realm designates. §12 (product-branded login pages/themes) is designed, not implemented.
 > Branch/worktree: `watchtower-central-auth-84057b`.
 > Grounded against the current code (Proxy module, `CaddyManager`/`CaddyConfigBuilder`, `Route`
 > entity, host wiring in `Program.cs`) and Elarion `0.2.3-preview.79.1` (authorization API verified
@@ -167,13 +167,13 @@ public sealed class Realm {                              // a user population (�
     public required string Name { get; set; }            // display name; editable
     public required string Slug { get; set; }            // unique, immutable — the `realm` claim
     public int? LoginRouteId { get; set; }               // the Watchtower route its login page is
-                                                         // served on = its cookie jar (ADR-0021);
+                                                         // served on = its cookie jar (ADR-0023);
                                                          // FK routes, ON DELETE SET NULL, unique
     public bool IsSystem { get; set; }                   // exactly one row: the operator realm
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-public enum RouteTarget { Service, Watchtower }          // what serves the hostname (ADR-0021)
+public enum RouteTarget { Service, Watchtower }          // what serves the hostname (ADR-0023)
 
 public sealed class User {
     public int Id { get; set; }
@@ -218,7 +218,7 @@ public enum AccessMode { Public, Authenticated, Restricted }
 // Route (existing entity) gains:
 public AccessMode AccessMode { get; set; } = AccessMode.Public;   // Public = today's behavior
 public string? BypassPaths { get; set; }                           // newline-separated prefixes
-public RouteTarget Target { get; set; } = RouteTarget.Service;     // ADR-0021
+public RouteTarget Target { get; set; } = RouteTarget.Service;     // ADR-0023
 public int? StackId { get; set; }                                  // null iff Target == Watchtower
 public int? RealmId { get; set; }                                  // set iff Target == Watchtower
 // A *service* route has no RealmId: its realm is its stack's category's (below). A Watchtower route
@@ -355,12 +355,12 @@ Caddy `forward_auth` sends the original headers (incl. `Cookie`) plus `X-Forward
 ## 6. Proxy config changes
 
 Two providers run this gate in front of an app: the deprecated **Caddy** container, whose generated
-configuration is below, and the **in-process** provider (ADR-0020), which renders exactly the same
+configuration is below, and the **in-process** provider (ADR-0022), which renders exactly the same
 contract as pipeline steps. Both call the same `AccessVerifier`, so they cannot come to different
 verdicts. The **Cloudflare Tunnel** provider is not in this picture at all — there access belongs to
 Zero Trust.
 
-Note what is *not* here: a site block for Watchtower's own hostnames. Since ADR-0021 those are
+Note what is *not* here: a site block for Watchtower's own hostnames. Since ADR-0023 those are
 ordinary route rows with `Target == Watchtower`, projected as `ProxySite.Local` and rendered per
 provider — Caddy writes `reverse_proxy watchtower:8080`, the in-process provider hands the request to
 its own pipeline, Cloudflare marks the route `Error`. They are never `Protected`, and the database
@@ -405,7 +405,7 @@ purpose-built shorthand for this exact pattern; SSE/WebSocket upgrades pass thro
 (only the initial request is checked).
 
 One new requirement: every **login host** must itself be reachable through Caddy — i.e. Watchtower
-needs a route to itself, one per realm that has a login page. Since ADR-0021 that is literally a route
+needs a route to itself, one per realm that has a login page. Since ADR-0023 that is literally a route
 row (`Target == Watchtower`), and Caddy renders it as an ordinary site block with upstream
 `watchtower:8080`. This also finally gives the Watchtower UI TLS through its own proxy; the management
 port stays as the escape hatch (and is how you recover from a proxy misconfiguration). None of these
@@ -431,7 +431,7 @@ runs *before* Watchtower's own routing and, for a `Host` in the route table:
    forward-auth response by `copy_headers`, then forwards to `{project}-{service}:{port}` with YARP's
    `IHttpForwarder`.
 
-A Watchtower route (ADR-0021 — a realm's login host among them) is dispatched to Watchtower's own
+A Watchtower route (ADR-0023 — a realm's login host among them) is dispatched to Watchtower's own
 pipeline rather than forwarded, because forwarding it would be forwarding to ourselves. It still gets
 the HTTPS upgrade every TLS route gets, for the same reason it always did: a login page reached over
 plain HTTP would set the session cookie without `Secure`.
@@ -562,7 +562,7 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
 ## 11. Risks / open questions
 
 - **Login-host bootstrap:** the login page must be reachable *before* auth is useful — a protected app
-  redirects there, so the hostname has to be served and hold a certificate first. Since ADR-0021 that
+  redirects there, so the hostname has to be served and hold a certificate first. Since ADR-0023 that
   is one concrete step rather than a configuration/synthesis pair: **create a Watchtower route and mark
   it as the realm's login host**, point its DNS at the instance, and watch the route go `Active` on the
   Routes page. Each realm needs its own. A realm without one is a legitimate state that fails closed —
@@ -649,7 +649,7 @@ reach the fields), at the cost of styling flexibility inside the form.
    is already CSS variables (`--brand-*` in `styles.css`), so tokens are data, not code. Covers
    most products.
 2. **Per-category auth hosts** — *the mechanism landed on 2026-08-10, realm-shaped rather than
-   template-shaped.* Every login host is served (as a Watchtower route since ADR-0021), and
+   template-shaped.* Every login host is served (as a Watchtower route since ADR-0023), and
    the `/api/access/verify` 302 does pick the login host per route rather than from the global
    `Auth:Host` — but the host hangs on the realm's login route, not on `StackTemplate.AuthHost`, and the
    302 follows the route's **realm** (§13). So what a category gets today is a *realm*
@@ -758,7 +758,7 @@ follows is what exists; §13.8 is what does not.
 ### 13.1 A realm is the user-population boundary
 
 The `Realm` entity is deliberately small: a `Name` an administrator can rename freely, a `Slug` that
-is unique and **immutable**, a nullable `LoginRouteId` (ADR-0021; it was `AuthHost` until then), and
+is unique and **immutable**, a nullable `LoginRouteId` (ADR-0023; it was `AuthHost` until then), and
 `IsSystem`. The slug is immutable because it
 is the value of the `realm` claim in every assertion the realm's applications receive — renaming it
 would silently change what an upstream is told about the population an account belongs to, which is
@@ -767,7 +767,7 @@ a different kind of change from renaming a label in a UI. The migration seeds ex
 into, the fallback an unrecognised host resolves to, and the population that administers the
 instance. It cannot be deleted. Its login page is served on whichever Watchtower route it names, and
 falls back to the configured `Auth:Host` when it names none — the escape hatch for an instance whose
-hostname is terminated by somebody else's proxy (ADR-0021).
+hostname is terminated by somebody else's proxy (ADR-0023).
 
 `User.RealmId`, `Group.RealmId` and `StackTemplate.RealmId` all default to the system realm, so a
 deployment that never creates a second realm behaves exactly as it did before realms existed. All
@@ -804,7 +804,7 @@ wrong here costs a lockout, and the operator population is the one that can alwa
 costs nothing in isolation, because an account still only ever authenticates within its own realm —
 resolving to the system realm decides which login page a visitor sees, not who gets in.
 
-### 13.3 Realm = cookie jar = login route *(revised by ADR-0021)*
+### 13.3 Realm = cookie jar = login route *(revised by ADR-0023)*
 
 `__wt_sso` is host-scoped, so the host a login page is served on *is* the realm's cookie jar. Login
 therefore resolves the realm from the host it was served on and pins `IRealmContext` before touching
@@ -904,7 +904,7 @@ instance rather than about its population.
 ### 13.7 Surface
 
 `realms.list/create/update/delete`, all `[RequireRole("Admin")]`. A slug is validated as a stable
-identifier and never editable. Since ADR-0021 `realms.create` takes a `loginDomain`, which creates the
+identifier and never editable. Since ADR-0023 `realms.create` takes a `loginDomain`, which creates the
 Watchtower route and designates it; naming an existing route there is deliberately not offered, since a
 Watchtower route carries the realm it serves and none can belong to a realm that does not exist yet.
 `realms.update` takes `loginRouteId` — that is where an existing route is designated — with `0` clearing

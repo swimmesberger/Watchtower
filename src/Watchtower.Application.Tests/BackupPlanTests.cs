@@ -1,3 +1,4 @@
+using Watchtower.Application.Entities;
 using Watchtower.Application.Services;
 using Xunit;
 
@@ -35,12 +36,25 @@ public sealed class BackupPlanTests {
         bool stopContainers = true,
         IReadOnlySet<string>? keepRunning = null,
         IReadOnlyDictionary<string, string>? excludeVolumes = null,
-        bool stopAllRunning = false) =>
+        bool stopAllRunning = false,
+        BackupQuiesceMode quiesceMode = BackupQuiesceMode.Stop,
+        bool forceStop = false) =>
         BackupPlan.Create(new BackupPlanRequest(
-            containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning));
+            containers, volumes, stopContainers, keepRunning, excludeVolumes, stopAllRunning, quiesceMode, forceStop));
 
     private static string[] Names(IEnumerable<BackupContainer> containers) =>
         [.. containers.Select(c => c.DisplayName)];
+
+    private static string[] Names(IEnumerable<BackupQuiesceStep> steps) =>
+        [.. steps.Select(s => s.Container.DisplayName)];
+
+    /// <summary>The levels as name lists, for one-line assertions.</summary>
+    private static string[][] LevelNames(BackupPlan plan) =>
+        [.. plan.Levels.Select(level => Names(level))];
+
+    /// <summary>The mode of the one quiesced container named.</summary>
+    private static BackupQuiesceMode ModeOf(BackupPlan plan, string name) =>
+        plan.Quiesce.Single(s => s.Container.DisplayName == name).Mode;
 
     // ── Mount scoping ────────────────────────────────────────────────────────
 
@@ -50,7 +64,7 @@ public sealed class BackupPlanTests {
             [C("web"), C("api", volumes: ["uploads"]), C("db", volumes: ["pgdata"])],
             ["pgdata", "uploads"]);
 
-        Assert.Equal(["api", "db"], Names(plan.Stop));
+        Assert.Equal(["api", "db"], Names(plan.Quiesce));
         var kept = Assert.Single(plan.Keep);
         Assert.Equal("web", kept.Container.DisplayName);
         Assert.Equal(BackupKeepReason.NoPlannedMount, kept.Reason);
@@ -65,7 +79,7 @@ public sealed class BackupPlanTests {
             ["uploads"],
             stopContainers: false);
 
-        Assert.Empty(plan.Stop);
+        Assert.Empty(plan.Quiesce);
         Assert.Equal(["api", "cron"], Names(plan.Keep.Select(k => k.Container)));
         Assert.All(plan.Keep, k => Assert.Equal(BackupKeepReason.MasterSwitchOff, k.Reason));
         // The mount is still reported, so the caller can decide whether that is worth a warning.
@@ -79,7 +93,7 @@ public sealed class BackupPlanTests {
             [C("api", volumes: ["uploads"]), C("db", running: false, volumes: ["pgdata"], exclude: "true")],
             ["pgdata", "uploads"]);
 
-        Assert.Equal(["api"], Names(plan.Stop));
+        Assert.Equal(["api"], Names(plan.Quiesce));
         Assert.Empty(plan.Keep);
         // The exclusion holds even though the excluded service happens to be down right now.
         Assert.Equal(["uploads"], plan.Volumes);
@@ -92,7 +106,7 @@ public sealed class BackupPlanTests {
 
         Assert.Equal(["orphaned", "uploads"], plan.Volumes);
         Assert.Empty(plan.Excluded);
-        Assert.Equal(["api"], Names(plan.Stop));
+        Assert.Equal(["api"], Names(plan.Quiesce));
     }
 
     // ── Labels ───────────────────────────────────────────────────────────────
@@ -130,7 +144,7 @@ public sealed class BackupPlanTests {
             [C("api", volumes: ["shared"]), C("cache", volumes: ["shared"], exclude: "true")],
             ["shared"]);
 
-        Assert.Equal(["api"], Names(plan.Stop));
+        Assert.Equal(["api"], Names(plan.Quiesce));
         var kept = Assert.Single(plan.Keep);
         Assert.Equal("cache", kept.Container.DisplayName);
         Assert.Equal(BackupKeepReason.Excluded, kept.Reason);
@@ -141,7 +155,7 @@ public sealed class BackupPlanTests {
     public void StopFalseKeepsAMounterRunning_AndSaysItMountsAPlannedVolume() {
         var plan = Plan([C("db", volumes: ["pgdata"], stop: "false")], ["pgdata"]);
 
-        Assert.Empty(plan.Stop);
+        Assert.Empty(plan.Quiesce);
         var kept = Assert.Single(plan.Keep);
         Assert.Equal(BackupKeepReason.StopLabel, kept.Reason);
         Assert.True(kept.MountsPlannedVolume);
@@ -152,7 +166,7 @@ public sealed class BackupPlanTests {
     public void StopTrueStopsAServiceThatMountsNothing() {
         var plan = Plan([C("worker", stop: "true"), C("web")], ["uploads"]);
 
-        Assert.Equal(["worker"], Names(plan.Stop));
+        Assert.Equal(["worker"], Names(plan.Quiesce));
         Assert.Equal(BackupKeepReason.NoPlannedMount, Assert.Single(plan.Keep).Reason);
     }
 
@@ -160,7 +174,7 @@ public sealed class BackupPlanTests {
     public void ExcludeWinsOverStopTrue_AndSaysSo() {
         var plan = Plan([C("cache", volumes: ["redis-data"], exclude: "true", stop: "true")], ["redis-data"]);
 
-        Assert.Empty(plan.Stop);
+        Assert.Empty(plan.Quiesce);
         Assert.Equal(BackupKeepReason.Excluded, Assert.Single(plan.Keep).Reason);
         var warning = Assert.Single(plan.Warnings);
         Assert.Contains("service 'cache' is labelled both watchtower.backup.exclude=true", warning);
@@ -177,7 +191,7 @@ public sealed class BackupPlanTests {
 
         // Absent means the mount decides — the volume is archived and its writer goes down.
         Assert.Equal(["pgdata"], plan.Volumes);
-        Assert.Equal(["db"], Names(plan.Stop));
+        Assert.Equal(["db"], Names(plan.Quiesce));
         var warning = Assert.Single(plan.Warnings);
         Assert.Contains($"service 'db' has an unrecognized watchtower.backup.exclude value '{value}'", warning);
         Assert.Contains("expected \"true\" or \"false\"", warning);
@@ -190,7 +204,7 @@ public sealed class BackupPlanTests {
         var plan = Plan([C("db", volumes: ["pgdata"], stop: value)], ["pgdata"]);
 
         Assert.Empty(plan.Warnings);
-        Assert.Equal(bool.Parse(value.Trim()) ? 1 : 0, plan.Stop.Count);
+        Assert.Equal(bool.Parse(value.Trim()) ? 1 : 0, plan.Quiesce.Count);
     }
 
     [Fact]
@@ -216,7 +230,7 @@ public sealed class BackupPlanTests {
         var plan = Plan([api, db, web, cache], ["uploads"],
             keepRunning: new HashSet<string>(["db-id"]), stopAllRunning: true);
 
-        Assert.Equal(["api"], Names(plan.Stop));
+        Assert.Equal(["api"], Names(plan.Quiesce));
         Assert.Equal(BackupKeepReason.CallerRequested, plan.Keep.Single(k => k.Container.Id == "db-id").Reason);
         Assert.Equal(BackupKeepReason.StopLabel, plan.Keep.Single(k => k.Container.Id == "web-id").Reason);
         Assert.Equal(BackupKeepReason.Excluded, plan.Keep.Single(k => k.Container.Id == "cache-id").Reason);
@@ -226,7 +240,7 @@ public sealed class BackupPlanTests {
     public void StopAllRunningStillHonoursTheMasterSwitch() {
         var plan = Plan([C("api"), C("db", volumes: ["pgdata"])], ["pgdata"],
             stopContainers: false, stopAllRunning: true);
-        Assert.Empty(plan.Stop);
+        Assert.Empty(plan.Quiesce);
         Assert.All(plan.Keep, k => Assert.Equal(BackupKeepReason.MasterSwitchOff, k.Reason));
     }
 
@@ -237,7 +251,7 @@ public sealed class BackupPlanTests {
             ["pgdata", "uploads"],
             keepRunning: new HashSet<string>(["db-id"], StringComparer.Ordinal));
 
-        Assert.Equal(["api"], Names(plan.Stop));
+        Assert.Equal(["api"], Names(plan.Quiesce));
         var kept = Assert.Single(plan.Keep);
         Assert.Equal(BackupKeepReason.CallerRequested, kept.Reason);
         Assert.True(kept.MountsPlannedVolume);
@@ -257,7 +271,7 @@ public sealed class BackupPlanTests {
         Assert.Equal(BackupVolumeExclusionReason.Caller, excluded.Reason);
         Assert.Equal("covered by the 'db' dump", excluded.Detail);
         // Nothing left to archive, so nothing worth stopping either.
-        Assert.Empty(plan.Stop);
+        Assert.Empty(plan.Quiesce);
         Assert.Equal(BackupKeepReason.NoPlannedMount, Assert.Single(plan.Keep).Reason);
     }
 
@@ -283,8 +297,8 @@ public sealed class BackupPlanTests {
             [C("db", volumes: ["pgdata"]), C("api", volumes: ["uploads"]), C("web", volumes: ["static"])],
             ["pgdata", "static", "uploads"]);
 
-        Assert.Equal(["db", "api", "web"], Names(plan.Stop));
-        Assert.Equal(["web", "api", "db"], Names(plan.RestartOrder));
+        Assert.Equal(["db", "api", "web"], Names(plan.Quiesce));
+        Assert.Equal(["web", "api", "db"], Names(plan.ResumeOrder));
         Assert.Empty(plan.Warnings);
     }
 
@@ -297,8 +311,8 @@ public sealed class BackupPlanTests {
              C("db", volumes: ["pgdata"])],
             ["pgdata", "static", "uploads"]);
 
-        Assert.Equal(["web", "api", "db"], Names(plan.Stop));
-        Assert.Equal(["db", "api", "web"], Names(plan.RestartOrder));
+        Assert.Equal(["web", "api", "db"], Names(plan.Quiesce));
+        Assert.Equal(["db", "api", "web"], Names(plan.ResumeOrder));
     }
 
     [Fact]
@@ -310,8 +324,8 @@ public sealed class BackupPlanTests {
              C("db", volumes: ["pgdata"])],
             ["pgdata", "redis-data", "static", "uploads"]);
 
-        Assert.Equal(["web", "cache", "api", "db"], Names(plan.Stop));
-        Assert.Equal(["db", "api", "cache", "web"], Names(plan.RestartOrder));
+        Assert.Equal(["web", "cache", "api", "db"], Names(plan.Quiesce));
+        Assert.Equal(["db", "api", "cache", "web"], Names(plan.ResumeOrder));
     }
 
     [Fact]
@@ -324,7 +338,7 @@ public sealed class BackupPlanTests {
              C("db", volumes: ["pgdata"], exclude: "true")],
             ["pgdata", "static", "uploads"]);
 
-        Assert.Equal(["web", "api"], Names(plan.Stop));
+        Assert.Equal(["web", "api"], Names(plan.Quiesce));
         Assert.Equal(BackupKeepReason.Excluded, Assert.Single(plan.Keep).Reason);
     }
 
@@ -336,7 +350,7 @@ public sealed class BackupPlanTests {
              C("c", volumes: ["c-data"], dependsOn: ["a"])],
             ["a-data", "b-data", "c-data"]);
 
-        Assert.Equal(["a", "b", "c"], Names(plan.Stop));
+        Assert.Equal(["a", "b", "c"], Names(plan.Quiesce));
         var warning = Assert.Single(plan.Warnings);
         Assert.Contains("circular depends_on between services a, b, c", warning);
         Assert.Contains("falling back to the engine's container order", warning);
@@ -348,7 +362,7 @@ public sealed class BackupPlanTests {
             [C("api", volumes: ["uploads"], dependsOn: ["api", "db"]), C("db", volumes: ["pgdata"])],
             ["pgdata", "uploads"]);
 
-        Assert.Equal(["api", "db"], Names(plan.Stop));
+        Assert.Equal(["api", "db"], Names(plan.Quiesce));
         Assert.Empty(plan.Warnings);
     }
 
@@ -361,8 +375,8 @@ public sealed class BackupPlanTests {
              C("db", volumes: ["pgdata"])],
             ["pgdata", "uploads"]);
 
-        Assert.Equal(["api-3", "api-2", "api-1", "db"], Names(plan.Stop));
-        Assert.Equal(["db", "api-1", "api-2", "api-3"], Names(plan.RestartOrder));
+        Assert.Equal(["api-3", "api-2", "api-1", "db"], Names(plan.Quiesce));
+        Assert.Equal(["db", "api-1", "api-2", "api-3"], Names(plan.ResumeOrder));
     }
 
     [Fact]
@@ -373,19 +387,19 @@ public sealed class BackupPlanTests {
              C("db", volumes: ["pgdata"])],
             ["pgdata", "scratch", "uploads"]);
 
-        Assert.Equal(["sidecar", "api", "db"], Names(plan.Stop));
-        Assert.Equal(["db", "api", "sidecar"], Names(plan.RestartOrder));
+        Assert.Equal(["sidecar", "api", "db"], Names(plan.Quiesce));
+        Assert.Equal(["db", "api", "sidecar"], Names(plan.ResumeOrder));
     }
 
     [Fact]
-    public void TheRestartOrderIsExactlyTheReverseOfTheStopOrder() {
+    public void TheResumeOrderIsExactlyTheReverseOfTheStopOrder() {
         var plan = Plan(
             [C("web", volumes: ["static"], dependsOn: ["api"]),
              C("api", volumes: ["uploads"], dependsOn: ["db"]),
              C("db", volumes: ["pgdata"])],
             ["pgdata", "static", "uploads"]);
 
-        Assert.Equal(Names(plan.Stop).Reverse(), Names(plan.RestartOrder));
+        Assert.Equal(Names(plan.Quiesce).Reverse(), Names(plan.ResumeOrder));
     }
 
     [Fact]
@@ -400,7 +414,7 @@ public sealed class BackupPlanTests {
         var reversed = Plan([.. containers.Reverse()], ["uploads", "static", "redis-data", "pgdata"]);
 
         Assert.Equal(forward.Volumes, reversed.Volumes);
-        Assert.Equal(Names(forward.Stop), Names(reversed.Stop));
+        Assert.Equal(Names(forward.Quiesce), Names(reversed.Quiesce));
         Assert.Equal(forward.Warnings, reversed.Warnings);
     }
 
@@ -486,4 +500,216 @@ public sealed class BackupPlanTests {
     [InlineData(",,:broken,db", new[] { "db" })]
     public void ParseDependsOnReadsComposesLabel(string? label, string[] expected) =>
         Assert.Equal(expected, BackupContainer.ParseDependsOn(label));
+
+    // ── Quiesce mode: stop vs pause (ADR-0019) ───────────────────────────────
+
+    [Fact]
+    public void TheStackDefaultIsStop_AndAppliesToMountSelectedContainers() {
+        var plan = Plan([C("db", volumes: ["pgdata"])], ["pgdata"]);
+
+        Assert.Equal(BackupQuiesceMode.Stop, ModeOf(plan, "db"));
+    }
+
+    [Fact]
+    public void AStackDefaultOfPausePausesUnlabelledWriters_ButStopTrueStillStops() {
+        // The label is the operator's per-service word: a database that cannot be dumped keeps a real
+        // stop even though the stack as a whole opted for the cheaper freeze.
+        var plan = Plan(
+            [C("uploads", volumes: ["files"]), C("mysql", volumes: ["mysqldata"], stop: "true"), C("web")],
+            ["files", "mysqldata"],
+            quiesceMode: BackupQuiesceMode.Pause);
+
+        Assert.Equal(BackupQuiesceMode.Pause, ModeOf(plan, "uploads"));
+        Assert.Equal(BackupQuiesceMode.Stop, ModeOf(plan, "mysql"));
+        Assert.Equal(["web"], Names(plan.Keep.Select(k => k.Container)));
+        Assert.Empty(plan.Warnings);
+    }
+
+    [Theory]
+    [InlineData("pause")]
+    [InlineData(" Pause ")]
+    [InlineData("PAUSE")]
+    public void TheStopLabelAcceptsPause_AndPausesThatServiceEvenWhenTheStackStops(string value) {
+        var plan = Plan(
+            [C("uploads", volumes: ["files"], stop: value), C("db", volumes: ["pgdata"])],
+            ["files", "pgdata"]);
+
+        Assert.Equal(BackupQuiesceMode.Pause, ModeOf(plan, "uploads"));
+        Assert.Equal(BackupQuiesceMode.Stop, ModeOf(plan, "db"));
+        Assert.Empty(plan.Warnings);
+    }
+
+    [Fact]
+    public void StopPauseQuiescesAServiceThatMountsNothing_LikeStopTrueDoes() {
+        var plan = Plan([C("worker", stop: "pause")], []);
+
+        Assert.Equal(["worker"], Names(plan.Quiesce));
+        Assert.Equal(BackupQuiesceMode.Pause, ModeOf(plan, "worker"));
+    }
+
+    [Fact]
+    public void AnUnrecognizedStopLabelValueNamesAllThreeWords() {
+        var plan = Plan([C("db", volumes: ["pgdata"], stop: "freeze")], ["pgdata"]);
+
+        // Treated as absent: the mount decides, with the stack default.
+        Assert.Equal(["db"], Names(plan.Quiesce));
+        Assert.Equal(BackupQuiesceMode.Stop, ModeOf(plan, "db"));
+        var warning = Assert.Single(plan.Warnings);
+        Assert.Contains("unrecognized watchtower.backup.stop value 'freeze'", warning);
+        Assert.Contains("expected \"true\", \"false\" or \"pause\"", warning);
+    }
+
+    [Fact]
+    public void ForceStopTurnsEveryPauseIntoAStop_ButStillQuiescesTheLabelledService() {
+        // A restore extracts into the volumes: a paused process thawed over replaced files is no better
+        // than a running one, so the label's "quiesce me" is honoured and its "by pausing" is not.
+        var plan = Plan(
+            [C("uploads", volumes: ["files"], stop: "pause"), C("db", volumes: ["pgdata"])],
+            ["files", "pgdata"],
+            quiesceMode: BackupQuiesceMode.Pause,
+            forceStop: true);
+
+        Assert.Equal(["uploads", "db"], Names(plan.Quiesce));
+        Assert.All(plan.Quiesce, s => Assert.Equal(BackupQuiesceMode.Stop, s.Mode));
+    }
+
+    [Fact]
+    public void ExcludeWinsOverStopPause_AndSaysSo() {
+        var plan = Plan([C("cache", volumes: ["redis"], exclude: "true", stop: "pause")], ["redis"]);
+
+        Assert.Empty(plan.Quiesce);
+        Assert.Contains(plan.Warnings, w =>
+            w.Contains("labelled both watchtower.backup.exclude=true and watchtower.backup.stop=pause"));
+    }
+
+    [Fact]
+    public void TheMasterSwitchOffKeepsAPauseLabelledServiceRunningToo() {
+        var plan = Plan([C("uploads", volumes: ["files"], stop: "pause")], ["files"], stopContainers: false);
+
+        Assert.Empty(plan.Quiesce);
+        Assert.Equal(BackupKeepReason.MasterSwitchOff, Assert.Single(plan.Keep).Reason);
+    }
+
+    // ── Dependency levels (concurrent quiesce within a level) ────────────────
+
+    [Fact]
+    public void WithoutDependsOnEverythingIsOneLevel() {
+        var plan = Plan(
+            [C("a", volumes: ["va"]), C("b", volumes: ["vb"]), C("c", volumes: ["vc"])],
+            ["va", "vb", "vc"]);
+
+        Assert.Equal([["a", "b", "c"]], LevelNames(plan));
+    }
+
+    [Fact]
+    public void AChainBecomesOneLevelPerService() {
+        var plan = Plan(
+            [C("api", volumes: ["uploads"], dependsOn: ["db"]),
+             C("web", volumes: ["static"], dependsOn: ["api"]),
+             C("db", volumes: ["pgdata"])],
+            ["pgdata", "static", "uploads"]);
+
+        Assert.Equal([["web"], ["api"], ["db"]], LevelNames(plan));
+        Assert.Equal(["web", "api", "db"], Names(plan.Quiesce));
+    }
+
+    [Fact]
+    public void ADiamondPutsTheIndependentMiddleInOneLevel() {
+        var plan = Plan(
+            [C("web", volumes: ["static"], dependsOn: ["api", "cache"]),
+             C("api", volumes: ["uploads"], dependsOn: ["db"]),
+             C("cache", volumes: ["redis-data"], dependsOn: ["db"]),
+             C("db", volumes: ["pgdata"])],
+            ["pgdata", "redis-data", "static", "uploads"]);
+
+        Assert.Equal([["web"], ["cache", "api"], ["db"]], LevelNames(plan));
+    }
+
+    [Fact]
+    public void TheLongestDependentPathDecidesALevel_NotTheShortest() {
+        // web depends on both api and db; api depends on db. db must wait for api even though web
+        // (level 0) depends on it directly.
+        var plan = Plan(
+            [C("web", volumes: ["static"], dependsOn: ["api", "db"]),
+             C("api", volumes: ["uploads"], dependsOn: ["db"]),
+             C("db", volumes: ["pgdata"])],
+            ["pgdata", "static", "uploads"]);
+
+        Assert.Equal([["web"], ["api"], ["db"]], LevelNames(plan));
+    }
+
+    [Fact]
+    public void AnIndependentServiceJoinsTheFirstLevel_EvenWhenKahnListedItLast() {
+        // Kahn's alphabetical tie-breaking lists the standalone "zed" after the chain; its level is
+        // still 0 — nothing waits for it and it waits for nothing. (Within the level the reversed
+        // Kahn order is kept, which is why zed leads.)
+        var plan = Plan(
+            [C("api", volumes: ["uploads"], dependsOn: ["db"]),
+             C("db", volumes: ["pgdata"]),
+             C("zed", volumes: ["zdata"])],
+            ["pgdata", "uploads", "zdata"]);
+
+        Assert.Equal([["zed", "api"], ["db"]], LevelNames(plan));
+        // The flat order is the levels concatenated, and still dependents-first.
+        Assert.Equal(["zed", "api", "db"], Names(plan.Quiesce));
+        Assert.Equal(["db", "api", "zed"], Names(plan.ResumeOrder));
+    }
+
+    [Fact]
+    public void ReplicasOfOneServiceShareALevel() {
+        var plan = Plan(
+            [C("api-1", service: "api", volumes: ["uploads"], dependsOn: ["db"], number: 1),
+             C("api-2", service: "api", volumes: ["uploads"], dependsOn: ["db"], number: 2),
+             C("db", volumes: ["pgdata"])],
+            ["pgdata", "uploads"]);
+
+        Assert.Equal([["api-2", "api-1"], ["db"]], LevelNames(plan));
+    }
+
+    [Fact]
+    public void AContainerWithoutAComposeServiceSitsInTheFirstLevel() {
+        var plan = Plan(
+            [C("api", volumes: ["uploads"], dependsOn: ["db"]),
+             C("db", volumes: ["pgdata"]),
+             Orphan("sidecar", volumes: ["scratch"])],
+            ["pgdata", "scratch", "uploads"]);
+
+        Assert.Equal([["sidecar", "api"], ["db"]], LevelNames(plan));
+    }
+
+    [Fact]
+    public void ACycleFallsBackToOneContainerPerLevelInEngineOrder() {
+        var plan = Plan(
+            [C("a", volumes: ["va"], dependsOn: ["b"]),
+             C("b", volumes: ["vb"], dependsOn: ["a"]),
+             C("c", volumes: ["vc"])],
+            ["va", "vb", "vc"]);
+
+        Assert.Equal([["a"], ["b"], ["c"]], LevelNames(plan));
+        Assert.Contains(plan.Warnings, w => w.Contains("circular depends_on"));
+    }
+
+    [Fact]
+    public void TheFlatQuiesceListIsAlwaysTheLevelsConcatenated() {
+        var plan = Plan(
+            [C("web", volumes: ["static"], dependsOn: ["api", "cache"]),
+             C("api", volumes: ["uploads"], dependsOn: ["db"]),
+             C("cache", volumes: ["redis-data"], dependsOn: ["db"]),
+             C("db", volumes: ["pgdata"])],
+            ["pgdata", "redis-data", "static", "uploads"]);
+
+        Assert.Equal(plan.Levels.SelectMany(l => l), plan.Quiesce);
+        Assert.Equal(plan.Quiesce.Reverse(), plan.ResumeOrder);
+    }
+
+    [Fact]
+    public void LevelsCarryEachContainersMode() {
+        var plan = Plan(
+            [C("web", volumes: ["static"], dependsOn: ["db"], stop: "pause"),
+             C("db", volumes: ["pgdata"])],
+            ["pgdata", "static"]);
+
+        Assert.Equal(BackupQuiesceMode.Pause, plan.Levels[0].Single().Mode);
+        Assert.Equal(BackupQuiesceMode.Stop, plan.Levels[1].Single().Mode);
+    }
 }

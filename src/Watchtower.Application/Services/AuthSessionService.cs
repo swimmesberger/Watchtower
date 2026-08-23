@@ -238,7 +238,7 @@ public sealed class AuthSessionService(
         // The realm rides along with the account: the principal minted from an SSO session carries the
         // realm claim, and the assertion minted from an app session carries the realm's issuer, so both
         // ends of the session lookup need it and neither should cost a second round trip for it. The
-        // realm's login route comes too, because the issuer *is* its domain (ADR-0021) — without it
+        // realm's login route comes too, because the issuer *is* its domain (ADR-0023) — without it
         // `RealmResolver.LoginHostForAsync` would go back to the database on every verified request
         // through the proxy, which is the hottest path there is here.
         var session = await db.AuthSessions

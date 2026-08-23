@@ -96,7 +96,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
-        // Reverse proxy — ADR-0015, extended by ADR-0020 for the third provider, which is also the
+        // Reverse proxy — ADR-0015, extended by ADR-0022 for the third provider, which is also the
         // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):
         // the in-process proxy (Watchtower binds 80/443 itself, no sibling container), Caddy (a sibling
         // container on host ports 80/443, automatic TLS — deprecated) and
@@ -125,7 +125,7 @@ public static class WatchtowerServiceCollectionExtensions {
         // A/AAAA resolution, shared by proxy.checkDns and the issuer's preflight so the operator's
         // "check DNS" button and the certificate machinery cannot come to different answers.
         services.AddSingleton<DnsPreflight>();
-        // Certificate issuance (ADR-0020): the protocol half, and the background loop that schedules it.
+        // Certificate issuance (ADR-0022): the protocol half, and the background loop that schedules it.
         // TryAdd on the transport so a test can substitute an in-process CA's message handler.
         services.TryAddSingleton<IAcmeTransportFactory, AcmeTransportFactory>();
         services.AddSingleton<CertificateIssuer>();
@@ -135,11 +135,11 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<YarpProxyProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
-        // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0020). Scoped because it
+        // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0022). Scoped because it
         // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.
         services.AddScoped<ProxyProviderMigration>();
         // The other one-time upgrade step: a configured Auth:Host becomes the system realm's Watchtower
-        // route (ADR-0021). Scoped and run from the same place, and after the migration — which is what
+        // route (ADR-0023). Scoped and run from the same place, and after the migration — which is what
         // converts the realms' own stored auth hosts.
         services.AddScoped<LoginHostConversion>();
 
@@ -208,7 +208,7 @@ public static class WatchtowerServiceCollectionExtensions {
         // like the context it reads through, and registered unconditionally alongside the other auth
         // services: nothing resolves it while Auth:Enabled is false — the verify endpoint is mapped as a
         // bare 404 in that mode. Shared with the in-process proxy so the two transports cannot come to
-        // different verdicts — ADR-0020.
+        // different verdicts — ADR-0022.
         services.AddScoped<AccessVerifier>();
 
         // Two-factor (TOTP + recovery codes, design.md §4). Scoped, like the UserManager and the context it

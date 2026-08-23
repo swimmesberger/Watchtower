@@ -9,7 +9,7 @@ namespace Watchtower.Application.Services.Yarp;
 /// flattened out of the <see cref="ProxySite"/> projection so no database is touched per request.
 /// <paramref name="Local"/> marks a host Watchtower serves itself (a <see cref="RouteTarget.Watchtower"/>
 /// route) — those are never forwarded upstream. <paramref name="RouteId"/> is set on every row: since
-/// ADR-0021 there is one route row per served hostname, Watchtower's own included.
+/// ADR-0023 there is one route row per served hostname, Watchtower's own included.
 /// </summary>
 public sealed record ProxyRouteSnapshot(
     string Host,
@@ -75,7 +75,7 @@ public sealed class ProxyRouteTableSnapshot {
 /// <summary>
 /// The in-process proxy's routing table: a singleton holding the current
 /// <see cref="ProxyRouteTableSnapshot"/>, replaced wholesale by
-/// <see cref="YarpProxyProvider.ApplyAsync"/> on every route change — ADR-0020.
+/// <see cref="YarpProxyProvider.ApplyAsync"/> on every route change — ADR-0022.
 /// </summary>
 /// <remarks>
 /// The read is the request hot path and the write happens once per reconcile, so the concurrency

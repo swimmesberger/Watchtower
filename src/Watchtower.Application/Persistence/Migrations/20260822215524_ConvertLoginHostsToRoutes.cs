@@ -6,7 +6,7 @@ namespace Watchtower.Application.Persistence.Migrations
 {
     /// <inheritdoc />
     /// <remarks>
-    /// ADR-0021, step two of two: the <em>data</em>. Every realm's stored <c>auth_host</c> becomes a
+    /// ADR-0023, step two of two: the <em>data</em>. Every realm's stored <c>auth_host</c> becomes a
     /// <c>Watchtower</c>-target route in that realm, designated as its login route, and the column is then
     /// dropped.
     /// <para>

@@ -1,7 +1,7 @@
 # Caddy provider (deprecated)
 
 > **Deprecated since 2026-08-22**, in favour of the built-in in-process provider
-> ([yarp.md](yarp.md), [ADR-0020](../decisions/0020-in-process-yarp-proxy.md)). It is kept, supported
+> ([yarp.md](yarp.md), [ADR-0022](../decisions/0022-in-process-yarp-proxy.md)). It is kept, supported
 > and selectable for installations already running on it — nothing is switched underneath you, and an
 > existing instance that never named a provider is pinned to `caddy` once at startup. It does the same
 > job as the built-in provider at the cost of a second container, a control network, an admin-API hop
@@ -19,7 +19,7 @@ The feature is **opt-in**. When it is off, none of the behavior below happens.
 
 ## How an existing install stays on Caddy
 
-Before [ADR-0020](../decisions/0020-in-process-yarp-proxy.md) this was the default, so an instance that
+Before [ADR-0022](../decisions/0022-in-process-yarp-proxy.md) this was the default, so an instance that
 enabled the proxy and added routes never had to name a provider. On the **first start after upgrading
 past that flip**, Watchtower looks for exactly that shape — routes in the table, no provider stated in
 the environment or the settings store — and, finding it, writes `caddy` into the settings store. It
@@ -45,14 +45,14 @@ selection — start at [README.md](README.md).
 ## Enabling it
 
 Make sure host ports 80 and 443 are free, then set `WATCHTOWER__PROXY__PROVIDER=caddy` (the default
-is the built-in provider since ADR-0020) and either flip **Settings → Reverse proxy** in the UI
+is the built-in provider since ADR-0022) and either flip **Settings → Reverse proxy** in the UI
 (applies immediately, no restart — disabling stops and removes the managed Caddy container while
 keeping networks and issued certificates), or pin it via environment variables:
 
 ```yaml
 environment:
   WATCHTOWER__PROXY__ENABLED: "true"
-  WATCHTOWER__PROXY__PROVIDER: caddy                # required since ADR-0020; the default is yarp
+  WATCHTOWER__PROXY__PROVIDER: caddy                # required since ADR-0022; the default is yarp
   WATCHTOWER__PROXY__ADMINEMAIL: you@example.com    # recommended, for Let's Encrypt notices
   # WATCHTOWER__PROXY__CADDYIMAGE: "caddy:2"        # optional override, defaults to caddy:2
 ```
@@ -104,7 +104,7 @@ Only Caddy publishes host ports; your services never need `ports:` in their comp
 - Config is pushed to Caddy's admin API (`/load`) for a **zero-downtime reload** — no restart, no
   shared config file.
 - **Watchtower routes** — routes whose target is Watchtower itself rather than a stack service
-  ([ADR-0021](../decisions/0021-login-hosts-are-watchtower-self-routes.md)) — render as an ordinary
+  ([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md)) — render as an ordinary
   site block with `reverse_proxy watchtower:8080`. That is the alias Caddy already reaches on the
   `watchtower-control` network for every protected site's `forward_auth` and `/.watchtower/*` handler,
   so nothing new is wired up for them. They are never given a `forward_auth` block: a login page behind

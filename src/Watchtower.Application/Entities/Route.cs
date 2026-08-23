@@ -59,7 +59,7 @@ public enum IdentityHeaderMode {
 }
 
 /// <summary>
-/// What a route's hostname is served by (ADR-0021). One column decides whether a row describes a
+/// What a route's hostname is served by (ADR-0023). One column decides whether a row describes a
 /// forwarded application or a hostname Watchtower answers on itself, and everything downstream —
 /// the site projection, the check constraint, the realm lookup, the UI — reads it rather than
 /// inferring the answer from which other columns happen to be null.
@@ -81,7 +81,7 @@ public enum RouteTarget {
 /// <summary>
 /// A public domain the reverse proxy terminates TLS for. A <see cref="RouteTarget.Service"/> route
 /// forwards it to a service inside a <see cref="Stack"/>; a <see cref="RouteTarget.Watchtower"/>
-/// route is served by Watchtower itself (ADR-0021). The set of routes is the authoritative source
+/// route is served by Watchtower itself (ADR-0023). The set of routes is the authoritative source
 /// for the generated proxy configuration and for which hostnames serve Watchtower.
 /// </summary>
 public sealed class Route {

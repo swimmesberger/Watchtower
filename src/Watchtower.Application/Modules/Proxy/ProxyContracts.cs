@@ -4,7 +4,7 @@ namespace Watchtower.Application.Modules.Proxy;
 
 /// <summary>A public route projection for the API (enum fields lowercased for the client).</summary>
 /// <param name="Target">
-/// <c>service</c> or <c>watchtower</c> (ADR-0021). A <c>watchtower</c> route has no
+/// <c>service</c> or <c>watchtower</c> (ADR-0023). A <c>watchtower</c> route has no
 /// <paramref name="StackId"/>, <paramref name="ServiceName"/> or <paramref name="ContainerPort"/> worth
 /// showing, and carries a <paramref name="RealmId"/> instead.
 /// </param>
@@ -65,7 +65,7 @@ public static class RouteMapping {
 
     /// <summary>
     /// Refuses a non-system realm's Watchtower route on the hostname the configured
-    /// <c>Auth:Host</c> names, or <see langword="null"/> when there is no collision (ADR-0021).
+    /// <c>Auth:Host</c> names, or <see langword="null"/> when there is no collision (ADR-0023).
     /// </summary>
     /// <remarks>
     /// <c>Auth:Host</c> is the operator realm's <em>fallback</em> login host, read while that realm has
@@ -91,7 +91,7 @@ public static class RouteMapping {
 
     /// <summary>
     /// Reads the wire form of <see cref="RouteTarget"/>, defaulting to <see cref="RouteTarget.Service"/>
-    /// for a blank or absent value: a client that predates ADR-0021 sends nothing and means the only kind
+    /// for a blank or absent value: a client that predates ADR-0023 sends nothing and means the only kind
     /// of route that existed then. An unrecognised value is refused rather than defaulted — creating a
     /// forwarded route because a typo did not parse is the wrong direction to fail in.
     /// </summary>

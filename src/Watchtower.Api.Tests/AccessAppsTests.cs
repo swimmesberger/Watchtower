@@ -70,7 +70,7 @@ public sealed class AccessAppsTests {
 
     /// <summary>
     /// The portal names applications a visitor can be sent to. A <see cref="RouteTarget.Watchtower"/>
-    /// route is not one of them (ADR-0021) — it is the page this list is being rendered on, and the
+    /// route is not one of them (ADR-0023) — it is the page this list is being rendered on, and the
     /// realm's own login host at that.
     /// </summary>
     [Fact]

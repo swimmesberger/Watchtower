@@ -18,7 +18,7 @@ namespace Watchtower.Application.Modules.Realms.Handlers;
 /// The login host is optional because DNS usually is not ready yet: a realm without one is a perfectly
 /// good population that simply cannot be logged into, and its protected routes fail closed at challenge
 /// time until it has one (see <c>WatchtowerAccessEndpoints</c>). Giving one here creates the
-/// <see cref="RouteTarget.Watchtower"/> route for the hostname and designates it (ADR-0021).
+/// <see cref="RouteTarget.Watchtower"/> route for the hostname and designates it (ADR-0023).
 /// <para>
 /// <b>There is deliberately no way to name an <em>existing</em> route at creation.</b> A Watchtower route
 /// carries the realm it serves, so no route can already belong to a realm that does not exist yet —

@@ -15,7 +15,7 @@ namespace Watchtower.Application.Services;
 /// <paramref name="RouteId"/> and <paramref name="BypassPaths"/> carry the originating
 /// <see cref="Route"/> through to providers that enforce access control themselves rather than
 /// delegating it to a forward-auth endpoint. Every site has a <paramref name="RouteId"/>: there is one
-/// row per served hostname (ADR-0021), Watchtower's own hostnames included.
+/// row per served hostname (ADR-0023), Watchtower's own hostnames included.
 /// <paramref name="Local"/> marks a site Watchtower serves itself (a <see cref="RouteTarget.Watchtower"/>
 /// route) — it is never forwarded to a stack and never protected.
 /// </summary>
@@ -52,7 +52,7 @@ public static class ProxySiteProjection {
     /// turning <c>Auth:Enabled</c> off is a complete escape hatch: the next reconcile emits exactly the
     /// configuration this file produced before access control existed, whatever the route rows say.
     /// <para>
-    /// <b><see cref="ProxySite.Local"/> is derived from the target and from nothing else</b> (ADR-0021).
+    /// <b><see cref="ProxySite.Local"/> is derived from the target and from nothing else</b> (ADR-0023).
     /// A <see cref="RouteTarget.Watchtower"/> row says the operator wants this instance served on that
     /// hostname; it is emitted pointing at <see cref="SelfAlias"/>:<see cref="SelfPort"/>, which each
     /// provider renders its own way — the in-process proxy hands the request to Watchtower's own pipeline,

@@ -10,7 +10,7 @@ namespace Watchtower.Api.Tests;
 
 /// <summary>
 /// The scheduling half of certificate management: which hosts are wanted, when an attempt is made, and
-/// — most of all — when files are and are not deleted. ADR-0020.
+/// — most of all — when files are and are not deleted. ADR-0022.
 /// </summary>
 /// <remarks>
 /// The asymmetry these tests exist to protect: a host leaving the desired set costs nothing to get wrong
@@ -134,7 +134,7 @@ public sealed class CertificateManagerTests {
     }
 
     /// <summary>
-    /// A login host needs a certificate like any other host, and since ADR-0021 it gets one for the
+    /// A login host needs a certificate like any other host, and since ADR-0023 it gets one for the
     /// ordinary reason: it is a <c>Watchtower</c>-target route in the table, so the route projection puts
     /// it in the desired set. This one arrives by the upgrade path — the host boots with a configured
     /// <c>Auth:Host</c> and <c>LoginHostConversion</c> turns it into the operator realm's login route
@@ -162,7 +162,7 @@ public sealed class CertificateManagerTests {
     }
 
     /// <summary>
-    /// And the list says which is which. Every served host has a route row now (ADR-0021), so the only
+    /// And the list says which is which. Every served host has a route row now (ADR-0023), so the only
     /// other thing the list can show is a leftover on the volume: a certificate nothing routes to.
     /// </summary>
     [Fact]

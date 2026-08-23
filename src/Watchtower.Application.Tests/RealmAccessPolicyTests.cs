@@ -92,7 +92,7 @@ public sealed class RealmAccessPolicyTests {
 
     /// <summary>
     /// A <see cref="RouteTarget.Watchtower"/> route has no stack to inherit a realm from and states its
-    /// own (ADR-0021), which is what makes <c>ResolveByHostAsync</c> and the grant editor agree about the
+    /// own (ADR-0023), which is what makes <c>ResolveByHostAsync</c> and the grant editor agree about the
     /// population a hostname belongs to.
     /// </summary>
     [Fact]

@@ -26,7 +26,7 @@ public readonly record struct RealmIdentity(string Slug, string? LoginHost, bool
     /// <summary>
     /// Projects a stored realm together with the login host resolved for it
     /// (<see cref="RealmResolver.LoginHostForAsync"/>). The host is passed in rather than read off the row
-    /// because since ADR-0021 it lives on the realm's login <see cref="Route"/>, and the signer is a
+    /// because since ADR-0023 it lives on the realm's login <see cref="Route"/>, and the signer is a
     /// singleton with no database of its own.
     /// </summary>
     public static RealmIdentity From(Realm realm, string? loginHost) {

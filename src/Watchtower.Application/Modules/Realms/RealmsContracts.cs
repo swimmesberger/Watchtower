@@ -16,7 +16,7 @@ namespace Watchtower.Application.Modules.Realms;
 /// realm that falls back to the configured <c>Auth:Host</c> when it has no login route.
 /// </param>
 /// <param name="LoginRouteId">
-/// The <see cref="RouteTarget.Watchtower"/> route this realm's login page is served on (ADR-0021), or null
+/// The <see cref="RouteTarget.Watchtower"/> route this realm's login page is served on (ADR-0023), or null
 /// when it has none yet.
 /// </param>
 /// <param name="LoginHost">
@@ -105,7 +105,7 @@ public static partial class RealmMapping {
     /// <remarks>
     /// Delegated to <see cref="Services.Acme.DesiredHosts.TryNormalize"/>, which is what
     /// <c>proxy.createRoute</c> applies to the very same string: a login domain <em>is</em> a route domain
-    /// since ADR-0021, so accepting one here that the route handler would refuse would only produce a
+    /// since ADR-0023, so accepting one here that the route handler would refuse would only produce a
     /// refusal one call later.
     /// </remarks>
     public static AppError? ValidateLoginDomain(string? loginDomain, out string? normalized) {

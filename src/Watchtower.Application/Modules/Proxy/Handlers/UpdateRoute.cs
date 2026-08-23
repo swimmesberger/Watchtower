@@ -10,7 +10,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 
 /// <summary>Updates a route's domain/target/TLS settings, then reconciles the proxy.</summary>
 /// <remarks>
-/// <see cref="Route.Target"/> is <b>not</b> editable (ADR-0021). The two kinds are different rows with
+/// <see cref="Route.Target"/> is <b>not</b> editable (ADR-0023). The two kinds are different rows with
 /// different required columns, and flipping one in place would silently re-point a live hostname at
 /// something else — delete and recreate says what is happening.
 /// </remarks>

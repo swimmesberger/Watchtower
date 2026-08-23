@@ -85,7 +85,7 @@ const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
 ]
 
 const emptyForm = {
-  // What the hostname is served by (ADR-0021). `service` is the default because it is what nearly every
+  // What the hostname is served by (ADR-0023). `service` is the default because it is what nearly every
   // route is; `watchtower` swaps the stack/service/port half of the form for a realm picker.
   target: 'service' as RouteTarget,
   realmId: '',

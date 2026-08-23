@@ -6,7 +6,7 @@ namespace Watchtower.Application.Persistence.Migrations
 {
     /// <inheritdoc />
     /// <remarks>
-    /// ADR-0021, step one of two: the <em>shape</em>. Routes gain a <c>target</c>
+    /// ADR-0023, step one of two: the <em>shape</em>. Routes gain a <c>target</c>
     /// (<c>Service</c>/<c>Watchtower</c>), a nullable <c>stack_id</c> and a <c>realm_id</c>; realms gain
     /// a <c>login_route_id</c>. <c>realms.auth_host</c> is deliberately still here — the data conversion
     /// and the drop are <c>ConvertLoginHostsToRoutes</c>, the migration immediately after this one.

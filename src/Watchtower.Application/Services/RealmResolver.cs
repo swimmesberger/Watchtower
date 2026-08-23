@@ -53,7 +53,7 @@ public sealed class RealmResolver(
     /// </summary>
     /// <remarks>
     /// The host is looked up in the route table: a <see cref="RouteTarget.Watchtower"/> route names the
-    /// realm whose surface it serves (ADR-0021), so the same rows the proxy serves are what decides the
+    /// realm whose surface it serves (ADR-0023), so the same rows the proxy serves are what decides the
     /// population. The configured <c>Auth:Host</c> resolves to the system realm — it is that realm's
     /// fallback login host — and so does everything else: the published port and bare-IP access, see the
     /// class remarks. The comparison is over the normalised host
@@ -99,7 +99,7 @@ public sealed class RealmResolver(
     /// <remarks>
     /// The realm's <see cref="Realm.LoginRouteId"/> is the answer: one of its
     /// <see cref="RouteTarget.Watchtower"/> routes, designated as the address protected apps redirect to
-    /// (ADR-0021). A realm created before its DNS exists has none, and its protected routes then fail
+    /// (ADR-0023). A realm created before its DNS exists has none, and its protected routes then fail
     /// closed at challenge time rather than redirecting somewhere arbitrary.
     /// <para>
     /// The system realm — and only the system realm — falls back to the configured

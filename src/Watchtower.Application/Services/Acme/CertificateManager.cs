@@ -33,7 +33,7 @@ public sealed record HostCertificateState(
     int ConsecutiveFailures);
 
 /// <summary>
-/// Keeps every host the in-process proxy serves in possession of a valid certificate — ADR-0020. The
+/// Keeps every host the in-process proxy serves in possession of a valid certificate — ADR-0022. The
 /// <see cref="IProxyCertificateManager"/> the provider talks to, and the background loop that does the
 /// work.
 /// </summary>

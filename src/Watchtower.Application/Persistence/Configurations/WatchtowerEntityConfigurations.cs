@@ -93,6 +93,10 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
+        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The column default
+        // is what the migration backfills existing rows with, so a stack from before quiesce modes
+        // existed keeps stopping its containers, exactly as before.
+        b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
         b.HasIndex(x => x.Name).IsUnique();
         // The App API authenticates every request by looking the presented bearer token up here, so
         // the column must be indexed. Unique guards against two stacks ever sharing a token; SQLite
@@ -189,6 +193,34 @@ public sealed class BackupEventConfiguration : IEntityTypeConfiguration<BackupEv
 }
 
 [EntityConfiguration]
+public sealed class BackupPausedContainerConfiguration : IEntityTypeConfiguration<BackupPausedContainer> {
+    public void Configure(EntityTypeBuilder<BackupPausedContainer> b) {
+        b.ToTable("backup_paused_containers");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.ContainerId).IsRequired();
+        b.Property(x => x.ContainerName).IsRequired();
+        b.Property(x => x.StackName).IsRequired();
+        // The run deletes its rows by container id once the container is unpaused.
+        b.HasIndex(x => x.ContainerId);
+    }
+}
+
+[EntityConfiguration]
+public sealed class StackBackupServiceOverrideConfiguration : IEntityTypeConfiguration<StackBackupServiceOverride> {
+    public void Configure(EntityTypeBuilder<StackBackupServiceOverride> b) {
+        b.ToTable("stack_backup_service_overrides");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Service).IsRequired();
+        // One row per (stack, service): setting an override upserts, clearing every knob deletes it.
+        b.HasIndex(x => new { x.StackId, x.Service }).IsUnique();
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnvVar> {
     public void Configure(EntityTypeBuilder<StackEnvVar> b) {
         b.ToTable("stack_env_vars");
@@ -207,7 +239,7 @@ public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnv
 public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
     public void Configure(EntityTypeBuilder<Route> b) {
         // The two route kinds are different rows, and the schema says which columns each one may fill
-        // (ADR-0021). Two properties of the Watchtower kind are load-bearing enough to be structural
+        // (ADR-0023). Two properties of the Watchtower kind are load-bearing enough to be structural
         // rather than merely enforced in the handlers: it points at a realm and not at a stack, and it is
         // always Public. The second is the invariant "no realm's login host sits behind its own gate",
         // which used to be a force-unprotect in the site projection and is now something the database
@@ -222,7 +254,7 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
         b.Property(x => x.Domain).IsRequired();
         b.Property(x => x.ServiceName).IsRequired();
         // Stored as the enum name ("Service"/"Watchtower"); "Service" is the default, which is what the
-        // check constraint above and the migration's backfill both read for every pre-ADR-0021 row.
+        // check constraint above and the migration's backfill both read for every pre-ADR-0023 row.
         b.Property(x => x.Target).HasConversion<string>().HasDefaultValue(RouteTarget.Service);
         // Stored as the enum name (e.g. "Active"/"Managed"); the API maps Status to lowercase for the client.
         b.Property(x => x.Status).HasConversion<string>();

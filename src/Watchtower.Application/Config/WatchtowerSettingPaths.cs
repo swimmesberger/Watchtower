@@ -36,7 +36,7 @@ public static class WatchtowerSettingPaths {
 
     /// <summary>
     /// Internal marker: <see cref="Services.LoginHostConversion"/> has already turned this installation's
-    /// configured <c>Auth:Host</c> into a Watchtower route (ADR-0021). Not a user setting — never offered
+    /// configured <c>Auth:Host</c> into a Watchtower route (ADR-0023). Not a user setting — never offered
     /// in the UI and deliberately not env-pinnable. It exists so an operator who deletes the converted
     /// route does not find it recreated on the next restart.
     /// </summary>
@@ -48,7 +48,7 @@ public static class WatchtowerSettingPaths {
 
     /// <summary>
     /// Internal marker: <see cref="Services.ProxyProviderMigration"/> has already decided whether this
-    /// installation predates ADR-0020's default flip. Not a user setting — never offered in the UI, never
+    /// installation predates ADR-0022's default flip. Not a user setting — never offered in the UI, never
     /// listed among the proxy card's paths, and deliberately not env-pinnable. It exists because the
     /// question the migration answers ("did this instance rely on the old implicit caddy default?") stops
     /// being answerable the moment the instance adds its first route under the new default.

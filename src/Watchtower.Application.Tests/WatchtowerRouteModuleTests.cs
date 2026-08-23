@@ -11,7 +11,7 @@ using Xunit;
 namespace Watchtower.Application.Tests;
 
 /// <summary>
-/// Covers the route CRUD handlers where they meet ADR-0021: creating, editing and deleting a
+/// Covers the route CRUD handlers where they meet ADR-0023: creating, editing and deleting a
 /// <see cref="RouteTarget.Watchtower"/> route, and the two things such a route refuses — a stack, and an
 /// access policy.
 /// </summary>
@@ -209,7 +209,7 @@ public sealed class WatchtowerRouteModuleTests {
             scope.ServiceProvider,
             new CreateRoute.Command(stackId, "app.example.invalid", "web", 8080, true, false, null));
 
-        // A client that predates ADR-0021 sends no target and means the only kind of route there was.
+        // A client that predates ADR-0023 sends no target and means the only kind of route there was.
         Assert.True(result.IsSuccess, Describe(result));
         Assert.Equal("service", result.Value.Route.Target);
         Assert.Equal(stackId, result.Value.Route.StackId);

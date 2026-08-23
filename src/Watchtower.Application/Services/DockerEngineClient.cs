@@ -122,9 +122,35 @@ public sealed class DockerEngineClient : IDisposable {
         response.EnsureSuccessStatusCode();
     }
 
-    /// <summary>Sends a stop signal to the specified container (SIGTERM → SIGKILL after 10s).</summary>
-    public async Task StopContainerAsync(string containerId, CancellationToken ct = default) {
-        var response = await _client.PostAsync($"{_apiBase}/containers/{containerId}/stop", content: null, ct);
+    /// <summary>Sends a stop signal to the specified container (SIGTERM → SIGKILL after the daemon's default 10 s).</summary>
+    public Task StopContainerAsync(string containerId, CancellationToken ct = default) =>
+        StopContainerAsync(containerId, timeoutSeconds: null, ct);
+
+    /// <summary>
+    /// Sends a stop signal to the specified container, giving it <paramref name="timeoutSeconds"/> to
+    /// exit on SIGTERM before the daemon sends SIGKILL (<c>?t=N</c>). Null keeps the daemon's default
+    /// (10 s, or the container's own <c>--stop-timeout</c>).
+    /// </summary>
+    public async Task StopContainerAsync(string containerId, int? timeoutSeconds, CancellationToken ct = default) {
+        var url = $"{_apiBase}/containers/{containerId}/stop";
+        if (timeoutSeconds is { } t) url += $"?t={t}";
+        var response = await _client.PostAsync(url, content: null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Freezes the container's processes with the cgroup freezer (<c>docker pause</c>): no signal is
+    /// delivered, nothing exits, TCP connections stay open — the processes simply make no progress until
+    /// <see cref="UnpauseContainerAsync"/>. Returns in milliseconds.
+    /// </summary>
+    public async Task PauseContainerAsync(string containerId, CancellationToken ct = default) {
+        var response = await _client.PostAsync($"{_apiBase}/containers/{containerId}/pause", content: null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>Thaws a container frozen by <see cref="PauseContainerAsync"/> (<c>docker unpause</c>).</summary>
+    public async Task UnpauseContainerAsync(string containerId, CancellationToken ct = default) {
+        var response = await _client.PostAsync($"{_apiBase}/containers/{containerId}/unpause", content: null, ct);
         response.EnsureSuccessStatusCode();
     }
 

@@ -3,7 +3,7 @@ using System.Collections.Frozen;
 namespace Watchtower.Application.Services.Yarp;
 
 /// <summary>
-/// What the host actually managed to bind for the in-process proxy — ADR-0020. Read by
+/// What the host actually managed to bind for the in-process proxy — ADR-0022. Read by
 /// <see cref="YarpProxyProvider"/> for its running state, by the Settings config surface (which warns when
 /// the proxy is enabled but 443 never came up), and — per request — by the host dispatcher, which decides
 /// from <see cref="IngressPorts"/> whether it is looking at public ingress or the management plane.
@@ -45,7 +45,7 @@ public sealed class YarpListenerState {
     /// The dispatcher reads this per request to answer a question no host header can: did this arrive on a
     /// listener the operator published to the world, or on the management endpoint? A host nobody routed is
     /// a 404 on the first and Watchtower's own UI on the second, which is the whole point of splitting the
-    /// endpoints in the first place (ADR-0020). Frozen on assignment: the set is read far more often than
+    /// endpoints in the first place (ADR-0022). Frozen on assignment: the set is read far more often than
     /// it is written — twice, both before the first request is served — and a reader must never see it
     /// half-built.
     /// </remarks>

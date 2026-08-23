@@ -21,7 +21,7 @@ public sealed record CertificateEntry(
     int ChainLength);
 
 /// <summary>
-/// The in-process proxy's certificate store — ADR-0020. PEM files on disk under
+/// The in-process proxy's certificate store — ADR-0022. PEM files on disk under
 /// <see cref="RootPath"/>, and one ready-to-serve <see cref="SslStreamCertificateContext"/> per host in
 /// memory, which is what the Kestrel SNI callback hands to <c>SslStream</c> for each handshake.
 /// </summary>

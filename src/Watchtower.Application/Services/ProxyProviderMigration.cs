@@ -7,8 +7,8 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// The one-time upgrade step that keeps ADR-0020's default flip from switching a running installation's
-/// proxy underneath it. Before ADR-0020 the implicit <c>Proxy:Provider</c> default was <c>caddy</c>, so
+/// The one-time upgrade step that keeps ADR-0022's default flip from switching a running installation's
+/// proxy underneath it. Before ADR-0022 the implicit <c>Proxy:Provider</c> default was <c>caddy</c>, so
 /// an operator who added routes never had to name a provider — and after the flip that same silence
 /// would mean "the in-process proxy", quietly abandoning a working Caddy container, its certificates and
 /// its published ports on nothing more than an image update.
@@ -71,7 +71,7 @@ public sealed class ProxyProviderMigration(
             // comes up.
             await audit.RecordAsync(
                 "proxy", "config.migrate", "proxy settings",
-                "pinned provider to caddy — existing installation upgraded to the yarp default (ADR-0020)",
+                "pinned provider to caddy — existing installation upgraded to the yarp default (ADR-0022)",
                 ct: ct);
         }
 

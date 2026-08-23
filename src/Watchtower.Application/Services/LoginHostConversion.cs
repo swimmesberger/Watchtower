@@ -9,7 +9,7 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// The half of ADR-0021's one-time conversion that SQL cannot do: turning a configured
+/// The half of ADR-0023's one-time conversion that SQL cannot do: turning a configured
 /// <c>Watchtower:Auth:Host</c> into the system realm's login <see cref="Route"/>.
 /// </summary>
 /// <remarks>
@@ -131,7 +131,7 @@ public sealed class LoginHostConversion(
             // Actor-less on purpose: nobody asked for this, the upgrade did.
             await audit.RecordAsync(
                 AuditCategory, AuditAction, host,
-                "created a Watchtower route for the configured Auth:Host (ADR-0021)", ct: ct);
+                "created a Watchtower route for the configured Auth:Host (ADR-0023)", ct: ct);
         }
 
         if (system.LoginRouteId is null) {
@@ -140,7 +140,7 @@ public sealed class LoginHostConversion(
             changed = true;
             await audit.RecordAsync(
                 AuditCategory, AuditAction, host,
-                "made it the operator realm's login route (ADR-0021)", ct: ct);
+                "made it the operator realm's login route (ADR-0023)", ct: ct);
         }
 
         if (changed)

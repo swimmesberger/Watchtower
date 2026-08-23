@@ -19,7 +19,7 @@ namespace Watchtower.Application.Modules.Realms.Handlers;
 /// accepted rather than prevented: a realm that has to move hosts has to move hosts. The change is audited
 /// so an operator reading the trail after "everyone was signed out" finds the reason.
 /// <para>
-/// The system realm is editable here like any other (ADR-0021): its login host is a Watchtower route too,
+/// The system realm is editable here like any other (ADR-0023): its login host is a Watchtower route too,
 /// and the configured <c>Auth:Host</c> is only the fallback used when it has none.
 /// </para>
 /// </remarks>

@@ -151,7 +151,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             if (tunnel is null) return;
 
             var all = await LoadRoutesAsync(ct);
-            // Watchtower's own hostnames (ADR-0021) are not something this provider can serve: a tunnel
+            // Watchtower's own hostnames (ADR-0023) are not something this provider can serve: a tunnel
             // ingress rule pointing at Watchtower would publish the management plane through Cloudflare
             // with no gate in front of it, which is exactly the thing Cloudflare Access exists to do
             // properly. They are excluded from everything below and told to say so on the Routes page —

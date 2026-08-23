@@ -6,7 +6,7 @@ namespace Watchtower.Api.Proxy;
 
 /// <summary>
 /// The one outbound client every proxied request is forwarded on, and the request configuration that goes
-/// with it — ADR-0020. A singleton because connection pooling is the whole point: a client
+/// with it — ADR-0022. A singleton because connection pooling is the whole point: a client
 /// per request would open a new TCP connection to the upstream container for every hit.
 /// </summary>
 /// <remarks>

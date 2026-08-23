@@ -10,7 +10,7 @@ using Yarp.ReverseProxy.Forwarder;
 namespace Watchtower.Api.Proxy;
 
 /// <summary>
-/// The in-process proxy's request path — ADR-0020. Every request is dispatched by its
+/// The in-process proxy's request path — ADR-0022. Every request is dispatched by its
 /// <c>Host</c> <em>before</em> Watchtower's own pipeline: a host in the route table is access-checked and
 /// forwarded to its container, and everything else falls through to the app that was always there.
 /// </summary>
@@ -40,7 +40,7 @@ namespace Watchtower.Api.Proxy;
 /// how <c>http://&lt;public-ip&gt;/</c> ends up serving the management plane — the login page with
 /// authentication on, the whole UI with it off. The mirror rule holds on the management port: a routed
 /// application's host is refused there too, so ingress traffic cannot be half-served on the endpoint an
-/// operator is meant to bind privately. Watchtower's own hosts (ADR-0021) are served on both, which is
+/// operator is meant to bind privately. Watchtower's own hosts (ADR-0023) are served on both, which is
 /// what keeps the UI reachable — through ingress on the hostnames the operator routed there, and on the
 /// management endpoint whatever they are.
 /// </para>
@@ -106,7 +106,7 @@ public sealed class YarpHostDispatchMiddleware(
             return;
         }
 
-        // A Watchtower route (ADR-0021). Watchtower serves it itself — forwarding it would be forwarding
+        // A Watchtower route (ADR-0023). Watchtower serves it itself — forwarding it would be forwarding
         // to ourselves — so it takes the ordinary pipeline, SPA and all, on either kind of listener:
         // through ingress it is a hostname the management plane is deliberately reachable on, and on the
         // management endpoint it is how an operator who bound 8080 privately still reaches the UI. The one

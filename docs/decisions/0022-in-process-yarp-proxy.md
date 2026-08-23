@@ -1,7 +1,7 @@
-# ADR-0020: The reverse proxy runs in Watchtower's own process (YARP + ACME), and is the default
+# ADR-0022: The reverse proxy runs in Watchtower's own process (YARP + ACME), and is the default
 
 - Status: Accepted
-- Extended by: [ADR-0021](0021-login-hosts-are-watchtower-self-routes.md) — the login hosts this ADR
+- Extended by: [ADR-0023](0023-login-hosts-are-watchtower-self-routes.md) — the login hosts this ADR
   describes as synthesised `Local` sites are now ordinary `Watchtower`-target route rows.
 - Date: 2026-08-22
 - Related: [ADR-0015](0015-proxy-provider-abstraction.md) (the provider seam this extends),

@@ -78,7 +78,7 @@ public static class RouteAccessPolicy {
     /// (docs/central-auth/design.md §13). A <see cref="RouteTarget.Service"/> route inherits its realm from
     /// its stack's category (<see cref="StackTemplate.RealmId"/>); a standalone stack has no category, so
     /// its routes belong to the system realm. A <see cref="RouteTarget.Watchtower"/> route has no stack to
-    /// inherit from and states its realm outright (ADR-0021).
+    /// inherit from and states its realm outright (ADR-0023).
     /// </summary>
     /// <remarks>
     /// A service route carries no realm column of its own on purpose: the category is where a population is

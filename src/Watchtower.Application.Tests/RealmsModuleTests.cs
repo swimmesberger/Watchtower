@@ -91,7 +91,7 @@ public sealed class RealmsModuleTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var route = await db.Routes.AsNoTracking().SingleAsync(Ct);
 
-        // A login host is a route (ADR-0021), so the realm's login page is a hostname the proxy serves,
+        // A login host is a route (ADR-0023), so the realm's login page is a hostname the proxy serves,
         // gets a certificate for, and reports a status on — none of which a stored string could do.
         Assert.Equal(RouteTarget.Watchtower, route.Target);
         Assert.Equal("login.acme.invalid", route.Domain);
@@ -170,7 +170,7 @@ public sealed class RealmsModuleTests {
     }
 
     /// <summary>
-    /// One hostname cannot serve two populations, and since ADR-0021 the rule that says so is the unique
+    /// One hostname cannot serve two populations, and since ADR-0023 the rule that says so is the unique
     /// index on <c>routes.domain</c> rather than one on a realm column — the same rule that stops a login
     /// host colliding with an application's domain.
     /// </summary>
@@ -280,7 +280,7 @@ public sealed class RealmsModuleTests {
     }
 
     /// <summary>
-    /// The operator realm is no longer a special case here (ADR-0021): its login host is a Watchtower
+    /// The operator realm is no longer a special case here (ADR-0023): its login host is a Watchtower
     /// route like anyone else's, and <c>Auth:Host</c> is only what answers while it has none.
     /// </summary>
     [Fact]
@@ -374,7 +374,7 @@ public sealed class RealmsModuleTests {
 
     /// <summary>
     /// A realm's Watchtower routes are public hostnames this instance answers on, so deleting the realm
-    /// would silently un-serve them (ADR-0021). Refused for the same reason accounts and categories are:
+    /// would silently un-serve them (ADR-0023). Refused for the same reason accounts and categories are:
     /// the blast radius has to be visible, one deliberate step at a time.
     /// </summary>
     [Fact]

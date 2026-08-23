@@ -47,7 +47,7 @@ public sealed class DeleteRealm(
                 $"{templateCount} template(s). Remove them first.");
         }
 
-        // Its Watchtower routes are public hostnames this instance is currently served on (ADR-0021).
+        // Its Watchtower routes are public hostnames this instance is currently served on (ADR-0023).
         // Removing the realm would have to take them with it — deleting live hostnames as a side effect
         // of a realm delete is exactly the blast radius the rest of this handler refuses to have — so the
         // routes are deleted first, deliberately and visibly, and the foreign key is the backstop.

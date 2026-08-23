@@ -11,7 +11,7 @@ using Xunit;
 namespace Watchtower.Application.Tests;
 
 /// <summary>
-/// The upgrade guard behind ADR-0020's default flip. Before it, <c>Proxy:Provider</c> defaulted to
+/// The upgrade guard behind ADR-0022's default flip. Before it, <c>Proxy:Provider</c> defaulted to
 /// <c>caddy</c>, so an operator who added routes never had to name a provider — and after the flip that
 /// same silence would mean "the in-process proxy", abandoning a working Caddy container and its
 /// certificates on nothing but an image update.
