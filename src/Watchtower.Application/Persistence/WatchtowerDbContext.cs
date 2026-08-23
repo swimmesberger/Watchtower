@@ -4,6 +4,7 @@ using Elarion.Scheduling.EntityFrameworkCore;
 using Elarion.Settings.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Watchtower.Application.Persistence;
 
@@ -45,4 +46,31 @@ public sealed partial class WatchtowerDbContext(DbContextOptions<WatchtowerDbCon
         // Generated method that applies configurations from all assemblies containing entities.
         ConfigureEntities(modelBuilder);
     }
+
+    /// <summary>
+    /// Clips every mapped <see cref="DateTimeOffset"/> to the microsecond resolution of a PostgreSQL
+    /// <c>timestamptz</c> on the way in, so a stored instant is bit-for-bit the instant the application
+    /// held (see <see cref="PostgresTime"/>). Without it the column silently drops the seventh fractional
+    /// digit and a computed value stops comparing equal to its own round trip.
+    /// </summary>
+    /// <remarks>
+    /// Model-wide on purpose. It reaches the Elarion-owned tables in this context too — settings, the
+    /// role leases and the scheduler occurrence claims — which is what makes the rule uniform rather than
+    /// a habit of Watchtower's own entities; all of those store deadlines whose sub-microsecond tail was
+    /// never meaningful. EF applies a non-nullable property converter to the nullable properties of the
+    /// same type as well, so <c>DateTimeOffset?</c> columns are covered by this one registration.
+    /// Concurrency tokens are untouched: this context's is PostgreSQL's <c>xmin</c>, a <c>uint</c>.
+    /// </remarks>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) {
+        base.ConfigureConventions(configurationBuilder);
+        configurationBuilder.Properties<DateTimeOffset>().HaveConversion<MicrosecondPrecisionConverter>();
+    }
+
+    /// <summary>
+    /// Truncating on the way to the database, identity on the way back — the read side has nothing to
+    /// undo, since the column cannot return anything finer than what it was given.
+    /// </summary>
+    private sealed class MicrosecondPrecisionConverter()
+        : ValueConverter<DateTimeOffset, DateTimeOffset>(
+            stored => stored.ToMicrosecondPrecision(), read => read);
 }

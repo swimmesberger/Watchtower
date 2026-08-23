@@ -38,6 +38,18 @@ public sealed class AuthSessionService(
     private const int TokenByteLength = 32;
 
     /// <summary>
+    /// The clock, clipped to the resolution the database stores (<see cref="PostgresTime"/>).
+    /// </summary>
+    /// <remarks>
+    /// Every instant this service computes is written to a row and then compared against what comes back
+    /// out of it — <see cref="AuthSession.ExpiresAt"/> against a later <c>now</c>, the renewed expiry
+    /// against <see cref="AuthSession.CreatedAt"/> plus the absolute cap. Reading the clock at a precision
+    /// <c>timestamptz</c> cannot hold would make those comparisons depend on whether the value had made
+    /// the round trip yet, which is not a distinction session lifetime should be able to see.
+    /// </remarks>
+    private DateTimeOffset Now => time.GetUtcNow().ToMicrosecondPrecision();
+
+    /// <summary>
     /// How long a login code stays redeemable. It exists only to survive one redirect hop, so the window
     /// is the round trip and nothing more.
     /// </summary>
@@ -92,7 +104,7 @@ public sealed class AuthSessionService(
         User user, SessionKind kind, int? routeId, TimeSpan? lifetime, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(user);
 
-        var now = time.GetUtcNow();
+        var now = Now;
         await SweepExpiredAsync(now, ct);
 
         var token = NewToken();
@@ -144,7 +156,7 @@ public sealed class AuthSessionService(
             .FirstOrDefaultAsync(s => s.TokenHash == hash && s.Kind == SessionKind.MfaPending, ct);
         if (pending is null) return null;
 
-        if (pending.ExpiresAt <= time.GetUtcNow()) {
+        if (pending.ExpiresAt <= Now) {
             db.AuthSessions.Remove(pending);
             await db.SaveChangesAsync(ct);
             return null;
@@ -219,7 +231,7 @@ public sealed class AuthSessionService(
                 s => s.TokenHash == hash && (s.Kind == SessionKind.Sso || s.Kind == SessionKind.App), ct);
         if (session is null) return null;
 
-        var now = time.GetUtcNow();
+        var now = Now;
         if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
             db.AuthSessions.Remove(session);
             await db.SaveChangesAsync(ct);
@@ -252,7 +264,7 @@ public sealed class AuthSessionService(
         // and deleting it here would let a request to app B sign the visitor out of app A.
         if (routeId is not null && session.RouteId != routeId) return null;
 
-        var now = time.GetUtcNow();
+        var now = Now;
         if (session.ExpiresAt <= now || session.CreatedAt + AbsoluteLifetime <= now) {
             // Expired by either clock: drop the row on the way past so a stale cookie stops costing a lookup.
             db.AuthSessions.Remove(session);
@@ -314,7 +326,7 @@ public sealed class AuthSessionService(
         int userId, int routeId, string redirectUri, CancellationToken ct = default) {
         ArgumentException.ThrowIfNullOrWhiteSpace(redirectUri);
 
-        var now = time.GetUtcNow();
+        var now = Now;
         await SweepExpiredCodesAsync(now, ct);
 
         var code = NewToken();
@@ -350,7 +362,7 @@ public sealed class AuthSessionService(
         var claimed = await db.LoginCodes.Where(c => c.Id == code.Id).ExecuteDeleteAsync(ct);
         if (claimed != 1) return null;
 
-        return code.ExpiresAt <= time.GetUtcNow()
+        return code.ExpiresAt <= Now
             ? null
             : new LoginCodeGrant(code.UserId, code.RouteId, code.RedirectUri);
     }
