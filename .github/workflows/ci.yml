@@ -26,7 +26,7 @@ jobs:
       # WATCHTOWER_TEST_PG below is the same override a developer uses locally when their container
       # engine is not reachable — so both paths are exercised rather than one being CI-only.
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: watchtower
         ports:

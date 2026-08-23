@@ -20,7 +20,7 @@ namespace Watchtower.Application.Tests;
 ///     workstation where Testcontainers cannot reach the container engine (see docs/contributing.md).
 ///   </description></item>
 ///   <item><description>
-///     Otherwise Testcontainers starts a <c>postgres:17-alpine</c> once for the whole run, over
+///     Otherwise Testcontainers starts a <c>postgres:18-alpine</c> once for the whole run, over
 ///     whatever <c>DOCKER_HOST</c>/<c>/var/run/docker.sock</c> points at — Docker or Podman.
 ///   </description></item>
 /// </list>
@@ -147,7 +147,7 @@ public static class PostgresTestServer {
         var external = Environment.GetEnvironmentVariable(ExternalServerVariable);
         if (!string.IsNullOrWhiteSpace(external)) return external;
 
-        var container = new PostgreSqlBuilder("postgres:17-alpine")
+        var container = new PostgreSqlBuilder("postgres:18-alpine")
             // Durability buys nothing for a database that lives for one test run, and fsync is most of
             // the cost of the DDL the migrations run.
             .WithCommand("-c", "fsync=off", "-c", "full_page_writes=off", "-c", "synchronous_commit=off")
@@ -161,7 +161,7 @@ public static class PostgresTestServer {
                 + $"(ADR-0024). Either make a container engine reachable (Docker Desktop, or Podman with "
                 + $"/var/run/docker.sock pointing at the podman socket), or start one yourself and set "
                 + $"{ExternalServerVariable} — for example:\n"
-                + "  podman run -d --name wtpg -e POSTGRES_PASSWORD=wt -p 15432:5432 postgres:17-alpine\n"
+                + "  podman run -d --name wtpg -e POSTGRES_PASSWORD=wt -p 15432:5432 postgres:18-alpine\n"
                 + $"  export {ExternalServerVariable}=\"Host=127.0.0.1;Port=15432;Database=postgres;"
                 + "Username=postgres;Password=wt\"\n"
                 + "See docs/contributing.md.", ex);

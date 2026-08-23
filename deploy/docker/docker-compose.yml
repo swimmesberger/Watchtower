@@ -123,7 +123,7 @@ services:
   # compose network. Back it up with `docker compose exec postgres pg_dump -U watchtower watchtower`
   # (see docs/backups.md) — the stack-backup machinery in the UI backs up *your* stacks, not this.
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     container_name: watchtower-postgres
     restart: unless-stopped
     environment:
@@ -132,7 +132,11 @@ services:
       # Change this. The default exists so a first `docker compose up` works, not so it ships.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-watchtower}
     volumes:
-      - watchtower-pg:/var/lib/postgresql/data
+      # postgres:18 moved the mount point up a level (PGDATA is now the versioned
+      # /var/lib/postgresql/18/docker) so pg_upgrade --link can place old and new data directories
+      # side by side for in-place major upgrades. Mounting the old /var/lib/postgresql/data here
+      # would silently NOT persist the data.
+      - watchtower-pg:/var/lib/postgresql
     healthcheck:
       # Watchtower migrates on startup, so it must not start before the server accepts connections.
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-watchtower} -d ${POSTGRES_DB:-watchtower}"]

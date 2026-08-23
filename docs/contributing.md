@@ -37,7 +37,7 @@ run — set `WATCHTOWER_TEST_PG` to a server the tests may `CREATE DATABASE` on,
 instead. This is also what CI does, against its `services: postgres` container.
 
 ```bash
-podman run -d --name wtpg -e POSTGRES_PASSWORD=wt -p 15432:5432 postgres:17-alpine
+podman run -d --name wtpg -e POSTGRES_PASSWORD=wt -p 15432:5432 postgres:18-alpine
 export WATCHTOWER_TEST_PG="Host=127.0.0.1;Port=15432;Database=postgres;Username=postgres;Password=wt"
 dotnet test Watchtower.slnx
 ```
