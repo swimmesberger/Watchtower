@@ -358,8 +358,11 @@ export interface MetricsRange {
   stepSeconds: number
 }
 
-/** The three metrics backends (ADR-0013). */
-export type MetricsBackend = 'memory' | 'sqlite' | 'influxdb'
+/**
+ * The three metrics backends (ADR-0013). `database` was spelled `sqlite` before ADR-0024 replaced the
+ * file with PostgreSQL; the server still accepts the old value on read, but never sends it.
+ */
+export type MetricsBackend = 'memory' | 'database' | 'influxdb'
 
 /** InfluxDB connection values in the config surface. The token never leaves the server. */
 export interface MetricsInfluxConfig {
@@ -375,7 +378,7 @@ export interface MetricsInfluxConfig {
 /** `metrics.getConfig` / `metrics.updateConfig` payload: the effective backend configuration. */
 export interface MetricsConfig {
   backend: MetricsBackend
-  /** History window of the sqlite backend, in days (1–365). */
+  /** History window of the database backend, in days (1–365). */
   retentionDays: number
   historyAvailable: boolean
   influx: MetricsInfluxConfig

@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Watchtower.Application.Persistence;
 
 #nullable disable
@@ -15,36 +16,40 @@ namespace Watchtower.Application.Persistence.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
+            modelBuilder
+                .HasAnnotation("ProductVersion", "10.0.9")
+                .HasAnnotation("Relational:MaxIdentifierLength", 63);
+
+            NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("Elarion.Settings.EntityFrameworkCore.Setting", b =>
                 {
                     b.Property<string>("Kind")
                         .HasMaxLength(64)
-                        .HasColumnType("TEXT")
+                        .HasColumnType("character varying(64)")
                         .HasColumnName("kind");
 
                     b.Property<string>("Owner")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT")
+                        .HasColumnType("character varying(256)")
                         .HasColumnName("owner");
 
                     b.Property<string>("Key")
                         .HasMaxLength(512)
-                        .HasColumnType("TEXT")
+                        .HasColumnType("character varying(512)")
                         .HasColumnName("key");
 
                     b.Property<DateTimeOffset>("UpdatedOnUtc")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_on_utc");
 
                     b.Property<string>("Value")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("value");
 
                     b.Property<int>("Version")
                         .IsConcurrencyToken()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("version");
 
                     b.HasKey("Kind", "Owner", "Key")
@@ -57,42 +62,44 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("action");
 
                     b.Property<string>("Actor")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("actor");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("category");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<string>("Detail")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("detail");
 
                     b.Property<string>("Error")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("error");
 
                     b.Property<bool>("Success")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("success");
 
                     b.Property<string>("Target")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("target");
 
                     b.HasKey("Id")
@@ -111,33 +118,35 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
 
                     b.Property<string>("Kind")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("kind");
 
                     b.Property<int?>("RouteId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("route_id");
 
                     b.Property<string>("TokenHash")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("token_hash");
 
                     b.Property<int>("UserId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id")
@@ -163,41 +172,43 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset?>("FinishedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("finished_at");
 
                     b.Property<string>("Output")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("output");
 
                     b.Property<string>("RemotePath")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("remote_path");
 
                     b.Property<long?>("SizeBytes")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("size_bytes");
 
                     b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<DateTimeOffset>("StartedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("TriggeredBy")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("triggered_by");
 
                     b.HasKey("Id")
@@ -216,26 +227,28 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("ContainerId")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("container_id");
 
                     b.Property<string>("ContainerName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("container_name");
 
                     b.Property<DateTimeOffset>("PausedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("paused_at");
 
                     b.Property<string>("StackName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("stack_name");
 
                     b.HasKey("Id")
@@ -251,65 +264,67 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<bool>("AllowDockerSocket")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_docker_socket");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<int>("CredentialId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("credential_id");
 
                     b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("enabled");
 
                     b.Property<string>("ExtraLabels")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("extra_labels");
 
                     b.Property<string>("LastWarmError")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("last_warm_error");
 
                     b.Property<DateTimeOffset?>("LastWarmedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_warmed_at");
 
                     b.Property<int>("MaxConcurrentRunners")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("max_concurrent_runners");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("Owner")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("owner");
 
                     b.Property<string>("RunnerImage")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("runner_image");
 
                     b.Property<DateTimeOffset?>("ToolchainDetectedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("toolchain_detected_at");
 
                     b.Property<string>("ToolchainProfileJson")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("toolchain_profile_json");
 
                     b.Property<string>("WarmedProfileHash")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("warmed_profile_hash");
 
                     b.HasKey("Id")
@@ -329,26 +344,28 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("Token")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("token");
 
                     b.Property<string>("Username")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("username");
 
                     b.HasKey("Id")
@@ -364,33 +381,35 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset?>("FinishedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("finished_at");
 
                     b.Property<string>("Output")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("output");
 
                     b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<DateTimeOffset>("StartedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("TriggeredBy")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("triggered_by");
 
                     b.HasKey("Id")
@@ -409,26 +428,34 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("NormalizedName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("normalized_name");
 
                     b.Property<int>("RealmId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("realm_id");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("pk_groups");
@@ -444,15 +471,17 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<int>("GroupId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("group_id");
 
                     b.Property<int>("UserId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id")
@@ -472,33 +501,35 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("CodeHash")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("code_hash");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
 
                     b.Property<string>("RedirectUri")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("redirect_uri");
 
                     b.Property<int>("RouteId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("route_id");
 
                     b.Property<int>("UserId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id")
@@ -524,36 +555,38 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
                     b.Property<string>("ContainerName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("container_name");
 
                     b.Property<double>("CpuPercent")
-                        .HasColumnType("REAL")
+                        .HasColumnType("double precision")
                         .HasColumnName("cpu_percent");
 
                     b.Property<long?>("MemLimitBytes")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("mem_limit_bytes");
 
                     b.Property<long>("MemUsedBytes")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("mem_used_bytes");
 
                     b.Property<string>("StackName")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("stack_name");
 
                     b.Property<long>("TUnixSeconds")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("t_unix_seconds");
 
                     b.Property<int>("TierSeconds")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("tier_seconds");
 
                     b.HasKey("Id")
@@ -561,7 +594,7 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.HasIndex("TierSeconds", "TUnixSeconds", "ContainerName")
                         .IsUnique()
-                        .HasDatabaseName("ix_metric_container_samples_tier_seconds_t_unix_seconds_container_name");
+                        .HasDatabaseName("ix_metric_container_samples_tier_seconds_t_unix_seconds_contai");
 
                     b.ToTable("metric_container_samples", (string)null);
                 });
@@ -570,35 +603,37 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
                     b.Property<double?>("CpuPercent")
-                        .HasColumnType("REAL")
+                        .HasColumnType("double precision")
                         .HasColumnName("cpu_percent");
 
                     b.Property<double?>("LoadAvg1")
-                        .HasColumnType("REAL")
+                        .HasColumnType("double precision")
                         .HasColumnName("load_avg1");
 
                     b.Property<double?>("LoadAvg5")
-                        .HasColumnType("REAL")
+                        .HasColumnType("double precision")
                         .HasColumnName("load_avg5");
 
                     b.Property<double?>("MemPercent")
-                        .HasColumnType("REAL")
+                        .HasColumnType("double precision")
                         .HasColumnName("mem_percent");
 
                     b.Property<long?>("MemUsedBytes")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("mem_used_bytes");
 
                     b.Property<long>("TUnixSeconds")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("bigint")
                         .HasColumnName("t_unix_seconds");
 
                     b.Property<int>("TierSeconds")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("tier_seconds");
 
                     b.HasKey("Id")
@@ -615,30 +650,38 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<bool>("IsSystem")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_system");
 
                     b.Property<int?>("LoginRouteId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("login_route_id");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("Slug")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("slug");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("pk_realms");
@@ -653,31 +696,43 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_realms_slug");
 
                     b.ToTable("realms", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            CreatedAt = new DateTimeOffset(new DateTime(2026, 8, 10, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            IsSystem = true,
+                            Name = "Operator",
+                            Slug = "operator"
+                        });
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Registry", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<int?>("CredentialId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("credential_id");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("Url")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("url");
 
                     b.HasKey("Id")
@@ -696,85 +751,93 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("AccessMode")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasDefaultValue("Public")
                         .HasColumnName("access_mode");
 
                     b.Property<string>("BypassPaths")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("bypass_paths");
 
                     b.Property<DateTimeOffset?>("CertNotAfter")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("cert_not_after");
 
                     b.Property<int>("ContainerPort")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("container_port");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<string>("Domain")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("domain");
 
                     b.Property<string>("IdentityHeaderMode")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasDefaultValue("None")
                         .HasColumnName("identity_header_mode");
 
                     b.Property<bool>("IsPrimary")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_primary");
 
                     b.Property<string>("Kind")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("kind");
 
                     b.Property<int?>("RealmId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("realm_id");
 
                     b.Property<string>("ServiceName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("service_name");
 
                     b.Property<int?>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("status");
 
                     b.Property<string>("StatusDetail")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("status_detail");
 
                     b.Property<string>("Target")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasDefaultValue("Service")
                         .HasColumnName("target");
 
                     b.Property<bool>("TlsEnabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("tls_enabled");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("pk_routes");
@@ -799,19 +862,21 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<int?>("GroupId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("group_id");
 
                     b.Property<int>("RouteId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("route_id");
 
                     b.Property<int?>("UserId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id")
@@ -843,109 +908,117 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<bool>("AppApiEnabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("app_api_enabled");
 
                     b.Property<string>("AppApiToken")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("app_api_token");
 
                     b.Property<string>("AutoDeployMode")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("auto_deploy_mode");
 
                     b.Property<string>("AutoDeployTime")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("auto_deploy_time");
 
                     b.Property<string>("BackupCron")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("backup_cron");
 
                     b.Property<bool>("BackupEnabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("backup_enabled");
 
                     b.Property<string>("BackupQuiesceMode")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasDefaultValue("Stop")
                         .HasColumnName("backup_quiesce_mode");
 
                     b.Property<bool>("BackupStopContainers")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("backup_stop_containers");
 
                     b.Property<string>("Branch")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("branch");
 
                     b.Property<string>("ComposeFilePath")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("compose_file_path");
 
                     b.Property<string>("ComposeProjectName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("compose_project_name");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<int?>("CredentialId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("credential_id");
 
                     b.Property<string>("LastDeployStatus")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("last_deploy_status");
 
                     b.Property<DateTimeOffset?>("LastDeployedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_deployed_at");
 
                     b.Property<string>("LastDeployedCommit")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("last_deployed_commit");
 
                     b.Property<DateTimeOffset?>("LastScheduledBackupAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_scheduled_backup_at");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<string>("RepositoryUrl")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("repository_url");
 
                     b.Property<int?>("TemplateId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("template_id");
 
                     b.Property<string>("TenantSlug")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("tenant_slug");
 
                     b.Property<bool>("WebhookEnabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("webhook_enabled");
 
                     b.Property<string>("WebhookToken")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("webhook_token");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
 
                     b.HasKey("Id")
                         .HasName("pk_stacks");
@@ -972,28 +1045,30 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<string>("Dump")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("dump");
 
                     b.Property<bool>("Exclude")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("exclude");
 
                     b.Property<string>("Service")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("service");
 
                     b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<string>("Stop")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("stop");
 
                     b.HasKey("Id")
@@ -1010,21 +1085,23 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("Key")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("key");
 
                     b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<string>("Value")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("value");
 
                     b.HasKey("Id")
@@ -1041,53 +1118,55 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("Branch")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("branch");
 
                     b.Property<string>("ComposeFilePath")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("compose_file_path");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<int?>("CredentialId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("credential_id");
 
                     b.Property<string>("DomainPattern")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("domain_pattern");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("name");
 
                     b.Property<int>("RealmId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("realm_id");
 
                     b.Property<string>("RepositoryUrl")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("repository_url");
 
                     b.Property<int>("TargetPort")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("target_port");
 
                     b.Property<string>("TargetServiceName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("target_service_name");
 
                     b.HasKey("Id")
@@ -1110,21 +1189,23 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("Key")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("key");
 
                     b.Property<int>("TemplateId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("template_id");
 
                     b.Property<string>("Value")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("value");
 
                     b.HasKey("Id")
@@ -1140,29 +1221,29 @@ namespace Watchtower.Application.Persistence.Migrations
             modelBuilder.Entity("Watchtower.Application.Entities.StackUpdateCheck", b =>
                 {
                     b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<DateTimeOffset>("CheckedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("checked_at");
 
                     b.Property<bool>("HasUpdates")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("has_updates");
 
                     b.Property<string>("NewCommitSha")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("new_commit_sha");
 
                     b.Property<string>("OutdatedImageDigests")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("outdated_image_digests");
 
                     b.Property<string>("OutdatedImages")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("outdated_images");
 
                     b.HasKey("StackId")
@@ -1175,23 +1256,25 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<bool>("AllowDelete")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("allow_delete");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<int>("StackId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
                     b.Property<int>("TemplateId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("template_id");
 
                     b.HasKey("Id")
@@ -1211,69 +1294,71 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
 
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
                     b.Property<int>("AccessFailedCount")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("access_failed_count");
 
                     b.Property<string>("AuthenticatorKey")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("authenticator_key");
 
                     b.Property<string>("ConcurrencyStamp")
                         .IsConcurrencyToken()
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("concurrency_stamp");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<bool>("Disabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("disabled");
 
                     b.Property<string>("Email")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("email");
 
                     b.Property<bool>("IsAdmin")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("is_admin");
 
                     b.Property<DateTimeOffset?>("LockoutEnd")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("lockout_end");
 
                     b.Property<string>("NormalizedUserName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("normalized_user_name");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("password_hash");
 
                     b.Property<int>("RealmId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("realm_id");
 
                     b.Property<string>("SecurityStamp")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("security_stamp");
 
                     b.Property<bool>("TwoFactorEnabled")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("boolean")
                         .HasColumnName("two_factor_enabled");
 
                     b.Property<string>("UserName")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("user_name");
 
                     b.HasKey("Id")
@@ -1290,20 +1375,22 @@ namespace Watchtower.Application.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("CodeHash")
                         .IsRequired()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("text")
                         .HasColumnName("code_hash");
 
                     b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT")
+                        .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
                     b.Property<int>("UserId")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("integer")
                         .HasColumnName("user_id");
 
                     b.HasKey("Id")

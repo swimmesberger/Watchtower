@@ -10,7 +10,7 @@ namespace Watchtower.Application.Services;
 /// <c>Watchtower:Metrics:*</c> through the settings store re-binds the options and the very next read
 /// (including the <c>metrics-history</c> flag evaluation) lands on the new backend.
 ///
-/// <para>The memory and SQLite sources are cheap always-on singletons. The InfluxDB reader is built
+/// <para>The memory and database sources are cheap always-on singletons. The InfluxDB reader is built
 /// lazily from the options snapshot in use and rebuilt when the connection settings change; connection
 /// settings that fail its constructor's validation degrade to an "unavailable" stand-in (reason
 /// <c>influx-misconfigured</c>) instead of faulting resolution — under runtime switching a bad config
@@ -18,7 +18,7 @@ namespace Watchtower.Application.Services;
 /// </summary>
 public sealed class MetricsSourceRouter(
     InMemoryMetricsSource memory,
-    SqliteMetricsSource sqlite,
+    DatabaseMetricsSource database,
     IOptionsMonitor<WatchtowerOptions> options,
     ILoggerFactory loggerFactory) : IMetricsSource, IDisposable {
     private readonly object _lock = new();
@@ -40,7 +40,7 @@ public sealed class MetricsSourceRouter(
     private IMetricsSource Current => options.CurrentValue.Metrics.ResolveBackend() switch {
         MetricsBackendKind.Memory => memory,
         MetricsBackendKind.Influxdb => GetOrCreateInflux(),
-        _ => sqlite,
+        _ => database,
     };
 
     /// <summary>

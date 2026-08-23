@@ -18,10 +18,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Entity Framework Core with the SQLite provider (self-contained single-node persistence). -->
+    <!-- Entity Framework Core with the Npgsql provider — PostgreSQL is the only backend (ADR-0024). -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="EFCore.NamingConventions" />
+    <!-- SQLite, for the one-shot `import-sqlite` command only (Services/SqliteImport): it reads a
+         pre-ADR-0024 database file and COPYs it into PostgreSQL. No EF SQLite provider is referenced. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
     <!-- Referenced directly so the pinned e_sqlite3 native version (GHSA-2m69-gcr7-jv3q) actually applies. -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
   </ItemGroup>

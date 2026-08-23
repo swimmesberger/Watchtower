@@ -367,7 +367,7 @@ public sealed class TenantSwitcherTests {
         // "by slug ascending" assertions have something to bite on.
         //
         // With one honest limit worth knowing before trusting them: deleting the sort in
-        // TenantDiscoveryService alone does *not* fail them, because SQLite answers the tenants query from
+        // TenantDiscoveryService alone does *not* fail them, because the database answers the tenants query from
         // the unique (template_id, tenant_slug) index and hands back slug order anyway. What this fixture
         // does catch is the realistic drift — the tenants query acquiring an order of its own, e.g. the
         // `OrderByDescending(s => s.Id)` ("newest first") that the neighbouring ListTenantsAsync uses.

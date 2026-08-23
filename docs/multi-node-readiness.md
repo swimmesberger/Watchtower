@@ -20,7 +20,7 @@ the database, which is the right half. The other half does not:
 
 | State | Lives in | Why it blocks a second instance |
 | --- | --- | --- |
-| The database itself | **SQLite file** (`Watchtower:DbPath`) | single-writer, one disk — the hard blocker; see §2 |
+| ~~The database itself~~ | **PostgreSQL** (`Watchtower:Database:ConnectionString`) — *done*, ADR-0024 | was a single-writer SQLite file on one disk, the hard blocker; see §2 |
 | ACME account key, issued certificates | PEM files under `Proxy:Yarp:CertPath` (`CertificateStore`, `AcmeAccountKey`) | every instance would order its own certificates → Let's Encrypt rate limits, different SNI answers per node |
 | HTTP-01 challenge tokens | in-memory `AcmeHttpChallengeStore` | the CA's validation request lands on whichever node answers port 80 — not necessarily the one that published the token |
 | Identity-assertion signing key (`AuthTokenSigner`), ASP.NET data-protection key ring | files under `Auth:KeyPath` | a token or cookie minted on node A is unreadable on node B; OIDC correlation/nonce cookies (the external-IdP case) are data-protection-encrypted too |
@@ -34,29 +34,43 @@ authoritative state is a handful of files and one in-memory map. Second, nothing
 self-route design has to be undone: the cluster shape is the same process with the file-backed
 state moved into the database and a role flag (§4).
 
-## 2. Database: PostgreSQL replaces SQLite (in progress)
+## 2. Database: PostgreSQL replaces SQLite (done)
 
 SQLite cannot be shared, and running two database backends with different semantics (transaction
 isolation, `ExecuteUpdate` behaviour, date/time storage, raw-SQL migrations) would double the
-testing surface for no product benefit. Decision taken 2026-08-23: **PostgreSQL is the single
-supported database**, starting with the stacked PR that also moves the proxy/auth state into it.
+testing surface for no product benefit. Decided and shipped 2026-08-23,
+[ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md): **PostgreSQL is the single
+supported database.**
 
-What that means concretely (the ADR accompanying the change has the details):
+What landed:
 
-- Npgsql EF Core provider; migrations regenerated for PostgreSQL (the SQLite history is not
-  portable — table rebuilds, `strftime`, `PRAGMA journal_mode=WAL`); snake_case naming kept.
-- Optimistic concurrency on editable rows via the `xmin` system column as the EF concurrency
-  token (routes, stacks, realms, settings — the Elarion settings store already carries
-  `expectedVersion`).
+- Npgsql EF Core provider; the migration history regenerated as one `InitialPostgreSql` (the SQLite
+  history was not portable — table rebuilds, `strftime`, `PRAGMA journal_mode=WAL`); snake_case
+  naming kept. The seeded operator realm moved onto the model as `HasData`, so it is part of the
+  schema every environment scaffolds rather than one migration's hand-written INSERT.
+- Optimistic concurrency on editable rows via the `xmin` system column as the EF concurrency token
+  (routes, stacks, realms, groups — the Elarion settings store already carries `expectedVersion`),
+  surfaced as a `Conflict` result by one assembly-wide decorator. Users keep Identity's
+  `ConcurrencyStamp`, which survives the detached read/write the user store is built on.
+- A connection string (`Watchtower:Database:ConnectionString`, falling back to
+  `ConnectionStrings:watchtower`) replaces `DbPath`; `docker-compose.yml` gains a `postgres` service
+  and the Aspire AppHost a Postgres resource; both integration suites run against a real PostgreSQL
+  — Testcontainers by default, or the server `WATCHTOWER_TEST_PG` names (CI's service container, or
+  a locally started one) — with a database per test host cloned from a migrated template.
+- Existing SQLite installations are carried across by a one-shot `--import-sqlite <path>` that
+  copies every table into the configured PostgreSQL and refuses a non-empty target
+  ([upgrading.md](upgrading.md)); it is the only SQLite code that stays.
+- The SQLite-era workarounds went with it: the raw-SQL expiry sweeps, the client-side sorts that
+  existed because SQLite cannot `ORDER BY` a `DateTimeOffset`, the in-process lockout computation,
+  and `PRAGMA journal_mode=WAL`. ADR-0013's `sqlite` metrics backend is now `database` (same
+  semantics; the old value still reads).
+
+Still to come here, with the work that needs them:
+
 - Work that several instances may pick up — deploy and backup jobs, certificate orders per host —
-  is claimed with `SELECT … FOR UPDATE SKIP LOCKED` or a per-key advisory lock, never with
-  "I am the only worker".
-- Singleton loops hold a lease (§3) rather than assuming singleness.
-- A connection string replaces `DbPath`; `docker-compose.yml` and the Aspire AppHost gain a
-  Postgres service; the integration tests run against a real PostgreSQL (Testcontainers / a
-  `WATCHTOWER_TEST_PG` connection string), not an in-memory SQLite.
-- Existing SQLite installations get a one-shot import (`--import-sqlite <path>`) that copies every
-  table in dependency order into the configured PostgreSQL; it is the only SQLite code that stays.
+  claimed with `SELECT … FOR UPDATE SKIP LOCKED` or a per-key advisory lock, never with "I am the
+  only worker" (§4).
+- Singleton loops holding a lease (§3) rather than assuming singleness.
 
 ## 3. Proxy/auth state moves into the database (in progress)
 
@@ -127,7 +141,7 @@ outside only through a self-route, exactly as today.
 
 ## 6. Sequencing
 
-1. PostgreSQL replaces SQLite (§2) — prerequisite for everything else. *Now.*
+1. ~~PostgreSQL replaces SQLite (§2)~~ — prerequisite for everything else. **Done** (ADR-0024).
 2. Proxy/auth state into the database, locked issuance, change signal (§3). *Now, same PR.*
 3. Job claiming and leases for the background loops; the role flag and the database-privilege
    split (§4) — their own ADR, before the runtime port so the port targets them.

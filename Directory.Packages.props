@@ -19,13 +19,17 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Entity Framework Core — SQLite provider (self-contained single-node persistence) -->
+    <!-- Entity Framework Core — PostgreSQL/Npgsql provider, the only database backend (ADR-0024). -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.9" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.9" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageVersion Include="EFCore.NamingConventions" Version="10.0.1" />
-    <!-- Transitive pin: fix GHSA-2m69-gcr7-jv3q (SQLite vuln in the e_sqlite3 native bundled by the
-         SQLite EF Core provider). The native lib package is versioned independently of the managed
+    <!-- SQLite, kept for exactly one thing: the one-shot `import-sqlite` command that carries a
+         pre-ADR-0024 installation into PostgreSQL (Services/SqliteImport). No EF SQLite provider —
+         the importer reads the old file with the raw ADO.NET client and writes through COPY. -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <!-- Transitive pin: fix GHSA-2m69-gcr7-jv3q (SQLite vuln in the e_sqlite3 native bundled with
+         Microsoft.Data.Sqlite). The native lib package is versioned independently of the managed
          SQLitePCLRaw layer and is designed to be bumped on its own. -->
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
   </ItemGroup>
@@ -66,6 +70,10 @@
     <!-- WebApplicationFactory, for exercising the real Program.cs pipeline (auth middleware order,
          endpoint gating, cookie attributes) rather than a hand-rebuilt approximation of it. -->
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <!-- The integration suites run against a real PostgreSQL (ADR-0024). Testcontainers starts one per
+         test run from Docker/Podman; WATCHTOWER_TEST_PG points them at an already-running server
+         instead (CI's service container, or a locally started `podman run postgres`). -->
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.14.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -73,6 +81,8 @@
          Not part of the shipped Docker image. -->
     <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.4.6" />
     <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.4.6" />
+    <!-- The development database: a Postgres container with a data volume (ADR-0024). -->
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
     <!-- Direct pin for the Aspire/DCP transitive dependency vulnerable below MessagePack 2.5.301. -->
     <PackageVersion Include="MessagePack" Version="3.1.7" />
   </ItemGroup>

@@ -66,9 +66,17 @@ public static class RouteAccessPolicy {
         return string.IsNullOrEmpty(host) ? null : host.ToLowerInvariant();
     }
 
-    /// <summary>Looks a route up by domain, case-insensitively. Returns <see langword="null"/> for an unknown host.</summary>
-    public static Task<Route?> FindRouteByHostAsync(WatchtowerDbContext db, string host, CancellationToken ct) =>
-        db.Routes.AsNoTracking().FirstOrDefaultAsync(r => r.Domain.ToLower() == host, ct);
+    /// <summary>Looks a route up by domain. Returns <see langword="null"/> for an unknown host.</summary>
+    /// <remarks>
+    /// <paramref name="host"/> is expected already normalized (<see cref="NormalizeForwardedHost"/>), and
+    /// the column is written normalized too (<c>DesiredHosts.TryNormalize</c> gates every route write) —
+    /// so this is a plain equality against the unique index rather than a <c>lower()</c> on the column,
+    /// which would make the index unusable on the one lookup every proxied request performs.
+    /// </remarks>
+    public static Task<Route?> FindRouteByHostAsync(WatchtowerDbContext db, string host, CancellationToken ct) {
+        var normalized = host?.Trim().ToLowerInvariant();
+        return db.Routes.AsNoTracking().FirstOrDefaultAsync(r => r.Domain == normalized, ct);
+    }
 
     /// <summary>One route's realm as the database can project it: null means "standalone stack".</summary>
     private sealed record RouteRealmRow(int RouteId, int? RealmId);

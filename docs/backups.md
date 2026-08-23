@@ -20,6 +20,24 @@ containers that mount it **quiesced** — stopped (the default) or, opt-in, paus
 the tar ([ADR-0019](decisions/0019-pause-quiesce-and-parallel-stops.md), see
 [Quiesce modes](#quiesce-modes-stop-or-pause)).
 
+## Backing up Watchtower itself
+
+This whole document is about **your stacks**. Watchtower's own records — stacks, routes, realms,
+accounts, credentials, audit trail, metrics history — live in the PostgreSQL it is configured against
+([ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md)), and nothing here touches
+that. Back it up the way you back up any database:
+
+```bash
+docker compose exec postgres pg_dump -U watchtower -Fc watchtower > watchtower-$(date +%F).dump
+```
+
+Restore with `pg_restore -U watchtower -d watchtower --clean` into an empty database, then start
+Watchtower — it migrates on startup, so a dump from an older version comes forward on its own.
+
+Take the `watchtower-data` volume with it: the certificates, the ACME account key and the
+data-protection key ring still live there, and a database restored without them signs everyone out and
+reissues every certificate. Neither half is much use alone.
+
 ## Setting it up
 
 Everything global lives in **Settings → Backups** (or the `WATCHTOWER__BACKUP__*` environment

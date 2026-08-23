@@ -335,7 +335,7 @@ function ToggleRow({
 // ── Metrics backend card (ADR-0013, runtime-switchable) ───────────────────────
 
 const BACKEND_LABELS: Record<MetricsBackend, string> = {
-  sqlite: 'Persisted (SQLite, default)',
+  database: 'Persisted (database, default)',
   memory: 'Live only (in-memory)',
   influxdb: 'External InfluxDB (bring your own)',
 }
@@ -471,7 +471,7 @@ function MetricsCard() {
               )}
             </Field>
 
-            {form.backend === 'sqlite' && (
+            {form.backend === 'database' && (
               <div className="flex items-center gap-2 pl-0.5">
                 <span className="text-[13px] text-text-2">Keep history for</span>
                 <Input

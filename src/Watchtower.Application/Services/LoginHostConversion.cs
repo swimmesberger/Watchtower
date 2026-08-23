@@ -14,13 +14,14 @@ namespace Watchtower.Application.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The other half — every realm's stored <c>auth_host</c> — is carried by the
-/// <c>ConvertLoginHostsToRoutes</c> migration itself, because the column has to be read before it is
-/// dropped and only the migration is running at that moment. <c>Auth:Host</c> is not a column: it lives in
-/// the settings store, in an environment variable, or in <c>appsettings.json</c>, and no migration can see
-/// any of those. So it is converted here, on the first start after the upgrade — and, unlike the migration
-/// half, it writes audit rows, because by this point the audit trail exists and a scoped service can use
-/// it.
+/// The other half — every realm's stored <c>auth_host</c> — used to be carried by the
+/// <c>ConvertLoginHostsToRoutes</c> migration, which ADR-0024 regenerated away with the rest of the
+/// SQLite history. A database that still holds that column is now carried by <c>--import-sqlite</c>
+/// instead (see <c>SqliteImporter.ConvertLegacyLoginHostsAsync</c> and docs/upgrading.md).
+/// <c>Auth:Host</c> was never a column: it lives in the settings store, in an environment variable, or in
+/// <c>appsettings.json</c>, so neither a migration nor the importer can see it. That is why this half
+/// still runs here, on the first start after the upgrade — and it writes audit rows, because by this
+/// point the audit trail exists and a scoped service can use it.
 /// </para>
 /// <para>
 /// <b>What it does.</b> When <c>Auth:Host</c> names a hostname and no route claims that hostname, a
@@ -95,8 +96,8 @@ public sealed class LoginHostConversion(
                 "realm's login host.", host);
             return false;
         }
-        // A Watchtower route on that hostname that belongs to *another* realm — which the migration half
-        // can produce, since a realm's own auth_host is converted first. Re-pointing it at the operator
+        // A Watchtower route on that hostname that belongs to *another* realm — which the importer can
+        // produce, since a realm's own auth_host is converted first. Re-pointing it at the operator
         // realm would take a customer population's login page away from it, and designating it as the
         // operator realm's login route would send operator visitors to a page that cannot admit them.
         // Neither is this step's call to make; the operator picks a hostname of their own instead.

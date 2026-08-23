@@ -3,12 +3,14 @@ namespace Watchtower.Application.Config;
 /// <summary>
 /// Strongly-typed configuration options for Watchtower.
 /// Bound from the "Watchtower" section of appsettings.json or environment variables
-/// (e.g. WATCHTOWER__DBPATH, WATCHTOWER__DOCKERAPIVERSION).
+/// (e.g. WATCHTOWER__PUBLICBASEURL, WATCHTOWER__DOCKERAPIVERSION).
 /// </summary>
+/// <remarks>
+/// The database connection string is deliberately not here: it is read once at startup, before the
+/// options system exists, and it is not runtime-switchable. See
+/// <see cref="Persistence.WatchtowerConnectionString"/>.
+/// </remarks>
 public sealed record WatchtowerOptions {
-    /// <summary>Path to the SQLite database file.</summary>
-    public string DbPath { get; init; } = "/data/watchtower.db";
-
     /// <summary>
     /// Docker Engine API version used for all Docker communication.
     /// <list type="bullet">
@@ -663,15 +665,23 @@ public sealed record CloudflareProxyOptions {
 /// </summary>
 public sealed record MetricsOptions {
     /// <summary>
-    /// <c>sqlite</c> (default) — the in-memory live ring plus SQLite-persisted history with windowed
-    /// retention; <c>memory</c> — the live ring only, nothing written; or <c>influxdb</c> — read from
-    /// an InfluxDB an external collector populates, with the sampler idle so there is a single
-    /// collector. Unknown values resolve to <c>sqlite</c>, matching the default.
+    /// <c>database</c> (default) — the in-memory live ring plus history persisted in Watchtower's own
+    /// PostgreSQL with windowed retention; <c>memory</c> — the live ring only, nothing written; or
+    /// <c>influxdb</c> — read from an InfluxDB an external collector populates, with the sampler idle
+    /// so there is a single collector. Unknown values resolve to <c>database</c>, matching the default.
     /// </summary>
-    public string Backend { get; init; } = "sqlite";
+    /// <remarks>
+    /// The value was <c>sqlite</c> before ADR-0024 replaced the file with PostgreSQL; the semantics did
+    /// not change, only the name of the store, so <see cref="ResolveBackend"/> still accepts it. See
+    /// <see cref="LegacyDatabaseBackendName"/>.
+    /// </remarks>
+    public string Backend { get; init; } = "database";
+
+    /// <summary>The pre-ADR-0024 spelling of <see cref="MetricsBackendKind.Database"/>, still accepted on read.</summary>
+    public const string LegacyDatabaseBackendName = "sqlite";
 
     /// <summary>
-    /// How many days of history the <c>sqlite</c> backend keeps (its rollup tier — see ADR-0013).
+    /// How many days of history the <c>database</c> backend keeps (its rollup tier — see ADR-0013).
     /// Clamped to 1–365 where it is consumed. Ignored by the other backends.
     /// </summary>
     public int RetentionDays { get; init; } = 30;
@@ -679,20 +689,28 @@ public sealed record MetricsOptions {
     /// <summary>InfluxDB connection + schema mapping. Only used when <see cref="Backend"/> is <c>influxdb</c>.</summary>
     public InfluxOptions Influx { get; init; } = new();
 
-    /// <summary>The backend <see cref="Backend"/> resolves to (case-insensitive; unknown ⇒ <c>sqlite</c>).</summary>
+    /// <summary>The backend <see cref="Backend"/> resolves to (case-insensitive; unknown ⇒ <c>database</c>).</summary>
+    /// <remarks>
+    /// The <c>sqlite</c> branch is written out rather than left to the fallback. It resolves to the same
+    /// value today, so the fallback would look sufficient — but it is an <em>alias</em>, not an unknown
+    /// value, and the day the default moves the two must not move together. A stored setting from before
+    /// ADR-0024 has to keep meaning what it meant.
+    /// </remarks>
     public MetricsBackendKind ResolveBackend() =>
         string.Equals(Backend, "memory", StringComparison.OrdinalIgnoreCase) ? MetricsBackendKind.Memory
         : string.Equals(Backend, "influxdb", StringComparison.OrdinalIgnoreCase) ? MetricsBackendKind.Influxdb
-        : MetricsBackendKind.Sqlite;
+        : string.Equals(Backend, LegacyDatabaseBackendName, StringComparison.OrdinalIgnoreCase)
+            ? MetricsBackendKind.Database
+        : MetricsBackendKind.Database;
 
     /// <summary>True when <see cref="Backend"/> selects the InfluxDB reader (case-insensitive).</summary>
     public bool UsesInflux => ResolveBackend() == MetricsBackendKind.Influxdb;
 }
 
-/// <summary>The three metrics backends (ADR-0013): live-only, SQLite-persisted (default), BYO InfluxDB.</summary>
+/// <summary>The three metrics backends (ADR-0013): live-only, database-persisted (default), BYO InfluxDB.</summary>
 public enum MetricsBackendKind {
     Memory,
-    Sqlite,
+    Database,
     Influxdb,
 }
 

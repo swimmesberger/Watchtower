@@ -20,11 +20,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      # The integration suites run against a real PostgreSQL (ADR-0024). A service container rather
+      # than Testcontainers on CI: the runner already has one waiting before the first test starts, and
+      # WATCHTOWER_TEST_PG below is the same override a developer uses locally when their container
+      # engine is not reachable — so both paths are exercised rather than one being CI-only.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: watchtower
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
 
       # ── Backend ──
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -32,6 +48,10 @@ jobs:
         run: dotnet build Watchtower.slnx --configuration Release
 
       - name: Test backend
+        # The account must be able to CREATE DATABASE: each test host gets its own, cloned from a
+        # template the migrations are applied to once per assembly (PostgresTestServer).
+        env:
+          WATCHTOWER_TEST_PG: "Host=127.0.0.1;Port=5432;Database=postgres;Username=postgres;Password=watchtower"
         run: dotnet test Watchtower.slnx --configuration Release --no-build
 
       - name: Verify RPC schema is up to date
@@ -45,7 +65,7 @@ jobs:
             || (echo "::error::rpc-schema.json is stale. Regenerate from the repo root: dotnet run --project src/Watchtower.Api -- --export-schema \"\$PWD/rpc-schema.json\"" && exit 1)
 
       # ── Frontend ──
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

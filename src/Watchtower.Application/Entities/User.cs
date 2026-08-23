@@ -31,7 +31,7 @@ public sealed class User {
 
     /// <summary>
     /// Upper-cased form of <see cref="UserName"/> maintained by Identity's <c>ILookupNormalizer</c>.
-    /// Lookups go through this column so user names are case-insensitive on SQLite too, and uniqueness is
+    /// Lookups go through this column so user names are case-insensitive, and uniqueness is
     /// enforced on <c>(realm_id, normalized_user_name)</c>.
     /// </summary>
     public required string NormalizedUserName { get; set; }

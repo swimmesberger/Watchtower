@@ -14,8 +14,8 @@ namespace Watchtower.Application.Tests;
 /// </summary>
 /// <remarks>
 /// The real worker clones a git repository and shells out to <c>docker compose</c> — neither exists in a
-/// test — and it does so on a background thread that would then write to the very SQLite connection the
-/// test is reading, which is a single shared connection and not thread-safe. What it writes <em>before</em>
+/// test — and it does so on a background thread that would then write to the very database the test is
+/// reading, behind its back. What it writes <em>before</em>
 /// starting that thread is reproduced faithfully here: the tracking <c>deploy_events</c> row and the
 /// stack's queued status, which is exactly what "the deploy was enqueued" means to every caller.
 /// </remarks>

@@ -1,11 +1,22 @@
 # Example Watchtower deployment.
 #
 # Watchtower talks to the host Docker daemon to inspect containers and run `docker compose`
-# for your stacks, so it needs the Docker socket mounted and permission to use it.
+# for your stacks, so it needs the Docker socket mounted and permission to use it. It stores its own
+# state in PostgreSQL (ADR-0024), which the `postgres` service below provides.
 #
 #   1. Find the host's docker group GID:  getent group docker | cut -d: -f3
 #   2. Put that value in `group_add` below.
-#   3. docker compose up -d
+#   3. Set POSTGRES_PASSWORD to something of your own (a .env file next to this one works).
+#   4. docker compose up -d
+#
+# UPGRADING from a Watchtower that stored everything in /data/watchtower.db: bring the postgres
+# service up first, then carry the old database across once, then start normally —
+#
+#   docker compose up -d postgres
+#   docker compose run --rm watchtower --import-sqlite /data/watchtower.db
+#   docker compose up -d
+#
+# See docs/upgrading.md.
 #
 # The UI is served on http://localhost:8080 — the management plane, published on the loopback interface
 # below. Put it behind an authenticating reverse proxy (e.g. Cloudflare Access, Authelia) — Watchtower
@@ -58,8 +69,12 @@ services:
       # - ${HOME}/.docker/config.json:/home/watchtower/.docker/config.json:ro
       # Optional: host CPU/RAM/load on the Dashboard (opt-in) — see docs/host-metrics.md.
       # - /proc:/host/proc:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      WATCHTOWER__DBPATH: /data/watchtower.db
+      # Watchtower's own database (ADR-0024). Required — there is no default and no file fallback.
+      WATCHTOWER__DATABASE__CONNECTIONSTRING: "Host=postgres;Database=${POSTGRES_DB:-watchtower};Username=${POSTGRES_USER:-watchtower};Password=${POSTGRES_PASSWORD:-watchtower}"
       WATCHTOWER__DOCKERAPIVERSION: "1.43"
       # Enable the background "update available" checkers (opt-in — generate registry traffic):
       # WATCHTOWER__AUTOCHECKENABLED: "true"
@@ -71,13 +86,39 @@ services:
       # WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL: https://acme-v02.api.letsencrypt.org/directory
       # Host metrics (opt-in) — needs the /proc mount above; see docs/host-metrics.md.
       # WATCHTOWER_HOST_PROC: /host/proc
-      # Metrics history is ON by default (persisted into the data volume, ~30 days; ADR-0013).
+      # Metrics history is ON by default (persisted in Watchtower's database, ~30 days; ADR-0013).
       # Tune or switch under Settings → Metrics in the UI, or here; see docs/metrics-history.md.
-      # WATCHTOWER__METRICS__BACKEND: sqlite   # sqlite (default) | memory | influxdb
+      # The value was `sqlite` before ADR-0024 and is still accepted; `database` is the name now.
+      # WATCHTOWER__METRICS__BACKEND: database   # database (default) | memory | influxdb
       # WATCHTOWER__METRICS__RETENTIONDAYS: "30"
     # Replace 999 with the host's docker group GID (see the header comment).
     group_add:
       - "999"
 
+  # Watchtower's own database. Not published on a host port: only Watchtower talks to it, over the
+  # compose network. Back it up with `docker compose exec postgres pg_dump -U watchtower watchtower`
+  # (see docs/backups.md) — the stack-backup machinery in the UI backs up *your* stacks, not this.
+  postgres:
+    image: postgres:17-alpine
+    container_name: watchtower-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-watchtower}
+      POSTGRES_USER: ${POSTGRES_USER:-watchtower}
+      # Change this. The default exists so a first `docker compose up` works, not so it ships.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-watchtower}
+    volumes:
+      - watchtower-pg:/var/lib/postgresql/data
+    healthcheck:
+      # Watchtower migrates on startup, so it must not start before the server accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-watchtower} -d ${POSTGRES_DB:-watchtower}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
 volumes:
+  # Certificates, the ACME account key and the data-protection key ring — and, until you have run the
+  # import, the old watchtower.db.
   watchtower-data:
+  watchtower-pg:

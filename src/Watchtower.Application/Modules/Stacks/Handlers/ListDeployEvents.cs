@@ -14,11 +14,14 @@ public sealed class ListDeployEvents(WatchtowerDbContext db)
         if (!await db.Stacks.AnyAsync(s => s.Id == query.StackId, ct))
             return AppError.NotFound($"Stack {query.StackId} not found");
 
-        // SQLite can't ORDER BY a DateTimeOffset, so sort newest-first client-side.
+        // Id breaks ties: two events of the same deploy burst can share a timestamp, and "newest first"
+        // has to be a total order or the page reshuffles between reads.
         var events = await db.DeployEvents.AsNoTracking()
             .Where(e => e.StackId == query.StackId)
+            .OrderByDescending(e => e.StartedAt)
+            .ThenByDescending(e => e.Id)
             .Select(e => new DeployEventDto(e.Id, e.StackId, e.TriggeredBy, e.Status, e.Output, e.StartedAt, e.FinishedAt))
             .ToListAsync(ct);
-        return new Response([.. events.OrderByDescending(e => e.StartedAt)]);
+        return new Response(events);
     }
 }

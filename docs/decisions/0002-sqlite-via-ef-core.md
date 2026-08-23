@@ -1,9 +1,17 @@
 # ADR-0002: SQLite via EF Core; drop NativeAOT
 
-- Status: Accepted
+- Status: Superseded by [ADR-0024](0024-postgresql-only-and-state-in-the-database.md)
 - Date: 2026-07-04
 - Related: [ADR-0001](0001-rebuild-on-elarion.md) (the rebuild that forces this),
   [ADR-0004](0004-singleton-ef-scopes.md) (how singletons reach the scoped context).
+
+> **Superseded (2026-08-23).** The EF Core half of this decision stands — the generators, the migrations
+> applied on startup, the integer identity keys, snake_case naming, and dropping NativeAOT are all still
+> how Watchtower works. The *provider* does not: ADR-0024 replaces SQLite with PostgreSQL outright.
+> The reason is not that SQLite proved wrong at the shape this ADR chose it for, but that the shape
+> changed — "zero external dependencies" was the whole point here, and it is incompatible with a second
+> instance ever existing. Existing installations are carried across by `--import-sqlite`
+> ([docs/upgrading.md](../upgrading.md)).
 
 ## Context
 

@@ -8,19 +8,19 @@ namespace Watchtower.Application.Services;
 /// <summary>
 /// The default metrics backend (ADR-0013): the live window comes straight from the in-memory ring
 /// (identical to <see cref="InMemoryMetricsSource"/>), historical ranges are aggregated in SQL from the
-/// rows <see cref="MetricsPersistenceService"/> persists. The tier is picked per query — minute rows
+/// rows <see cref="MetricsPersistenceService"/> persists into Watchtower's own database. The tier is picked per query — minute rows
 /// inside the raw window, 10-minute rollups beyond it — and either tier is bucketed server-side into
 /// the requested step, mirroring the InfluxDB reader's <c>aggregateWindow</c> shape.
 ///
 /// <para>Container identity in history is the container <em>name</em> (stable across recreation), the
 /// same convention the InfluxDB backend uses; the frontend matches rows by id or name.</para>
 /// </summary>
-public sealed class SqliteMetricsSource(
+public sealed class DatabaseMetricsSource(
     MetricsStore store,
     IServiceScopeFactory scopeFactory,
     TimeProvider clock,
-    ILogger<SqliteMetricsSource> logger) : IMetricsSource {
-    public MetricsCapabilities Capabilities { get; } = new("sqlite", HistoryAvailable: true);
+    ILogger<DatabaseMetricsSource> logger) : IMetricsSource {
+    public MetricsCapabilities Capabilities { get; } = new("database", HistoryAvailable: true);
 
     public async ValueTask<HostReadout> GetHostAsync(MetricsWindow window, CancellationToken ct) {
         if (!window.IsHistory) {
@@ -53,8 +53,8 @@ public sealed class SqliteMetricsSource(
             var (live, _) = store.GetHost();
             return new HostReadout(live, history);
         } catch (Exception ex) when (ex is not OperationCanceledException) {
-            logger.LogWarning(ex, "SQLite metrics history host query failed");
-            return new HostReadout(HostSnapshot.Unavailable("sqlite-history-error"), []);
+            logger.LogWarning(ex, "Database metrics history host query failed");
+            return new HostReadout(HostSnapshot.Unavailable("database-history-error"), []);
         }
     }
 
@@ -101,7 +101,7 @@ public sealed class SqliteMetricsSource(
             }
             return result;
         } catch (Exception ex) when (ex is not OperationCanceledException) {
-            logger.LogWarning(ex, "SQLite metrics history container query failed");
+            logger.LogWarning(ex, "Database metrics history container query failed");
             return [];
         }
     }

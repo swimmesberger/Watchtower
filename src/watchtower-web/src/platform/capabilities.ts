@@ -1,6 +1,6 @@
 // The capability snapshot resolution reads — fetched once at boot from the backend's `elarion.session`
 // bootstrap (ADR-0030) and wrapped in the generated typed accessors: which modules are enabled, the
-// [ClientFeatures] flags the deployment resolves (e.g. `metrics-history` — true on the sqlite and
+// [ClientFeatures] flags the deployment resolves (e.g. `metrics-history` — true on the database and
 // influxdb metrics backends, ADR-0013; a runtime backend switch reloads the page to re-fetch), and who
 // the caller is.
 //

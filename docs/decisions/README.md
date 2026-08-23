@@ -21,7 +21,7 @@ live here.
 ## Index
 
 - [ADR-0001: Rebuild Watchtower on the Elarion framework](0001-rebuild-on-elarion.md)
-- [ADR-0002: SQLite via EF Core; drop NativeAOT](0002-sqlite-via-ef-core.md)
+- [ADR-0002: SQLite via EF Core; drop NativeAOT](0002-sqlite-via-ef-core.md) — *superseded by ADR-0024*
 - [ADR-0003: JSON-RPC is the primary transport; streaming and webhooks stay plain HTTP](0003-jsonrpc-primary-transport.md)
 - [ADR-0004: Singleton services access EF Core through `IServiceScopeFactory`](0004-singleton-ef-scopes.md)
 - [ADR-0005: Development orchestration with a .NET Aspire AppHost](0005-aspire-dev-orchestration.md)

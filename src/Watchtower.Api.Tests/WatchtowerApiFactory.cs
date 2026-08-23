@@ -2,7 +2,6 @@ using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -13,35 +12,35 @@ using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
+using Watchtower.Application.Tests;
 using Xunit;
 using Yarp.ReverseProxy.Forwarder;
 
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// Boots the real <see cref="Program"/> pipeline over a private in-memory SQLite database. Exercising the
-/// actual host is the point of this project: the middleware order, the endpoint gating and the cookie
-/// attributes are all properties of <c>Program.cs</c> and its endpoint files, and a hand-rebuilt
-/// approximation of that wiring would happily pass while the shipped one was wrong.
+/// Boots the real <see cref="Program"/> pipeline over a private PostgreSQL database
+/// (<see cref="PostgresTestServer"/>). Exercising the actual host is the point of this project: the
+/// middleware order, the endpoint gating and the cookie attributes are all properties of
+/// <c>Program.cs</c> and its endpoint files, and a hand-rebuilt approximation of that wiring would
+/// happily pass while the shipped one was wrong.
 /// </summary>
 /// <remarks>
 /// Configuration reaches the app through <see cref="IWebHostBuilder.UseSetting"/>, which the deferred host
 /// builder turns into command-line arguments for the entry point — the one channel that lands
 /// <em>before</em> <c>Program.cs</c> reads <c>Watchtower:Auth:Enabled</c> off
-/// <c>builder.Configuration</c>, which happens well before <c>builder.Build()</c>.
-/// The connection is held open for the factory's lifetime because closing the last connection to
-/// <c>DataSource=:memory:</c> discards the database.
+/// <c>builder.Configuration</c>, which happens well before <c>builder.Build()</c>. The connection string
+/// goes down the same channel, so the host resolves it exactly as a deployment would.
 /// </remarks>
 public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
-    private readonly SqliteConnection _connection;
+    private readonly string _connectionString;
     private readonly string _dataDirectory;
     private readonly (string Key, string? Value)[] _settings;
 
     public WatchtowerApiFactory(params (string Key, string? Value)[] settings) {
         _settings = settings;
         _dataDirectory = Path.Combine(Path.GetTempPath(), "watchtower-api-tests", Guid.NewGuid().ToString("N"));
-        _connection = new SqliteConnection("DataSource=:memory:");
-        _connection.Open();
+        _connectionString = PostgresTestServer.CreateDatabase();
     }
 
     /// <summary>The bootstrap password the <c>admin</c> account is created with.</summary>
@@ -155,9 +154,9 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         // and the tests would stop describing what ships.
         builder.UseEnvironment(Environments.Production);
 
-        // DbPath, Auth:KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices
+        // Auth:KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices
         // creates eagerly.
-        builder.UseSetting("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db"));
+        builder.UseSetting(WatchtowerConnectionString.ConfigurationKey, _connectionString);
         builder.UseSetting("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys"));
         builder.UseSetting("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs"));
         builder.UseSetting("Watchtower:Auth:BootstrapPassword", AdminPassword);
@@ -166,13 +165,6 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         builder.ConfigureLogging(b => b.SetMinimumLevel(LogLevel.Warning));
 
         builder.ConfigureServices(services => {
-            // Swap the file-backed context for the shared in-memory connection. AddDbContext registers its
-            // options with TryAdd, so the original descriptor has to go first.
-            services.RemoveAll<DbContextOptions<WatchtowerDbContext>>();
-            services.RemoveAll<DbContextOptions>();
-            services.AddDbContext<WatchtowerDbContext>(o =>
-                o.UseSqlite(_connection).UseSnakeCaseNamingConvention());
-
             // Drop every background service except the auth bootstrap. The rest reconcile Docker, Caddy and
             // the CI runners; none of that exists here, so they would only add start-up latency and a wall
             // of connection failures to the test log. The bootstrap stays because the admin account it
@@ -186,8 +178,8 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             // The three services that reach outside the process on a request path, replaced by doubles
             // that record instead. Dropping the hosted registrations above is not enough: a request can
             // still call any of them directly — enqueuing a deploy really does start a worker that
-            // clones a repository and shells out to compose, on a thread that would then race this
-            // host's single shared SQLite connection. Substituting them is also what makes their effects
+            // clones a repository and shells out to compose, on a thread that would then write to this
+            // host's database behind the test's back. Substituting them is also what makes their effects
             // (a compose down, a proxy reload) observable at all, since both no-op without a daemon.
             //
             // This is unconditional, so it applies to every test in this assembly, not only the ones
@@ -299,7 +291,7 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     protected override void Dispose(bool disposing) {
         base.Dispose(disposing);
         if (!disposing) return;
-        _connection.Dispose();
+        PostgresTestServer.Drop(_connectionString);
         if (Directory.Exists(_dataDirectory)) Directory.Delete(_dataDirectory, recursive: true);
     }
 }

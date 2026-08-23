@@ -87,7 +87,7 @@ public sealed class AuditModuleTests {
 
         var page = await ListAsync(host, new ListAuditEvents.Query());
 
-        // Descending id, not descending CreatedAt: the SQLite provider cannot ORDER BY a DateTimeOffset,
+        // Descending id, not descending CreatedAt: id is unique, so it is the only total order,
         // and over an append-only table the surrogate key is the arrival order anyway.
         Assert.Equal([ids[2], ids[1], ids[0]], page.Events.Select(e => e.Id));
         Assert.Equal(["third", "second", "first"], page.Events.Select(e => e.Detail));

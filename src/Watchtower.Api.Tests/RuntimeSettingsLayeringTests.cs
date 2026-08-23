@@ -1,8 +1,9 @@
 using Elarion.Settings;
 using Elarion.Settings.Configuration;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
+using Npgsql;
+using Watchtower.Application.Tests;
 using Xunit;
 
 namespace Watchtower.Api.Tests;
@@ -91,36 +92,59 @@ public sealed class RuntimeSettingsLayeringTests : IDisposable {
 
     [Fact]
     public void LoadStoredGlobalSettings_ReadsOnlyTheGlobalScope() {
-        var dbPath = Path.Combine(Path.GetTempPath(), "watchtower-tests", $"{Guid.NewGuid():N}.db");
-        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        // A migrated database, because the reader queries the real elarion_settings table — a
+        // hand-written stand-in would keep passing after Elarion changed the table under it.
+        var connectionString = PostgresTestServer.CreateDatabase();
         try {
-            using (var connection = new SqliteConnection($"Data Source={dbPath}")) {
+            using (var connection = new NpgsqlConnection(connectionString)) {
                 connection.Open();
                 using var command = connection.CreateCommand();
                 command.CommandText = """
-                    CREATE TABLE elarion_settings (
-                        kind TEXT NOT NULL, owner TEXT NOT NULL, "key" TEXT NOT NULL,
-                        value TEXT, updated_on_utc TEXT NOT NULL, version INTEGER NOT NULL,
-                        PRIMARY KEY (kind, owner, "key"));
-                    INSERT INTO elarion_settings VALUES ('global', '', 'Watchtower:Auth:Enabled', 'true', '2026-01-01', 1);
-                    INSERT INTO elarion_settings VALUES ('user', '42', 'Watchtower:Auth:Enabled', 'false', '2026-01-01', 1);
+                    INSERT INTO elarion_settings (kind, owner, "key", value, updated_on_utc, version)
+                    VALUES ('global', '', 'Watchtower:Auth:Enabled', 'true', TIMESTAMPTZ '2026-01-01 00:00:00+00', 1),
+                           ('user', '42', 'Watchtower:Auth:Enabled', 'false', TIMESTAMPTZ '2026-01-01 00:00:00+00', 1);
                     """;
                 command.ExecuteNonQuery();
             }
 
-            var entries = RuntimeSettingsLayering.LoadStoredGlobalSettings(dbPath);
+            var entries = RuntimeSettingsLayering.LoadStoredGlobalSettings(connectionString);
 
             var entry = Assert.Single(entries);
             Assert.Equal("Watchtower:Auth:Enabled", entry.Key);
             Assert.Equal("true", entry.Value);
         } finally {
-            SqliteConnection.ClearAllPools();
-            File.Delete(dbPath);
+            PostgresTestServer.Drop(connectionString);
         }
     }
 
+    /// <summary>
+    /// First boot: the database is there but the migration has not run, so <c>elarion_settings</c> does
+    /// not exist yet. The snapshot has to come back empty rather than take the host down with it.
+    /// </summary>
     [Fact]
-    public void LoadStoredGlobalSettings_ToleratesAMissingDatabase() =>
+    public void LoadStoredGlobalSettings_ToleratesAnUnmigratedDatabase() {
+        var connectionString = PostgresTestServer.CreateDatabase();
+        try {
+            using (var connection = new NpgsqlConnection(connectionString)) {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """DROP TABLE "elarion_settings" """;
+                command.ExecuteNonQuery();
+            }
+            Assert.Empty(RuntimeSettingsLayering.LoadStoredGlobalSettings(connectionString));
+        } finally {
+            PostgresTestServer.Drop(connectionString);
+        }
+    }
+
+    /// <summary>And a database that is not up yet, which is the same startup race one step earlier.</summary>
+    [Fact]
+    public void LoadStoredGlobalSettings_ToleratesAnUnreachableServer() =>
         Assert.Empty(RuntimeSettingsLayering.LoadStoredGlobalSettings(
-            Path.Combine(Path.GetTempPath(), "watchtower-tests", $"{Guid.NewGuid():N}-missing.db")));
+            "Host=127.0.0.1;Port=1;Database=watchtower;Username=watchtower;Password=watchtower;Timeout=1"));
+
+    /// <summary>No connection string at all is not an error here either — the host reports that itself.</summary>
+    [Fact]
+    public void LoadStoredGlobalSettings_ToleratesNoConnectionString() =>
+        Assert.Empty(RuntimeSettingsLayering.LoadStoredGlobalSettings(null));
 }

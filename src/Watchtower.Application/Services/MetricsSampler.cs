@@ -12,7 +12,7 @@ namespace Watchtower.Application.Services;
 /// them into the singleton <see cref="MetricsStore"/>. All <c>metrics.*</c> RPC handlers read only the
 /// store, so no Docker fan-out happens on the request path.
 ///
-/// <para>The active backend is re-read each tick (ADR-0013, runtime-switchable): under <c>sqlite</c>
+/// <para>The active backend is re-read each tick (ADR-0013, runtime-switchable): under <c>database</c>
 /// the tick additionally feeds <see cref="MetricsPersistenceService"/>; under <c>influxdb</c> the tick
 /// does nothing at all, preserving the single-collector invariant — the external collector owns the
 /// numbers and this loop is idle.</para>
@@ -66,7 +66,7 @@ public sealed class MetricsSampler(
                 var backend = options.CurrentValue.Metrics.ResolveBackend();
                 // Under influxdb the external collector is the single source of truth — stay idle.
                 if (backend != MetricsBackendKind.Influxdb)
-                    await SampleAsync(persist: backend == MetricsBackendKind.Sqlite, stoppingToken);
+                    await SampleAsync(persist: backend == MetricsBackendKind.Database, stoppingToken);
             } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) {
                 return;
             } catch (Exception ex) {

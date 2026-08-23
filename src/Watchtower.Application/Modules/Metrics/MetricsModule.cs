@@ -12,7 +12,7 @@ namespace Watchtower.Application.Modules.Metrics;
 /// </summary>
 /// <remarks>
 /// Exposes the <c>metrics-history</c> client flag (ADR-0030): true when the active metrics backend can
-/// answer historical time ranges (the sqlite and influxdb backends). Resolved per session fetch by
+/// answer historical time ranges (the database and influxdb backends). Resolved per session fetch by
 /// <c>WatchtowerFeatureFlagService</c> from <c>IMetricsSource.Capabilities</c>, so it follows a runtime
 /// backend switch (<c>metrics.updateConfig</c>); the frontend gates the History view on it.
 /// </remarks>
@@ -52,7 +52,7 @@ internal static class MetricsBackendKindExtensions {
     public static string ToConfigValue(this MetricsBackendKind kind) => kind switch {
         MetricsBackendKind.Memory => "memory",
         MetricsBackendKind.Influxdb => "influxdb",
-        _ => "sqlite",
+        _ => "database",
     };
 }
 

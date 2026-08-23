@@ -35,7 +35,7 @@ Caddy always forward-auths to **one** verify endpoint: Watchtower's. Watchtower 
 cookies, the login redirect flow, and — critically — the **per-app access policy**. The login page's
 identity backend is what varies:
 
-- **Local (default):** users in Watchtower's SQLite, password login.
+- **Local (default):** users in Watchtower's database, password login.
 - **OIDC upstream (v2):** the login page becomes "Continue with SSO" → standard OIDC code flow
   against Keycloak/Entra/anything; users are provisioned just-in-time and linked by `issuer + sub`.
 
@@ -287,8 +287,8 @@ could not both be served — and `stack_templates.name`, because a template name
 picks a category by in the one management surface there is, and that surface is operator-realm-only,
 so one flat namespace is exactly what they see.
 
-Signing material: one ES256 key pair, generated on first use, stored under `/data` next to the
-SQLite db (`Auth:KeyPath`, default `/data/auth-keys/`). ASP.NET Data Protection keys (cookie
+Signing material: one ES256 key pair, generated on first use, stored under `/data`
+(`Auth:KeyPath`, default `/data/auth-keys/`). ASP.NET Data Protection keys (cookie
 encryption) are persisted to the same directory — otherwise every restart logs everyone out.
 
 ## 4. Sessions & tokens
@@ -298,7 +298,7 @@ encryption) are persisted to the same directory — otherwise every restart logs
 - The **SSO session** (`__wt_sso`, auth host) is created at login; default lifetime 12 h sliding,
   7 d absolute (both under `Auth:` options).
 - **App sessions** (`__wt_access`, app host) are minted only via the callback and reference their
-  `RouteId`; verify consults the DB (SQLite point-read per request is fine at Watchtower's scale;
+  `RouteId`; verify consults the DB (an indexed point-read per request is fine at Watchtower's scale;
   an in-memory cache keyed by token hash with short TTL + invalidation on revoke is a follow-up).
 - **Logout:** the auth host's logout deletes the SSO session and all App sessions of that user
   (global sign-out); a per-app logout path (`/.watchtower/logout` on the app domain) clears just
@@ -485,8 +485,8 @@ existing convention for non-RPC/external surfaces):
   without interrupting the recording. `audit.listEvents` is keyset-paged on the primary key
   (`Id < beforeId`, `ORDER BY Id DESC`, default 100 rows, clamped at 500) rather than offset-paged,
   because the table is append-only and is being written while it is read; ordering by `Id` rather than
-  `CreatedAt` is also forced by SQLite, which cannot `ORDER BY` a `DateTimeOffset` (the same limitation
-  `stacks.events` works around). `audit.listFacets` reports the distinct categories, actions and actors
+  `CreatedAt` is deliberate too — `Id` is unique, so it is the only total order a keyset page can rely on
+  (`stacks.events` orders by `StartedAt` with `Id` as the tie-breaker, which is the same idea). `audit.listFacets` reports the distinct categories, actions and actors
   actually present, so the filters never drift from the vocabulary. Rows are reference-free: actor and
   target are recorded by name, so a row about a deleted account keeps everything it said.
 - Secure-by-default via `[assembly: ElarionAuthorizationDefaults]`; `[AllowAnonymous]` on the
@@ -577,7 +577,7 @@ alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password vi
   break-glass.
 - **`/.watchtower/*` path collision** with an app that genuinely uses that prefix: reserved-prefix
   approach is what Cloudflare (`/cdn-cgi/`) does; document it, make the prefix constant.
-- **Verify latency:** one SQLite read + one ES256 sign per request through the proxy. Fine at this
+- **Verify latency:** one indexed read + one ES256 sign per request through the proxy. Fine at this
   scale; cache is a known follow-up (§4), not a v1 requirement.
 - **Non-browser clients** of protected apps (API tokens, mobile): bypass paths are the v1 answer;
   service tokens are designed-for but deferred — confirm this is acceptable for the first real

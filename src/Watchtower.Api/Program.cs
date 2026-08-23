@@ -17,6 +17,7 @@ using Watchtower.Api.Proxy;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.SqliteImport;
 
 // ── Coordinator mode ──────────────────────────────────────────────────────────
 // Spawned as a sibling container to perform the actual self-update compose run.
@@ -55,6 +56,23 @@ if (args is ["--export-schema", var schemaOutputPath]) {
     return;
 }
 
+// ── SQLite import mode ──────────────────────────────────────────────────────────
+// Carries a pre-ADR-0024 installation into PostgreSQL and exits, without starting the web server.
+// Run once, against an empty target, before the first normal start:
+//   docker compose run --rm watchtower --import-sqlite /data/watchtower.db
+if (args is ["--import-sqlite", var sqliteSourcePath]) {
+    // A configuration of its own rather than the host builder's: this mode needs one value, and
+    // building the host would also register everything that expects the import to have already run.
+    var importConfiguration = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .AddEnvironmentVariables()
+        .Build();
+    Environment.ExitCode = await SqliteImporter.RunAsync(
+        WatchtowerConnectionString.Resolve(importConfiguration), sqliteSourcePath, Console.Out);
+    return;
+}
+
 var builder = WebApplication.CreateSlimBuilder(args);
 
 // Single-line console logging for clean Docker/Portainer output.
@@ -89,12 +107,13 @@ builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
 // to the pre-DI reads below (Auth:Enabled, Auth:KeyPath), which run before the live provider loads.
 // Ordered before AddWatchtowerServices so those same reads inside it see the stored values too.
 builder.AddElarionSettingsConfiguration();
-var settingsDbPath = builder.Configuration.GetValue<string>("Watchtower:DbPath") ?? "/data/watchtower.db";
 RuntimeSettingsLayering.MakeEnvironmentWin(
-    builder.Configuration, RuntimeSettingsLayering.LoadStoredGlobalSettings(settingsDbPath));
+    builder.Configuration,
+    RuntimeSettingsLayering.LoadStoredGlobalSettings(
+        WatchtowerConnectionString.Find(builder.Configuration)));
 
-// Application infrastructure: strongly-typed options, the SQLite EF Core context, the Docker/compose/
-// git service layer, the deploy engine, and the background update checkers.
+// Application infrastructure: strongly-typed options, the PostgreSQL EF Core context, the Docker/
+// compose/git service layer, the deploy engine, and the background update checkers.
 builder.Services.AddWatchtowerServices(builder.Configuration);
 
 // The in-process proxy's request path (ADR-0022): YARP's direct forwarder and the singleton
@@ -241,8 +260,6 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
 
     // Idempotent — safe to run every startup.
     await db.Database.MigrateAsync();
-    // WAL improves concurrent read/write; the setting persists in the database file.
-    await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
     // Reset any deploys stuck in 'running'/'queued' from a previous crash.
     await db.DeployEvents
         .Where(e => e.Status == "running" || e.Status == "queued")

@@ -78,13 +78,14 @@ Request (still open, framework side): resolve a relative output against a stable
 root or nearest `Directory.Build.props`), refuse a bare relative path, or print a prominent warning with
 the absolute resolved path vs. the last committed location — so the safe invocation is the default.
 
-### B2. (Low priority) Opt-in EF conventions for common SQLite value shapes
-The EF configs repeat SQLite boilerplate: enums via `HasConversion<string>()` on every property, a
-`string[]`-as-newline-text converter + custom `ValueComparer`, and **client-side** `OrderByDescending`
-because "SQLite can't ORDER BY a DateTimeOffset." Since Elarion already owns the snake-case convention +
-EF generator, opt-in conventions (enum-as-string default, a canonical `string[]` converter, a sortable
-`DateTimeOffset` storage convention for SQLite) would remove copy-pasted code from every SQLite Elarion
-app. EF/SQLite realities, not bugs — just a convenience.
+### B2. (Low priority) Opt-in EF conventions for common value shapes
+The EF configs repeat boilerplate: enums via `HasConversion<string>()` on every property, and a
+`string[]`-as-newline-text converter + custom `ValueComparer`. Since Elarion already owns the snake-case
+convention + EF generator, opt-in conventions (enum-as-string default, a canonical `string[]` converter)
+would remove copy-pasted code from every Elarion app. A convenience, not a bug.
+
+(The third item this note used to list — client-side `OrderByDescending` because "SQLite can't ORDER BY
+a DateTimeOffset" — went away with ADR-0024: on PostgreSQL those sorts are ordinary SQL.)
 
 ## C. Forward-looking (no action)
 When Watchtower becomes the reverse proxy, it's the natural place to also terminate auth (Caddy

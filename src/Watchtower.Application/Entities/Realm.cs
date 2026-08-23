@@ -6,9 +6,9 @@ namespace Watchtower.Application.Entities;
 /// scope, and the categories (<see cref="StackTemplate"/>s) whose tenants its accounts may enter.
 /// </summary>
 /// <remarks>
-/// Exactly one row is the <see cref="IsSystem"/> realm — the operator population, seeded by the
-/// <c>AddRealms</c> migration, which owns Watchtower's own management surface and is the realm every
-/// pre-realm row was backfilled into. It cannot be deleted, and it is the only realm that falls back to
+/// Exactly one row is the <see cref="IsSystem"/> realm — the operator population, seeded by the model
+/// (<c>RealmConfiguration.HasData</c>), which owns Watchtower's own management surface and is the realm
+/// every realm-less row defaults into. It cannot be deleted, and it is the only realm that falls back to
 /// the configured <c>Watchtower:Auth:Host</c> when it has no <see cref="LoginRouteId"/> — the escape
 /// hatch for an instance fronted by somebody else's proxy (ADR-0023).
 /// <para>
@@ -19,8 +19,8 @@ namespace Watchtower.Application.Entities;
 /// </remarks>
 public sealed class Realm {
     /// <summary>
-    /// Primary key of the built-in system realm. Seeded with this explicit id by the <c>AddRealms</c>
-    /// migration, which is what lets the realm columns added to existing tables default to it and what
+    /// Primary key of the built-in system realm. Seeded with this explicit id by the model
+    /// (<c>RealmConfiguration.HasData</c>), which is what lets every realm column default to it and what
     /// makes <see cref="Services.IRealmContext"/>'s default a constant rather than a query.
     /// <see cref="Services.RealmResolver"/> is still the authority — it reads the <see cref="IsSystem"/>
     /// row — so nothing but a default ever assumes the number.

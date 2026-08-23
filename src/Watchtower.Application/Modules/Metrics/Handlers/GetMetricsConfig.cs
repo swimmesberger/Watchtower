@@ -6,7 +6,7 @@ namespace Watchtower.Application.Modules.Metrics.Handlers;
 
 /// <summary>
 /// Returns the effective metrics-backend configuration (ADR-0013) for the Settings page: the resolved
-/// backend, the sqlite retention window, and the InfluxDB connection values — with the token reduced to
+/// backend, the database retention window, and the InfluxDB connection values — with the token reduced to
 /// a has-a-value flag, because it is a secret and the UI only needs to know whether one is stored.
 /// Env-pinned paths ride along so the UI can disable those fields (env wins over the settings store).
 /// </summary>

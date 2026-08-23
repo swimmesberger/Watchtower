@@ -20,7 +20,7 @@ export const metricsManifest = defineModule({
     ]),
     // Desktop-only nav entry to the historical view (the live strip stays on the Dashboard). Gated on the
     // `metrics-history` session flag (ADR-0030): the item only renders when the active metrics backend can
-    // answer historical ranges (the sqlite default or influxdb, ADR-0013) — on the memory backend it
+    // answer historical ranges (the database default or influxdb, ADR-0013) — on the memory backend it
     // disappears. A runtime backend switch reloads the page, which rebuilds this registry.
     contribute(sidebarItems, [
       {

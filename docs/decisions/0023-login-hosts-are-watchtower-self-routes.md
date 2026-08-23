@@ -78,6 +78,8 @@ the self path.
    - the **migration** `ConvertLoginHostsToRoutes` copies every realm's `auth_host` into a Watchtower
      route (TLS on, `Managed`, `Public`) and sets `login_route_id`, then drops the column. It has to be
      the migration: the column must be read before it is dropped;
+     (regenerated away by [ADR-0024](0024-postgresql-only-and-state-in-the-database.md); the importer
+     performs the conversion for legacy databases);
    - `Services/LoginHostConversion.cs`, run from `Program.InitializeDatabaseAsync` after migrations and
      before the providers start, does the `Auth:Host` half — which no migration can see, because it is
      configuration. Idempotent on the settings sentinel `Watchtower:Auth:LoginHostsConverted`, and it
@@ -162,6 +164,8 @@ redirect hostnames; nothing is served or issued by us.
   end of the migration they appear in while raw SQL keeps its position, so no ordering *within* one
   migration can make "`stack_id` is nullable" true at the moment the conversion inserts stack-less rows.
   `AddRouteTargetAndLoginRoutes` does the shape; `ConvertLoginHostsToRoutes` does the data.
+  (Both regenerated away by [ADR-0024](0024-postgresql-only-and-state-in-the-database.md); the importer
+  performs the conversion for legacy databases.)
 - **Backward compatibility was not a goal**, beyond the one-time conversion: this is a pre-1.0 change to
   a seam only an operator's own configuration touches.
 

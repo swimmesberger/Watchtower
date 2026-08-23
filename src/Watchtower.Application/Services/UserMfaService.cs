@@ -189,7 +189,7 @@ public sealed class UserMfaService(WatchtowerDbContext db, UserManager<User> use
     /// The transaction is what makes "all three" true rather than aspirational: the recovery codes go by
     /// <c>ExecuteDelete</c>, which is its own statement, and a failure between the two would otherwise
     /// leave live recovery codes on an account with no second factor — credentials nothing checks the
-    /// state of. An ambient transaction is joined rather than nested, since SQLite has no nested
+    /// state of. An ambient transaction is joined rather than nested, since PostgreSQL has no nested
     /// transactions and a caller that opened one owns the commit.
     /// </para>
     /// <para>

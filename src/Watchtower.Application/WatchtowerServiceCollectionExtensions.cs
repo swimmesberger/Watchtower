@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Npgsql;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -21,7 +22,7 @@ using Watchtower.Application.Services.Yarp;
 namespace Watchtower.Application;
 
 /// <summary>
-/// Registers Watchtower's application-layer infrastructure: strongly-typed options, the SQLite
+/// Registers Watchtower's application-layer infrastructure: strongly-typed options, the PostgreSQL
 /// EF Core context, the Docker/compose/git service layer, the deploy engine, and the optional
 /// background update checkers. Elarion handlers and modules are registered separately via
 /// <c>AddElarion</c> in the host.
@@ -39,13 +40,15 @@ public static class WatchtowerServiceCollectionExtensions {
         // configuration layering in Program.cs). TryAdd so tests can substitute a fake environment.
         services.TryAddSingleton<EnvironmentSettingPins>();
 
-        var dbPath = section.GetValue<string>("DbPath") ?? "/data/watchtower.db";
-        var dir = Path.GetDirectoryName(dbPath);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
+        // PostgreSQL is the only database (ADR-0024). One NpgsqlDataSource per process, shared by the
+        // EF context and — from the state-in-the-database phase on — by Elarion's PostgreSQL packages
+        // (role leases, LISTEN/NOTIFY settings propagation), which is why it is a registered singleton
+        // rather than something UseNpgsql(connectionString) builds privately per context.
+        var connectionString = WatchtowerConnectionString.Resolve(config);
+        services.TryAddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).Build());
 
-        services.AddDbContext<WatchtowerDbContext>(o =>
-            o.UseSqlite($"Data Source={dbPath}")
+        services.AddDbContext<WatchtowerDbContext>((sp, o) =>
+            o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>())
              .UseSnakeCaseNamingConvention());
 
         // Stateless infrastructure (no DB) — singletons.
@@ -170,7 +173,8 @@ public static class WatchtowerServiceCollectionExtensions {
         // tokens today and the session cookies from the next work item on. The key ring is persisted to
         // Auth:KeyPath — unconditionally, because the default location is per-user and the shipped
         // container has no home directory, which would make the keys ephemeral and sign everyone out on
-        // every restart. Directory created up front, exactly as DbPath's is above.
+        // every restart. The directory is created up front so a misconfigured path fails at startup
+        // rather than at the first login.
         var keyPath = section.GetValue<string>("Auth:KeyPath");
         if (string.IsNullOrWhiteSpace(keyPath)) keyPath = new AuthOptions().KeyPath;
         Directory.CreateDirectory(keyPath);
@@ -264,7 +268,7 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // CI runners (docs/ci-runners/design.md) — the orchestrator reconciles ephemeral GitHub
         // Actions runner containers for enabled repos; singleton so ci.* handlers can read live
-        // status and wake it after config changes. Idle cost with no repos configured: one SQLite
+        // status and wake it after config changes. Idle cost with no repos configured: one database
         // query + one Docker label query per pass.
         services.AddSingleton<GitHubApiClient>();
         services.AddSingleton<CiRunnerOrchestrator>();
@@ -274,7 +278,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CiToolchainRecorder>();
 
         // Metrics backend (ADR-0007, amended by ADR-0013) — three backends behind one runtime router:
-        // "sqlite" (default) persists windowed history next to the live ring, "memory" keeps the ring
+        // "database" (default) persists windowed history next to the live ring, "memory" keeps the ring
         // only, "influxdb" reads an externally-collected InfluxDB. Everything is registered
         // unconditionally; the router resolves the backend from IOptionsMonitor per call and the sampler
         // re-checks it per tick (idling under influxdb so exactly one collector runs). That is what
@@ -283,7 +287,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<MetricsPersistenceService>();
         services.AddHostedService<MetricsSampler>();
         services.AddSingleton<InMemoryMetricsSource>();
-        services.AddSingleton<SqliteMetricsSource>();
+        services.AddSingleton<DatabaseMetricsSource>();
         services.AddSingleton<IMetricsSource, MetricsSourceRouter>();
 
         // Client-exposed feature flags (ADR-0030): the session bootstrap evaluates every module's
@@ -314,7 +318,7 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddHostedService<StackUpdateBackgroundService>();
         services.AddHostedService<ImagePruneBackgroundService>();
         // Pull-based deployment — per-stack opt-in (AutoDeployMode), so no global toggle: the
-        // minute tick is a single cheap SQLite query when nothing is configured.
+        // minute tick is a single cheap database query when nothing is configured.
         services.AddHostedService<AutoDeployBackgroundService>();
 
         return services;

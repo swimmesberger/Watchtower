@@ -307,11 +307,11 @@ public sealed class AppApiService(WatchtowerDbContext db, DockerEngineClient doc
             .Select(c => new AppServiceStatusDto(ServiceOf(c), c.Id, c.State, c.Status, c.Image))
             .ToList();
 
-        // Ordered by id (not StartedAt): SQLite cannot sort a DateTimeOffset column, and the identity
-        // column is monotonic, so the newest in-flight event is the highest id.
+        // Newest in-flight event, with the identity column breaking a shared timestamp.
         var active = await db.DeployEvents.AsNoTracking()
             .Where(e => e.StackId == caller.StackId && (e.Status == "running" || e.Status == "queued"))
-            .OrderByDescending(e => e.Id)
+            .OrderByDescending(e => e.StartedAt)
+            .ThenByDescending(e => e.Id)
             .Select(e => new { e.Id, e.Status, e.StartedAt })
             .FirstOrDefaultAsync(ct);
 

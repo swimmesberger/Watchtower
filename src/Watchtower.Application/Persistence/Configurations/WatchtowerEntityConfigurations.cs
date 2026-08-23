@@ -11,11 +11,21 @@ namespace Watchtower.Application.Persistence.Configurations;
 /// <c>ConfigureEntities</c> method on <see cref="WatchtowerDbContext"/>. Column names are
 /// snake_cased by convention (<c>UseSnakeCaseNamingConvention</c>); table names are set explicitly.
 /// </summary>
+/// <remarks>
+/// Entities several writers can meet on — <c>Realm</c>, <c>Stack</c>, <c>Route</c>, <c>Group</c> —
+/// carry PostgreSQL's <c>xmin</c> system column as their EF concurrency token (ADR-0024 decision 3),
+/// so a read-modify-write whose row moved underneath it raises <c>DbUpdateConcurrencyException</c>
+/// instead of silently overwriting. <c>xmin</c> rather than a version column of our own because the
+/// database maintains it already: a token nobody has to remember to bump cannot be forgotten on the
+/// one write path where it mattered. <c>User</c> is the exception, and carries Identity's own
+/// <c>ConcurrencyStamp</c> instead — see <c>UserConfiguration</c>.
+/// </remarks>
 [EntityConfiguration]
 public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
     public void Configure(EntityTypeBuilder<Realm> b) {
         b.ToTable("realms");
         b.HasKey(x => x.Id);
+        b.UseXminAsConcurrencyToken();
         b.Property(x => x.Name).IsRequired();
         b.Property(x => x.Slug).IsRequired();
         // The slug is the realm's identity on the wire (the `realm` JWT claim), so it is unique and the
@@ -24,8 +34,8 @@ public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
         // At most one realm may name a given route as its login route: the host decides which population
         // a visitor arriving on it authenticates into, so two realms sharing one would make that
         // ambiguous. Filtered rather than plain unique because "no login route yet" is a legitimate state
-        // for any number of realms — SQLite already treats NULLs as distinct, but the filter states the
-        // intent (the RouteAccessGrant precedent) and is what a future Postgres backend would need anyway.
+        // for any number of realms — PostgreSQL already treats NULLs as distinct, but the filter states
+        // the intent (the RouteAccessGrant precedent) rather than relying on it.
         b.HasIndex(x => x.LoginRouteId).IsUnique().HasFilter("\"login_route_id\" IS NOT NULL");
         // SET NULL, not Restrict: deleting the route is a legitimate act whose consequence (this realm
         // has no login host any more) is reported by the handler rather than prevented by the schema.
@@ -33,7 +43,26 @@ public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
             .WithMany()
             .HasForeignKey(x => x.LoginRouteId)
             .OnDelete(DeleteBehavior.SetNull);
+        // The operator realm, with the explicit id every realm column defaults to. On the model rather
+        // than hand-written into a migration, so the row is part of the schema every environment
+        // scaffolds and `migrations has-pending-model-changes` covers it. Its login route is null and
+        // stays null on a fresh install: the operator realm falls back to Watchtower:Auth:Host until a
+        // Watchtower route is created for it (ADR-0023).
+        b.HasData(new Realm {
+            Id = Realm.SystemRealmId,
+            Name = Realm.SystemRealmName,
+            Slug = Realm.SystemRealmSlug,
+            IsSystem = true,
+            CreatedAt = SystemRealmCreatedAt,
+        });
     }
+
+    /// <summary>
+    /// Timestamp stamped on the seeded system realm. A literal, not <c>DateTimeOffset.UtcNow</c>: seed
+    /// data must produce the same row on every instance, and "when this deployment happened to be
+    /// installed" is not a fact about the operator population.
+    /// </summary>
+    private static readonly DateTimeOffset SystemRealmCreatedAt = new(2026, 8, 10, 0, 0, 0, TimeSpan.Zero);
 }
 
 [EntityConfiguration]
@@ -56,6 +85,10 @@ public sealed class CiRepoConfiguration : IEntityTypeConfiguration<CiRepo> {
         b.Property(x => x.Owner).IsRequired();
         b.Property(x => x.Name).IsRequired();
         b.HasIndex(x => new { x.Owner, x.Name }).IsUnique();
+        // GitHub treats owner/name case-insensitively and the lookups do too, so they compare
+        // lower(owner)/lower(name). EF cannot model an expression index, so the matching
+        // ix_ci_repos_owner_name_lower is raw SQL in the initial migration — if this pair of columns
+        // ever moves, that statement moves with it.
         b.HasOne(x => x.Credential)
             .WithMany()
             .HasForeignKey(x => x.CredentialId)
@@ -84,6 +117,7 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
     public void Configure(EntityTypeBuilder<Stack> b) {
         b.ToTable("stacks");
         b.HasKey(x => x.Id);
+        b.UseXminAsConcurrencyToken();
         b.Property(x => x.Name).IsRequired();
         b.Property(x => x.RepositoryUrl).IsRequired();
         b.Property(x => x.ComposeFilePath).IsRequired();
@@ -93,13 +127,17 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
-        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The column default
-        // is what the migration backfills existing rows with, so a stack from before quiesce modes
-        // existed keeps stopping its containers, exactly as before.
+        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The default is on the
+        // model so a row written without one — by the SQLite importer, say — stops its containers, which
+        // is what every stack did before quiesce modes existed.
         b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
         b.HasIndex(x => x.Name).IsUnique();
+        // The compose project name is compared case-insensitively (StackProjectNames.IsTakenAsync) but
+        // stored as the operator typed it, so the supporting index is on lower(compose_project_name).
+        // EF cannot model an expression index: ix_stacks_compose_project_name_lower is raw SQL in the
+        // initial migration, and moves with this column if it ever does.
         // The App API authenticates every request by looking the presented bearer token up here, so
-        // the column must be indexed. Unique guards against two stacks ever sharing a token; SQLite
+        // the column must be indexed. Unique guards against two stacks ever sharing a token; PostgreSQL
         // treats NULLs as distinct, so any number of stacks may still have no token yet.
         b.HasIndex(x => x.AppApiToken).IsUnique();
         b.HasOne(x => x.Credential)
@@ -107,7 +145,7 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
             .HasForeignKey(x => x.CredentialId)
             .OnDelete(DeleteBehavior.SetNull);
         // Tenant instances link back to their template; deleting a template detaches (not deletes) them.
-        // (TemplateId, TenantSlug) is unique — SQLite treats NULLs as distinct, so standalone stacks
+        // (TemplateId, TenantSlug) is unique — PostgreSQL treats NULLs as distinct, so standalone stacks
         // (both null) never collide.
         b.HasOne(x => x.Template)
             .WithMany(t => t.Instances)
@@ -251,18 +289,18 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
             OR ("target" = 'Service' AND "stack_id" IS NOT NULL AND "realm_id" IS NULL)
             """));
         b.HasKey(x => x.Id);
+        b.UseXminAsConcurrencyToken();
         b.Property(x => x.Domain).IsRequired();
         b.Property(x => x.ServiceName).IsRequired();
         // Stored as the enum name ("Service"/"Watchtower"); "Service" is the default, which is what the
-        // check constraint above and the migration's backfill both read for every pre-ADR-0023 row.
+        // check constraint above reads for a route written without one.
         b.Property(x => x.Target).HasConversion<string>().HasDefaultValue(RouteTarget.Service);
         // Stored as the enum name (e.g. "Active"/"Managed"); the API maps Status to lowercase for the client.
         b.Property(x => x.Status).HasConversion<string>();
         b.Property(x => x.Kind).HasConversion<string>();
-        // Stored as the enum name (e.g. "Public"); "Public" is the default so existing routes keep today's
-        // behaviour. The default is declared on the model rather than only in the migration that added the
-        // column, so a later table rebuild (SQLite regenerates the table from the model) cannot quietly
-        // drop it and leave a row inserted without the column failing its NOT NULL check.
+        // Stored as the enum name (e.g. "Public"); "Public" is the default so a route written without one
+        // is Public rather than rejected. Declared on the model, not only in a migration, so the default is
+        // a property of the schema every environment scaffolds rather than of one migration's DDL.
         b.Property(x => x.AccessMode).HasConversion<string>().HasDefaultValue(AccessMode.Public);
         // Stored as the enum name (e.g. "None"); "None" is the default so existing routes forward JWT only.
         b.Property(x => x.IdentityHeaderMode).HasConversion<string>().HasDefaultValue(IdentityHeaderMode.None);
@@ -292,6 +330,11 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
     public void Configure(EntityTypeBuilder<User> b) {
         b.ToTable("users");
         b.HasKey(x => x.Id);
+        // No xmin token here, unlike the other editable entities: users already have one in
+        // ConcurrencyStamp, and a second would break the pattern WatchtowerUserStore is built around —
+        // read detached, mutate, attach, write back. A detached read carries no shadow xmin, so every
+        // such write would fail as a phantom conflict. ConcurrencyStamp travels on the entity itself and
+        // survives the round trip, which is exactly why Identity models it as a column.
         b.Property(x => x.UserName).IsRequired();
         b.Property(x => x.NormalizedUserName).IsRequired();
         b.Property(x => x.PasswordHash).IsRequired();
@@ -379,11 +422,12 @@ public sealed class GroupConfiguration : IEntityTypeConfiguration<Group> {
     public void Configure(EntityTypeBuilder<Group> b) {
         b.ToTable("groups");
         b.HasKey(x => x.Id);
+        b.UseXminAsConcurrencyToken();
         b.Property(x => x.Name).IsRequired();
         b.Property(x => x.NormalizedName).IsRequired();
-        // Same shape as users: uniqueness lives on the normalized column so names are case-insensitive
-        // on SQLite too, and every lookup that has to be case-blind goes through this index — scoped to
-        // the realm, because a group belongs to exactly one population (design.md §13).
+        // Same shape as users: uniqueness lives on the normalized column, and every lookup that has to be
+        // case-blind goes through this index — scoped to the realm, because a group belongs to exactly one
+        // population (design.md §13).
         b.HasIndex(x => new { x.RealmId, x.NormalizedName }).IsUnique();
         // Restrict, as for users: a realm with groups still in it is not deletable.
         b.HasOne(x => x.Realm)
@@ -425,9 +469,9 @@ public sealed class RouteAccessGrantConfiguration : IEntityTypeConfiguration<Rou
         b.HasKey(x => x.Id);
         // One grant per (route, subject) — re-granting is idempotent rather than duplicated. Two partial
         // indexes rather than one composite: the pair is unique *within* a subject kind, and the rows of
-        // the other kind must not be dragged into the constraint. SQLite already treats NULLs as distinct
-        // (see the Stack.AppApiToken note above), but the filter states the intent rather than relying on
-        // it, and is what a future Postgres backend would need anyway.
+        // the other kind must not be dragged into the constraint. PostgreSQL already treats NULLs as
+        // distinct (see the Stack.AppApiToken note above), but the filter states the intent rather than
+        // relying on it.
         b.HasIndex(x => new { x.RouteId, x.UserId }).IsUnique()
             .HasFilter("\"user_id\" IS NOT NULL");
         b.HasIndex(x => new { x.RouteId, x.GroupId }).IsUnique()
@@ -552,5 +596,27 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
             map[line[..separator]] = line[(separator + 1)..];
         }
         return map;
+    }
+}
+
+/// <summary>
+/// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3).
+/// </summary>
+/// <remarks>
+/// A shadow property rather than one on the entity: <c>xmin</c> is the database's own bookkeeping —
+/// the id of the transaction that last wrote the row — so no application code should be able to read
+/// or set it. Npgsql's <c>UseXminAsConcurrencyToken</c> shorthand was removed in the 9.x provider;
+/// this is the mapping it used to emit, in one place so the four entities that want it cannot drift.
+/// </remarks>
+internal static class XminConcurrency {
+    public static EntityTypeBuilder<T> UseXminAsConcurrencyToken<T>(this EntityTypeBuilder<T> builder)
+        where T : class {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .HasColumnType("xid")
+            .ValueGeneratedOnAddOrUpdate()
+            .IsConcurrencyToken();
+        return builder;
     }
 }

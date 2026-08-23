@@ -1,11 +1,11 @@
 namespace Watchtower.Application.Entities;
 
 /// <summary>
-/// One aggregated host utilization sample in the SQLite metrics history (ADR-0013). Rows exist in two
+/// One aggregated host utilization sample in the persisted metrics history (ADR-0013). Rows exist in two
 /// tiers, discriminated by <see cref="TierSeconds"/>: minute averages of the sampler's 10s ticks
 /// (60, kept for the raw window) and coarser rollups of those minutes (600, kept for the retention
 /// window). <see cref="TUnixSeconds"/> is the bucket start; integer seconds rather than a DateTimeOffset
-/// column so range scans and bucket grouping stay integer arithmetic in SQLite.
+/// column so range scans and bucket grouping stay integer arithmetic in the database.
 /// </summary>
 public sealed class MetricHostSample {
     public long Id { get; set; }

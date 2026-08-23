@@ -32,19 +32,20 @@ public sealed class RealmResolver(
     IOptionsMonitor<WatchtowerOptions> options,
     AuthTokenSigner signer,
     ILogger<RealmResolver> logger) {
-    /// <summary>The built-in operator realm — the <see cref="Realm.IsSystem"/> row, seeded by the migration.</summary>
+    /// <summary>The built-in operator realm — the <see cref="Realm.IsSystem"/> row, seeded by the model.</summary>
     /// <remarks>
     /// Read rather than assumed from <see cref="Realm.SystemRealmId"/>: the constant is what column defaults
     /// point at, this is what decisions are made on.
     /// </remarks>
     public async Task<Realm> SystemRealmAsync(CancellationToken ct) {
         var realm = await db.Realms.AsNoTracking().FirstOrDefaultAsync(r => r.IsSystem, ct);
-        // The migration seeds it and realms.delete refuses to remove it, so its absence is a broken
-        // database rather than a state to recover from — and silently inventing one would put every
-        // account in a realm that is not stored anywhere.
+        // The model seeds it (RealmConfiguration.HasData) and realms.delete refuses to remove it, so its
+        // absence is a broken database rather than a state to recover from — and silently inventing one
+        // would put every account in a realm that is not stored anywhere. Re-running the migrations does
+        // not bring it back either: the row is created once, by the initial migration.
         return realm ?? throw new InvalidOperationException(
-            "The system realm is missing from the database. It is seeded by the AddRealms migration and " +
-            "cannot be deleted; restore the database or re-apply migrations.");
+            "The system realm is missing from the database. It is seeded when the schema is created and " +
+            "cannot be deleted through the API; restore the database from a backup.");
     }
 
     /// <summary>
@@ -65,8 +66,10 @@ public sealed class RealmResolver(
         var normalized = RouteAccessPolicy.NormalizeForwardedHost(host);
         if (normalized is null) return await SystemRealmAsync(ct);
 
+        // Plain equality, not lower(domain): the column is written normalized and the parameter arrives
+        // normalized, so this rides the domain index instead of forcing a scan on every login request.
         var realmId = await db.Routes.AsNoTracking()
-            .Where(r => r.Target == RouteTarget.Watchtower && r.Domain.ToLower() == normalized)
+            .Where(r => r.Target == RouteTarget.Watchtower && r.Domain == normalized)
             .Select(r => r.RealmId)
             .FirstOrDefaultAsync(ct);
         if (realmId is { } id && await FindAsync(id, ct) is { } realm) return realm;

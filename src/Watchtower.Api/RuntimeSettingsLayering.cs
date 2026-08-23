@@ -1,7 +1,7 @@
 using Elarion.Settings.Configuration;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.Configuration.Memory;
+using Npgsql;
 
 namespace Watchtower.Api;
 
@@ -23,8 +23,9 @@ namespace Watchtower.Api;
 /// <c>Program.cs</c> (<c>Auth:Enabled</c>, <c>Auth:KeyPath</c>) have already happened. Without it, a
 /// stored <c>Auth:Enabled</c> would never reach the startup pipeline decision and the setting could not
 /// survive a restart. <see cref="LoadStoredGlobalSettings"/> reads the <c>elarion_settings</c> table
-/// synchronously (read-only, tolerant of a missing file/table on first run) so those reads see the
-/// stored values; the live source sits directly above it and takes over once the refresher runs.
+/// synchronously (tolerant of a missing table on first run, and of a database that is not up yet) so
+/// those reads see the stored values; the live source sits directly above it and takes over once the
+/// refresher runs.
 /// </para>
 /// </summary>
 public static class RuntimeSettingsLayering {
@@ -69,15 +70,21 @@ public static class RuntimeSettingsLayering {
     }
 
     /// <summary>
-    /// Synchronously reads every Global-scope setting from the SQLite database at
-    /// <paramref name="dbPath"/>. Returns an empty list when the file or table does not exist yet
-    /// (first run, or an upgrade whose migration has not run) — the live provider fills the gap once
-    /// the host has started.
+    /// Synchronously reads every Global-scope setting straight out of PostgreSQL over
+    /// <paramref name="connectionString"/>. Returns an empty list when there is no connection string,
+    /// when the table does not exist yet (first run, before the migration) or when the database is
+    /// unreachable — the live provider fills the gap once the host has started.
     /// </summary>
-    public static IReadOnlyList<KeyValuePair<string, string?>> LoadStoredGlobalSettings(string dbPath) {
+    /// <remarks>
+    /// Deliberately a bare <see cref="NpgsqlConnection"/> rather than the EF context: this runs before
+    /// the service provider exists, and building one to read two columns would drag the whole
+    /// application registration — including the parts that read the configuration this is populating —
+    /// into the pre-DI window.
+    /// </remarks>
+    public static IReadOnlyList<KeyValuePair<string, string?>> LoadStoredGlobalSettings(string? connectionString) {
+        if (string.IsNullOrWhiteSpace(connectionString)) return [];
         try {
-            if (!File.Exists(dbPath)) return [];
-            using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+            using var connection = new NpgsqlConnection(connectionString);
             connection.Open();
             using var command = connection.CreateCommand();
             // Scope encoding per Elarion.Settings: Global is kind "global" with an empty owner.
@@ -87,10 +94,14 @@ public static class RuntimeSettingsLayering {
             while (reader.Read())
                 entries.Add(new(reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
             return entries;
+        } catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UndefinedTable) {
+            // First boot: the database exists but MigrateAsync has not run yet. Not worth a warning.
+            return [];
         } catch (Exception ex) {
             // Never fail startup over the snapshot: pre-DI reads fall back to env/appsettings and the
-            // live provider still loads once the host runs. Logging isn't built yet, hence Console.
-            Console.Error.WriteLine($"warn: could not preload stored settings from {dbPath}: {ex.Message}");
+            // live provider still loads once the host runs (and the host's own MigrateAsync will report
+            // a database that is genuinely down). Logging isn't built yet, hence Console.
+            Console.Error.WriteLine($"warn: could not preload stored settings from PostgreSQL: {ex.Message}");
             return [];
         }
     }

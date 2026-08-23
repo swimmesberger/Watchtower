@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,19 +13,19 @@ namespace Watchtower.Application.Tests;
 
 /// <summary>
 /// A Watchtower service provider wired the way the real host wires it
-/// (<see cref="WatchtowerServiceCollectionExtensions.AddWatchtowerServices"/>), but persisting to a
-/// private in-memory SQLite database instead of <c>/data</c>. Exercising the production registration
-/// is the point: a test that hand-registered Identity would not notice the host drifting away from it.
+/// (<see cref="WatchtowerServiceCollectionExtensions.AddWatchtowerServices"/>), but pointed at a
+/// private PostgreSQL database (<see cref="PostgresTestServer"/>) and a scratch data directory instead
+/// of <c>/data</c>. Exercising the production registration is the point: a test that hand-registered
+/// Identity would not notice the host drifting away from it.
 /// </summary>
 /// <remarks>
-/// The SQLite connection is held open for the lifetime of the host because closing the last
-/// connection to <c>DataSource=:memory:</c> discards the database. <see cref="Restart"/> hands the
-/// same connection <em>and the same data directory</em> to a second provider, which is how "what happens
-/// on the next start" is tested — in a deployment both live on the same persistent volume, so a restart
-/// that saw a fresh key directory would be modelling a disaster rather than a restart.
+/// <see cref="Restart"/> hands the same database name <em>and the same data directory</em> to a second
+/// provider, which is how "what happens on the next start" is tested — in a deployment both survive a
+/// restart, so a second host that saw an empty database would be modelling a disaster rather than a
+/// restart.
 /// </remarks>
 public sealed class AuthTestHost : IDisposable {
-    private readonly SqliteConnection _connection;
+    private readonly string _connectionString;
     private readonly bool _ownsResources;
     private readonly ServiceProvider _provider;
     private readonly ServiceCollection _registrations;
@@ -35,23 +34,26 @@ public sealed class AuthTestHost : IDisposable {
     private readonly Action<IServiceCollection>? _configure;
 
     private AuthTestHost(
-        SqliteConnection connection,
+        string connectionString,
         bool ownsResources,
         string dataDirectory,
         TestTimeProvider time,
         Action<IServiceCollection>? configure,
         IEnumerable<KeyValuePair<string, string?>> settings) {
-        _connection = connection;
+        _connectionString = connectionString;
         _ownsResources = ownsResources;
         _time = time;
         _configure = configure;
         _dataDirectory = dataDirectory;
 
-        // DbPath, KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices creates
-        // eagerly — point them all at a scratch directory so tests never write outside their temp space.
+        // KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices creates
+        // eagerly — point them at a scratch directory so tests never write outside their temp space.
+        // The connection string is passed the same way the deployment passes it, so the registration
+        // under test is the shipped one rather than something the test rewires afterwards.
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(settings.Concat([
-                new KeyValuePair<string, string?>("Watchtower:DbPath", Path.Combine(_dataDirectory, "watchtower.db")),
+                new KeyValuePair<string, string?>(
+                    WatchtowerConnectionString.ConfigurationKey, _connectionString),
                 new KeyValuePair<string, string?>("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys")),
                 new KeyValuePair<string, string?>("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs")),
             ]))
@@ -65,19 +67,7 @@ public sealed class AuthTestHost : IDisposable {
         _registrations.AddWatchtowerServices(configuration);
         _configure?.Invoke(_registrations);
 
-        // Swap the file-backed context for the shared in-memory connection. AddDbContext registers its
-        // options with TryAdd, so the original descriptor has to go first.
-        _registrations.RemoveAll<DbContextOptions<WatchtowerDbContext>>();
-        _registrations.RemoveAll<DbContextOptions>();
-        _registrations.AddDbContext<WatchtowerDbContext>(o =>
-            o.UseSqlite(_connection).UseSnakeCaseNamingConvention());
-
         _provider = _registrations.BuildServiceProvider();
-
-        using var scope = _provider.CreateScope();
-        // Applying the real migrations (rather than EnsureCreated) keeps the tests honest about the
-        // schema the deployed database will actually have.
-        scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>().Database.Migrate();
     }
 
     public IServiceProvider Services => _provider;
@@ -93,24 +83,21 @@ public sealed class AuthTestHost : IDisposable {
     /// Starts a host with extra registrations layered on top of the production ones — used to add a single
     /// generated handler pipeline so a test can dispatch through it without booting the whole Elarion host.
     /// </summary>
-    public static AuthTestHost Start(Action<IServiceCollection>? configure, params (string Key, string? Value)[] settings) {
-        var connection = new SqliteConnection("DataSource=:memory:");
-        connection.Open();
-        return new AuthTestHost(
-            connection,
+    public static AuthTestHost Start(Action<IServiceCollection>? configure, params (string Key, string? Value)[] settings) =>
+        new(
+            PostgresTestServer.CreateDatabase(),
             ownsResources: true,
             Path.Combine(Path.GetTempPath(), "watchtower-tests", Guid.NewGuid().ToString("N")),
             new TestTimeProvider(DateTimeOffset.UtcNow),
             configure,
             ToConfiguration(settings));
-    }
 
     /// <summary>
     /// Simulates the next process start against the same database and the same <c>/data</c> volume,
     /// optionally with different configuration.
     /// </summary>
     public AuthTestHost Restart(params (string Key, string? Value)[] settings) =>
-        new(_connection, ownsResources: false, _dataDirectory, _time, _configure, ToConfiguration(settings));
+        new(_connectionString, ownsResources: false, _dataDirectory, _time, _configure, ToConfiguration(settings));
 
     /// <summary>
     /// Builds the bootstrap hosted service the way the host would, first asserting that
@@ -136,7 +123,7 @@ public sealed class AuthTestHost : IDisposable {
         _provider.Dispose();
         // A restarted host borrows both; only the host that created them cleans up, and it is disposed last.
         if (!_ownsResources) return;
-        _connection.Dispose();
+        PostgresTestServer.Drop(_connectionString);
         if (Directory.Exists(_dataDirectory)) Directory.Delete(_dataDirectory, recursive: true);
     }
 

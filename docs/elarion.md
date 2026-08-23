@@ -8,7 +8,7 @@ pinned once via `ElarionVersion` in [`Directory.Packages.props`](../Directory.Pa
 | Package | Referenced by | Why |
 | --- | --- | --- |
 | `Elarion` | `Watchtower.Application`, `Watchtower.Api` | Core handler/module/pipeline primitives; bundles the module + handler source generator. |
-| `Elarion.EntityFrameworkCore` | `Watchtower.Application` | `[GenerateDbSets]` / `[EntityConfiguration]` and the DbContext generator (provider-neutral; used here with the SQLite provider). |
+| `Elarion.EntityFrameworkCore` | `Watchtower.Application` | `[GenerateDbSets]` / `[EntityConfiguration]` and the DbContext generator (provider-neutral; used here with the Npgsql provider). |
 | `Elarion.AspNetCore` | `Watchtower.Api` | ASP.NET host glue: `MapElarionJsonRpc`, `MapElarionEndpoints`, and the `[assembly: GenerateModuleBootstrapper]` trigger. |
 | `Elarion.JsonRpc` | `Watchtower.Api` | JSON-RPC transport, `JsonRpcDispatcher`, `JsonRpcSchemaExporter`. |
 | `Elarion.AspNetCore.Mcp` | `Watchtower.Api` | Projects the same handlers as MCP tools. |

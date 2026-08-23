@@ -42,14 +42,16 @@ public sealed class RouteAccessModeTests {
             // Identity forwarding defaults to JWT-only: no plaintext identity header unless opted in.
             Assert.Equal(IdentityHeaderMode.None, route.IdentityHeaderMode);
 
-            // Enums are persisted by name, so the column stays readable in the SQLite file.
+            // Enums are persisted by name, so the column stays readable in a psql session. The alias is
+            // quoted because PostgreSQL folds bare identifiers to lower case, and SqlQuery<T> matches the
+            // returned column against the shape's "Value" member by name.
             var stored = await db.Database
-                .SqlQuery<string>($"SELECT access_mode AS Value FROM routes WHERE id = {routeId}")
+                .SqlQuery<string>($"SELECT access_mode AS \"Value\" FROM routes WHERE id = {routeId}")
                 .SingleAsync(ct);
             Assert.Equal(nameof(AccessMode.Public), stored);
 
             var storedMode = await db.Database
-                .SqlQuery<string>($"SELECT identity_header_mode AS Value FROM routes WHERE id = {routeId}")
+                .SqlQuery<string>($"SELECT identity_header_mode AS \"Value\" FROM routes WHERE id = {routeId}")
                 .SingleAsync(ct);
             Assert.Equal(nameof(IdentityHeaderMode.None), storedMode);
         }
@@ -86,7 +88,7 @@ public sealed class RouteAccessModeTests {
             Assert.Equal(IdentityHeaderMode.Remote, route.IdentityHeaderMode);
 
             var stored = await db.Database
-                .SqlQuery<string>($"SELECT identity_header_mode AS Value FROM routes WHERE id = {routeId}")
+                .SqlQuery<string>($"SELECT identity_header_mode AS \"Value\" FROM routes WHERE id = {routeId}")
                 .SingleAsync(ct);
             Assert.Equal(nameof(IdentityHeaderMode.Remote), stored);
         }
@@ -126,11 +128,11 @@ public sealed class RouteAccessModeTests {
     }
 
     /// <summary>
-    /// The reason the scaffolded <c>defaultValue: ""</c> in the AddCentralAuth migration was replaced by
-    /// <c>"Public"</c>: rows that predate the column are back-filled by SQLite's column default, and an
-    /// empty string is not a value the enum converter can read. This inserts such a row the way the
-    /// migration leaves one behind — without mentioning <c>access_mode</c> at all — and then loads it
-    /// through EF, which is exactly what an upgraded deployment does on its first request.
+    /// The reason <c>access_mode</c> and <c>identity_header_mode</c> declare their defaults on the model
+    /// rather than only in the migration that first added them: a writer that does not mention the column
+    /// — the SQLite importer, or a hand-written INSERT — must land a value the enum converter can read,
+    /// not the empty string a scaffolded <c>defaultValue: ""</c> would have given it. This inserts such a
+    /// row and then loads it through EF.
     /// </summary>
     [Fact]
     public async Task RowInsertedWithoutAccessMode_IsBackFilledAsPublic() {
@@ -145,7 +147,7 @@ public sealed class RouteAccessModeTests {
             var stackId = await db.Stacks.Where(s => s.Name == "legacy").Select(s => s.Id).SingleAsync(ct);
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO routes (stack_id, domain, service_name, container_port, tls_enabled, is_primary, kind, status, created_at)
-                VALUES ({stackId}, 'legacy.example.invalid', 'web', 8080, 1, 0, 'Managed', 'Pending', '2026-01-01 00:00:00.0000000+00:00')
+                VALUES ({stackId}, 'legacy.example.invalid', 'web', 8080, true, false, 'Managed', 'Pending', TIMESTAMPTZ '2026-01-01 00:00:00+00')
                 """, ct);
         }
 
@@ -153,8 +155,8 @@ public sealed class RouteAccessModeTests {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Domain == "legacy.example.invalid", ct);
             Assert.Equal(AccessMode.Public, route.AccessMode);
-            // The identity_header_mode column the AddRouteIdentityHeaderMode migration adds is likewise
-            // back-filled by SQLite's "None" default — an empty string would not read back as the enum.
+            // identity_header_mode is filled by its own "None" default for the same reason — an empty
+            // string would not read back as the enum.
             Assert.Equal(IdentityHeaderMode.None, route.IdentityHeaderMode);
         }
     }

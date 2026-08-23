@@ -356,32 +356,18 @@ public sealed class AuthSessionService(
     }
 
     /// <summary>
-    /// Opportunistic sweep of expired codes, riding along with the mint that is already writing. Same
-    /// hand-written-SQL reason as <see cref="SweepExpiredAsync"/>.
+    /// Opportunistic sweep of expired codes, riding along with the mint that is already writing.
     /// </summary>
-    private async Task SweepExpiredCodesAsync(DateTimeOffset now, CancellationToken ct) {
-        var cutoff = now.ToUniversalTime();
-        await db.Database.ExecuteSqlAsync($"DELETE FROM login_codes WHERE expires_at <= {cutoff}", ct);
-    }
+    private Task SweepExpiredCodesAsync(DateTimeOffset now, CancellationToken ct) =>
+        db.LoginCodes.Where(c => c.ExpiresAt <= now).ExecuteDeleteAsync(ct);
 
     /// <summary>
     /// Opportunistic lazy sweep of expired sessions of every kind. Logins are rare and already write, so this
     /// rides along instead of costing a background service (design.md §4) — it is housekeeping, not a control:
     /// <see cref="ValidateAsync"/> decides expiry from the row it just read, never from this having run.
     /// </summary>
-    /// <remarks>
-    /// Hand-written SQL because EF Core's SQLite provider cannot translate a <see cref="DateTimeOffset"/>
-    /// comparison at all (SQLite has no date type; <c>Where(s =&gt; s.ExpiresAt &lt;= now)</c> throws at
-    /// translation time, and so does <c>OrderBy</c>). The stored text is
-    /// <c>yyyy-MM-dd HH:mm:ss.FFFFFFFzzz</c>, which sorts lexicographically as long as every value carries the
-    /// same offset — hence the explicit <see cref="DateTimeOffset.ToUniversalTime"/>, matching the UTC instants
-    /// this service writes. Table and column names mirror <c>AuthSessionConfiguration</c>; a drift there is
-    /// caught by the sweep test rather than silently skipping the delete.
-    /// </remarks>
-    private async Task SweepExpiredAsync(DateTimeOffset now, CancellationToken ct) {
-        var cutoff = now.ToUniversalTime();
-        await db.Database.ExecuteSqlAsync($"DELETE FROM auth_sessions WHERE expires_at <= {cutoff}", ct);
-    }
+    private Task SweepExpiredAsync(DateTimeOffset now, CancellationToken ct) =>
+        db.AuthSessions.Where(s => s.ExpiresAt <= now).ExecuteDeleteAsync(ct);
 
     /// <summary>The value stored in <see cref="AuthSession.TokenHash"/> for a raw cookie token.</summary>
     public static string HashToken(string rawToken) =>

@@ -12,6 +12,8 @@
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <!-- The PostgreSQL every test runs against (ADR-0024), unless WATCHTOWER_TEST_PG names one. -->
+    <PackageReference Include="Testcontainers.PostgreSql" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,6 +26,10 @@
          reference is not the alternative — one test assembly referencing another drags its whole test
          collection into this runner. -->
     <Compile Include="..\Watchtower.Application.Tests\TotpCodes.cs" Link="TotpCodes.cs" />
+    <!-- Linked for the same reason: both assemblies need a real PostgreSQL, and two implementations of
+         "start a server, migrate a template, hand out databases" would drift. Each test assembly is its
+         own process, so each gets its own server unless WATCHTOWER_TEST_PG points both at one. -->
+    <Compile Include="..\Watchtower.Application.Tests\PostgresTestServer.cs" Link="PostgresTestServer.cs" />
   </ItemGroup>
 
 </Project>

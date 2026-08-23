@@ -37,8 +37,11 @@ public sealed class UpdateMetricsConfig(
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var backend = command.Backend.Trim().ToLowerInvariant();
-        if (backend is not ("memory" or "sqlite" or "influxdb"))
-            return AppError.Validation("Backend must be one of: memory, sqlite, influxdb.");
+        // The pre-ADR-0024 spelling of "database" is accepted and stored under its new name, so an
+        // operator retyping what their old compose file said does not get a validation error.
+        if (backend == MetricsOptions.LegacyDatabaseBackendName) backend = "database";
+        if (backend is not ("memory" or "database" or "influxdb"))
+            return AppError.Validation("Backend must be one of: memory, database, influxdb.");
         if (command.RetentionDays is < 1 or > 365)
             return AppError.Validation("RetentionDays must be between 1 and 365.");
 
@@ -103,7 +106,7 @@ public sealed class UpdateMetricsConfig(
         var config = new MetricsConfig(
             Backend: backend,
             RetentionDays: command.RetentionDays,
-            HistoryAvailable: backend is "sqlite" or "influxdb",
+            HistoryAvailable: backend is "database" or "influxdb",
             Influx: new MetricsInfluxConfig(
                 Url: url,
                 Org: org,

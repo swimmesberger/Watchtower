@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Watchtower.Application.Persistence;
 
 /// <summary>
-/// Central EF Core database context for Watchtower (SQLite).
+/// Central EF Core database context for Watchtower (PostgreSQL — ADR-0024).
 /// <c>[GenerateDbSets]</c> emits a <c>DbSet&lt;T&gt;</c> per <c>[EntityConfiguration]</c> class
 /// (across referenced assemblies) plus the <c>ConfigureEntities(ModelBuilder)</c> method that
 /// applies every discovered configuration.
