@@ -11,7 +11,10 @@ pinned once via `ElarionVersion` in [`Directory.Packages.props`](../Directory.Pa
 | `Elarion.EntityFrameworkCore` | `Watchtower.Application` | `[GenerateDbSets]` / `[EntityConfiguration]` and the DbContext generator (provider-neutral; used here with the SQLite provider). |
 | `Elarion.AspNetCore` | `Watchtower.Api` | ASP.NET host glue: `MapElarionJsonRpc`, `MapElarionEndpoints`, and the `[assembly: GenerateModuleBootstrapper]` trigger. |
 | `Elarion.JsonRpc` | `Watchtower.Api` | JSON-RPC transport, `JsonRpcDispatcher`, `JsonRpcSchemaExporter`. |
+| `Elarion.AspNetCore.Mcp` | `Watchtower.Api` | Projects the same handlers as MCP tools. |
+| `Elarion.Settings` / `.EntityFrameworkCore` / `.Configuration` | `Watchtower.Application`, `Watchtower.Api` | The versioned settings store (`ISettingsStore`, optimistic `expectedVersion` writes), its EF-backed table, and the `IConfiguration` provider over it. |
 | `@swimmesberger/elarion-jsonrpc-client-generator` | `src/watchtower-web` (dev dependency) | Generates the TypeScript RPC types + Zod schemas from `rpc-schema.json`. |
+| `@swimmesberger/elarion-contributions` | `src/watchtower-web` | The frontend module/contribution model the SPA's `src/modules/` folders plug into. |
 
 ## Integration points
 
@@ -34,6 +37,21 @@ pinned once via `ElarionVersion` in [`Directory.Packages.props`](../Directory.Pa
   path: `dotnet run --project` runs the app with its CWD set to the project directory, so a bare relative
   path writes to `src/Watchtower.Api/` instead of the repo-root file the toolchain reads.
 
-To upgrade the framework, bump `ElarionVersion` (and the npm generator version in
-[`src/watchtower-web/package.json`](../src/watchtower-web/package.json)), then rebuild and re-export
-the schema.
+## Upgrading
+
+Keep the .NET and npm sides on the **same** Elarion version — the RPC schema is the contract between
+them, and a generator from a different version can silently emit a client for a different schema shape.
+
+1. Bump `ElarionVersion` in [`Directory.Packages.props`](../Directory.Packages.props), and both
+   `@swimmesberger/*` versions in [`src/watchtower-web/package.json`](../src/watchtower-web/package.json)
+   (`elarion-jsonrpc-client-generator` and `elarion-contributions`) to match.
+2. `dotnet build Watchtower.slnx -c Release` and fix every `EL*` generator diagnostic at its cause —
+   they are the generators enforcing framework conventions, never something to suppress. Look each id up
+   in Elarion's `reference/diagnostics` page.
+3. `dotnet ef migrations has-pending-model-changes --project src/Watchtower.Application --startup-project src/Watchtower.Api`
+   — a framework table whose shape changed (the Elarion `settings` table, for one) shows up here and
+   needs a migration.
+4. `dotnet test Watchtower.slnx -c Release`, then re-export the schema (see above) and run
+   `npm ci && npm run generate:rpc && npm run typecheck && npm run build` in `src/watchtower-web`.
+
+The current pin is `0.2.6`.

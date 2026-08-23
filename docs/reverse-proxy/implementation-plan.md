@@ -4,6 +4,7 @@
 > Branch/worktree: `worktree-reverse-proxy-plan`.
 > Grounded against the current code (Stacks module, deploy pipeline, host wiring, web modules, deploy
 > manifest) and Elarion `0.2.3-preview.79.1`.
+> Re-verified unchanged on `0.2.6` (2026-08-23).
 
 ## 1. Goal
 
