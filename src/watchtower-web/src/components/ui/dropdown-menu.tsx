@@ -1,4 +1,5 @@
 import { DropdownMenu as Menu } from 'radix-ui'
+import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export const DropdownMenu = Menu.Root
@@ -42,6 +43,58 @@ export function DropdownMenuItem({
       )}
       {...props}
     />
+  )
+}
+
+export const DropdownMenuRadioGroup = Menu.RadioGroup
+
+/** A radio item: the dot shows on the selected one. */
+export function DropdownMenuRadioItem({
+  className,
+  children,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof Menu.RadioItem>) {
+  return (
+    <Menu.RadioItem
+      className={cn(
+        'relative flex cursor-pointer select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none',
+        'focus:bg-surface-2 data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+        className,
+      )}
+      {...props}
+    >
+      <span className="absolute left-2 flex size-3.5 items-center justify-center">
+        <Menu.ItemIndicator>
+          <span className="block size-2 rounded-full bg-current" />
+        </Menu.ItemIndicator>
+      </span>
+      {children}
+    </Menu.RadioItem>
+  )
+}
+
+/** A checkbox item: the check shows when checked. */
+export function DropdownMenuCheckboxItem({
+  className,
+  children,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof Menu.CheckboxItem>) {
+  return (
+    <Menu.CheckboxItem
+      className={cn(
+        'relative flex cursor-pointer select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none',
+        'focus:bg-surface-2 data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+        className,
+      )}
+      {...props}
+    >
+      <span className="absolute left-2 flex size-3.5 items-center justify-center">
+        <Menu.ItemIndicator>
+          <Check className="size-3.5" />
+        </Menu.ItemIndicator>
+      </span>
+      {children}
+    </Menu.CheckboxItem>
   )
 }
 

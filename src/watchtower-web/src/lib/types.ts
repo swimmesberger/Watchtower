@@ -946,6 +946,55 @@ export interface BackupStackConfig {
   quiesceMode: BackupQuiesceMode
 }
 
+/**
+ * Per-service backup settings configured in the UI (ADR-0020), in the compose labels' own value
+ * syntax — `exclude` stands in for `watchtower.backup.exclude=true`, `stop` for `watchtower.backup.stop`,
+ * `dump` for `watchtower.backup.dump`. A label on the deployed service always wins.
+ */
+export interface BackupServiceOverride {
+  service: string
+  exclude: boolean
+  /** Omitted on the wire when not set. */
+  stop?: 'true' | 'false' | 'pause' | null
+  /** Omitted on the wire when not set. */
+  dump?: 'false' | 'postgres' | null
+}
+
+/** What the next backup run would do with one container. */
+export type BackupServiceAction = 'stop' | 'pause' | 'keep' | 'dump' | 'excluded' | 'notRunning'
+
+/** Where a per-service decision came from: the mount rule / stack default, a compose label, or a UI override. */
+export type BackupSettingSource = 'default' | 'label' | 'override'
+
+/** One row of the backup plan preview. */
+export interface BackupServicePreview {
+  service: string
+  /** Absent for an override whose service is not deployed right now. */
+  container?: string | null
+  state: 'running' | 'not running' | 'absent' | string
+  volumes: string[]
+  action: BackupServiceAction
+  reason: string
+  source: BackupSettingSource
+  /** The raw compose labels; omitted on the wire when the service carries none. */
+  excludeLabel?: string | null
+  stopLabel?: string | null
+  dumpLabel?: string | null
+  /** Omitted on the wire when the service has no override. */
+  override?: BackupServiceOverride | null
+}
+
+/** The dry run of a backup for a stack as deployed right now (ADR-0020). */
+export interface BackupPlanPreview {
+  deployed: boolean
+  volumes: string[]
+  excludedVolumes: { name: string; reason: 'label' | 'dump'; detail: string }[]
+  services: BackupServicePreview[]
+  warnings: string[]
+  /** The UI overrides rendered as compose labels to paste; omitted when there are none. */
+  labelSnippet?: string | null
+}
+
 export interface BackupRunAccepted {
   backupEventId: number
   status: string
