@@ -389,7 +389,12 @@ public sealed class CertificateStoreTests {
 
         Assert.Equal(1, await CountAsync(a));
         var winner = (await RowAsync(a, Host))!.Thumbprint;
-        // Whichever landed, both are serving it — each store re-reads the row it wrote through.
+        // Whichever landed, both serve it after the reload the change signal performs in production.
+        // Without the reload the outcome is timing-dependent: a store that lost the race re-reads the
+        // winner's row, but when the two installs happen to serialize cleanly both writes succeed and
+        // the earlier store's cache legitimately holds its own certificate until the signal arrives.
+        await Store(a).ReloadAsync(Ct);
+        await Store(b).ReloadAsync(Ct);
         Assert.Equal(winner, Store(a).SelectCertificate(Host)!.Thumbprint);
         Assert.Equal(winner, Store(b).SelectCertificate(Host)!.Thumbprint);
 
@@ -402,6 +407,9 @@ public sealed class CertificateStoreTests {
 
         Assert.Equal(1, await CountAsync(a));
         var renewed = (await RowAsync(a, Host))!.Thumbprint;
+        // Same reasoning as above: convergence is the signal-driven reload's job, not the race's.
+        await Store(a).ReloadAsync(Ct);
+        await Store(b).ReloadAsync(Ct);
         Assert.Equal(renewed, Store(a).SelectCertificate(Host)!.Thumbprint);
         Assert.Equal(renewed, Store(b).SelectCertificate(Host)!.Thumbprint);
     }
