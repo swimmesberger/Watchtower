@@ -62,8 +62,8 @@ front of Watchtower, and blank `ProxyHttp` when nothing publishes 80 (no certifi
 then). With **both** blank there is no ingress at all, and the single remaining endpoint serves routes
 and the UI together, as it did before the split.
 
-Everything except the three `Kestrel__*` variables and `Proxy:Yarp:CertPath` is editable at runtime
-under **Settings → Reverse proxy**, and applies immediately. Env vars win over the UI
+Everything except the three `Kestrel__*` variables is editable at runtime under
+**Settings → Reverse proxy**, and applies immediately. Env vars win over the UI
 ([ADR-0014](../decisions/0014-env-wins-runtime-settings.md)): a setting supplied that way shows as
 pinned and read-only until the variable is removed.
 
@@ -138,9 +138,49 @@ which is also how the challenge is answered.
 
 ### Storage and renewal
 
-PEM files and the ACME account key live under **`/data/proxy-certs`**, inside the existing data
-volume — nothing extra to mount, and they survive a container recreate. The path is read at startup
-(`WATCHTOWER__PROXY__YARP__CERTPATH`) and is shown read-only in the UI.
+Certificates are **rows in the database**, not files
+([ADR-0024](../decisions/0024-postgresql-only-and-state-in-the-database.md)): the leaf and its
+intermediates as PEM, the private key, the validity, the issuer and the thumbprint, one row per host
+in `proxy_certificates`. The ACME account is a row too, one per directory URL, and the live HTTP-01
+challenge tokens are rows with an expiry. `Proxy:Yarp:CertPath` is gone, and so is the
+`/data/proxy-certs` directory it named — an existing one is imported once on the first start after
+the upgrade and can then be deleted ([upgrading.md](../upgrading.md)).
+
+Why rows: the in-memory SNI map is a *cache* of that table, so **every** instance answers every routed
+host with the same certificate, whichever instance obtained it. A file on one node's volume could not.
+
+**Encryption at rest is optional and worth turning on.** Set
+`WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase and the private keys —
+certificates, the ACME account, the identity-assertion signing key — are stored AES-256-GCM encrypted
+under a key derived from it. Keep it out of the database (that is the entire point) and out of your
+backups of the database. It covers the certificate keys, the ACME account key, the identity-assertion
+signing key and the ASP.NET data-protection key ring. Left unset, all four are stored exactly as the
+files on the data volume were — unencrypted — and the host says so once at startup. Setting it later
+works: certificates are re-encrypted as they renew, the signing key and the ACME account on the next
+start, and the key ring for keys generated from then on. Losing a configured secret invalidates sessions
+and forces every certificate to be reissued, which is the same blast radius losing the key directory
+always had.
+
+### Which instance orders
+
+Every instance **serves** certificates from the table; exactly one **orders** them. That one is
+whichever instance currently holds the `acme-issuer` role lease, a row in `elarion_role_leases`
+renewed on a heartbeat. Without the lease, three instances would open three ACME orders for every
+host and spend the deployment's Let's Encrypt rate limit three times over to obtain one certificate.
+
+The holder logs `This instance holds the acme-issuer lease and is ordering certificates.`; the others
+log the corresponding "released" line naming the holder. **Renew now** on a non-holder is refused with
+a message naming the instance that can do it — there is no request forwarding between instances yet,
+and the holder's own pass picks the host up within five minutes anyway.
+
+### How the other instances find out
+
+A route, realm or certificate write bumps an internal setting, `Watchtower:Proxy:RoutesVersion`, and
+every instance watches it through the settings store's PostgreSQL `LISTEN/NOTIFY` channel and
+re-projects its route table and SNI map. It is internal: it never appears in the Settings UI and is not
+one of the proxy card's paths. Do not pin it through the environment — that would freeze the one write
+that tells the other instances anything changed. The instance handling the request also re-projects directly, so
+it is correct before it answers — the signal is what brings the rest along a moment later.
 
 Renewal starts once a certificate is into the **last third of its lifetime** — a fraction rather than
 a fixed 30 days, so a 90-day Let's Encrypt certificate and a 24-hour test certificate both get a
@@ -225,7 +265,8 @@ attempt. It refreshes every 30 seconds while the page is open.
 
 **Renew now** (`proxy.renewCertificate`) orders immediately, ignoring both the renewal window and any
 backoff rung. It is the escape hatch for "I have just fixed the DNS and do not want to wait six
-hours". It only accepts hosts the proxy already wants a certificate for.
+hours". It only accepts hosts the proxy already wants a certificate for, and only on the instance
+holding the `acme-issuer` lease — elsewhere it answers with a conflict naming that instance.
 
 ## Troubleshooting
 

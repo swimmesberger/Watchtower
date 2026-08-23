@@ -35,6 +35,14 @@ public sealed class RenewCertificate(
         if (known is null || !known.Desired)
             return AppError.Validation($"'{host}' is not a host the in-process proxy serves.");
 
+        // Exactly one instance orders certificates (ADR-0024 decision 5), and it may not be this one.
+        // Refused rather than forwarded: a holder proxy needs the advertised address on the lease row
+        // and an authenticated hop between instances, and half of it — a silent forward with no error
+        // path — would be worse than saying where the work happens. The holder's own pass picks the host
+        // up within five minutes regardless, so waiting is always a valid answer.
+        if (certificates.IssuanceUnavailableReason() is { } unavailable)
+            return AppError.Conflict(unavailable);
+
         await audit.RecordAsync(
             CertificateIssuer.AuditCategory, "cert.renew.request", host, detail: null,
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);

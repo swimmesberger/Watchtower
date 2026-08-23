@@ -287,9 +287,16 @@ could not both be served — and `stack_templates.name`, because a template name
 picks a category by in the one management surface there is, and that surface is operator-realm-only,
 so one flat namespace is exactly what they see.
 
-Signing material: one ES256 key pair, generated on first use, stored under `/data`
-(`Auth:KeyPath`, default `/data/auth-keys/`). ASP.NET Data Protection keys (cookie
-encryption) are persisted to the same directory — otherwise every restart logs everyone out.
+Signing material: one ES256 key pair, created on first start and stored as the `identity-assertion`
+row of `signing_keys`; the ASP.NET Data Protection key ring is persisted to the same database
+(`PersistKeysToDbContext`, table `data_protection_keys`) — otherwise every restart logs everyone out,
+and on more than one instance a cookie minted on node A would be unreadable on node B
+([ADR-0024](../decisions/0024-postgresql-only-and-state-in-the-database.md)). Both are encrypted at
+rest when `Auth:KeyProtectionSecret` is set — the signing key as an AES-GCM column, the ring through a
+`KeyProtectorXmlEncryptor` wrapping each `<key>` element — and stored as the files were when it is not.
+Adopting the secret later encrypts the signing key on the next start and the ring for keys generated
+from then on; existing ring elements stay plaintext and keep loading, because the key ring is
+append-only and rewriting it is how a ring loses keys.
 
 ## 4. Sessions & tokens
 
@@ -495,9 +502,9 @@ existing convention for non-RPC/external surfaces):
 **Host wiring** (`Program.cs`): standard cookie authentication for the native UI session +
 `UseElarionCurrentUser` snapshotting the principal (replacing the `AnonymousCurrentUser`
 registration at `Program.cs:87` when `Auth:Enabled`); ASP.NET rate limiter on the login endpoint;
-Data Protection persisted to `/data`.
+Data Protection persisted to the database.
 
-**Options:** `AuthOptions { Enabled, Host, SessionLifetime, AbsoluteSessionLifetime, KeyPath }`
+**Options:** `AuthOptions { Enabled, Host, SessionLifetime, AbsoluteSessionLifetime, KeyProtectionSecret }`
 alongside `ProxyOptions` in `Config/WatchtowerOptions.cs`; bootstrap password via env var (§2.6).
 
 ## 8. Frontend

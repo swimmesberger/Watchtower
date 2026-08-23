@@ -60,7 +60,7 @@ environment:
   # WATCHTOWER__AUTH__HOST: watchtower.example.com
   # Optional tuning:
   # WATCHTOWER__AUTH__COOKIESECURE: "Auto"                     # Auto | Always | Never (default Auto)
-  # WATCHTOWER__AUTH__KEYPATH: "/data/auth-keys"               # signing + data-protection keys (persist this!)
+  # WATCHTOWER__AUTH__KEYPROTECTIONSECRET: "<32+ random chars>" # encrypt the stored keys at rest (recommended)
   # WATCHTOWER__AUTH__LOGINRATELIMITPERMINUTE: "10"            # per-IP login backstop
   # WATCHTOWER__AUTH__SESSIONLIFETIMEHOURS: "12"               # idle lifetime (sliding)
   # WATCHTOWER__AUTH__ABSOLUTESESSIONLIFETIMEDAYS: "7"         # hard cap regardless of activity
@@ -347,8 +347,35 @@ The **`Secure`** attribute is where deployments differ, controlled by `WATCHTOWE
   recovery path.
 - **`Never`** — only for a lab/LAN with no TLS anywhere; the cookie then travels in the clear.
 
-The signing and data-protection keys live under `Auth:KeyPath` (default `/data/auth-keys`). **Keep this
-on a persistent volume** — losing it signs everyone out on restart.
+## Where the keys live
+
+The ES256 identity-assertion signing key and the ASP.NET data-protection key ring are **rows in the
+database** ([ADR-0024](../decisions/0024-postgresql-only-and-state-in-the-database.md)), in
+`signing_keys` and `data_protection_keys`. `Auth:KeyPath` and `/data/auth-keys` are gone; an existing
+directory is imported once on the first start after the upgrade, which is what keeps people signed in
+across it ([upgrading.md](../upgrading.md)).
+
+Rows rather than files because a token or cookie minted on one instance has to be readable on every
+other: every instance publishes the same JWKS, stamps the same `kid`, and can read what any of them
+protected.
+
+**Back up the database.** Losing these keys is what signing everyone out looks like now, and it
+invalidates the assertions apps have cached a `kid` for.
+
+Optionally set `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase: the private keys
+are then stored AES-256-GCM encrypted under a key derived from it, so a database dump is not a key
+compromise. That covers the signing key, the certificate keys, the ACME account key **and** the
+data-protection key ring — each ring element is wrapped, so `data_protection_keys` holds no readable
+key material. Keep the secret out of the database and out of the backups of it.
+
+Without it, all of them are stored as the files were — unencrypted — and the host logs one warning at
+startup saying so.
+
+Setting it on an installation that has been running without it is safe and needs no migration step,
+but it is not retroactive in one go: the signing key and the ACME account key are encrypted on the
+next start, certificates as they renew, and the key ring only for keys generated from then on. Ring
+elements written earlier stay plaintext and keep loading — the ring is append-only, and rewriting it
+is how a ring loses keys. Rotate the ring (or accept the wait) if you need every element covered.
 
 ## Login rate limiting
 

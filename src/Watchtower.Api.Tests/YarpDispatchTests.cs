@@ -476,18 +476,22 @@ public sealed class YarpDispatchTests {
         using var client = factory.CreateApiClient(8081);
         await factory.ApplyProxyAsync();
         var challenges = factory.Services.GetRequiredService<AcmeHttpChallengeStore>();
-        using var published = challenges.Publish("token-abc", "token-abc.key-authorization");
+        // A realistic base64url token: the store refuses anything that is not shaped like one, so that
+        // a stranger looping over invented tokens never reaches the database.
+        const string token = "dG9rZW4tYWJjLWNoYWxsZW5nZS12YWx1ZQ";
+        await using var published = await challenges.PublishAsync(
+            token, $"{token}.key-authorization", "not-a-route.example.invalid", ct: Ct);
 
         var answered = await client.GetAsync(
-            "http://not-a-route.example.invalid/.well-known/acme-challenge/token-abc", Ct);
+            $"http://not-a-route.example.invalid/.well-known/acme-challenge/{token}", Ct);
 
         Assert.Equal(HttpStatusCode.OK, answered.StatusCode);
-        Assert.Equal("token-abc.key-authorization", await Body(answered));
+        Assert.Equal($"{token}.key-authorization", await Body(answered));
 
         // A token nobody issued is still the challenge middleware's 404, not the dispatcher's — the
         // distinction does not show in the status, which is the point: neither one says what is here.
         var unknown = await client.GetAsync(
-            "http://not-a-route.example.invalid/.well-known/acme-challenge/never-issued", Ct);
+            "http://not-a-route.example.invalid/.well-known/acme-challenge/bmV2ZXItaXNzdWVkLXRva2Vu", Ct);
 
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
     }

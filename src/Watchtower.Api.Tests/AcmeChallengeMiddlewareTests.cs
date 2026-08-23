@@ -36,7 +36,7 @@ public sealed class AcmeChallengeMiddlewareTests {
         using var client = factory.CreateApiClient();
         await factory.AddRouteAsync(AppDomain, AccessMode.Public, tlsEnabled: true);
         await factory.ApplyProxyAsync();
-        using var published = Publish(factory);
+        await using var published = await PublishAsync(factory);
 
         foreach (var url in new[] {
             $"http://{AppDomain}{Challenge(Token)}",
@@ -62,12 +62,38 @@ public sealed class AcmeChallengeMiddlewareTests {
         await factory.AddRouteAsync(AppDomain, AccessMode.Public, tlsEnabled: false);
         await factory.ApplyProxyAsync();
 
-        var response = await client.GetAsync($"http://{AppDomain}{Challenge("never-issued")}", Ct);
+        var response = await client.GetAsync(
+            $"http://{AppDomain}{Challenge("bmV2ZXItaXNzdWVkLXRva2Vu")}", Ct);
 
         // Not a fall-through: forwarding it would let any stranger ask "is this domain proxied, and by
         // what?" simply by requesting a token that was never minted.
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Empty(await response.Content.ReadAsStringAsync(Ct));
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// A last segment that is not shaped like an ACME token is answered without asking the store
+    /// anything. The endpoint is anonymous by protocol and reachable on port 80 for every host the proxy
+    /// serves, so a stranger's loop over invented paths must cost a character scan and not a query.
+    /// </summary>
+    /// <remarks>
+    /// Still a 404 rather than a fall-through, for the same reason the unknown-token case is: what the
+    /// status must not do is tell a stranger whether the domain is proxied and to what.
+    /// </remarks>
+    [Theory]
+    [InlineData("short")]
+    [InlineData("this-one-is-long-enough-but-has-a-plus+sign")]
+    [InlineData("%2e%2e%2f%2e%2e%2fetc%2fpasswd-and-then-some")]
+    public async Task AMalformedToken_Is404_AndIsNotForwarded(string token) {
+        using var factory = WatchtowerApiFactory.WithYarpProxy();
+        using var client = factory.CreateApiClient();
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public, tlsEnabled: false);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"http://{AppDomain}{Challenge(token)}", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Empty(factory.Forwarder.Forwarded);
     }
 
@@ -85,7 +111,7 @@ public sealed class AcmeChallengeMiddlewareTests {
         using var client = factory.CreateApiClient();
         await factory.AddRouteAsync(AppDomain, AccessMode.Public, tlsEnabled: false);
         await factory.ApplyProxyAsync();
-        using var published = Publish(factory);
+        await using var published = await PublishAsync(factory);
 
         var response = await client.GetAsync($"http://{AppDomain}{path}", Ct);
 
@@ -104,7 +130,7 @@ public sealed class AcmeChallengeMiddlewareTests {
         using var client = factory.CreateApiClient();
         await factory.AddRouteAsync(AppDomain, AccessMode.Restricted, tlsEnabled: true);
         await factory.ApplyProxyAsync();
-        using var published = Publish(factory);
+        await using var published = await PublishAsync(factory);
 
         var response = await client.GetAsync($"http://{AppDomain}{Challenge(Token)}", Ct);
 
@@ -120,20 +146,21 @@ public sealed class AcmeChallengeMiddlewareTests {
         using var client = factory.CreateApiClient();
         var store = factory.Services.GetRequiredService<AcmeHttpChallengeStore>();
 
-        var published = store.Publish(Token, KeyAuthorization);
-        Assert.Equal(1, store.Count);
+        var published = await store.PublishAsync(Token, KeyAuthorization, "app.example.invalid", ct: Ct);
+        Assert.Equal(1, await store.CountAsync(Ct));
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(Challenge(Token), Ct)).StatusCode);
 
-        published.Dispose();
-        // Idempotent: an order that fails after the using has already unwound must not throw here.
-        published.Dispose();
+        await published.DisposeAsync();
+        // Idempotent: an order that fails after the await using has already unwound must not throw here.
+        await published.DisposeAsync();
 
-        Assert.Equal(0, store.Count);
+        Assert.Equal(0, await store.CountAsync(Ct));
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Challenge(Token), Ct)).StatusCode);
     }
 
-    private static IDisposable Publish(WatchtowerApiFactory factory) =>
-        factory.Services.GetRequiredService<AcmeHttpChallengeStore>().Publish(Token, KeyAuthorization);
+    private static Task<IAsyncDisposable> PublishAsync(WatchtowerApiFactory factory) =>
+        factory.Services.GetRequiredService<AcmeHttpChallengeStore>()
+            .PublishAsync(Token, KeyAuthorization, "app.example.invalid", ct: Ct);
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 }

@@ -1,44 +1,88 @@
-using System.Security.Cryptography;
-using System.Text.Json;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
 using Xunit;
 
 namespace Watchtower.Application.Tests;
 
 /// <summary>
-/// The ACME account key on disk. An ACME account is rate-limited per key and accumulates issuance
-/// history, so the properties that matter are all about <em>not</em> losing one: a corrupt file is fatal
-/// rather than replaced, a second load reuses what is there, and the registration survives a restart.
+/// The ACME account in the database (ADR-0024). An ACME account is rate-limited per key and accumulates
+/// issuance history, so the properties that matter are all about <em>not</em> ending up with a second
+/// one: a concurrent create yields one key, a second load reuses it, and the registration survives a
+/// restart on any instance.
 /// </summary>
-public sealed class AcmeAccountKeyTests : IDisposable {
+public sealed class AcmeAccountKeyTests {
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private const string DirectoryUrl = "https://ca.test/directory";
 
-    private readonly string _root =
-        Path.Combine(Path.GetTempPath(), "watchtower-acme-account-tests", Guid.NewGuid().ToString("N"));
-
-    private AcmeAccountKey Load() => AcmeAccountKey.Load(_root, DirectoryUrl, NullLogger.Instance);
-
     [Fact]
-    public void AFirstLoad_GeneratesAndPersistsAPrivateKey() {
-        using var account = Load();
+    public async Task AFirstLoad_GeneratesAndPersistsAPrivateKey() {
+        using var host = AuthTestHost.Start();
 
-        var keyPath = Path.Combine(_root, AcmeAccountKey.KeyFileName);
-        Assert.True(File.Exists(keyPath));
+        using var account = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct);
+
         Assert.Null(account.AccountUrl);
-        Assert.Contains("PRIVATE KEY", File.ReadAllText(keyPath));
-        if (!OperatingSystem.IsWindows())
-            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(keyPath));
+        var row = await RowAsync(host);
+        Assert.NotNull(row);
+        Assert.NotEmpty(row.PrivateKey);
+        Assert.Equal(DirectoryUrl, row.DirectoryUrl);
     }
 
     [Fact]
-    public void ASecondLoad_ReusesTheSameKey() {
+    public async Task ASecondLoad_ReusesTheSameKey() {
+        using var host = AuthTestHost.Start();
         string first;
-        using (var account = Load()) first = AcmeJws.Thumbprint(account.Key);
+        using (var account = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct))
+            first = AcmeJws.Thumbprint(account.Key);
 
-        using var reloaded = Load();
+        using var reloaded = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct);
 
         Assert.Equal(first, AcmeJws.Thumbprint(reloaded.Key));
+    }
+
+    /// <summary>
+    /// The reason the insert is unconditional rather than read-then-write: two instances starting at the
+    /// same moment must not each register an account, or the CA ends up holding two for one deployment,
+    /// each with its own rate-limit budget and half the issuance history.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentCreates_ProduceOneKey() {
+        using var host = AuthTestHost.Start();
+        using var other = host.Restart();
+
+        var loads = await Task.WhenAll(
+            Store(host).LoadOrCreateAsync(DirectoryUrl, Ct),
+            Store(other).LoadOrCreateAsync(DirectoryUrl, Ct),
+            Store(host).LoadOrCreateAsync(DirectoryUrl, Ct));
+
+        var thumbprints = loads.Select(a => AcmeJws.Thumbprint(a.Key)).Distinct().ToArray();
+        foreach (var account in loads) account.Dispose();
+        Assert.Single(thumbprints);
+        Assert.Equal(1, await CountAsync(host));
+    }
+
+    /// <summary>
+    /// Adopting the secret on a running installation encrypts the account key where it is read, without
+    /// a migration step — and without minting a second account, which is the one thing that must never
+    /// happen to an ACME account.
+    /// </summary>
+    [Fact]
+    public async Task AdoptingTheSecretLater_EncryptsTheExistingAccountKey() {
+        using var plain = AuthTestHost.Start();
+        string thumbprint;
+        using (var account = await Store(plain).LoadOrCreateAsync(DirectoryUrl, Ct))
+            thumbprint = AcmeJws.Thumbprint(account.Key);
+        Assert.Equal(KeyProtector.None, (await RowAsync(plain))!.Protection);
+
+        using var encrypting = plain.Restart(
+            ("Watchtower:Auth:KeyProtectionSecret", "a-long-enough-passphrase-for-a-test"));
+        using var reloaded = await Store(encrypting).LoadOrCreateAsync(DirectoryUrl, Ct);
+
+        Assert.Equal(thumbprint, AcmeJws.Thumbprint(reloaded.Key));
+        Assert.Equal(KeyProtector.AesGcmV1, (await RowAsync(encrypting))!.Protection);
+        Assert.Equal(1, await CountAsync(encrypting));
     }
 
     /// <summary>
@@ -47,64 +91,75 @@ public sealed class AcmeAccountKeyTests : IDisposable {
     /// to connect the two.
     /// </summary>
     [Fact]
-    public void ACorruptKeyFile_Throws() {
-        Directory.CreateDirectory(_root);
-        File.WriteAllText(Path.Combine(_root, AcmeAccountKey.KeyFileName), "not a key\n");
+    public async Task ACorruptKey_Throws() {
+        using var host = AuthTestHost.Start();
+        using (var _ = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct)) { }
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            await db.AcmeAccounts.Where(a => a.DirectoryUrl == DirectoryUrl)
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.PrivateKey, "not a key\n"u8.ToArray()), Ct);
+        }
 
-        Assert.ThrowsAny<CryptographicException>(() => Load());
+        await Assert.ThrowsAnyAsync<System.Security.Cryptography.CryptographicException>(
+            () => Store(host).LoadOrCreateAsync(DirectoryUrl, Ct));
     }
 
     [Fact]
-    public void TheAccountUrl_RoundTripsAcrossLoads() {
-        using (var account = Load()) {
-            account.SetAccountUrl("https://ca.test/acct/42");
+    public async Task TheAccountUrl_RoundTripsAcrossLoads() {
+        using var host = AuthTestHost.Start();
+        using (var account = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct)) {
+            await account.SetAccountUrlAsync("https://ca.test/acct/42", Ct);
             Assert.Equal("https://ca.test/acct/42", account.AccountUrl);
         }
 
-        using var reloaded = Load();
+        using var reloaded = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct);
         Assert.Equal("https://ca.test/acct/42", reloaded.AccountUrl);
-
-        var stored = JsonSerializer.Deserialize(
-            File.ReadAllText(Path.Combine(_root, AcmeAccountKey.AccountFileName)),
-            AcmeJsonContext.Default.AcmeAccountFile);
-        Assert.Equal(DirectoryUrl, stored!.DirectoryUrl);
+        Assert.Equal("https://ca.test/acct/42", (await RowAsync(host))!.AccountUrl);
     }
 
     [Fact]
-    public void ClearingTheAccountUrl_SurvivesAReload() {
-        using (var account = Load()) {
-            account.SetAccountUrl("https://ca.test/acct/42");
-            account.ClearAccountUrl();
+    public async Task ClearingTheAccountUrl_SurvivesAReload() {
+        using var host = AuthTestHost.Start();
+        using (var account = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct)) {
+            await account.SetAccountUrlAsync("https://ca.test/acct/42", Ct);
+            await account.ClearAccountUrlAsync(Ct);
         }
 
-        using var reloaded = Load();
+        using var reloaded = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct);
         Assert.Null(reloaded.AccountUrl);
     }
 
     /// <summary>
-    /// An account exists only at the CA that issued it. A directory folder copied between deployments —
-    /// or a directory URL edited in place — must not present one CA's account URL to another.
+    /// An account exists only at the CA that issued it. Pointing Watchtower at a different directory has
+    /// to produce a fresh key and a fresh registration, never one CA's account URL presented to another —
+    /// which is what keying the row by directory URL buys.
     /// </summary>
     [Fact]
-    public void AnAccountUrlFromAnotherDirectory_IsIgnored() {
-        using (var account = Load()) account.SetAccountUrl("https://ca.test/acct/42");
+    public async Task AnotherDirectory_GetsItsOwnAccount() {
+        using var host = AuthTestHost.Start();
+        using var here = await Store(host).LoadOrCreateAsync(DirectoryUrl, Ct);
+        await here.SetAccountUrlAsync("https://ca.test/acct/42", Ct);
 
-        using var elsewhere = AcmeAccountKey.Load(_root, "https://other-ca.test/directory", NullLogger.Instance);
+        using var elsewhere = await Store(host).LoadOrCreateAsync("https://other-ca.test/directory", Ct);
 
         Assert.Null(elsewhere.AccountUrl);
+        Assert.NotEqual(AcmeJws.Thumbprint(here.Key), AcmeJws.Thumbprint(elsewhere.Key));
+        Assert.Equal(2, await CountAsync(host));
     }
 
-    [Fact]
-    public void AMissingOrUnreadableAccountFile_MeansNotRegistered() {
-        using (var _ = Load()) { }
-        File.WriteAllText(Path.Combine(_root, AcmeAccountKey.AccountFileName), "{ not json");
+    // ── Wiring ───────────────────────────────────────────────────────────────
 
-        using var account = Load();
+    private static AcmeAccountStore Store(AuthTestHost host) =>
+        host.Services.GetRequiredService<AcmeAccountStore>();
 
-        Assert.Null(account.AccountUrl);
+    private static async Task<Entities.AcmeAccount?> RowAsync(AuthTestHost host) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.AcmeAccounts.AsNoTracking().FirstOrDefaultAsync(a => a.DirectoryUrl == DirectoryUrl, Ct);
     }
 
-    public void Dispose() {
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+    private static async Task<int> CountAsync(AuthTestHost host) {
+        await using var scope = host.Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>().AcmeAccounts.CountAsync(Ct);
     }
 }

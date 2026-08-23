@@ -38,11 +38,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user; /data holds the data-protection key ring and, when the built-in reverse proxy is
-# enabled, the issued certificates and the ACME account key under /data/proxy-certs — so they survive a
-# recreate in the same named volume, with no second mount to declare (ADR-0022). Watchtower's own
-# records live in PostgreSQL since ADR-0024; the pre-upgrade watchtower.db also sits here until
-# `--import-sqlite` has carried it across (docs/upgrading.md).
+# Non-root user. /data no longer holds any state Watchtower needs: since ADR-0024 the keys, the
+# data-protection key ring, the ACME account and the issued certificates are rows in PostgreSQL like
+# everything else, so any instance can serve any host. The mount stays for the one upgrade that needs
+# it — a pre-upgrade watchtower.db until `--import-sqlite` carries it across, and the old
+# /data/auth-keys and /data/proxy-certs until the first normal start imports them
+# (docs/upgrading.md). A fresh install can drop it.
 RUN groupadd -r watchtower && useradd -r -g watchtower watchtower \
     && mkdir -p /data && chown watchtower:watchtower /data
 

@@ -22,8 +22,7 @@
         "src/Watchtower.Api",
         "--no-build",
         "--",
-        "--Watchtower:DbPath=C:/Users/Simon/AppData/Local/Temp/claude/wt-dev-data/watchtower.db",
-        "--Watchtower:Auth:KeyPath=C:/Users/Simon/AppData/Local/Temp/claude/wt-dev-data/auth-keys"
+        "--Watchtower:Database:ConnectionString=Host=127.0.0.1;Port=5432;Database=watchtower;Username=postgres;Password=postgres"
       ],
       "port": 5080
     }

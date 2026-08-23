@@ -177,7 +177,7 @@ public sealed class AcmeClient : IDisposable {
             ?? throw new AcmeException(
                 null, result.Status, null, "The CA registered the account without returning a Location header.");
 
-        _account.SetAccountUrl(location);
+        await _account.SetAccountUrlAsync(location, ct);
         if (!_loggedTerms) {
             _loggedTerms = true;
             _logger.LogInformation(
@@ -415,7 +415,7 @@ public sealed class AcmeClient : IDisposable {
             if (failure.IsType(AcmeProblemTypes.AccountDoesNotExist) && !signWithJwk && !reregistered) {
                 reregistered = true;
                 _logger.LogWarning("The CA does not know the stored ACME account; registering again.");
-                _account.ClearAccountUrl();
+                await _account.ClearAccountUrlAsync(ct);
                 await _accountGate.WaitAsync(ct);
                 try {
                     if (_account.AccountUrl is null) await RegisterAsync(ct);

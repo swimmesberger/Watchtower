@@ -23,9 +23,16 @@ namespace Watchtower.Application.Services.Yarp;
 /// <c>Teardown</c> cheap: disabling the provider empties the route table, and the listener the host
 /// bound at startup simply stops matching anything.
 /// <para>
-/// Nothing here binds a socket or terminates TLS yet — this is the control plane. The request path
-/// (Kestrel endpoints, the forwarder middleware) and certificate issuance land in later phases; the
-/// seams they plug into are <see cref="ProxyRouteTable"/>, <see cref="YarpListenerState"/> and
+/// Since ADR-0024 the projection has a second trigger besides the local one: every instance watches
+/// <see cref="ProxyChangeSignal"/> and re-projects when any of them writes a route, a realm or a
+/// certificate. The direct <c>ApplyAsync</c> call the write handlers make is kept as the fast local
+/// path — the instance an operator is talking to should be correct before it answers them, not a
+/// notification hop later.
+/// </para>
+/// <para>
+/// Nothing here binds a socket or terminates TLS — this is the control plane. The request path (Kestrel
+/// endpoints, the forwarder middleware) and certificate issuance plug into
+/// <see cref="ProxyRouteTable"/>, <see cref="YarpListenerState"/> and
 /// <see cref="IProxyCertificateManager"/>.
 /// </para>
 /// </remarks>
@@ -36,10 +43,12 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
     private readonly YarpListenerState _listener;
     private readonly IProxyCertificateManager _certs;
     private readonly RouteStatusUpdater _routeStatus;
+    private readonly ProxyChangeSignal _signal;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<YarpProxyProvider> _logger;
     private readonly CancellationTokenSource _cts = new();
     private readonly IDisposable? _optionsSubscription;
+    private IDisposable? _signalSubscription;
     // Serializes the transitions (startup reconcile, runtime enable/disable, refresh) so a toggle
     // flipped twice in quick succession cannot interleave a teardown with a reconcile.
     private readonly SemaphoreSlim _transitionLock = new(1, 1);
@@ -55,6 +64,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
         YarpListenerState listener,
         IProxyCertificateManager certs,
         RouteStatusUpdater routeStatus,
+        ProxyChangeSignal signal,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<YarpProxyProvider> logger) {
         _scopeFactory = scopeFactory;
@@ -63,6 +73,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
         _listener = listener;
         _certs = certs;
         _routeStatus = routeStatus;
+        _signal = signal;
         _options = options;
         _logger = logger;
         _applied = options.CurrentValue.Proxy;
@@ -75,6 +86,12 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
     private static bool IsYarpActive(ProxyOptions o) => o.Enabled && o.ResolveProvider() == ProxyProviderKind.Yarp;
 
     public Task StartAsync(CancellationToken cancellationToken) {
+        // Registered whether or not this provider is the active one, and before the early return below:
+        // the proxy is switchable from the Settings page, so an instance that starts with caddy selected
+        // still has to notice the route changes that happen after somebody switches it to yarp.
+        // ApplyAsync itself no-ops while inactive, so a signal on such an instance costs one read.
+        _signalSubscription ??= _signal.Watch(ApplyAsync);
+
         if (!Enabled) {
             _logger.LogInformation(
                 "In-process reverse proxy inactive (disabled or another provider selected); skipping setup. "
@@ -95,6 +112,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
 
     public void Dispose() {
         _optionsSubscription?.Dispose();
+        _signalSubscription?.Dispose();
         _cts.Dispose();
         _transitionLock.Dispose();
     }

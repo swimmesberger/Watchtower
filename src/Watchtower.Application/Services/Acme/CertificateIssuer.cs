@@ -225,9 +225,13 @@ public sealed class CertificateIssuer(
         var keyAuthorization = AcmeJws.KeyAuthorization(challenge.Token, session.Account.Key);
 
         // ── 5. Publish, then prove to ourselves it is answerable ──────────────
-        // The `using` is what retracts the token on every path out, including the throwing ones — a
-        // challenge left answerable after its order settled is a token any stranger can fetch.
-        using var published = challenges.Publish(challenge.Token, keyAuthorization);
+        // The `await using` is what retracts the row on every path out, including the throwing ones — a
+        // challenge left answerable after its order settled is a token any stranger can fetch. It is a
+        // row rather than process state since ADR-0024, so that the CA's validation request can land on
+        // any instance; the write costs one insert per order, on a path that is already talking to a CA
+        // over the network.
+        await using var published = await challenges.PublishAsync(
+            challenge.Token, keyAuthorization, host, ct: ct);
 
         if (session.SelfCheckEnabled && listener.LocalHttpAddress is { } localAddress) {
             var why = await SelfCheckAsync(localAddress, host, challenge.Token, keyAuthorization, ct);

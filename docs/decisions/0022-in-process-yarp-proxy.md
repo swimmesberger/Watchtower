@@ -64,7 +64,9 @@ question rather than the routing.
    dependency. One order per host, issued eagerly rather than on demand, with a DNS preflight and a
    self-check through the public hostname before the order opens, so a domain whose DNS is not ready
    fails as `AwaitingDns` instead of spending an ACME failure. Certificates and the account key are
-   PEM files under `/data/proxy-certs`, inside the existing data volume.
+   PEM files under `/data/proxy-certs`, inside the existing data volume. *(Superseded by
+   [ADR-0024](0024-postgresql-only-and-state-in-the-database.md): certificates and the ACME account
+   are rows, so any instance can serve any host.)*
 
 5. **Any RFC 8555 CA, not only Let's Encrypt.** `AcmeDirectoryUrl` selects the directory,
    `AcmeCaBundlePath` adds roots to the system trust store (additively — an internal CA's root, not a

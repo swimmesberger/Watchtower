@@ -39,16 +39,16 @@ public sealed class ProxyListenerStateTests {
     }
 
     /// <summary>
-    /// The store is constructible over the configured directory — the check that would otherwise only
-    /// happen inside a container, since nothing in the test host resolves it on its own.
+    /// The store is filled from the database by the host's startup step — the check that would otherwise
+    /// only happen inside a container, since nothing in the test host resolves it on its own. An empty
+    /// table has to produce an empty store rather than a failed start.
     /// </summary>
     [Fact]
-    public void TheCertificateStore_OpensOverTheConfiguredDirectory() {
+    public void TheCertificateStore_IsInitializedByTheHost() {
         using var factory = new WatchtowerApiFactory();
 
         var store = factory.Services.GetRequiredService<CertificateStore>();
 
-        Assert.True(Directory.Exists(store.RootPath));
         Assert.Empty(store.Entries);
         Assert.Null(store.SelectContext("app.example.invalid"));
     }

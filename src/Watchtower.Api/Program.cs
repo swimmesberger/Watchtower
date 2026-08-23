@@ -104,7 +104,7 @@ builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
 // settings live-reload into IOptionsMonitor<WatchtowerOptions> (no restart), but a WATCHTOWER__* env
 // var pins its setting — env is the infrastructure-as-code layer and always wins, and the Settings UI
 // disables pinned fields instead of losing to them. The boot snapshot makes the stored values visible
-// to the pre-DI reads below (Auth:Enabled, Auth:KeyPath), which run before the live provider loads.
+// to the pre-DI reads below (Auth:Enabled), which run before the live provider loads.
 // Ordered before AddWatchtowerServices so those same reads inside it see the stored values too.
 builder.AddElarionSettingsConfiguration();
 RuntimeSettingsLayering.MakeEnvironmentWin(
@@ -288,6 +288,14 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
     // realms' own stored auth hosts and drops the column) and before the providers start, so the first
     // reconcile already serves the converted hostname.
     await scope.ServiceProvider.GetRequiredService<LoginHostConversion>().RunAsync();
+
+    // ADR-0024: the proxy/auth plane's state is rows now, so it has to be read before the process
+    // serves anything. This carries a pre-PostgreSQL installation's key and certificate files into the
+    // database (once), fills the SNI map and loads the identity-assertion signing key. Last, and before
+    // app.RunAsync(), because Kestrel starts listening the moment the host runs: a store filled from a
+    // background task would answer "no certificate" to whatever arrived first, which a visitor sees as
+    // a broken site rather than a slow one.
+    await app.Services.InitializeWatchtowerStateAsync();
 }
 
 namespace Watchtower.Api {

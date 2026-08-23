@@ -1,12 +1,16 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
 
 namespace Watchtower.Application.Services;
 
@@ -48,13 +52,24 @@ public readonly record struct RealmIdentity(string Slug, string? LoginHost, bool
 /// not accepted, so a hostile upstream cannot replay one it received.
 /// <para>
 /// Lifetime is five minutes: this is an assertion about one proxied request, not a bearer credential the
-/// app should store. Rotating the key (deleting the file) therefore invalidates only assertions still in
-/// flight.
+/// app should store. Rotating the key (deleting the <c>signing_keys</c> row) therefore invalidates only
+/// assertions still in flight.
+/// </para>
+/// <para>
+/// The key pair is a row rather than a file since ADR-0024, which is what makes an assertion minted on
+/// one instance verifiable on every other: all of them read the same key, publish the same JWKS and
+/// stamp the same <c>kid</c>.
 /// </para>
 /// </remarks>
 public sealed class AuthTokenSigner : IDisposable {
-    /// <summary>File the PEM-encoded private key is persisted as, under <c>Auth:KeyPath</c>.</summary>
+    /// <summary>
+    /// The file the PEM-encoded private key used to live in, under the removed <c>Auth:KeyPath</c>. Kept
+    /// only so <see cref="FileStateImport"/> can find it once on an upgraded installation.
+    /// </summary>
     public const string KeyFileName = "jwt-es256.key";
+
+    /// <summary>The <see cref="KeyProtector"/> purpose the signing key is encrypted under.</summary>
+    internal const string KeyPurpose = "identity-assertion";
 
     /// <summary>Issuer used when <c>Auth:Host</c> is not configured.</summary>
     public const string DefaultIssuer = "watchtower";
@@ -62,6 +77,8 @@ public sealed class AuthTokenSigner : IDisposable {
     /// <summary>How long a minted assertion is valid.</summary>
     public static readonly TimeSpan TokenLifetime = TimeSpan.FromMinutes(5);
 
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly KeyProtector _protector;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly TimeProvider _time;
     private readonly ILogger<AuthTokenSigner> _logger;
@@ -78,12 +95,137 @@ public sealed class AuthTokenSigner : IDisposable {
     private bool _disposed;
 
     public AuthTokenSigner(
+        IServiceScopeFactory scopeFactory,
+        KeyProtector protector,
         IOptionsMonitor<WatchtowerOptions> options,
         TimeProvider time,
         ILogger<AuthTokenSigner> logger) {
+        _scopeFactory = scopeFactory;
+        _protector = protector;
         _options = options;
         _time = time;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Loads the signing key from the database, creating it on first ever start. Called from the host's
+    /// database initialization, before anything can be served.
+    /// </summary>
+    /// <remarks>
+    /// Eager rather than on first use, and that is the multi-instance requirement rather than a
+    /// preference: every instance has to agree on the key before any of them mints an assertion, or the
+    /// first request after a deployment could be answered with a token whose <c>kid</c> is not in the
+    /// JWKS the app already cached.
+    /// </remarks>
+    public async Task InitializeAsync(CancellationToken ct = default) {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Volatile.Read(ref _material) is not null) return;
+        var material = await LoadAsync(ct);
+        lock (_gate) {
+            // Another caller won; the loser's material is scratch.
+            if (_material is not null) {
+                material.Dispose();
+                return;
+            }
+            Volatile.Write(ref _material, material);
+        }
+    }
+
+    /// <summary>
+    /// Reads the <c>identity-assertion</c> row, creating it if this is the first start of the first
+    /// instance.
+    /// </summary>
+    /// <remarks>
+    /// The insert is unconditional and the unique primary key is the race guard, then everyone re-reads:
+    /// two instances starting together must end up with one key, not two, because a token minted under
+    /// the key that lost would fail verification against the JWKS served by the one that won.
+    /// </remarks>
+    private async Task<SigningMaterial> LoadAsync(CancellationToken ct) {
+        var stored = await ReadKeyAsync(ct);
+        if (stored is null) {
+            await TryCreateKeyAsync(ct);
+            stored = await ReadKeyAsync(ct)
+                     ?? throw new InvalidOperationException(
+                         "The identity-assertion signing key was created but could not be read back.");
+        }
+
+        var key = ECDsa.Create();
+        try {
+            var pem = _protector.UnprotectText(stored.PrivateKey, stored.Protection, KeyPurpose);
+            try {
+                key.ImportFromPem(pem);
+            } catch (Exception ex) when (ex is ArgumentException or CryptographicException) {
+                // Fatal rather than silently replaced: overwriting it would invalidate every assertion an
+                // operator's apps are pinned to, without anyone noticing.
+                throw new CryptographicException(
+                    "The stored identity-assertion signing key could not be read. Restore the "
+                    + "key-protection secret it was written with, or delete the signing_keys row to mint "
+                    + "a new key (which invalidates every assertion apps have cached a kid for).", ex);
+            }
+            await ReprotectAsync(stored, pem, ct);
+            return SigningMaterial.From(key);
+        } catch {
+            key.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Encrypts a signing key that was written before a key-protection secret existed. On load rather
+    /// than by a migration pass, because this is the only moment the plaintext is in hand anyway — and
+    /// because an operator who adopts the secret expects the key to become encrypted without a separate
+    /// step.
+    /// </summary>
+    private async Task ReprotectAsync(SigningKey stored, string pem, CancellationToken ct) {
+        if (!_protector.IsEncrypting || stored.Protection != KeyProtector.None) return;
+        try {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var updated = await db.SigningKeys
+                // Guarded on the row still being unprotected, so two instances starting together do not
+                // both rewrite it — and so this cannot overwrite a row re-encrypted under a different
+                // secret in between.
+                .Where(k => k.Purpose == stored.Purpose && k.Protection == KeyProtector.None)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(k => k.PrivateKey, _protector.ProtectText(pem, KeyPurpose))
+                        .SetProperty(k => k.Protection, _protector.CurrentProtection),
+                    ct);
+            if (updated > 0)
+                _logger.LogInformation("Encrypted the identity-token signing key at rest.");
+        } catch (Exception ex) {
+            // Not fatal: the key was read fine and assertions are being minted. The next start retries.
+            _logger.LogWarning(ex, "Could not encrypt the identity-token signing key at rest.");
+        }
+    }
+
+    private async Task<SigningKey?> ReadKeyAsync(CancellationToken ct) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.SigningKeys.AsNoTracking()
+            .FirstOrDefaultAsync(k => k.Purpose == SigningKey.IdentityAssertionPurpose, ct);
+    }
+
+    private async Task TryCreateKeyAsync(CancellationToken ct) {
+        using var generated = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.SigningKeys.Add(new SigningKey {
+            Purpose = SigningKey.IdentityAssertionPurpose,
+            PrivateKey = _protector.ProtectText(generated.ExportPkcs8PrivateKeyPem(), KeyPurpose),
+            Protection = _protector.CurrentProtection,
+            KeyId = SigningMaterial.ComputeKeyId(generated),
+            CreatedAt = _time.GetUtcNow(),
+        });
+
+        try {
+            await db.SaveChangesAsync(ct);
+            _logger.LogInformation("Generated a new ES256 identity-token signing key.");
+        } catch (DbUpdateException ex)
+            when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation }) {
+            _logger.LogInformation(
+                "Another instance created the identity-token signing key first; using theirs.");
+        }
     }
 
     /// <summary>
@@ -315,26 +457,24 @@ public sealed class AuthTokenSigner : IDisposable {
         return true;
     }
 
-    /// <summary>Loads (or generates and persists) the key pair on first use.</summary>
+    /// <summary>
+    /// The loaded key pair. <see cref="InitializeAsync"/> is what fills this, at startup; the blocking
+    /// fallback below is a safety net for a host that never ran it, not a second design.
+    /// </summary>
+    /// <remarks>
+    /// Blocking on a database read from a property is exactly as unpleasant as it looks, which is why
+    /// the eager path exists — but the alternative here is throwing on the first proxied request of a
+    /// misconfigured host, and a signer that quietly works is worth one synchronous read that in
+    /// practice never happens.
+    /// </remarks>
     private SigningMaterial Material {
         get {
             var loaded = Volatile.Read(ref _material);
             if (loaded is not null) return loaded;
-            lock (_gate) {
-                ObjectDisposedException.ThrowIf(_disposed, this);
-                if (_material is not null) return _material;
-                var material = SigningMaterial.Load(KeyFilePath, _logger);
-                Volatile.Write(ref _material, material);
-                return material;
-            }
-        }
-    }
-
-    private string KeyFilePath {
-        get {
-            var keyPath = _options.CurrentValue.Auth.KeyPath;
-            if (string.IsNullOrWhiteSpace(keyPath)) keyPath = new AuthOptions().KeyPath;
-            return Path.Combine(keyPath, KeyFileName);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            InitializeAsync(CancellationToken.None).GetAwaiter().GetResult();
+            return Volatile.Read(ref _material)
+                   ?? throw new InvalidOperationException("The identity-assertion signing key is not loaded.");
         }
     }
 
@@ -367,21 +507,12 @@ public sealed class AuthTokenSigner : IDisposable {
         }
 
         /// <summary>
-        /// Reads the PEM at <paramref name="path"/>, generating and persisting one if it is absent.
-        /// A key that fails to parse is fatal rather than silently replaced: overwriting it would
-        /// invalidate every assertion an operator's apps are pinned to, without anyone noticing.
+        /// Derives everything the signer needs from a loaded key pair. Takes ownership of
+        /// <paramref name="key"/>.
         /// </summary>
-        public static SigningMaterial Load(string path, ILogger logger) {
-            var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        public static SigningMaterial From(ECDsa key) {
             ECDsa? publicOnly = null;
             try {
-                if (!TryPersistNew(path, key, logger)) {
-                    key.Dispose();
-                    key = ECDsa.Create();
-                    key.ImportFromPem(File.ReadAllText(path));
-                    logger.LogInformation("Loaded the identity-token signing key from {Path}.", path);
-                }
-
                 // The JWKS must never carry `d`: JsonWebKeyConverter emits the private parameters when the
                 // key it is handed has them, so the public half is re-exported into its own instance first.
                 // That same public-only key is kept for signature verification (see ValidationKey).
@@ -392,41 +523,20 @@ public sealed class AuthTokenSigner : IDisposable {
 
                 return new SigningMaterial(key, publicOnly, keyId, RenderJwks(jwk, keyId));
             } catch {
-                key.Dispose();
                 publicOnly?.Dispose();
                 throw;
             }
         }
 
         /// <summary>
-        /// Writes a freshly generated key, or reports that one is already there.
-        /// <see cref="FileMode.CreateNew"/> rather than an existence check so two starts racing over the
-        /// same volume cannot have one silently overwrite the other's key.
+        /// The RFC 7638 thumbprint of a key pair's public half — the <c>kid</c>. Stored on the row as
+        /// well as derived here, so an operator can tell two keys apart without decrypting either.
         /// </summary>
-        private static bool TryPersistNew(string path, ECDsa key, ILogger logger) {
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-
-            var streamOptions = new FileStreamOptions {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                Share = FileShare.None,
-            };
-            // Owner-only from the moment the file exists. Windows has no such mode and rejects the
-            // option outright, so it is set only where it means something — the shipped image is Linux.
-            if (!OperatingSystem.IsWindows())
-                streamOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-
-            try {
-                using var stream = new FileStream(path, streamOptions);
-                using var writer = new StreamWriter(stream);
-                writer.Write(key.ExportPkcs8PrivateKeyPem());
-            } catch (IOException) when (File.Exists(path)) {
-                return false;
-            }
-
-            logger.LogInformation("Generated a new ES256 identity-token signing key at {Path}.", path);
-            return true;
+        public static string ComputeKeyId(ECDsa key) {
+            using var publicOnly = ECDsa.Create();
+            publicOnly.ImportParameters(key.ExportParameters(includePrivateParameters: false));
+            var jwk = JsonWebKeyConverter.ConvertFromECDsaSecurityKey(new ECDsaSecurityKey(publicOnly));
+            return Base64UrlEncoder.Encode(jwk.ComputeJwkThumbprint());
         }
 
         /// <summary>

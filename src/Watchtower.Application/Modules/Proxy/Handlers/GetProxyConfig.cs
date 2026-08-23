@@ -27,7 +27,6 @@ public sealed class GetProxyConfig(
         WatchtowerSettingPaths.ProxyProvider,
         WatchtowerSettingPaths.ProxyAdminEmail,
         WatchtowerSettingPaths.ProxyCaddyImage,
-        WatchtowerSettingPaths.ProxyYarpCertPath,
         WatchtowerSettingPaths.ProxyYarpAcmeDirectoryUrl,
         WatchtowerSettingPaths.ProxyYarpAcmeCaBundlePath,
         WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId,
@@ -70,7 +69,6 @@ public sealed record ProxyConfigDto(
         AdminEmail: proxy.AdminEmail,
         CaddyImage: proxy.CaddyImage,
         Yarp: new ProxyYarpConfigDto(
-            CertPath: proxy.Yarp.CertPath,
             AcmeDirectoryUrl: proxy.Yarp.AcmeDirectoryUrl,
             AcmeCaBundlePath: proxy.Yarp.AcmeCaBundlePath,
             AcmeEabKeyId: proxy.Yarp.AcmeEabKeyId,
@@ -95,13 +93,15 @@ public sealed record ProxyConfigDto(
 
 /// <summary>
 /// In-process proxy values for the config surface. The EAB HMAC key is a secret and appears only as
-/// <paramref name="HasAcmeEabHmacKey"/>; <paramref name="CertPath"/> is read-only (bind-time).
-/// <paramref name="HttpsListenerBound"/> is runtime state rather than configuration — it is what lets
-/// the Settings page say "enabled, but 443 never came up" instead of looking healthy while every route
-/// is served over plain HTTP.
+/// <paramref name="HasAcmeEabHmacKey"/>. <paramref name="HttpsListenerBound"/> is runtime state rather
+/// than configuration — it is what lets the Settings page say "enabled, but 443 never came up" instead
+/// of looking healthy while every route is served over plain HTTP.
 /// </summary>
+/// <remarks>
+/// There is no certificate directory any more: certificates are rows (ADR-0024), so the field the card
+/// used to show — a read-only path an operator could do nothing with — has no counterpart to replace it.
+/// </remarks>
 public sealed record ProxyYarpConfigDto(
-    string CertPath,
     string AcmeDirectoryUrl,
     string? AcmeCaBundlePath,
     string? AcmeEabKeyId,

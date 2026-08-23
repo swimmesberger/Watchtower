@@ -4136,9 +4136,6 @@
               "yarp": {
                 "type": "object",
                 "properties": {
-                  "certPath": {
-                    "type": "string"
-                  },
                   "acmeDirectoryUrl": {
                     "type": "string"
                   },
@@ -4165,7 +4162,6 @@
                   }
                 },
                 "required": [
-                  "certPath",
                   "acmeDirectoryUrl",
                   "acmeCaBundlePath",
                   "acmeEabKeyId",
@@ -5062,9 +5058,6 @@
               "yarp": {
                 "type": "object",
                 "properties": {
-                  "certPath": {
-                    "type": "string"
-                  },
                   "acmeDirectoryUrl": {
                     "type": "string"
                   },
@@ -5091,7 +5084,6 @@
                   }
                 },
                 "required": [
-                  "certPath",
                   "acmeDirectoryUrl",
                   "acmeCaBundlePath",
                   "acmeEabKeyId",

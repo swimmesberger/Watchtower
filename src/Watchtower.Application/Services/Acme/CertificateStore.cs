@@ -2,11 +2,14 @@ using System.Collections.Concurrent;
 using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Watchtower.Application.Config;
+using Npgsql;
+using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Services.Acme;
 
@@ -21,17 +24,33 @@ public sealed record CertificateEntry(
     int ChainLength);
 
 /// <summary>
-/// The in-process proxy's certificate store — ADR-0022. PEM files on disk under
-/// <see cref="RootPath"/>, and one ready-to-serve <see cref="SslStreamCertificateContext"/> per host in
-/// memory, which is what the Kestrel SNI callback hands to <c>SslStream</c> for each handshake.
+/// The in-process proxy's certificate store — ADR-0022, moved into the database by ADR-0024. Rows in
+/// <c>proxy_certificates</c>, and one ready-to-serve <see cref="SslStreamCertificateContext"/> per host
+/// in memory, which is what the Kestrel SNI callback hands to <c>SslStream</c> for each handshake.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The constructor loads everything <em>synchronously</em>, and that is a requirement rather than a
-/// convenience: Kestrel is already listening by the time the first <c>IHostedService</c> runs, so a store
-/// that filled itself from a background task would answer "no certificate" to whatever arrived in the
-/// meantime — a handshake failure the client sees as a broken site. The store is resolved while Kestrel
-/// is being configured, so by the time a connection can arrive the map is populated.
+/// The table is authoritative and the dictionary is a cache of it. That is what makes a second instance
+/// possible at all: every node answers the same SNI name with the same certificate, whichever node
+/// obtained it, and a node that has just started serves everything rather than only what it ordered
+/// itself.
+/// </para>
+/// <para>
+/// Loading is <see cref="InitializeAsync"/>, called from the host's database initialization <em>before</em>
+/// Kestrel serves — not from the constructor, which used to read the disk synchronously, and not from a
+/// background task. The requirement has not changed, only the source: Kestrel is listening by the time
+/// any <c>IHostedService</c> runs, so a store that filled itself later would answer "no certificate" to
+/// whatever arrived in the meantime, which a visitor sees as a broken site. What did change is that the
+/// store can no longer do that loading in a constructor at all — the read is asynchronous and needs a
+/// scope — so the ordering is stated in <c>Program.InitializeDatabaseAsync</c> rather than implied by
+/// where the object is built.
+/// </para>
+/// <para>
+/// <see cref="ReloadAsync"/> is the other half: a certificate installed on another instance is a row
+/// this one has not read, so the cross-instance change signal (ADR-0024 decision 6) drives a re-read.
+/// Only entries whose thumbprint actually moved are rebuilt — building an
+/// <see cref="SslStreamCertificateContext"/> costs a PKCS#12 round trip, and the same signal fires for
+/// route changes.
 /// </para>
 /// <para>
 /// A certificate context is built once per install and reused for every handshake, with the whole chain
@@ -55,9 +74,8 @@ public sealed record CertificateEntry(
 /// </para>
 /// </remarks>
 public sealed class CertificateStore : IDisposable {
-    private const string CertFileName = "cert.pem";
-    private const string KeyFileName = "key.pem";
-    private const string MetaFileName = "meta.json";
+    /// <summary>The <see cref="KeyProtector"/> purpose the leaf private keys are encrypted under.</summary>
+    internal const string KeyPurpose = "proxy-certificate";
 
     /// <summary>
     /// How far into the future a <c>NotBefore</c> may sit and still be served. Clocks drift, and a CA can
@@ -66,31 +84,27 @@ public sealed class CertificateStore : IDisposable {
     /// </summary>
     private static readonly TimeSpan NotBeforeSkew = TimeSpan.FromMinutes(5);
 
-    private static readonly UnixFileMode PublicFileMode =
-        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
-
-    private static readonly UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-
     private readonly ConcurrentDictionary<string, Loaded> _certificates = new(StringComparer.Ordinal);
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly KeyProtector _protector;
+    private readonly ProxyChangeSignal _signal;
     private readonly TimeProvider _time;
     private readonly ILogger<CertificateStore> _logger;
+    private IDisposable? _watch;
     private bool _disposed;
 
     public CertificateStore(
-        IOptionsMonitor<WatchtowerOptions> options, TimeProvider time, ILogger<CertificateStore> logger) {
+        IServiceScopeFactory scopeFactory,
+        KeyProtector protector,
+        ProxyChangeSignal signal,
+        TimeProvider time,
+        ILogger<CertificateStore> logger) {
+        _scopeFactory = scopeFactory;
+        _protector = protector;
+        _signal = signal;
         _time = time;
         _logger = logger;
-        var configured = options.CurrentValue.Proxy.Yarp.CertPath;
-        RootPath = string.IsNullOrWhiteSpace(configured) ? new YarpProxyOptions().CertPath : configured.Trim();
-        LoadAll();
     }
-
-    /// <summary>
-    /// The directory the certificates live under, read once at construction. <c>Proxy:Yarp:CertPath</c> is
-    /// bind-time configuration for exactly this reason — the store is opened over it, so a change would
-    /// need a restart anyway.
-    /// </summary>
-    public string RootPath { get; }
 
     /// <summary>What the store currently serves, in no particular order.</summary>
     public IReadOnlyCollection<CertificateEntry> Entries =>
@@ -125,12 +139,91 @@ public sealed class CertificateStore : IDisposable {
         return _certificates.TryGetValue(name, out var loaded) ? loaded : null;
     }
 
+    // ── Loading ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Fills the cache from the table and starts watching for changes made by other instances. Called
+    /// once, from the host's database initialization, before anything can arrive on the HTTPS listener.
+    /// </summary>
+    /// <remarks>
+    /// Never throws for a row it cannot use — one certificate whose key will not decrypt must cost that
+    /// one host, not the listener. A database that is unreachable <em>does</em> throw: it is not a
+    /// certificate problem, and starting with an empty SNI map because PostgreSQL was down for a second
+    /// would fail every handshake for the life of the process.
+    /// </remarks>
+    public async Task InitializeAsync(CancellationToken ct = default) {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        foreach (var (host, loaded) in await LoadAllAsync(ct)) Activate(host, loaded);
+        _logger.LogInformation(
+            "Certificate store opened with {Count} certificate(s) from the database.", _certificates.Count);
+
+        // After the first load, so a signal that arrives during startup re-reads a store that is already
+        // consistent rather than racing the initial fill.
+        _watch ??= _signal.Watch(ReloadAsync);
+    }
+
+    /// <summary>
+    /// Re-reads the table and brings the cache into line with it — the certificate half of the
+    /// cross-instance change signal.
+    /// </summary>
+    /// <remarks>
+    /// An entry whose thumbprint is unchanged is left exactly as it is, including the context object
+    /// itself: a signal fires for every route change too, and rebuilding twenty certificate contexts
+    /// because somebody renamed a route would be work for nothing. A host whose row is gone is dropped —
+    /// another instance deleted it, and continuing to answer for it would make the two disagree.
+    /// </remarks>
+    public async Task ReloadAsync(CancellationToken ct = default) {
+        if (_disposed) return;
+        var loaded = await LoadAllAsync(ct);
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (host, candidate) in loaded) {
+            seen.Add(host);
+            if (_certificates.TryGetValue(host, out var current)
+                && string.Equals(
+                    current.Entry.Thumbprint, candidate.Entry.Thumbprint, StringComparison.Ordinal)) {
+                // Already serving this exact certificate; the freshly built one never becomes visible.
+                candidate.Dispose();
+                continue;
+            }
+            if (Activate(host, candidate))
+                _logger.LogInformation("Picked up the certificate for {Host} from the database.", host);
+        }
+
+        foreach (var host in _certificates.Keys.Where(h => !seen.Contains(h)).ToArray()) {
+            // Dropped, not disposed — see the class remarks.
+            if (!_certificates.TryRemove(host, out _)) continue;
+            _logger.LogInformation("Stopped serving {Host}: its certificate row is gone.", host);
+        }
+    }
+
+    /// <summary>
+    /// Reads every row into servable material. A row that cannot be turned into a certificate is logged
+    /// and skipped, exactly as an unreadable directory used to be.
+    /// </summary>
+    private async Task<List<(string Host, Loaded Loaded)>> LoadAllAsync(CancellationToken ct) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var rows = await db.ProxyCertificates.AsNoTracking().ToListAsync(ct);
+
+        var loaded = new List<(string, Loaded)>(rows.Count);
+        foreach (var row in rows) {
+            try {
+                loaded.Add((row.Host, Materialize(row)));
+            } catch (Exception ex) {
+                _logger.LogWarning(
+                    ex, "Skipping the certificate for {Host}: its row could not be loaded.", row.Host);
+            }
+        }
+        return loaded;
+    }
+
     // ── Mutations ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Writes a newly obtained certificate to disk and starts serving it. Files first, memory second: a
-    /// crash between the two costs one restart's worth of staleness, whereas the other order would serve
-    /// a certificate that is not persisted anywhere.
+    /// Stores a newly obtained certificate and starts serving it. Row first, memory second: a crash
+    /// between the two costs one restart's worth of staleness, whereas the other order would serve a
+    /// certificate that is not persisted anywhere.
     /// </summary>
     /// <param name="pemChain">The issued chain, leaf first, as concatenated PEM blocks.</param>
     /// <param name="privateKey">The key the leaf was issued for. Not taken ownership of.</param>
@@ -138,48 +231,134 @@ public sealed class CertificateStore : IDisposable {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(pemChain);
         ArgumentNullException.ThrowIfNull(privateKey);
-        var name = HostDirectoryName(host);
+        var name = NormalizeHost(host);
 
-        // Parse before writing, so material that could never be served does not reach the disk at all.
+        // Parse before writing, so material that could never be served does not reach the table at all.
+        var described = DescribeChain(name, pemChain);
+        await UpsertAsync(
+            name, pemChain, privateKey.ExportPkcs8PrivateKeyPem(), described,
+            ProxyCertificateSources.Acme, ct);
+
+        // Re-read from the row rather than from the arguments: what is served is then provably what a
+        // restart would load, instead of two code paths that can disagree.
+        var stored = await ReadAsync(name, ct)
+                     ?? throw new InvalidOperationException(
+                         $"The certificate for {name} was written but could not be read back.");
+        var loaded = Materialize(stored);
+        if (!Activate(name, loaded))
+            _logger.LogWarning(
+                "The certificate installed for {Host} is not valid before {NotBefore:u}; it was stored "
+                + "but is not being served yet.", name, loaded.Entry.NotBefore);
+
+        await _signal.BumpAsync($"certificate installed for {name}", ct);
+    }
+
+    /// <summary>
+    /// Stores a certificate carried in from the pre-ADR-0024 volume. Differs from
+    /// <see cref="InstallAsync"/> only in what it records as the source, in taking the key as PEM — which
+    /// is the form the file had — and in leaving an existing row alone: a certificate already in the
+    /// table was issued after the upgrade, and is newer than anything on the old volume.
+    /// </summary>
+    /// <returns>Whether a row was written.</returns>
+    internal async Task<bool> ImportAsync(
+        string host, string pemChain, string keyPem, CancellationToken ct) {
+        var name = NormalizeHost(host);
+        var described = DescribeChain(name, pemChain);
+        return await UpsertAsync(
+            name, pemChain, keyPem, described, ProxyCertificateSources.FileImport, ct, onlyIfAbsent: true);
+    }
+
+    /// <summary>Parses a PEM chain into the summary columns, and refuses one with no certificate in it.</summary>
+    private static CertificateEntry DescribeChain(string host, string pemChain) {
         var parsed = new X509Certificate2Collection();
         parsed.ImportFromPem(pemChain);
         if (parsed.Count == 0)
             throw new ArgumentException("The PEM chain contains no certificate.", nameof(pemChain));
-        foreach (var certificate in parsed) certificate.Dispose();
-
-        var directory = Path.Combine(RootPath, name);
-        Directory.CreateDirectory(directory);
-        await WriteAtomicAsync(Path.Combine(directory, CertFileName), pemChain, PublicFileMode, ct);
-        await WriteAtomicAsync(
-            Path.Combine(directory, KeyFileName), privateKey.ExportPkcs8PrivateKeyPem(), PrivateFileMode, ct);
-
-        // Re-read from disk rather than from the arguments: what is served is then provably what a
-        // restart would load, instead of two code paths that can disagree.
-        var loaded = LoadFromDisk(name, directory);
         try {
-            await WriteAtomicAsync(
-                Path.Combine(directory, MetaFileName), RenderMeta(loaded.Entry), PublicFileMode, ct);
-        } catch (Exception ex) {
-            // Pure convenience for an operator reading the volume; nothing reads it back.
-            _logger.LogWarning(ex, "Could not write {File} for {Host}.", MetaFileName, name);
+            return Describe(host, parsed[0], parsed.Count);
+        } finally {
+            foreach (var certificate in parsed) certificate.Dispose();
+        }
+    }
+
+    /// <summary>Writes the row, replacing whatever was there for the host.</summary>
+    /// <param name="onlyIfAbsent">The import's mode: leave an existing row alone.</param>
+    /// <returns>Whether a row was written.</returns>
+    private async Task<bool> UpsertAsync(
+        string host,
+        string pemChain,
+        string keyPem,
+        CertificateEntry described,
+        string source,
+        CancellationToken ct,
+        bool onlyIfAbsent = false) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var existing = await db.ProxyCertificates.FirstOrDefaultAsync(c => c.Host == host, ct);
+        if (existing is not null && onlyIfAbsent) return false;
+
+        var protectedKey = _protector.ProtectText(keyPem, KeyPurpose);
+        var now = _time.GetUtcNow();
+        if (existing is null) {
+            db.ProxyCertificates.Add(new ProxyCertificate {
+                Host = host,
+                CertificatePem = pemChain,
+                PrivateKey = protectedKey,
+                Protection = _protector.CurrentProtection,
+                NotBefore = described.NotBefore,
+                NotAfter = described.NotAfter,
+                Issuer = described.IssuerCommonName,
+                Thumbprint = described.Thumbprint,
+                Source = source,
+                InstalledAt = now,
+            });
+        } else {
+            existing.CertificatePem = pemChain;
+            existing.PrivateKey = protectedKey;
+            // Every write re-protects, which is how a row stored before the secret was configured stops
+            // being plaintext without a migration pass over the whole table.
+            existing.Protection = _protector.CurrentProtection;
+            existing.NotBefore = described.NotBefore;
+            existing.NotAfter = described.NotAfter;
+            existing.Issuer = described.IssuerCommonName;
+            existing.Thumbprint = described.Thumbprint;
+            existing.Source = source;
+            existing.InstalledAt = now;
         }
 
-        if (!Activate(name, loaded))
-            _logger.LogWarning(
-                "The certificate installed for {Host} is not valid before {NotBefore:u}; it was written to "
-                + "disk but is not being served yet.", name, loaded.Entry.NotBefore);
+        try {
+            await db.SaveChangesAsync(ct);
+        } catch (DbUpdateException ex) when (existing is null && IsUniqueViolation(ex)) {
+            // Two instances finished an order for the same host at once — the issuer lease makes this
+            // unlikely rather than impossible (a handover mid-order is exactly the window). Whichever row
+            // landed first is a perfectly good certificate for the same name, so this one steps aside
+            // rather than fighting for the last word.
+            _logger.LogInformation(
+                "Another instance stored a certificate for {Host} first; keeping theirs.", host);
+            return false;
+        } catch (DbUpdateConcurrencyException) {
+            // The same race one moment later: the row moved between the read above and this write, so
+            // the xmin token no longer matches. Same verdict for the same reason — both writers hold a
+            // valid certificate for the host, and the one that landed is as good as this one. The caller
+            // re-reads, so what it goes on to serve is the winner's row rather than its own arguments.
+            _logger.LogInformation(
+                "Another instance replaced the certificate for {Host} while this one was storing it; "
+                + "keeping theirs.", host);
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
-    /// Drops what is held for a host. Only the route-delete path passes
-    /// <paramref name="deleteFiles"/>: a host merely dropping out of the desired set must keep its files,
-    /// or a route removed by mistake would cost a fresh issuance against the CA's rate limits.
+    /// Drops what is held for a host and deletes its row. This is the "the domain is gone" path — a host
+    /// merely dropping out of the desired set keeps its certificate, or a route removed by mistake would
+    /// cost a fresh issuance against the CA's rate limits.
     /// </summary>
     /// <returns>Whether anything was actually removed.</returns>
-    public bool Forget(string host, bool deleteFiles) {
+    public async Task<bool> ForgetAsync(string host, CancellationToken ct = default) {
         string name;
         try {
-            name = HostDirectoryName(host);
+            name = NormalizeHost(host);
         } catch (ArgumentException) {
             // Nothing can be stored under a name the store would refuse to write, so there is nothing
             // to remove — and a caller cleaning up after bad input deserves an answer, not a throw.
@@ -190,16 +369,15 @@ public sealed class CertificateStore : IDisposable {
         // leaf it was removed by. Unreferenced, the handle is reclaimed on its own.
         var removed = _certificates.TryRemove(name, out _);
 
-        if (!deleteFiles) return removed;
-        var directory = Path.Combine(RootPath, name);
-        if (!Directory.Exists(directory)) return removed;
-        try {
-            Directory.Delete(directory, recursive: true);
-            return true;
-        } catch (Exception ex) {
-            _logger.LogWarning(ex, "Could not delete the certificate directory for {Host}.", name);
-            return removed;
+        int deleted;
+        await using (var scope = _scopeFactory.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            deleted = await db.ProxyCertificates.Where(c => c.Host == name).ExecuteDeleteAsync(ct);
         }
+
+        if (!removed && deleted == 0) return false;
+        await _signal.BumpAsync($"certificate removed for {name}", ct);
+        return true;
     }
 
     /// <summary>
@@ -208,81 +386,44 @@ public sealed class CertificateStore : IDisposable {
     /// the desired set <em>and</em> the certificate has to be past its usefulness — because the cost of
     /// deleting one that is still wanted is a new issuance against a rate limit.
     /// </summary>
+    /// <remarks>
+    /// Driven off the rows rather than off the cache, so a certificate this instance never loaded (one
+    /// whose key will not decrypt, say) is still eligible: the prune is housekeeping on the table, and a
+    /// row nobody can serve is exactly the kind of thing that should not accumulate.
+    /// </remarks>
     /// <returns>How many hosts were removed.</returns>
-    public int PruneUndesired(IReadOnlySet<string> desired, TimeSpan grace) {
+    public async Task<int> PruneUndesiredAsync(
+        IReadOnlySet<string> desired, TimeSpan grace, CancellationToken ct = default) {
         ArgumentNullException.ThrowIfNull(desired);
         var wanted = new HashSet<string>(desired, StringComparer.OrdinalIgnoreCase);
-        var now = _time.GetUtcNow();
+        var cutoff = _time.GetUtcNow() - grace;
+
+        List<string> candidates;
+        await using (var scope = _scopeFactory.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            candidates = await db.ProxyCertificates.AsNoTracking()
+                .Where(c => c.NotAfter < cutoff)
+                .Select(c => c.Host)
+                .ToListAsync(ct);
+        }
+
         var removed = 0;
-        foreach (var entry in Entries) {
-            if (wanted.Contains(entry.Host)) continue;
-            if (entry.NotAfter + grace >= now) continue;
-            if (!Forget(entry.Host, deleteFiles: true)) continue;
+        foreach (var host in candidates) {
+            if (wanted.Contains(host)) continue;
+            if (!await ForgetAsync(host, ct)) continue;
             removed++;
             _logger.LogInformation(
-                "Removed the expired certificate for {Host}; nothing routes to it any more.", entry.Host);
+                "Removed the expired certificate for {Host}; nothing routes to it any more.", host);
         }
         return removed;
     }
 
-    // ── Loading ───────────────────────────────────────────────────────────────
+    // ── Materialization ───────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Scans <see cref="RootPath"/> once. Never throws: a store that refused to construct because one
-    /// directory on a mounted volume is unreadable would take the whole host down with it, and the rest
-    /// of the certificates are still perfectly serviceable.
-    /// </summary>
-    private void LoadAll() {
-        if (!Directory.Exists(RootPath)) {
-            _logger.LogInformation(
-                "No certificate directory at {CertPath} yet; the proxy starts with nothing to serve.", RootPath);
-            return;
-        }
-
-        string[] directories;
-        try {
-            // Materialised inside the try on purpose: EnumerateDirectories is lazy, so a volume the
-            // process cannot read would otherwise throw out of the foreach — and out of the constructor,
-            // taking the whole host down over a directory nobody has put a certificate in yet.
-            directories = Directory.GetDirectories(RootPath);
-        } catch (Exception ex) {
-            _logger.LogWarning(
-                ex, "Could not read the certificate directory {CertPath}; the proxy starts with nothing to serve.",
-                RootPath);
-            return;
-        }
-
-        foreach (var directory in directories) {
-            var candidate = Path.GetFileName(directory);
-            string name;
-            try {
-                name = HostDirectoryName(candidate);
-            } catch (ArgumentException) {
-                _logger.LogWarning(
-                    "Ignoring {Directory} under {CertPath}: it is not a host name.", candidate, RootPath);
-                continue;
-            }
-
-            if (!File.Exists(Path.Combine(directory, CertFileName))) continue;
-
-            Loaded loaded;
-            try {
-                loaded = LoadFromDisk(name, directory);
-            } catch (Exception ex) {
-                _logger.LogWarning(
-                    ex, "Skipping the certificate for {Host}: it could not be loaded from {Directory}.",
-                    name, directory);
-                continue;
-            }
-
-            if (!Activate(name, loaded))
-                _logger.LogWarning(
-                    "Not serving the certificate for {Host}: it is not valid before {NotBefore:u}.",
-                    name, loaded.Entry.NotBefore);
-        }
-
-        _logger.LogInformation(
-            "Certificate store opened at {CertPath} with {Count} certificate(s).", RootPath, _certificates.Count);
+    private async Task<ProxyCertificate?> ReadAsync(string host, CancellationToken ct) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.ProxyCertificates.AsNoTracking().FirstOrDefaultAsync(c => c.Host == host, ct);
     }
 
     /// <summary>
@@ -298,6 +439,9 @@ public sealed class CertificateStore : IDisposable {
     /// </remarks>
     private bool Activate(string host, Loaded loaded) {
         if (loaded.Entry.NotBefore > _time.GetUtcNow() + NotBeforeSkew) {
+            _logger.LogWarning(
+                "Not serving the certificate for {Host}: it is not valid before {NotBefore:u}.",
+                host, loaded.Entry.NotBefore);
             loaded.Dispose();
             return false;
         }
@@ -312,16 +456,16 @@ public sealed class CertificateStore : IDisposable {
     }
 
     /// <summary>
-    /// Reads one host directory into a servable certificate. Throws on anything unreadable — the callers
-    /// decide whether that is fatal (an install) or a directory to skip (the startup scan).
+    /// Turns one row into servable material. Throws on anything unreadable — the callers decide whether
+    /// that is fatal (an install) or a row to skip (the load).
     /// </summary>
-    private Loaded LoadFromDisk(string host, string directory) {
-        // X509Certificate2.CreateFromPemFile keeps only the first certificate, which would silently drop
+    private Loaded Materialize(ProxyCertificate row) {
+        // X509Certificate2.CreateFromPem keeps only the first certificate, which would silently drop
         // exactly the intermediates this store exists to send.
         var chain = new X509Certificate2Collection();
-        chain.ImportFromPemFile(Path.Combine(directory, CertFileName));
+        chain.ImportFromPem(row.CertificatePem);
         if (chain.Count == 0)
-            throw new CryptographicException($"{CertFileName} contains no certificate.");
+            throw new CryptographicException($"The stored chain for {row.Host} contains no certificate.");
 
         var leaf = chain[0];
         var intermediates = new X509Certificate2Collection();
@@ -329,9 +473,9 @@ public sealed class CertificateStore : IDisposable {
 
         X509Certificate2? withKey = null;
         X509Certificate2? usable = null;
+        var keyPem = _protector.Unprotect(row.PrivateKey, row.Protection, KeyPurpose);
         try {
-            var keyPem = File.ReadAllText(Path.Combine(directory, KeyFileName));
-            withKey = Rekey(leaf, keyPem);
+            withKey = Rekey(leaf, Encoding.UTF8.GetString(keyPem));
 
             // A private key attached with CopyWithPrivateKey is not always usable for TLS on every
             // platform (the key can be ephemeral, or live outside a provider SslStream can reach), so the
@@ -344,12 +488,13 @@ public sealed class CertificateStore : IDisposable {
             }
 
             var context = SslStreamCertificateContext.Create(usable, intermediates, offline: true);
-            return new Loaded(usable, intermediates, context, Describe(host, usable, chain.Count));
+            return new Loaded(usable, intermediates, context, Describe(row.Host, usable, chain.Count));
         } catch {
             usable?.Dispose();
             foreach (var intermediate in intermediates) intermediate.Dispose();
             throw;
         } finally {
+            CryptographicOperations.ZeroMemory(keyPem);
             // The leaf without the key and the intermediate instance holding it are both scratch: what is
             // served is the PKCS#12 round-trip.
             leaf.Dispose();
@@ -387,15 +532,13 @@ public sealed class CertificateStore : IDisposable {
         Thumbprint: leaf.Thumbprint,
         ChainLength: chainLength);
 
-    // ── Files ─────────────────────────────────────────────────────────────────
-
     /// <summary>
-    /// The directory a host's material lives in. Validates rather than sanitises: every caller passes a
+    /// The name a host's material is stored under. Validates rather than sanitises: every caller passes a
     /// host name that has already been normalised, so anything else here is a bug or an injection
-    /// attempt, and quietly rewriting it into <em>some</em> directory is the outcome worth ruling out.
+    /// attempt, and quietly rewriting it into <em>some</em> row is the outcome worth ruling out.
     /// </summary>
     /// <exception cref="ArgumentException">The argument is not a plain lowercase-able DNS name.</exception>
-    public static string HostDirectoryName(string host) {
+    public static string NormalizeHost(string host) {
         ArgumentException.ThrowIfNullOrWhiteSpace(host);
         var name = host.ToLowerInvariant();
         if (name.Length > 253)
@@ -416,41 +559,18 @@ public sealed class CertificateStore : IDisposable {
         return name;
     }
 
-    private static async Task WriteAtomicAsync(string path, string content, UnixFileMode mode, CancellationToken ct) {
-        var temporary = path + ".tmp";
-        var options = new FileStreamOptions {
-            Mode = FileMode.Create,
-            Access = FileAccess.Write,
-            Share = FileShare.None,
-        };
-        // Windows has no such mode and rejects the option outright; the shipped image is Linux.
-        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = mode;
-
-        await using (var stream = new FileStream(temporary, options)) {
-            await using (var writer = new StreamWriter(stream, leaveOpen: true)) {
-                await writer.WriteAsync(content.AsMemory(), ct);
-            }
-            // The rename below is atomic, but only against content that has actually reached the device:
-            // without this, a power loss right after the move can leave a present-but-empty cert.pem,
-            // which is worse than the absent file the store knows how to skip.
-            stream.Flush(flushToDisk: true);
-        }
-
-        // Again, explicitly: UnixCreateMode only applies when the file is created, and the temporary may
-        // have survived an interrupted write with whatever mode that one left behind.
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, mode);
-        File.Move(temporary, path, overwrite: true);
-    }
-
-    private string RenderMeta(CertificateEntry entry) => JsonSerializer.Serialize(
-        new CertificateMetadata(
-            entry.Host, entry.NotBefore, entry.NotAfter, entry.IssuerCommonName, entry.Thumbprint,
-            _time.GetUtcNow()),
-        CertificateStoreJsonContext.Default.CertificateMetadata);
+    /// <summary>
+    /// Whether a failed save was the unique index on <c>host</c> rejecting a second row — PostgreSQL's
+    /// <c>23505</c>, reached through EF's wrapper.
+    /// </summary>
+    private static bool IsUniqueViolation(DbUpdateException ex) =>
+        ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
     public void Dispose() {
         if (_disposed) return;
         _disposed = true;
+        _watch?.Dispose();
+        _watch = null;
         foreach (var loaded in _certificates.Values) loaded.Dispose();
         _certificates.Clear();
     }
@@ -479,22 +599,3 @@ public sealed class CertificateStore : IDisposable {
         }
     }
 }
-
-/// <summary>
-/// <c>meta.json</c> — what an operator looking at the volume needs to answer "which certificate is this
-/// and when does it expire" without running <c>openssl</c>. Written on install and never read back: the
-/// store always derives its state from the certificate itself, so the file cannot go stale in a way that
-/// matters.
-/// </summary>
-internal sealed record CertificateMetadata(
-    string Host,
-    DateTimeOffset NotBefore,
-    DateTimeOffset NotAfter,
-    string Issuer,
-    string Thumbprint,
-    DateTimeOffset InstalledAt);
-
-/// <summary>Source-generated serializer for <see cref="CertificateMetadata"/>.</summary>
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
-[JsonSerializable(typeof(CertificateMetadata))]
-internal sealed partial class CertificateStoreJsonContext : JsonSerializerContext;

@@ -465,10 +465,11 @@ export interface UpdateAuthConfigRequest {
 /** The reverse-proxy backends. See ADR-0015 and ADR-0022. */
 export type ProxyProvider = 'caddy' | 'cloudflare' | 'yarp'
 
-/** In-process proxy + ACME values (the EAB HMAC key never leaves the server). */
+/**
+ * In-process proxy + ACME values (the EAB HMAC key never leaves the server). Certificates and the ACME
+ * account are rows in the database since ADR-0024, so there is no directory to report.
+ */
 export interface ProxyYarpConfig {
-  /** Where issued certificates and the ACME account key live. Bind-time — read-only here. */
-  certPath: string
   acmeDirectoryUrl: string
   /** Extra PEM roots trusted when talking to the ACME directory (an internal CA). */
   acmeCaBundlePath: string | null

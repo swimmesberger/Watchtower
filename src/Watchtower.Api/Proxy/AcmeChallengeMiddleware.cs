@@ -14,27 +14,49 @@ namespace Watchtower.Api.Proxy;
 /// stranger on the domain being validated, and Watchtower has no way to recognise it. What bounds the
 /// exposure is that the only thing this can disclose is a key authorization the CA is about to be told
 /// anyway, for a token Watchtower itself minted seconds earlier.
+/// <para>
+/// The answer comes from the database since ADR-0024, which is what lets <em>any</em> instance satisfy a
+/// validation the CA aimed at whichever node answers port 80. What that costs is bounded on purpose:
+/// a request only reaches the store if its path is a challenge URL <em>and</em> its last segment is
+/// shaped like a base64url token, and the store then answers a token this instance published from
+/// memory and remembers a miss for a few seconds — so a stranger looping over invented tokens does not
+/// turn into database load.
+/// </para>
 /// </remarks>
 public sealed class AcmeChallengeMiddleware(RequestDelegate next, AcmeHttpChallengeStore store) {
     /// <summary>The well-known prefix from RFC 8555 §8.3; the one remaining segment is the token.</summary>
     private static readonly PathString ChallengePrefix = new("/.well-known/acme-challenge");
 
-    public Task InvokeAsync(HttpContext context) {
+    public async Task InvokeAsync(HttpContext context) {
         ArgumentNullException.ThrowIfNull(context);
-        if (!context.Request.Path.StartsWithSegments(ChallengePrefix, out var remaining))
-            return next(context);
+        if (!context.Request.Path.StartsWithSegments(ChallengePrefix, out var remaining)) {
+            await next(context);
+            return;
+        }
 
         var token = Token(remaining);
         // Not a challenge URL at all (the bare prefix, or something nested under it). Falling through is
         // right here and only here: an upstream may legitimately serve its own /.well-known tree.
-        if (token is null) return next(context);
+        if (token is null) {
+            await next(context);
+            return;
+        }
 
-        if (!store.TryGet(token, out var keyAuthorization)) {
+        // Answered, not passed on, and without asking the store anything: this endpoint is anonymous and
+        // reachable on port 80 for every host the proxy serves, so a string that is not shaped like a
+        // token at all should cost a character scan and nothing more.
+        if (!AcmeHttpChallengeStore.IsWellFormedToken(token)) {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        var keyAuthorization = await store.TryGetAsync(token, context.RequestAborted);
+        if (keyAuthorization is null) {
             // Deliberately answered rather than passed on. On a route host the fall-through would forward
             // this to the upstream, which turns "is this domain proxied by Watchtower, and to what?" into a
             // question any stranger can ask by requesting a token that was never issued.
             context.Response.StatusCode = StatusCodes.Status404NotFound;
-            return Task.CompletedTask;
+            return;
         }
 
         context.Response.StatusCode = StatusCodes.Status200OK;
@@ -44,7 +66,7 @@ public sealed class AcmeChallengeMiddleware(RequestDelegate next, AcmeHttpChalle
         context.Response.Headers.CacheControl = "no-store";
         var body = Encoding.UTF8.GetBytes(keyAuthorization);
         context.Response.ContentLength = body.Length;
-        return context.Response.Body.WriteAsync(body, context.RequestAborted).AsTask();
+        await context.Response.Body.WriteAsync(body, context.RequestAborted);
     }
 
     /// <summary>

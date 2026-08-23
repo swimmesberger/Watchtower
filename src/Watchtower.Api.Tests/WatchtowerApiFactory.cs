@@ -102,6 +102,12 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// </summary>
     public StubDnsPreflight Dns { get; } = new();
 
+    /// <summary>
+    /// The <c>acme-issuer</c> role lease the host runs with (ADR-0024 decision 5): a stub that says this
+    /// instance holds it. Set <c>IsHeld = false</c> to exercise the non-issuer half.
+    /// </summary>
+    public StubRoleLease IssuerLease { get; private set; } = new(CertificateManager.IssuerRole);
+
     /// <summary>The forwarder the host runs with: a double that records instead of connecting.</summary>
     /// <remarks>Throws when the host was built with <see cref="UseRealForwarder"/>.</remarks>
     public RecordingHttpForwarder Forwarder =>
@@ -154,9 +160,10 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         // and the tests would stop describing what ships.
         builder.UseEnvironment(Environments.Production);
 
-        // Auth:KeyPath and the proxy cert path default to /data/*, which AddWatchtowerServices
-        // creates eagerly.
         builder.UseSetting(WatchtowerConnectionString.ConfigurationKey, _connectionString);
+        // The two legacy directories the one-shot file import reads (ADR-0024). Nothing else looks at
+        // them any more; they are pointed at a scratch directory so no test can read the developer's
+        // real /data.
         builder.UseSetting("Watchtower:Auth:KeyPath", Path.Combine(_dataDirectory, "auth-keys"));
         builder.UseSetting("Watchtower:Proxy:Yarp:CertPath", Path.Combine(_dataDirectory, "proxy-certs"));
         builder.UseSetting("Watchtower:Auth:BootstrapPassword", AdminPassword);
@@ -216,6 +223,14 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
                 services.RemoveAll<IAcmeTransportFactory>();
                 services.AddSingleton(AcmeTransport);
             }
+
+            // The acme-issuer lease (ADR-0024 decision 5), always held. The real one is acquired by a
+            // heartbeat hosted service, and every hosted service but the auth bootstrap is dropped above
+            // — so without this every host here would be a non-issuer and the ACME suites would assert
+            // on an instance that is deliberately doing nothing. Held is also the single-node truth,
+            // which is what these tests are about; the gate itself has its own tests with a lease that
+            // says no.
+            IssuerLease = services.UseStubIssuerLease();
 
             // The listener facts a real Kestrel would have recorded at startup. TestServer binds nothing,
             // so a host that wants the ingress/management split has to be told what it "bound" — and the

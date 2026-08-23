@@ -21,10 +21,10 @@ the database, which is the right half. The other half does not:
 | State | Lives in | Why it blocks a second instance |
 | --- | --- | --- |
 | ~~The database itself~~ | **PostgreSQL** (`Watchtower:Database:ConnectionString`) — *done*, ADR-0024 | was a single-writer SQLite file on one disk, the hard blocker; see §2 |
-| ACME account key, issued certificates | PEM files under `Proxy:Yarp:CertPath` (`CertificateStore`, `AcmeAccountKey`) | every instance would order its own certificates → Let's Encrypt rate limits, different SNI answers per node |
-| HTTP-01 challenge tokens | in-memory `AcmeHttpChallengeStore` | the CA's validation request lands on whichever node answers port 80 — not necessarily the one that published the token |
-| Identity-assertion signing key (`AuthTokenSigner`), ASP.NET data-protection key ring | files under `Auth:KeyPath` | a token or cookie minted on node A is unreadable on node B; OIDC correlation/nonce cookies (the external-IdP case) are data-protection-encrypted too |
-| Route table (`ProxyRouteTable`), certificate SNI map | in-memory, **derived** from the database | harmless in itself, but refreshed by an in-process `ApplyAsync` — a change on node A is invisible to node B until its next reconcile |
+| ~~ACME account key, issued certificates~~ | **`acme_accounts` / `proxy_certificates`** — *done*, ADR-0024; one instance orders, all serve | were PEM files under the removed `Proxy:Yarp:CertPath` → every instance would order its own certificates, hitting Let's Encrypt rate limits and answering SNI differently per node |
+| ~~HTTP-01 challenge tokens~~ | **`acme_http_challenges`** — *done*, ADR-0024 | were in-memory; the CA's validation request lands on whichever node answers port 80, not necessarily the one that published the token |
+| ~~Identity-assertion signing key, ASP.NET data-protection key ring~~ | **`signing_keys` / `data_protection_keys`** — *done*, ADR-0024 | were files under the removed `Auth:KeyPath` → a token or cookie minted on node A was unreadable on node B, OIDC correlation/nonce cookies included |
+| ~~Route table (`ProxyRouteTable`), certificate SNI map~~ | in-memory, **derived** — and now re-projected on the cross-instance change signal (*done*, ADR-0024) | was refreshed only by an in-process `ApplyAsync`, so a change on node A was invisible to node B until its next reconcile |
 | Login rate limiter, live metrics ring, SSE deploy-output broadcaster | in-memory | per-instance views; inconsistent, not dangerous |
 | Background loops (`DeployQueueService`, `BackupQueueService`, `CertificateManager`, `AutoDeployBackgroundService`, `StackUpdateBackgroundService`, `ImagePruneBackgroundService`, `SelfUpdateBackgroundService`, `CiRunnerOrchestrator`, `MetricsSampler`, the proxy providers) | one `IHostedService` per process | each assumes it is the only instance: no leader election, no job claiming — two instances would run every deploy twice and race on every reconcile |
 | Runtime access | the Docker socket (`DockerEngineClient`), compose project names, per-stack ingress networks | node-local by nature; replaced wholesale by the Kubernetes API in the ADR-0010 port |
@@ -72,7 +72,7 @@ Still to come here, with the work that needs them:
   only worker" (§4).
 - Singleton loops holding a lease (§3) rather than assuming singleness.
 
-## 3. Proxy/auth state moves into the database (in progress)
+## 3. Proxy/auth state moves into the database (done)
 
 The rows that replace the files, all keyed so any instance can serve them, and the framework
 primitives that carry the cross-instance parts (Elarion ≥ 0.2.6 — the pinned 0.2.3 preview
@@ -100,6 +100,13 @@ predates all of them; the bump is the first commit of the stacked PR):
   hand-rolled `NpgsqlConnection.Notification` listener (one fewer moving part).
 - **Scheduled jobs** claim occurrences through `Elarion.Scheduling.EntityFrameworkCore`
   (Postgres claims), so `[ScheduledJob]`s such as the backup schedule run once cluster-wide.
+
+All of the above landed with ADR-0024's second commit. What is *not* done, and is deliberately left
+to §4: the deploy and backup queues, the reconcilers, and every other background loop still assume
+they are the only instance — so a second instance today is safe for the proxy/auth plane and not for
+the rest. `RenewNowAsync` on a non-holder reports where the work happens rather than forwarding to it;
+a role-holder proxy needs the advertised address on the lease row and an authenticated hop between
+instances, which is §4's business.
 
 ## 4. Edge and control: split the *deployment*, not the code
 
@@ -142,7 +149,7 @@ outside only through a self-route, exactly as today.
 ## 6. Sequencing
 
 1. ~~PostgreSQL replaces SQLite (§2)~~ — prerequisite for everything else. **Done** (ADR-0024).
-2. Proxy/auth state into the database, locked issuance, change signal (§3). *Now, same PR.*
+2. ~~Proxy/auth state into the database, locked issuance, change signal (§3).~~ **Done** (ADR-0024).
 3. Job claiming and leases for the background loops; the role flag and the database-privilege
    split (§4) — their own ADR, before the runtime port so the port targets them.
 4. The Kubernetes runtime port (ADR-0010): edge `DaemonSet`, control `Deployment`, Docker adapters

@@ -2,10 +2,14 @@ using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Features;
 using Elarion.Abstractions.Identity;
 using Elarion.Authorization;
+using Elarion.Coordination.PostgreSql;
 using Elarion.Identity;
+using Elarion.Scheduling.EntityFrameworkCore;
 using Elarion.Settings;
 using Elarion.Settings.EntityFrameworkCore;
+using Elarion.Settings.PostgreSql;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -89,6 +93,27 @@ public static class WatchtowerServiceCollectionExtensions {
         // automation toggles.
         services.AddElarionSettings();
         services.AddElarionSettingsEntityFrameworkCore<WatchtowerDbContext>();
+        // …and its cross-instance change channel (ADR-0024 decision 6). This is what turns a settings
+        // write on one node into an IChangeToken firing on every node — including the internal
+        // Watchtower:Proxy:RoutesVersion key that carries route, realm and certificate changes to the
+        // other instances' route tables and SNI maps. The data source is the one registered above, so
+        // the listener shares the process's connection configuration rather than parsing its own.
+        // The connection-string overload rather than the shared NpgsqlDataSource above, deliberately:
+        // a LISTEN connection is held open for the life of the process, so borrowing one from the pool
+        // the request path uses would permanently shrink it. The package owns and disposes the small
+        // data source it builds for that one connection.
+        services.AddElarionPostgreSqlSettingsChanges(connectionString);
+
+        // Leader election for the roles exactly one instance may play. Today that is certificate
+        // ordering: every instance serves from proxy_certificates, one holds `acme-issuer` and orders
+        // (ADR-0024 decision 5). The same primitive carries the `control` role in the next ADR.
+        services.AddElarionPostgreSqlRoleLease<WatchtowerDbContext>(
+            o => o.RoleName = CertificateManager.IssuerRole);
+
+        // Scheduler occurrence claims, so a [ScheduledJob] — today the backup schedule's minute tick
+        // (ADR-0018) — fires once cluster-wide instead of once per instance. Without this, two instances
+        // would each start the nightly backup of every stack.
+        services.AddElarionSchedulerEntityFrameworkCore<WatchtowerDbContext>();
 
         // Deploy queue — singleton for enqueuing; hosted for graceful shutdown.
         services.AddSingleton<DeployQueueService>();
@@ -110,6 +135,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // The general audit trail (audit.listEvents). Singleton — its writers are the singleton
         // providers; TryAdd so tests can substitute a recording double.
         services.TryAddSingleton<AuditLog>();
+        // Encrypts the private keys that now live in the database — certificates, the ACME account, the
+        // identity-assertion signing key (ADR-0024). Inert (and says so once) until
+        // Watchtower:Auth:KeyProtectionSecret is set.
+        services.TryAddSingleton<KeyProtector>();
         services.AddSingleton<ProxyIngressNetworks>();
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
@@ -121,10 +150,15 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<ProxyRouteTable>();
         services.AddSingleton<YarpListenerState>();
         services.AddSingleton<RouteStatusUpdater>();
-        // The live HTTP-01 challenge answers. Registered unconditionally, like the table above: the
-        // middleware that reads it is in the pipeline whatever the provider is, and an empty store simply
-        // answers 404.
+        // The live HTTP-01 challenge answers — rows since ADR-0024, so the CA's validation request can
+        // land on any instance. Registered unconditionally, like the table above: the middleware that
+        // reads it is in the pipeline whatever the provider is, and an empty table simply answers 404.
         services.AddSingleton<AcmeHttpChallengeStore>();
+        // The ACME account key, one row per directory URL.
+        services.AddSingleton<AcmeAccountStore>();
+        // How a route, realm or certificate write on this instance reaches the others (ADR-0024
+        // decision 6). A singleton because the watchers it hands out are process-lifetime.
+        services.AddSingleton<ProxyChangeSignal>();
         // A/AAAA resolution, shared by proxy.checkDns and the issuer's preflight so the operator's
         // "check DNS" button and the certificate machinery cannot come to different answers.
         services.AddSingleton<DnsPreflight>();
@@ -145,17 +179,14 @@ public static class WatchtowerServiceCollectionExtensions {
         // route (ADR-0023). Scoped and run from the same place, and after the migration — which is what
         // converts the realms' own stored auth hosts.
         services.AddScoped<LoginHostConversion>();
+        // ADR-0024's: the key and certificate files a pre-PostgreSQL installation left on /data become
+        // rows, once. Scoped like the two above and run from the same place, ahead of both consumers —
+        // see WatchtowerStateInitializer for why the order matters.
+        services.AddScoped<FileStateImport>();
 
-        // Where the in-process proxy keeps its issued certificates and ACME account key. Created up
-        // front for the same reason Auth:KeyPath is below: the certificate store is opened over this
-        // directory, and a path the process cannot write is worth failing on at startup rather than at
-        // the first issuance. Bind-time, hence read straight off configuration.
-        var certPath = section.GetValue<string>("Proxy:Yarp:CertPath");
-        if (string.IsNullOrWhiteSpace(certPath)) certPath = new YarpProxyOptions().CertPath;
-        Directory.CreateDirectory(certPath);
-        // The store opened over that directory. Registered unconditionally (like the rest of the proxy
-        // services) but only ever resolved by the host's HTTPS endpoint, which exists only where one is
-        // configured — so nothing reads the directory in development or under WebApplicationFactory.
+        // The SNI map, cached over the proxy_certificates table (ADR-0024). Registered unconditionally
+        // like the rest of the proxy services; filled by WatchtowerStateInitializer before Kestrel
+        // serves, because the handshake path cannot wait for a query.
         services.AddSingleton<CertificateStore>();
 
         services.AddSingleton<StackUpdateService>();
@@ -170,15 +201,23 @@ public static class WatchtowerServiceCollectionExtensions {
         //
         // Data protection is REQUIRED here, not a convenience: the host builds with
         // WebApplication.CreateSlimBuilder, which registers none of it. It encrypts the password-reset
-        // tokens today and the session cookies from the next work item on. The key ring is persisted to
-        // Auth:KeyPath — unconditionally, because the default location is per-user and the shipped
-        // container has no home directory, which would make the keys ephemeral and sign everyone out on
-        // every restart. The directory is created up front so a misconfigured path fails at startup
-        // rather than at the first login.
-        var keyPath = section.GetValue<string>("Auth:KeyPath");
-        if (string.IsNullOrWhiteSpace(keyPath)) keyPath = new AuthOptions().KeyPath;
-        Directory.CreateDirectory(keyPath);
-        services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+        // tokens and the OIDC correlation/nonce cookies. The key ring is persisted to the database
+        // (ADR-0024) — unconditionally, because the default location is a per-user directory and the
+        // shipped container has no home directory, which would make the keys ephemeral and sign
+        // everyone out on every restart. Rows rather than files because a token or cookie minted on one
+        // instance has to be readable on every other, which is the whole reason the ring moved.
+        services.AddDataProtection().PersistKeysToDbContext<WatchtowerDbContext>();
+        // …and encrypted at rest with the same secret as every other private key, when one is
+        // configured. Registered through the options builder rather than inline because the decision
+        // needs the KeyProtector, which needs the bound options: an unset secret leaves ASP.NET's
+        // default (plaintext elements), which is what keeps a ring written before the secret was
+        // configured readable — those rows carry no encryptedKey wrapper for a decryptor to look up.
+        // Only newly generated keys are encrypted; existing ones are not rewritten, because the key
+        // manager treats the ring as append-only and rewriting it is how a ring loses keys.
+        services.AddOptions<KeyManagementOptions>().Configure<KeyProtector>((keyManagement, protector) => {
+            if (!protector.IsEncrypting) return;
+            keyManagement.XmlEncryptor = new KeyProtectorXmlEncryptor(protector);
+        });
         services.AddIdentityCore<User>(o => {
             // Brute-force protection: 5 failed logins park the account for 15 minutes.
             o.Lockout.AllowedForNewUsers = true;
@@ -220,10 +259,10 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddScoped<UserMfaService>();
 
         // The ES256 signer behind X-Watchtower-Jwt and the JWKS endpoint (design.md §2.3). Singleton
-        // because the key pair is process-wide state: loading it per request would re-read the PEM on
-        // every proxied request, and generating it per request would produce a different `kid` each time.
-        // Registered unconditionally and lazily — the key file is not touched until the first assertion
-        // is minted or the JWKS is fetched, so a deployment with Auth:Enabled off never creates one.
+        // because the key pair is process-wide state: loading it per request would query on every
+        // proxied request, and generating it per request would produce a different `kid` each time. The
+        // key is a row since ADR-0024, read once by WatchtowerStateInitializer before anything is
+        // served, so every instance mints under the `kid` the JWKS advertises.
         services.AddSingleton<AuthTokenSigner>();
 
         // Who the caller is, and therefore what [assembly: ElarionAuthorizationDefaults] lets through.

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
-using System.Security.Cryptography;
-using System.Text;
+using Elarion.Abstractions.Coordination;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -52,8 +52,22 @@ public sealed record HostCertificateState(
 /// actually having bound. Both are runtime-switchable, so the loop stays alive while inactive instead of
 /// exiting — a provider switched on from the Settings page has to start issuing without a restart.
 /// </para>
+/// <para>
+/// Issuance is additionally gated on the <c>acme-issuer</c> role lease (ADR-0024 decision 5): every
+/// instance <em>serves</em> certificates from the table, exactly one <em>orders</em> them. Without that,
+/// three instances would open three orders for every host and burn the deployment's Let's Encrypt rate
+/// limit three times over for one certificate. The gate is checked per pass rather than started and
+/// stopped on leadership changes, which is what <see cref="IRoleLease"/> asks of its consumers — the
+/// loop is alive on every node and simply does nothing on the ones that are not the holder.
+/// </para>
 /// </remarks>
 public sealed class CertificateManager : BackgroundService, IProxyCertificateManager {
+    /// <summary>
+    /// The Elarion role lease that decides which instance orders certificates (ADR-0024 decision 5).
+    /// The DI key of the <see cref="IRoleLease"/> and the primary key of its row.
+    /// </summary>
+    public const string IssuerRole = "acme-issuer";
+
     /// <summary>The ceiling on how long the loop sleeps when nothing signals it.</summary>
     private static readonly TimeSpan ReconcileInterval = TimeSpan.FromMinutes(5);
 
@@ -71,6 +85,9 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
 
     private readonly CertificateStore _store;
     private readonly CertificateIssuer _issuer;
+    private readonly AcmeAccountStore _accounts;
+    private readonly AcmeHttpChallengeStore _challenges;
+    private readonly IRoleLease _issuerLease;
     private readonly YarpListenerState _listener;
     private readonly RouteStatusUpdater _routeStatus;
     private readonly IAcmeTransportFactory _transport;
@@ -105,13 +122,22 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     private AcmeSession? _session;
     private string? _sessionKey;
     private DateTimeOffset _lastPruneAt = DateTimeOffset.MinValue;
-    private bool _probedWritability;
     private bool _warnedNoHttps;
+
+    /// <summary>
+    /// What the last pass believed about the lease, so a handover is one log line rather than one per
+    /// five minutes for the life of the process.
+    /// </summary>
+    private bool? _heldIssuerLease;
+
     private bool _disposed;
 
     public CertificateManager(
         CertificateStore store,
         CertificateIssuer issuer,
+        AcmeAccountStore accounts,
+        AcmeHttpChallengeStore challenges,
+        [FromKeyedServices(IssuerRole)] IRoleLease issuerLease,
         YarpListenerState listener,
         RouteStatusUpdater routeStatus,
         IAcmeTransportFactory transport,
@@ -120,6 +146,9 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
         ILoggerFactory loggerFactory) {
         _store = store;
         _issuer = issuer;
+        _accounts = accounts;
+        _challenges = challenges;
+        _issuerLease = issuerLease;
         _listener = listener;
         _routeStatus = routeStatus;
         _transport = transport;
@@ -188,11 +217,9 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
             }
 
         // Unlike everything else here, this throws: the caller asked for one specific change and has to
-        // be told when it did not happen.
-        _store.Forget(name, deleteFiles: true);
-        var directory = Path.Combine(_store.RootPath, name);
-        if (Directory.Exists(directory))
-            throw new IOException($"The certificate directory for {name} could not be removed.");
+        // be told when it did not happen. The delete is a row, so "did it happen" is the database's
+        // answer rather than a directory that may or may not still be on the volume.
+        await _store.ForgetAsync(name, ct);
     }
 
     // ── Operator-driven and read surfaces ─────────────────────────────────────
@@ -211,6 +238,28 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
         if (!DesiredHosts.TryNormalize(host, out var name, out var reason))
             throw new ArgumentException(reason, nameof(host));
         return AttemptAsync(name, ct);
+    }
+
+    /// <summary>
+    /// Why this instance cannot order a certificate right now, or <see langword="null"/> when it can —
+    /// the operator-facing sentence behind the "Renew now" button's refusal.
+    /// </summary>
+    /// <remarks>
+    /// Reported rather than proxied to the holder. A holder proxy is a real feature (it needs the
+    /// advertised address on the lease row and an authenticated instance-to-instance hop), and shipping
+    /// half of it — a silent forward with no error path — would be worse than an explicit "not here".
+    /// The pass on the holder picks the host up within five minutes regardless, so waiting is always a
+    /// valid answer.
+    /// </remarks>
+    public string? IssuanceUnavailableReason() {
+        if (_issuerLease.IsHeld) return null;
+        var holder = _issuerLease.CurrentHolder;
+        return string.IsNullOrWhiteSpace(holder)
+            // No holder at all: a fresh cluster in the seconds before the first acquisition, or a
+            // database the lease cannot reach. "Retry there" would name nowhere.
+            ? "No instance currently holds the acme-issuer lease; certificate issuance starts again "
+              + "within a minute of one acquiring it."
+            : $"Certificate issuance runs on instance {holder}; retry there or wait for its next pass.";
     }
 
     /// <summary>
@@ -297,14 +346,15 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     public async Task ReconcileAsync(CancellationToken ct) {
         DrainRetiredSessions();
         if (!IsActive) return;
-        ProbeWritability();
 
         var desired = _desired;
+        var issuer = ObserveIssuerLease();
         if (desired.Count > 0) {
             var now = _time.GetUtcNow();
-            // Ahead of the listener gate, and unconditionally: a certificate the store already holds is
-            // held whether or not this process is the one that obtained it, and the route row has to say
-            // so either way.
+            // Ahead of both gates, and unconditionally: a certificate the store already holds is held
+            // whether or not this process is the one that obtained it — or is even allowed to obtain one
+            // — and the route row has to say so either way. This is the line that makes a non-issuing
+            // instance report the truth about what it is serving.
             await ProjectHeldCertificatesAsync(desired, now, ct);
 
             if (!_listener.HttpsBound) {
@@ -313,14 +363,39 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
                     _logger.LogWarning(
                         "HTTPS listener not bound; certificates would not be served — skipping issuance.");
                 }
-            } else {
+            } else if (issuer) {
                 _warnedNoHttps = false;
                 var due = desired.Where(host => IsDue(host, now)).ToArray();
                 if (due.Length > 0) await RunAsync(due, ct);
             }
         }
 
-        Prune(desired);
+        // Housekeeping belongs to the holder as well. Both deletes are idempotent, so N instances racing
+        // them would be safe rather than wrong — but it would also be N times the writes for one
+        // outcome, on the loop that already has a single owner.
+        if (issuer) {
+            await PruneAsync(desired, ct);
+            await SweepChallengesAsync(ct);
+        }
+    }
+
+    /// <summary>
+    /// Whether this instance may order certificates this pass, logging the handover the first time it
+    /// changes. One line per transition rather than per pass: the loop runs every five minutes for the
+    /// life of the process, and "still not the issuer" is not news.
+    /// </summary>
+    private bool ObserveIssuerLease() {
+        var held = _issuerLease.IsHeld;
+        if (_heldIssuerLease == held) return held;
+        _heldIssuerLease = held;
+        if (held)
+            _logger.LogInformation(
+                "This instance holds the {Role} lease and is ordering certificates.", IssuerRole);
+        else
+            _logger.LogInformation(
+                "This instance released the {Role} lease; certificates are now ordered by {Holder} and "
+                + "served here from the database.", IssuerRole, _issuerLease.CurrentHolder ?? "no instance");
+        return held;
     }
 
     /// <summary>
@@ -408,7 +483,7 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
             await gate.WaitAsync(scope.Token);
             IssueOutcome outcome;
             try {
-                outcome = await _issuer.IssueAsync(host, GetSession(), scope.Token);
+                outcome = await _issuer.IssueAsync(host, await GetSessionAsync(scope.Token), scope.Token);
             } finally {
                 gate.Release();
             }
@@ -484,12 +559,12 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     /// useless. Daily, because it is a tidiness concern and reading the whole store more often would be
     /// work for its own sake.
     /// </summary>
-    private void Prune(IReadOnlySet<string> desired) {
+    private async Task PruneAsync(IReadOnlySet<string> desired, CancellationToken ct) {
         var now = _time.GetUtcNow();
         if (now - _lastPruneAt < PruneInterval) return;
         _lastPruneAt = now;
         try {
-            var removed = _store.PruneUndesired(desired, PruneGrace);
+            var removed = await _store.PruneUndesiredAsync(desired, PruneGrace, ct);
             if (removed > 0)
                 foreach (var host in _states.Keys.Where(h => !desired.Contains(h)).ToArray()) {
                     _states.TryRemove(host, out _);
@@ -501,22 +576,17 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     }
 
     /// <summary>
-    /// Proves once that the certificate directory can actually be written to. A read-only volume is a
-    /// mundane deployment mistake whose only other symptom is every issuance succeeding at the CA and
-    /// then failing to install — which spends rate limit for nothing.
+    /// Deletes challenge rows an order never retracted — what an instance killed mid-issuance leaves
+    /// behind. On this loop rather than a timer of its own: it already runs on the right cadence, and a
+    /// second background service to delete a handful of rows a month would be a moving part for nothing.
     /// </summary>
-    private void ProbeWritability() {
-        if (_probedWritability) return;
-        _probedWritability = true;
+    private async Task SweepChallengesAsync(CancellationToken ct) {
         try {
-            Directory.CreateDirectory(_store.RootPath);
-            var probe = Path.Combine(_store.RootPath, $".write-probe-{Guid.NewGuid():N}");
-            File.WriteAllText(probe, "");
-            File.Delete(probe);
+            var swept = await _challenges.SweepExpiredAsync(ct);
+            if (swept > 0)
+                _logger.LogInformation("Swept {Count} expired ACME challenge token(s).", swept);
         } catch (Exception ex) {
-            _logger.LogError(
-                ex, "The certificate directory {CertPath} is not writable; no certificate can be installed.",
-                _store.RootPath);
+            _logger.LogWarning(ex, "Could not sweep expired ACME challenge tokens.");
         }
     }
 
@@ -559,7 +629,7 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     /// exists only at the CA that issued it, so pointing Watchtower at a different one has to produce a
     /// fresh key and a fresh registration rather than present one CA's account URL to another.
     /// </remarks>
-    private AcmeSession GetSession() {
+    private async Task<AcmeSession> GetSessionAsync(CancellationToken ct) {
         var yarp = Yarp;
         var directoryUrl = yarp.AcmeDirectoryUrl?.Trim() ?? "";
         if (!Uri.TryCreate(directoryUrl, UriKind.Absolute, out var uri))
@@ -574,40 +644,38 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
         lock (_sessionGate) {
             if (_session is not null && string.Equals(_sessionKey, key, StringComparison.Ordinal))
                 return _session;
-
-            var http = _transport.Create(yarp.AcmeCaBundlePath, TimeSpan.FromSeconds(30));
-            AcmeAccountKey? account = null;
-            try {
-                account = AcmeAccountKey.Load(AccountDirectory(directoryUrl), directoryUrl, _logger);
-                var client = new AcmeClient(http, account, _time, _loggerFactory.CreateLogger<AcmeClient>());
-                var replacement = new AcmeSession(
-                    client, account, uri, contact, yarp.AcmeEabKeyId, yarp.AcmeEabHmacKey,
-                    yarp.AcmeSelfCheckEnabled);
-
-                // Retired only now that a working replacement exists — and not disposed here either: an
-                // order started a moment ago is still holding it, so the next pass disposes it once
-                // nothing is in flight. Retiring before the build would leave the manager with no
-                // session at all if loading the account key threw.
-                if (_session is not null) _retired.Enqueue(_session);
-                _session = replacement;
-                _sessionKey = key;
-                return _session;
-            } catch {
-                account?.Dispose();
-                http.Dispose();
-                throw;
-            }
         }
-    }
 
-    /// <summary>
-    /// Where one CA's account material lives: <c>{CertPath}/accounts/{16 hex of SHA-256(directory URL)}</c>.
-    /// A hash rather than the URL because the URL is not a path, and a prefix rather than the whole digest
-    /// because 64 bits is far more than enough to separate the handful of directories any deployment uses.
-    /// </summary>
-    private string AccountDirectory(string directoryUrl) {
-        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(directoryUrl));
-        return Path.Combine(_store.RootPath, "accounts", Convert.ToHexStringLower(digest.AsSpan(0, 8)));
+        // The account read is outside the lock because it is I/O now — a database round trip, where it
+        // used to be a file read. Two attempts racing here build two sessions; the loser's is disposed
+        // below, which costs one wasted key load and keeps the lock off the wire. The account row itself
+        // is created at most once whatever happens, which is the property that actually matters.
+        var account = await _accounts.LoadOrCreateAsync(directoryUrl, ct);
+        var http = _transport.Create(yarp.AcmeCaBundlePath, TimeSpan.FromSeconds(30));
+        AcmeSession replacement;
+        try {
+            var client = new AcmeClient(http, account, _time, _loggerFactory.CreateLogger<AcmeClient>());
+            replacement = new AcmeSession(
+                client, account, uri, contact, yarp.AcmeEabKeyId, yarp.AcmeEabHmacKey,
+                yarp.AcmeSelfCheckEnabled);
+        } catch {
+            account.Dispose();
+            http.Dispose();
+            throw;
+        }
+
+        lock (_sessionGate) {
+            if (_session is not null && string.Equals(_sessionKey, key, StringComparison.Ordinal)) {
+                _retired.Enqueue(replacement);
+                return _session;
+            }
+            // Retired rather than disposed: an order started a moment ago is still holding it, so the
+            // next pass disposes it once nothing is in flight.
+            if (_session is not null) _retired.Enqueue(_session);
+            _session = replacement;
+            _sessionKey = key;
+            return _session;
+        }
     }
 
     private void DrainRetiredSessions() {

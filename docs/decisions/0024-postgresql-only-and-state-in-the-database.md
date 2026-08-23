@@ -1,6 +1,6 @@
 # ADR-0024: PostgreSQL is the only database, and the proxy/auth plane keeps its state in it
 
-- Status: Accepted
+- Status: Accepted (decisions 1–3 and 7 landed with the PostgreSQL switch; 4–6 with the state move)
 - Date: 2026-08-23
 - Related: [ADR-0010](0010-target-kubesolo-runtime.md) (the multi-node direction),
   [ADR-0013](0013-sqlite-metrics-history.md) (the SQLite-persisted metrics tier, which moves with it),
@@ -70,7 +70,13 @@ exist (see the inventory in docs/multi-node-readiness.md §1).
    (`ISettingsManager.Watch`) through `Elarion.Settings.PostgreSql`'s commit-gated `LISTEN/NOTIFY`
    and re-projects its route table and SNI map. Chosen over client events (browser-facing,
    at-most-once hints) and over a hand-rolled `NpgsqlConnection.Notification` listener (one more
-   thing to supervise).
+   thing to supervise). The value written is a fresh random string rather than a counter: nothing
+   reads it, only notices it changed, so an unconditional write makes concurrent bumps a non-event
+   instead of a compare-and-set loop. The bump sits in `ProxyProviderRouter.ApplyAsync` — the one
+   call every route and realm write handler already ends with — rather than repeated per handler,
+   which is the kind of rule a new handler can be written without. Watchers debounce (250 ms) and
+   re-read the database rather than replaying a payload, so a burst of writes costs one re-projection
+   and a lost notification costs nothing beyond the next one.
 7. **Elarion is bumped to 0.2.6** (from the 0.2.3 preview) as the first commit, because the
    primitives above do not exist in the pinned version.
 
@@ -87,13 +93,27 @@ exist (see the inventory in docs/multi-node-readiness.md §1).
 - **Backups of Watchtower's own state** become a PostgreSQL concern (`pg_dump` or the stack-backup
   machinery against the Watchtower database), not a file copy; ADR-0013's "sqlite" metrics backend
   is renamed `database` and keeps its semantics.
+- **The settings key is internal**: `Watchtower:Proxy:RoutesVersion` is never offered in the UI and is
+  not part of the proxy card's paths. Pinning it through the environment would freeze the one write
+  that tells the other instances anything changed, leaving their route tables to drift with nothing
+  reporting it. Same shape as `Watchtower:Proxy:ProviderMigrated` and
+  `Watchtower:Auth:LoginHostsConverted`, and now `Watchtower:Auth:FileStateImported` — the marker the
+  one-shot file import writes.
+- **The upgrade carries the files across itself.** On the first start after the upgrade, an existing
+  `/data/auth-keys` and `/data/proxy-certs` (or whatever the removed `Auth:KeyPath` /
+  `Proxy:Yarp:CertPath` named) are imported into the new tables: the signing key, the data-protection
+  key ring, the ACME account and every certificate. The key ring is the reason it is automatic rather
+  than a documented step — without it the upgrade invalidates every session and every in-flight OIDC
+  login, which reads as an outage. Nothing is deleted; removing the files is a step the operator takes
+  when they are satisfied.
 - **Keys in the database** raise the stakes of a database dump. Private keys (certificates, ACME
   account, identity-assertion signing key) are encrypted at rest with AES-GCM under a key derived
   from `Watchtower:Auth:KeyProtectionSecret` when that setting is present (env-pinnable, never
   stored in the database itself); when it is absent they are stored as the files were — unencrypted
   — and the host logs a warning at startup. Optional rather than required so an upgrade stays one
-  command; the data-protection key ring itself is stored unprotected (ASP.NET's default without a
-  certificate), which is the same exposure the key directory on the data volume had. Losing the
+  command; the data-protection key ring is encrypted under the same secret when one is set, and stored
+  as ASP.NET's default plaintext elements when it is not — the same exposure the key directory on the
+  data volume had. Losing the
   secret invalidates sessions and forces certificate reissuance — the blast radius the old key
   files already had.
 - The proxy becomes runnable on N nodes from the same table; the remaining single-instance

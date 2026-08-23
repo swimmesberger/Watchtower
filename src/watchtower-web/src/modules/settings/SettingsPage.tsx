@@ -919,30 +919,18 @@ function ProxyCard() {
                     HTTP-01 validation needs).
                   </Banner>
                 )}
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Field
-                    label="HTTPS listener"
-                    hint="Published as 443:8443 on Watchtower's container; the port itself comes from Kestrel__Endpoints__ProxyHttps__Url in the image."
-                  >
-                    {({ id }) => (
-                      <p id={id} className="text-[13px] text-text-2">
-                        {data?.yarp.httpsListenerBound
-                          ? 'Bound'
-                          : 'Not bound — routes are served over plain HTTP only'}
-                      </p>
-                    )}
-                  </Field>
-                  <Field
-                    label="Certificate directory"
-                    hint="Set at startup; certificates live here inside the data volume."
-                  >
-                    {({ id }) => (
-                      <p id={id} className="font-mono text-[13px] text-text-2">
-                        {data?.yarp.certPath}
-                      </p>
-                    )}
-                  </Field>
-                </div>
+                <Field
+                  label="HTTPS listener"
+                  hint="Published as 443:8443 on Watchtower's container; the port itself comes from Kestrel__Endpoints__ProxyHttps__Url in the image."
+                >
+                  {({ id }) => (
+                    <p id={id} className="text-[13px] text-text-2">
+                      {data?.yarp.httpsListenerBound
+                        ? 'Bound'
+                        : 'Not bound — routes are served over plain HTTP only'}
+                    </p>
+                  )}
+                </Field>
 
                 <Field
                   label="ACME directory URL"

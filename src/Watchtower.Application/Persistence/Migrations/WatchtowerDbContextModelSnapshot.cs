@@ -17,10 +17,62 @@ namespace Watchtower.Application.Persistence.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.9")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("Elarion.Coordination.PostgreSql.RoleLeaseEntity", b =>
+                {
+                    b.Property<string>("Role")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("role");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("address");
+
+                    b.Property<DateTimeOffset>("ExpiresOnUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_on_utc");
+
+                    b.Property<string>("Owner")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("owner");
+
+                    b.HasKey("Role")
+                        .HasName("pk_elarion_role_leases");
+
+                    b.ToTable("elarion_role_leases", (string)null);
+                });
+
+            modelBuilder.Entity("Elarion.Scheduling.EntityFrameworkCore.SchedulerClaimEntity", b =>
+                {
+                    b.Property<string>("JobName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("job_name");
+
+                    b.Property<DateTimeOffset>("OccurrenceUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurrence_utc");
+
+                    b.Property<DateTimeOffset>("ClaimedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("claimed_at_utc");
+
+                    b.HasKey("JobName", "OccurrenceUtc")
+                        .HasName("pk_elarion_scheduler_claims");
+
+                    b.HasIndex("OccurrenceUtc")
+                        .HasDatabaseName("ix_elarion_scheduler_claims_purge");
+
+                    b.ToTable("elarion_scheduler_claims", (string)null);
+                });
 
             modelBuilder.Entity("Elarion.Settings.EntityFrameworkCore.Setting", b =>
                 {
@@ -56,6 +108,100 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasName("pk_elarion_settings");
 
                     b.ToTable("elarion_settings", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("FriendlyName")
+                        .HasColumnType("text")
+                        .HasColumnName("friendly_name");
+
+                    b.Property<string>("Xml")
+                        .HasColumnType("text")
+                        .HasColumnName("xml");
+
+                    b.HasKey("Id")
+                        .HasName("pk_data_protection_keys");
+
+                    b.ToTable("data_protection_keys", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AcmeAccount", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AccountUrl")
+                        .HasColumnType("text")
+                        .HasColumnName("account_url");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DirectoryUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("directory_url");
+
+                    b.Property<byte[]>("PrivateKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("private_key");
+
+                    b.Property<string>("Protection")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("protection");
+
+                    b.HasKey("Id")
+                        .HasName("pk_acme_accounts");
+
+                    b.HasIndex("DirectoryUrl")
+                        .IsUnique()
+                        .HasDatabaseName("ix_acme_accounts_directory_url");
+
+                    b.ToTable("acme_accounts", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AcmeHttpChallenge", b =>
+                {
+                    b.Property<string>("Token")
+                        .HasColumnType("text")
+                        .HasColumnName("token");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Host")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("host");
+
+                    b.Property<string>("KeyAuthorization")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("key_authorization");
+
+                    b.HasKey("Token")
+                        .HasName("pk_acme_http_challenges");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_acme_http_challenges_expires_at");
+
+                    b.ToTable("acme_http_challenges", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.AuditEvent", b =>
@@ -646,6 +792,78 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("metric_host_samples", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.ProxyCertificate", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CertificatePem")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("certificate_pem");
+
+                    b.Property<string>("Host")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("host");
+
+                    b.Property<DateTimeOffset>("InstalledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("installed_at");
+
+                    b.Property<string>("Issuer")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("issuer");
+
+                    b.Property<DateTimeOffset>("NotAfter")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("not_after");
+
+                    b.Property<DateTimeOffset>("NotBefore")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("not_before");
+
+                    b.Property<byte[]>("PrivateKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("private_key");
+
+                    b.Property<string>("Protection")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("protection");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source");
+
+                    b.Property<string>("Thumbprint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("thumbprint");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id")
+                        .HasName("pk_proxy_certificates");
+
+                    b.HasIndex("Host")
+                        .IsUnique()
+                        .HasDatabaseName("ix_proxy_certificates_host");
+
+                    b.ToTable("proxy_certificates", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Realm", b =>
                 {
                     b.Property<int>("Id")
@@ -902,6 +1120,37 @@ namespace Watchtower.Application.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_route_access_grants_subject", "(\"user_id\" IS NOT NULL) <> (\"group_id\" IS NOT NULL)");
                         });
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.SigningKey", b =>
+                {
+                    b.Property<string>("Purpose")
+                        .HasColumnType("text")
+                        .HasColumnName("purpose");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("KeyId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("key_id");
+
+                    b.Property<byte[]>("PrivateKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("private_key");
+
+                    b.Property<string>("Protection")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("protection");
+
+                    b.HasKey("Purpose")
+                        .HasName("pk_signing_keys");
+
+                    b.ToTable("signing_keys", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>

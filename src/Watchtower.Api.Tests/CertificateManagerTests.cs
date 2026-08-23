@@ -38,7 +38,7 @@ public sealed class CertificateManagerTests {
 
     /// <summary>
     /// The contract that matters most. A route removed by mistake and put back must not have cost an
-    /// issuance, so dropping out of the desired set keeps the files exactly where they are.
+    /// issuance, so dropping out of the desired set keeps the row exactly where it is.
     /// </summary>
     [Fact]
     public async Task AHostLeavingTheDesiredSet_KeepsItsCertificate() {
@@ -49,7 +49,7 @@ public sealed class CertificateManagerTests {
         estate.Certificates.SetDesiredHosts([]);
 
         Assert.NotNull(estate.Store.Find(Host));
-        Assert.True(Directory.Exists(Path.Combine(estate.Store.RootPath, Host)));
+        Assert.NotNull(await estate.CertificateRowAsync(Host));
         // Still reported, flagged as unwanted — "why is this certificate still here" is the question the
         // list exists to answer.
         var state = estate.State(Host);
@@ -59,7 +59,7 @@ public sealed class CertificateManagerTests {
 
     /// <summary>The one path that does delete: an operator removing the route has said the domain is gone.</summary>
     [Fact]
-    public async Task ForgetHost_DeletesTheCertificateAndItsFiles() {
+    public async Task ForgetHost_DeletesTheCertificateAndItsRow() {
         await using var estate = await AcmeEstate.StartAsync();
         await estate.AddRouteAsync(Host);
         await estate.Certificates.RenewNowAsync(Host, Ct);
@@ -67,7 +67,7 @@ public sealed class CertificateManagerTests {
         await estate.Certificates.ForgetHostAsync(Host, Ct);
 
         Assert.Null(estate.Store.Find(Host));
-        Assert.False(Directory.Exists(Path.Combine(estate.Store.RootPath, Host)));
+        Assert.Null(await estate.CertificateRowAsync(Host));
         Assert.Null(estate.Store.SelectContext(Host));
     }
 

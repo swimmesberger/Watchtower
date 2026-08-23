@@ -20,13 +20,15 @@ public sealed class AcmeClientProtocolTests : IDisposable {
     private const string DirectoryUrl = "https://ca.test/directory";
     private const string AccountUrl = "https://ca.test/acct/1";
 
-    private readonly string _root =
-        Path.Combine(Path.GetTempPath(), "watchtower-acme-client-tests", Guid.NewGuid().ToString("N"));
-
     private readonly StubCa _ca = new();
 
     private (AcmeClient Client, AcmeAccountKey Account) NewClient() {
-        var account = AcmeAccountKey.Load(_root, DirectoryUrl, NullLogger.Instance);
+        // Detached: these tests are about what goes on the wire, and the account key's storage — a row
+        // since ADR-0024 — has nothing to do with any of it.
+        var account = AcmeAccountKey.Detached(
+            System.Security.Cryptography.ECDsa.Create(
+                System.Security.Cryptography.ECCurve.NamedCurves.nistP256),
+            DirectoryUrl);
         var http = new HttpClient(_ca) { BaseAddress = new Uri("https://ca.test/") };
         return (new AcmeClient(http, account, TimeProvider.System, NullLogger<AcmeClient>.Instance), account);
     }
@@ -273,7 +275,6 @@ public sealed class AcmeClientProtocolTests : IDisposable {
         Assert.True(payload.GetProperty("termsOfServiceAgreed").GetBoolean());
 
         _ca.Reset();
-        Directory.Delete(_root, recursive: true);
 
         // Blank means the member is absent, not present-and-empty: at least one CA rejects `[]`.
         var (blank, account2) = await RegisteredAsync("   ");
@@ -322,18 +323,30 @@ public sealed class AcmeClientProtocolTests : IDisposable {
 
     [Fact]
     public async Task AnAlreadyRegisteredKey_CostsNoRequestAtAll() {
-        var (first, account1) = await RegisteredAsync();
+        // The next start, with the account key and the URL the CA issued for it read back out of the
+        // database (ADR-0024) — which is the whole point of persisting the account URL: a registration
+        // costs a request and, at a real CA, a slot in a rate limit.
+        var (first, registered) = await RegisteredAsync();
         first.Dispose();
-        account1.Dispose();
         _ca.Reset();
 
-        var (client, account) = NewClient();
-        using var _ = client;
-        using var __ = account;
+        using var account = AcmeAccountKey.Detached(
+            CloneKey(registered.Key), DirectoryUrl, registered.AccountUrl);
+        registered.Dispose();
+        using var client = new AcmeClient(
+            new HttpClient(_ca) { BaseAddress = new Uri("https://ca.test/") },
+            account, TimeProvider.System, NullLogger<AcmeClient>.Instance);
         await client.GetDirectoryAsync(new Uri(DirectoryUrl), Ct);
         await client.EnsureAccountAsync("ops@example.invalid", null, null, Ct);
 
         Assert.DoesNotContain(_ca.Requests, r => r.Path == "/new-account");
+    }
+
+    /// <summary>The same key pair in a second instance — what reading the row back produces.</summary>
+    private static System.Security.Cryptography.ECDsa CloneKey(System.Security.Cryptography.ECDsa key) {
+        var copy = System.Security.Cryptography.ECDsa.Create();
+        copy.ImportPkcs8PrivateKey(key.ExportPkcs8PrivateKey(), out _);
+        return copy;
     }
 
     // ── Directory ─────────────────────────────────────────────────────────────
@@ -364,10 +377,7 @@ public sealed class AcmeClientProtocolTests : IDisposable {
         Assert.Contains("newAccount", error.Message);
     }
 
-    public void Dispose() {
-        _ca.Dispose();
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
-    }
+    public void Dispose() => _ca.Dispose();
 
     private static (HttpStatusCode Status, string Type, string Detail) Problem(
         HttpStatusCode status, string type, string detail) => (status, type, detail);

@@ -599,6 +599,77 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
     }
 }
 
+// ── The proxy/auth plane's state (ADR-0024 decision 4) ───────────────────────
+// Four tables that used to be files on the data volume. What they have in common is that every
+// instance has to be able to read them — the SNI map, the challenge answers and the signing key are
+// all things a request lands on whichever node the load balancer picked.
+
+[EntityConfiguration]
+public sealed class ProxyCertificateConfiguration : IEntityTypeConfiguration<ProxyCertificate> {
+    public void Configure(EntityTypeBuilder<ProxyCertificate> b) {
+        b.ToTable("proxy_certificates");
+        b.HasKey(x => x.Id);
+        // Two instances can finish an order for the same host at the same moment (the issuer lease makes
+        // that unlikely, not impossible — a lease handover mid-order is exactly the window). The upsert
+        // in CertificateStore.InstallAsync resolves it, and the concurrency token is what makes the
+        // loser's write a Conflict rather than a silent overwrite of the newer certificate.
+        b.UseXminAsConcurrencyToken();
+        b.Property(x => x.Host).IsRequired();
+        // Lowercased by every writer, so a plain unique index is the whole rule: one certificate per SNI
+        // name, and the store's lookup is an exact match on the same normalized form.
+        b.HasIndex(x => x.Host).IsUnique();
+        b.Property(x => x.CertificatePem).IsRequired();
+        b.Property(x => x.PrivateKey).IsRequired();
+        b.Property(x => x.Protection).IsRequired();
+        b.Property(x => x.Issuer).IsRequired();
+        b.Property(x => x.Thumbprint).IsRequired();
+        b.Property(x => x.Source).IsRequired();
+    }
+}
+
+[EntityConfiguration]
+public sealed class AcmeAccountConfiguration : IEntityTypeConfiguration<AcmeAccount> {
+    public void Configure(EntityTypeBuilder<AcmeAccount> b) {
+        b.ToTable("acme_accounts");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.DirectoryUrl).IsRequired();
+        // The unique index is load-bearing rather than descriptive: it is what makes the
+        // INSERT … ON CONFLICT DO NOTHING in AcmeAccountStore a race guard, so two instances starting
+        // together register one account with the CA instead of two.
+        b.HasIndex(x => x.DirectoryUrl).IsUnique();
+        b.Property(x => x.PrivateKey).IsRequired();
+        b.Property(x => x.Protection).IsRequired();
+    }
+}
+
+[EntityConfiguration]
+public sealed class AcmeHttpChallengeConfiguration : IEntityTypeConfiguration<AcmeHttpChallenge> {
+    public void Configure(EntityTypeBuilder<AcmeHttpChallenge> b) {
+        b.ToTable("acme_http_challenges");
+        // The token is the key: the middleware's only query is "is this exact token answerable", on a
+        // path the open internet can reach, so it should be one index seek and nothing else.
+        b.HasKey(x => x.Token);
+        b.Property(x => x.KeyAuthorization).IsRequired();
+        b.Property(x => x.Host).IsRequired();
+        // The sweep in the certificate manager's pass deletes by expiry; without this it would seq-scan
+        // a table whose rows are otherwise only ever fetched by primary key.
+        b.HasIndex(x => x.ExpiresAt);
+    }
+}
+
+[EntityConfiguration]
+public sealed class SigningKeyConfiguration : IEntityTypeConfiguration<SigningKey> {
+    public void Configure(EntityTypeBuilder<SigningKey> b) {
+        b.ToTable("signing_keys");
+        // Keyed by purpose, so "there is exactly one identity-assertion key" is a schema fact rather
+        // than a convention the create path has to remember.
+        b.HasKey(x => x.Purpose);
+        b.Property(x => x.PrivateKey).IsRequired();
+        b.Property(x => x.Protection).IsRequired();
+        b.Property(x => x.KeyId).IsRequired();
+    }
+}
+
 /// <summary>
 /// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3).
 /// </summary>

@@ -20,7 +20,7 @@ namespace Watchtower.Api;
 /// <para>
 /// The boot snapshot exists because the live provider's data is only pushed by a hosted service
 /// (<c>SettingsConfigurationRefresher.StartAsync</c>) — after the pre-DI configuration reads in
-/// <c>Program.cs</c> (<c>Auth:Enabled</c>, <c>Auth:KeyPath</c>) have already happened. Without it, a
+/// <c>Program.cs</c> (<c>Auth:Enabled</c>) have already happened. Without it, a
 /// stored <c>Auth:Enabled</c> would never reach the startup pipeline decision and the setting could not
 /// survive a restart. <see cref="LoadStoredGlobalSettings"/> reads the <c>elarion_settings</c> table
 /// synchronously (tolerant of a missing table on first run, and of a database that is not up yet) so

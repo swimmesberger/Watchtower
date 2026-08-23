@@ -15,11 +15,20 @@
     <PackageReference Include="Elarion.EntityFrameworkCore" />
     <PackageReference Include="Elarion.Settings" />
     <PackageReference Include="Elarion.Settings.EntityFrameworkCore" />
+    <!-- Cross-instance coordination on the one PostgreSQL (ADR-0024): the `acme-issuer` role lease,
+         the LISTEN/NOTIFY settings change channel, and scheduler occurrence claims. Each bundles the
+         source generator that maps its table onto WatchtowerDbContext. -->
+    <PackageReference Include="Elarion.Coordination.PostgreSql" />
+    <PackageReference Include="Elarion.Settings.PostgreSql" />
+    <PackageReference Include="Elarion.Scheduling.EntityFrameworkCore" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Entity Framework Core with the Npgsql provider — PostgreSQL is the only backend (ADR-0024). -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <!-- Referenced explicitly so every project in the graph resolves one version of it; see the note in
+         Directory.Packages.props. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="EFCore.NamingConventions" />
     <!-- SQLite, for the one-shot `import-sqlite` command only (Services/SqliteImport): it reads a
@@ -27,6 +36,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <!-- Referenced directly so the pinned e_sqlite3 native version (GHSA-2m69-gcr7-jv3q) actually applies. -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
+    <!-- PersistKeysToDbContext: the data-protection key ring is rows in WatchtowerDbContext, not files
+         on a volume (ADR-0024 decision 4). -->
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" />
   </ItemGroup>
 
   <ItemGroup>

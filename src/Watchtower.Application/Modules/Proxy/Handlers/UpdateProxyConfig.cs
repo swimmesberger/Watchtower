@@ -163,9 +163,6 @@ public sealed class UpdateProxyConfig(
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyProvider, provider, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyAdminEmail, email, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCaddyImage, image, ct);
-        // Proxy:Yarp:CertPath is deliberately absent: it is read at bind time (the directory is created
-        // and the certificate store opened over it at startup), so a runtime write would persist a value
-        // nothing acts on until the next restart.
         if (command.YarpAcmeDirectoryUrl is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpAcmeDirectoryUrl, command.YarpAcmeDirectoryUrl.Trim(), ct);
         if (command.YarpAcmeCaBundlePath is not null)

@@ -16,7 +16,9 @@
 #   docker compose run --rm watchtower --import-sqlite /data/watchtower.db
 #   docker compose up -d
 #
-# See docs/upgrading.md.
+# The last step also carries /data/auth-keys and /data/proxy-certs into the database, once and
+# automatically — which is what keeps everyone signed in and stops every certificate being re-ordered.
+# Afterwards the data volume holds nothing Watchtower needs. See docs/upgrading.md.
 #
 # The UI is served on http://localhost:8080 — the management plane, published on the loopback interface
 # below. Put it behind an authenticating reverse proxy (e.g. Cloudflare Access, Authelia) — Watchtower
@@ -33,8 +35,9 @@
 #     reaches Watchtower's UI or API.
 #   * point each route's DNS at this host before adding it, so the first issuance can validate.
 #   * set WATCHTOWER__PROXY__ADMINEMAIL for Let's Encrypt expiry notices (recommended).
-# Certificates and the ACME account key are written to /data/proxy-certs, so they persist in the data
-# volume below — nothing else to declare. An internal CA (step-ca, ZeroSSL, …) works too: set
+# Certificates, the ACME account and the challenge answers are rows in PostgreSQL (ADR-0024), so there
+# is nothing to mount and a second instance serves the same hosts from the same table — exactly one of
+# them orders certificates, elected through a lease row. An internal CA (step-ca, ZeroSSL, …) works too: set
 # WATCHTOWER__PROXY__YARP__ACMEDIRECTORYURL, plus __ACMECABUNDLEPATH for its root and the EAB pair if
 # it requires one. See docs/reverse-proxy/yarp.md.
 # Two other providers exist: `caddy` (a sibling Caddy container holding the host's ports 80/443) is
@@ -76,6 +79,14 @@ services:
       # Watchtower's own database (ADR-0024). Required — there is no default and no file fallback.
       WATCHTOWER__DATABASE__CONNECTIONSTRING: "Host=postgres;Database=${POSTGRES_DB:-watchtower};Username=${POSTGRES_USER:-watchtower};Password=${POSTGRES_PASSWORD:-watchtower}"
       WATCHTOWER__DOCKERAPIVERSION: "1.43"
+      # Encrypts the private keys Watchtower stores in that database — the certificate keys, the ACME
+      # account key, the identity-assertion signing key and the data-protection key ring (ADR-0024).
+      # Optional: without it they are
+      # stored unencrypted, exactly as the PEM files on the data volume used to be, and the log says so
+      # once at startup. Set it to a long random value (`openssl rand -base64 32`) and keep it OUT of
+      # the database and out of your database backups — that is the whole point of it. Losing it once
+      # set signs everyone out and forces every certificate to be reissued.
+      # WATCHTOWER__AUTH__KEYPROTECTIONSECRET: ${WATCHTOWER_KEY_PROTECTION_SECRET:-}
       # Enable the background "update available" checkers (opt-in — generate registry traffic):
       # WATCHTOWER__AUTOCHECKENABLED: "true"
       # WATCHTOWER__STACKCHECKENABLED: "true"

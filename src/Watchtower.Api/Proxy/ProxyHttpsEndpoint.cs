@@ -28,6 +28,12 @@ namespace Watchtower.Api.Proxy;
 /// issued — which is what <see cref="CertificateStore"/> builds. That hook only exists on a
 /// <c>ListenOptions</c>, which is why the endpoint is reached through the named-endpoint loader.
 /// </para>
+/// <para>
+/// The store is resolved here, at Kestrel-configure time, but it is <em>filled</em> earlier — by
+/// <c>Program.InitializeDatabaseAsync</c>, before the server starts. Nothing below may touch the
+/// database: this callback runs on the connection path, where a query per handshake would be both a
+/// latency floor and a way for a scanner to make the process talk to PostgreSQL.
+/// </para>
 /// </remarks>
 internal static class ProxyHttpsEndpoint {
     /// <summary>The Kestrel endpoint name — <c>Kestrel:Endpoints:ProxyHttps:Url</c>.</summary>
@@ -118,8 +124,8 @@ internal static class ProxyHttpsEndpoint {
                 });
 
                 logger.LogInformation(
-                    "Proxy HTTPS endpoint {Url} configured; serving {Count} certificate(s) from {CertPath}.",
-                    url, store.Entries.Count, store.RootPath);
+                    "Proxy HTTPS endpoint {Url} configured; serving {Count} certificate(s) from the "
+                    + "database.", url, store.Entries.Count);
             });
         });
     }

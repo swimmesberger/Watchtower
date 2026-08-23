@@ -190,18 +190,24 @@ public sealed class UpdateProxyConfigYarpValidationTests {
             await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, SettingsScope.Global, Ct));
     }
 
+    /// <summary>
+    /// The version key is the carrier of the cross-instance change signal (ADR-0024 decision 6), not a
+    /// setting. It must stay out of the proxy card entirely: offering it would let an operator write a
+    /// value, and — worse — an environment pin on it would freeze the one write that tells the other
+    /// instances something changed, leaving their route tables to drift silently.
+    /// </summary>
     [Fact]
-    public async Task TheCertPathIsNeverWrittenAtRuntime() {
+    public async Task TheRoutesVersionIsNotPartOfTheProxyCard() {
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyRoutesVersion, GetProxyConfig.ProxyPaths);
+
         using var host = AuthTestHost.Start();
         var result = await SaveAsync(host, Command() with { Provider = ProxyProviderNames.Yarp });
 
         Assert.True(result.IsSuccess);
-        // It is read at bind time, so a stored row would do nothing until the next restart — but it is
-        // still reported, and still listed among the paths the card manages so a pin can disable it.
-        var settings = host.Services.GetRequiredService<ISettingsManager>();
-        Assert.Null(await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpCertPath, SettingsScope.Global, Ct));
-        Assert.NotEmpty(result.Value.Config.Yarp.CertPath);
-        Assert.Contains(WatchtowerSettingPaths.ProxyYarpCertPath, GetProxyConfig.ProxyPaths);
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyRoutesVersion, result.Value.Config.PinnedPaths);
+        // And it is not offered on the DTO either — the card renders no field an operator could type into.
+        Assert.DoesNotContain(
+            "RoutesVersion", System.Text.Json.JsonSerializer.Serialize(result.Value.Config));
     }
 
     [Fact]

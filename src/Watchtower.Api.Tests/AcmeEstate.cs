@@ -101,6 +101,19 @@ internal sealed class AcmeEstate(FakeAcmeServer ca, WatchtowerApiFactory factory
     public HostCertificateState State(string host) =>
         Certificates.Snapshot().Single(s => s.Host == host);
 
+    /// <summary>
+    /// The stored certificate for a host, or null. Certificates are rows since ADR-0024, so "is it still
+    /// there" is a query rather than a directory check.
+    /// </summary>
+    public async Task<ProxyCertificate?> CertificateRowAsync(string host) {
+        ProxyCertificate? found = null;
+        await Factory.WithScopeAsync(async sp => {
+            found = await sp.GetRequiredService<WatchtowerDbContext>().ProxyCertificates
+                .AsNoTracking().FirstOrDefaultAsync(c => c.Host == host, Ct);
+        });
+        return found;
+    }
+
     public async ValueTask DisposeAsync() {
         Factory.Dispose();
         await Ca.DisposeAsync();

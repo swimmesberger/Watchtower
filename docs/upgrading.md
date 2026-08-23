@@ -30,8 +30,8 @@ environment:
   WATCHTOWER__DATABASE__CONNECTIONSTRING: "Host=postgres;Database=watchtower;Username=watchtower;Password=..."
 ```
 
-Leave the `watchtower-data` volume mounted. It still holds the certificates, the ACME account key and
-the data-protection key ring — and, for the moment, the SQLite file you are about to import.
+Leave the `watchtower-data` volume mounted. It holds the SQLite file you are about to import, and the
+key and certificate files the same upgrade carries into the database (see step 4).
 
 ### 3. Import the old database
 
@@ -79,12 +79,30 @@ Read the warnings once before you delete the old file.
 docker compose up -d
 ```
 
-Sign in and check that your stacks, routes and accounts are there. Once you are satisfied, delete the
-old file — nothing reads it any more:
+The first normal start also carries the **key and certificate files** into the database, once and
+automatically — nothing to run:
+
+```
+info: Imported legacy state into the database: 1 signing key(s), 2 data-protection key(s),
+      1 ACME account(s), 19 certificate(s). The files under /data/auth-keys and /data/proxy-certs are
+      no longer read and can be removed.
+```
+
+That is what keeps everyone signed in across the upgrade (the data-protection key ring), keeps the
+ACME account and its rate-limit history, and stops every certificate being re-ordered on the day you
+upgrade. It runs once — a marker records that it did — and never overwrites anything already in the
+database, so a certificate issued since is safe. **Nothing is deleted**: the files stay exactly where
+they were, which is what makes step "rolling back" possible.
+
+Sign in and check that your stacks, routes, accounts and certificates are there. Once you are
+satisfied, delete the old files — nothing reads them any more:
 
 ```bash
-docker compose exec watchtower rm /data/watchtower.db
+docker compose exec watchtower rm -rf /data/watchtower.db /data/auth-keys /data/proxy-certs
 ```
+
+At that point the data volume holds nothing Watchtower needs, and you can drop the mount entirely at
+your next convenient restart.
 
 ### What else changed
 
@@ -94,9 +112,28 @@ docker compose exec watchtower rm /data/watchtower.db
   persisted in Watchtower's own database. A stored or env-pinned `sqlite` is still accepted and reads
   as `database`, so nothing breaks if you miss it; the UI and new writes use the new name.
 - **`Watchtower:DbPath` / `WATCHTOWER__DBPATH` no longer exist.** A leftover value is ignored.
+- **`Proxy:Yarp:CertPath` and `Auth:KeyPath` no longer exist either.** Certificates, the ACME account,
+  the identity-assertion signing key and the data-protection key ring are rows now. A leftover value
+  for either is still read *once*, by the import above, so a deployment that moved those directories
+  is imported from where its files actually are; after that it is ignored. The read-only "certificate
+  directory" field is gone from Settings → Reverse proxy, because there is nothing for it to name.
+- **Private keys in the database can be encrypted at rest.** Set
+  `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase and keep it out of the database
+  and out of your database backups. It covers the certificate keys, the ACME account key, the
+  identity-assertion signing key and the data-protection key ring. Optional so the upgrade stays one
+  decision; without it, all four are stored exactly as the files were and the host logs one warning at
+  startup. You can set it later, and nothing needs migrating — but it is not retroactive in one go:
+  the signing key and the ACME account key are encrypted on the next start, certificates as they
+  renew, and the key ring only for keys generated from then on (earlier ring elements stay plaintext
+  and keep loading). Losing it once set invalidates sessions and forces certificate reissuance.
+- **More than one instance is now possible for the proxy/auth plane.** Every instance serves every
+  routed host from the same tables; exactly one holds the `acme-issuer` lease and orders certificates;
+  route, realm and certificate changes reach the others over PostgreSQL `LISTEN/NOTIFY`. Nothing about
+  a single-instance deployment changes.
 
 ### Rolling back
 
 There is no downgrade path in the tooling. If you need to go back, redeploy the previous image with the
-old `WATCHTOWER__DBPATH` and the `/data/watchtower.db` you kept — which is the reason step 4 leaves
-deleting it until last. Anything you changed after the import will not be in it.
+old `WATCHTOWER__DBPATH`, the `/data/watchtower.db` you kept, and the `/data/auth-keys` and
+`/data/proxy-certs` directories the import left untouched — which is the reason step 4 leaves deleting
+all three until last. Anything you changed after the import will not be in them.

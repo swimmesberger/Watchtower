@@ -82,6 +82,18 @@ public sealed class FakeAcmeServer : IAsyncDisposable {
         get { lock (_requests) return [.. _requests]; }
     }
 
+    /// <summary>
+    /// Forgets what has been asked so far, so a test can arrange through the CA and then assert that a
+    /// later pass reached it not at all — which is the shape of every "this instance must not issue" claim.
+    /// </summary>
+    public void ForgetRequests() {
+        lock (_requests) _requests.Clear();
+    }
+
+    /// <summary>Whether the CA has been asked to open an order since the last <see cref="ForgetRequests"/>.</summary>
+    public bool SawAnOrder =>
+        Requests.Any(path => path.Contains("new-order", StringComparison.Ordinal));
+
     /// <summary>Refuse the next authorization with this problem instead of validating it.</summary>
     public (string Type, string Detail)? FailValidationWith { get; set; }
 

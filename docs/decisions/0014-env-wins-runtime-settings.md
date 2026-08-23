@@ -40,7 +40,7 @@ Two further constraints shaped the fix:
 2. **A synchronous boot snapshot carries stored settings to startup.** Before the host is built,
    `RuntimeSettingsLayering.LoadStoredGlobalSettings` reads the Global-scope rows straight from the
    SQLite file (read-only; tolerant of a missing file/table) into a memory source directly beneath the
-   live provider. Pre-DI reads — `Auth:Enabled`, `Auth:KeyPath` — therefore see stored values, which
+   live provider. The pre-DI read — `Auth:Enabled` — therefore sees stored values, which
    is what lets a runtime-edited `Auth:Enabled` take effect on the next start.
 3. **Pinned settings are visible, disabled, and write-rejected.** `EnvironmentSettingPins` maps
    `WATCHTOWER__X__Y` ⇄ `Watchtower:X:Y`. Every settings get-handler returns the pinned paths for its

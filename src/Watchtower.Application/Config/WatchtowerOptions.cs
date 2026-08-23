@@ -333,10 +333,18 @@ public sealed record AuthOptions {
     public AuthCookieSecurePolicy CookieSecure { get; init; } = AuthCookieSecurePolicy.Auto;
 
     /// <summary>
-    /// Directory holding the identity-token signing key and the data-protection keys. Must live on a
-    /// persistent volume: losing it signs everyone out on restart.
+    /// Passphrase the private keys in the database are encrypted with at rest — the certificate keys, the
+    /// ACME account key and the identity-assertion signing key (ADR-0024). Set it via
+    /// <c>WATCHTOWER__AUTH__KEYPROTECTIONSECRET</c> and keep it <em>out</em> of the database, which is the
+    /// only way it protects anything: it exists so a database dump does not hand over the keys with it.
+    /// <para>
+    /// Optional. Left unset, keys are stored as the files on the data volume were — unencrypted — and the
+    /// host says so once at startup, so an upgrade stays one decision rather than two. Losing a
+    /// configured secret invalidates sessions and forces certificate reissuance, which is the blast
+    /// radius the old key files already had.
+    /// </para>
     /// </summary>
-    public string KeyPath { get; init; } = "/data/auth-keys";
+    public string? KeyProtectionSecret { get; init; }
 
     /// <summary>
     /// How many <c>POST /api/auth/login</c> attempts one client IP may make per minute before the
@@ -510,13 +518,6 @@ public static class ProxyProviderNames {
 /// from an ACME CA — so there is neither a sibling proxy container nor a control network.
 /// </summary>
 public sealed record YarpProxyOptions {
-    /// <summary>
-    /// Directory holding the issued PEM certificates and the ACME account key. Read at bind time
-    /// (the directory is created at startup and the certificate store is opened over it), so it is
-    /// environment/appsettings-only — not editable from the Settings page.
-    /// </summary>
-    public string CertPath { get; init; } = "/data/proxy-certs";
-
     /// <summary>
     /// ACME directory URL of the CA that issues the certificates. Defaults to Let's Encrypt
     /// production; point it at the staging directory while testing, or at an internal CA's directory.

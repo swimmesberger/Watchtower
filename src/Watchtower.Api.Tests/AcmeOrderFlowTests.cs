@@ -1,6 +1,8 @@
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
 using Watchtower.Application.Modules.Proxy.Handlers;
 using Watchtower.Application.Services.Acme;
 using Xunit;
@@ -75,7 +77,8 @@ public sealed class AcmeOrderFlowTests {
 
         await estate.Certificates.RenewNowAsync(Host, Ct);
 
-        Assert.Equal(0, estate.Factory.Services.GetRequiredService<AcmeHttpChallengeStore>().Count);
+        Assert.Equal(
+            0, await estate.Factory.Services.GetRequiredService<AcmeHttpChallengeStore>().CountAsync(Ct));
     }
 
     [Fact]
@@ -164,17 +167,24 @@ public sealed class AcmeOrderFlowTests {
         Assert.NotNull(estate.Store.Find("other.example.invalid"));
     }
 
-    /// <summary>A restart must not re-register: the account key and its URL live on the volume.</summary>
+    /// <summary>
+    /// A restart — or a second instance — must not re-register: the account key and the URL the CA
+    /// issued for it are a row keyed by directory URL (ADR-0024), not a folder on one node's volume.
+    /// </summary>
     [Fact]
-    public async Task TheAccountSurvivesInTheCertificateDirectory() {
+    public async Task TheAccountIsRecordedAgainstItsDirectoryUrl() {
         await using var estate = await AcmeEstate.StartAsync();
         await estate.AddRouteAsync(Host);
         await estate.Certificates.RenewNowAsync(Host, Ct);
 
-        var accounts = Path.Combine(estate.Store.RootPath, "accounts");
-        var directory = Assert.Single(Directory.GetDirectories(accounts));
-        Assert.True(File.Exists(Path.Combine(directory, AcmeAccountKey.KeyFileName)));
-        Assert.Contains(estate.Ca.DirectoryUrl, File.ReadAllText(Path.Combine(directory, AcmeAccountKey.AccountFileName)));
+        await estate.Factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var account = Assert.Single(await db.AcmeAccounts.AsNoTracking().ToListAsync(Ct));
+            Assert.Equal(estate.Ca.DirectoryUrl, account.DirectoryUrl);
+            Assert.NotEmpty(account.PrivateKey);
+            // The kid the next order signs with, without a second registration.
+            Assert.False(string.IsNullOrWhiteSpace(account.AccountUrl));
+        });
     }
 
     private static string[] SanNames(X509Certificate2 certificate) =>
