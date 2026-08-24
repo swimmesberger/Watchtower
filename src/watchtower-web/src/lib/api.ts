@@ -4,6 +4,7 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
+  HostRegistry,
   CloudflareForeignRoute,
   ActiveDeployment,
   AuditQuery,
@@ -82,6 +83,13 @@ import type {
 export const api = {
   registries: {
     list: async () => (await rpc('registries.list', {})).registries as Registry[],
+    listWithHost: async () => {
+      const result = await rpc('registries.list', {})
+      return {
+        registries: result.registries as Registry[],
+        hostRegistries: result.hostRegistries as HostRegistry[],
+      }
+    },
     create: async (data: CreateRegistryRequest) =>
       (await rpc('registries.create', {
         name: data.name,
@@ -197,6 +205,7 @@ export const api = {
       runnerImage?: string | null
       extraLabels?: string | null
       allowDockerSocket: boolean
+      syncRegistryUrl?: string | null
     }) =>
       (
         await rpc('ci.updateRepo', {
@@ -207,6 +216,7 @@ export const api = {
           runnerImage: repo.runnerImage ?? null,
           extraLabels: repo.extraLabels ?? null,
           allowDockerSocket: repo.allowDockerSocket,
+          syncRegistryUrl: repo.syncRegistryUrl ?? null,
         })
       ).repo as CiRepo,
   },

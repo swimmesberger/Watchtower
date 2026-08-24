@@ -1266,6 +1266,41 @@
                   "lastWarmedAt",
                   "lastWarmError"
                 ]
+              },
+              "syncRegistryUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "registrySync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ]
               }
             },
             "required": [
@@ -1281,7 +1316,9 @@
               "allowDockerSocket",
               "createdAt",
               "runnerStatus",
-              "toolchain"
+              "toolchain",
+              "syncRegistryUrl",
+              "registrySync"
             ]
           }
         },
@@ -1463,6 +1500,41 @@
                   "lastWarmedAt",
                   "lastWarmError"
                 ]
+              },
+              "syncRegistryUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "registrySync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ]
               }
             },
             "required": [
@@ -1478,7 +1550,9 @@
               "allowDockerSocket",
               "createdAt",
               "runnerStatus",
-              "toolchain"
+              "toolchain",
+              "syncRegistryUrl",
+              "registrySync"
             ]
           }
         },
@@ -1740,6 +1814,41 @@
                       "lastWarmedAt",
                       "lastWarmError"
                     ]
+                  },
+                  "syncRegistryUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "registrySync": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "status": {
+                        "type": "string"
+                      },
+                      "syncedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "syncedAt",
+                      "error"
+                    ]
                   }
                 },
                 "required": [
@@ -1755,7 +1864,9 @@
                   "allowDockerSocket",
                   "createdAt",
                   "runnerStatus",
-                  "toolchain"
+                  "toolchain",
+                  "syncRegistryUrl",
+                  "registrySync"
                 ]
               }
             },
@@ -1983,6 +2094,41 @@
                     "lastWarmedAt",
                     "lastWarmError"
                   ]
+                },
+                "syncRegistryUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "registrySync": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "syncedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "syncedAt",
+                    "error"
+                  ]
                 }
               },
               "required": [
@@ -1998,7 +2144,9 @@
                 "allowDockerSocket",
                 "createdAt",
                 "runnerStatus",
-                "toolchain"
+                "toolchain",
+                "syncRegistryUrl",
+                "registrySync"
               ]
             }
           }
@@ -2062,6 +2210,13 @@
           },
           "allowDockerSocket": {
             "type": "boolean"
+          },
+          "syncRegistryUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -2228,6 +2383,41 @@
                   "lastWarmedAt",
                   "lastWarmError"
                 ]
+              },
+              "syncRegistryUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "registrySync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ]
               }
             },
             "required": [
@@ -2243,7 +2433,9 @@
               "allowDockerSocket",
               "createdAt",
               "runnerStatus",
-              "toolchain"
+              "toolchain",
+              "syncRegistryUrl",
+              "registrySync"
             ]
           }
         },
@@ -5772,10 +5964,32 @@
                 "createdAt"
               ]
             }
+          },
+          "hostRegistries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "url",
+                "username"
+              ]
+            }
           }
         },
         "required": [
-          "registries"
+          "registries",
+          "hostRegistries"
         ]
       }
     },

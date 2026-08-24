@@ -51,6 +51,41 @@ public sealed class RegistryAuthBuilder(WatchtowerDbContext db) {
     }
 
     /// <summary>
+    /// The merged registry view used by CI secret sync and the read-only registry listing: host
+    /// docker-config auths as the base layer, Watchtower-configured registries on top (same
+    /// precedence as <see cref="CreateTempConfigDir"/>). Entries carry decoded credentials —
+    /// keep them server-side; DTOs must strip <see cref="ResolvedRegistry.Password"/>.
+    /// </summary>
+    public IReadOnlyList<ResolvedRegistry> ListResolvedRegistries() {
+        var result = new Dictionary<string, ResolvedRegistry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (url, auth) in LoadHostAuths()) {
+            var (username, password) = DecodeAuth(auth.Auth);
+            result[url] = new ResolvedRegistry(url, username, password, FromHostConfig: true, Name: null, RegistryId: null);
+        }
+
+        var configured = db.Registries
+            .AsNoTracking()
+            .Where(r => r.CredentialId != null && r.Credential != null)
+            .Select(r => new { r.Id, r.Name, r.Url, r.Credential!.Username, r.Credential.Token })
+            .ToList();
+        foreach (var reg in configured)
+            result[reg.Url] = new ResolvedRegistry(reg.Url, reg.Username, reg.Token, FromHostConfig: false, reg.Name, reg.Id);
+
+        return result.Values.OrderBy(r => r.Url, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Decodes a docker config <c>auth</c> value (base64 <c>user:pass</c>). Nulls when malformed.</summary>
+    private static (string? Username, string? Password) DecodeAuth(string auth) {
+        try {
+            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(auth));
+            var separator = decoded.IndexOf(':');
+            return separator < 0 ? (null, null) : (decoded[..separator], decoded[(separator + 1)..]);
+        } catch (FormatException) {
+            return (null, null);
+        }
+    }
+
+    /// <summary>
     /// Reads the <c>auths</c> section from the host's docker config.json.
     /// Returns an empty dictionary when the file is absent, unreadable, or has no auths.
     /// </summary>
@@ -95,6 +130,13 @@ public sealed class RegistryAuthBuilder(WatchtowerDbContext db) {
         return Path.Combine(configDir, "config.json");
     }
 }
+
+/// <summary>
+/// One registry as CI sync and the registry listing see it: the docker-config host layer merged
+/// with Watchtower-configured registries. <see cref="Password"/> never leaves the backend.
+/// </summary>
+public sealed record ResolvedRegistry(
+    string Url, string? Username, string? Password, bool FromHostConfig, string? Name, int? RegistryId);
 
 /// <summary>Represents the structure of a docker config.json file.</summary>
 internal sealed record DockerConfig {

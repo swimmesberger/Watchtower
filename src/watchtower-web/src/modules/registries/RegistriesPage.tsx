@@ -2,7 +2,13 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Boxes, MoreHorizontal, Plus, Trash2, Zap } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CreateRegistryRequest, Credential, DockerConfigStatus, Registry } from '@/lib/types'
+import type {
+  CreateRegistryRequest,
+  Credential,
+  DockerConfigStatus,
+  HostRegistry,
+  Registry,
+} from '@/lib/types'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -46,9 +52,10 @@ export function RegistriesPage() {
 
   const registriesQuery = useQuery({
     queryKey: ['registries'],
-    queryFn: api.registries.list,
+    queryFn: api.registries.listWithHost,
   })
-  const registries = registriesQuery.data ?? []
+  const registries = registriesQuery.data?.registries ?? []
+  const hostRegistries = registriesQuery.data?.hostRegistries ?? []
 
   const { data: credentials = [] } = useQuery({
     queryKey: ['credentials'],
@@ -190,6 +197,48 @@ export function RegistriesPage() {
     </div>
   )
 
+  const hostColumns: DataListColumn<HostRegistry>[] = [
+    {
+      key: 'url',
+      header: 'URL',
+      cell: (r) => <span className="font-mono text-[13px] text-text">{r.url}</span>,
+    },
+    {
+      key: 'username',
+      header: 'Username',
+      cell: (r) =>
+        r.username ? (
+          <span className="text-text-2">{r.username}</span>
+        ) : (
+          <Badge tone="neutral" size="sm" title="Stored in a credential helper — not readable from config.json">
+            credential helper
+          </Badge>
+        ),
+    },
+    {
+      key: 'source',
+      header: '',
+      align: 'right',
+      cell: () => (
+        <Badge tone="neutral" size="sm">
+          docker config
+        </Badge>
+      ),
+    },
+  ]
+
+  const renderHostCard = (r: HostRegistry) => (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-mono text-[13px] text-text">{r.url}</p>
+        <p className="mt-0.5 text-[13px] text-text-2">{r.username ?? 'credential helper'}</p>
+      </div>
+      <Badge tone="neutral" size="sm">
+        docker config
+      </Badge>
+    </div>
+  )
+
   function openForm() {
     if (isDesktop) setShowForm((s) => !s)
     else setShowForm(true)
@@ -260,6 +309,27 @@ export function RegistriesPage() {
             />
           }
         />
+      )}
+
+      {/* Read-only entries from the host docker config (docker login on the host). */}
+      {!registriesQuery.isError && hostRegistries.length > 0 && (
+        <div className="space-y-2">
+          <div>
+            <h2 className="text-sm font-medium text-text">From host Docker config</h2>
+            <p className="mt-0.5 text-[13px] text-text-2">
+              Found via <code className="font-mono text-[12px]">docker login</code> on the host.
+              Usable for private pulls and CI registry sync; manage them with the Docker CLI, not
+              here. Watchtower registries above take precedence on the same URL.
+            </p>
+          </div>
+          <DataList
+            items={hostRegistries}
+            getKey={(r) => r.url}
+            columns={hostColumns}
+            renderCard={renderHostCard}
+            aria-label="Host Docker config registries"
+          />
+        </div>
       )}
 
       {/* Mobile add form → Dialog (bottom sheet) */}

@@ -208,6 +208,12 @@ Mechanisms:
    `secret name → Credential` and `variable name → value`. Watchtower ships secrets via the
    sealed-box secrets API (`GET .../actions/secrets/public-key` + `PUT
    .../actions/secrets/{name}`; libsodium) and non-secret config via the variables API.
+   *Implemented for the registry case:* `CiRepo.SyncRegistryUrl` selects one registry from
+   the merged view (host docker config + Watchtower registries; `RegistryAuthBuilder.
+   ListResolvedRegistries`), and the orchestrator pushes the `REGISTRY` variable plus the
+   `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` secrets each reconcile pass the value hash
+   differs (rotation re-pushes automatically; failures backoff 5 min and surface in the CI
+   tab). Arbitrary name→credential mappings remain future work.
    Sync runs on mapping changes and **automatically on credential rotation** — rotate once
    in Watchtower, every repo using that credential is re-pushed. Secret values cannot be
    read back from GitHub, so Watchtower stores a hash of the last-synced value per mapping

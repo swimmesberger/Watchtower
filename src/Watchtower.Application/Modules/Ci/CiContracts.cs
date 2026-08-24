@@ -17,7 +17,17 @@ public sealed record CiRepoDto(
     bool AllowDockerSocket,
     DateTimeOffset CreatedAt,
     CiRunnerStatusDto? RunnerStatus,
-    CiToolchainProfileDto? Toolchain);
+    CiToolchainProfileDto? Toolchain,
+    string? SyncRegistryUrl,
+    CiRegistrySyncDto? RegistrySync);
+
+/// <summary>
+/// State of the registry→GitHub Actions sync (<c>REGISTRY</c> variable +
+/// <c>REGISTRY_USERNAME</c>/<c>REGISTRY_PASSWORD</c> secrets). Null on a <see cref="CiRepoDto"/>
+/// until a sync registry is selected.
+/// </summary>
+/// <param name="Status"><c>synced</c>, <c>pending</c> (push not attempted yet or values changed), or <c>failed</c>.</param>
+public sealed record CiRegistrySyncDto(string Status, DateTimeOffset? SyncedAt, string? Error);
 
 /// <summary>Live orchestrator state for one repo's runner slots.</summary>
 public sealed record CiRunnerStatusDto(
@@ -78,7 +88,9 @@ internal static class CiMapping {
         repo.AllowDockerSocket,
         repo.CreatedAt,
         status is null ? null : ToDto(status),
-        ToToolchainDto(repo, status));
+        ToToolchainDto(repo, status),
+        repo.SyncRegistryUrl,
+        ToRegistrySyncDto(repo));
 
     public static CiRunnerStatusDto ToDto(CiRepoRunnerStatus status) => new(
         status.DesiredRunners,
@@ -87,6 +99,18 @@ internal static class CiMapping {
         status.LastError,
         status.LastErrorAt,
         status.BackoffUntil);
+
+    /// <summary>
+    /// Projects the persisted sync columns into the wire DTO. The orchestrator's hash compare is
+    /// what keeps "synced" honest — it re-pushes (flipping through pending) when values rotate.
+    /// </summary>
+    public static CiRegistrySyncDto? ToRegistrySyncDto(CiRepo repo) =>
+        repo.SyncRegistryUrl is null ? null : new CiRegistrySyncDto(
+            repo.LastRegistrySyncError is not null ? "failed"
+            : repo.RegistrySyncedHash is not null ? "synced"
+            : "pending",
+            repo.RegistrySyncedAt,
+            repo.LastRegistrySyncError);
 
     /// <summary>Projects the persisted profile + live warmer state into the wire DTO. Pure.</summary>
     public static CiToolchainProfileDto? ToToolchainDto(CiRepo repo, CiRepoRunnerStatus? status) {
