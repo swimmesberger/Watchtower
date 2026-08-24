@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -14,7 +15,9 @@ namespace Watchtower.Application.Modules.Ci.Handlers;
 public sealed class AddRepo(
     WatchtowerDbContext db,
     GitHubApiClient gitHub,
-    CiRunnerOrchestrator orchestrator)
+    CiRunnerOrchestrator orchestrator,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<AddRepo.Command, Result<AddRepo.Response>> {
     public sealed record Command(
         string Owner,
@@ -59,6 +62,10 @@ public sealed class AddRepo(
         };
         db.CiRepos.Add(repo);
         await db.SaveChangesAsync(ct);
+
+        await audit.RecordAsync("ci", "repo.add", repo.FullName,
+            $"enabled CI runners with credential '{credential.Name}'",
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         orchestrator.RequestReconcile();
         return new Response(CiMapping.ToDto(repo, status: null));

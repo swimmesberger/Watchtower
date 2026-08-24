@@ -25,6 +25,7 @@ public sealed class CiRunnerOrchestrator(
     DockerEngineClient docker,
     GitHubApiClient gitHub,
     IOptionsMonitor<WatchtowerOptions> options,
+    AuditLog audit,
     ILogger<CiRunnerOrchestrator> logger) : BackgroundService {
 
     internal const string ManagedLabel = "watchtower.managed";
@@ -40,6 +41,16 @@ public sealed class CiRunnerOrchestrator(
 
     /// <summary>Snapshot of per-repo runner state for <c>ci.getRunnerStatus</c>/<c>ci.listRepos</c>.</summary>
     public IReadOnlyDictionary<int, CiRepoRunnerStatus> Status => _status;
+
+    /// <summary>
+    /// Drops the registry-sync failure defer for one repo so the next pass retries immediately.
+    /// Called by <c>ci.updateRepo</c> on every save: a config change is the operator saying "try
+    /// again now" — typically right after fixing the PAT's permissions.
+    /// </summary>
+    public void ClearRegistrySyncBackoff(int repoId) {
+        if (_status.TryGetValue(repoId, out var status))
+            status.ClearRegistrySyncRetry();
+    }
 
     /// <summary>Wakes the reconcile loop immediately (called by ci.* handlers after config changes).</summary>
     public void RequestReconcile() {
@@ -270,6 +281,11 @@ public sealed class CiRunnerOrchestrator(
             await db.SaveChangesAsync(ct);
             logger.LogInformation("Synced registry {Registry} to GitHub Actions config of {Repo}",
                 resolved.Url, repo.FullName);
+            // Actor-less: nobody clicked this — the reconcile loop shipped credentials to GitHub,
+            // which is exactly the kind of outward write the trail exists for.
+            await audit.RecordAsync("ci", "registry.sync", repo.FullName,
+                $"pushed the REGISTRY variable and REGISTRY_USERNAME/REGISTRY_PASSWORD secrets for "
+                + $"'{resolved.Url}' to GitHub Actions", ct: ct);
         } catch (HttpRequestException ex) {
             var message = ex.Message.Contains("403")
                 ? $"{ex.Message} The PAT likely lacks the repository Secrets (read and write) and "
@@ -279,11 +295,20 @@ public sealed class CiRunnerOrchestrator(
         }
     }
 
-    private static async Task RecordSyncFailureAsync(
+    private async Task RecordSyncFailureAsync(
         WatchtowerDbContext db, CiRepo tracked, CiRepoRunnerStatus status, string message, CancellationToken ct) {
+        // Audited on transitions only: the retry loop re-fails with the same message every few
+        // minutes, and a row per attempt would evict the category's actual history (the CI tab
+        // already shows the standing error).
+        var isNewFailure = tracked.LastRegistrySyncError != message;
         tracked.LastRegistrySyncError = message;
         status.DeferRegistrySyncRetry();
         await db.SaveChangesAsync(ct);
+        if (isNewFailure) {
+            await audit.RecordAsync("ci", "registry.sync", tracked.FullName,
+                $"syncing registry '{tracked.SyncRegistryUrl}' to GitHub Actions failed",
+                success: false, error: message, ct: ct);
+        }
     }
 
     // ── Toolcache warming (docs/ci-runners/design.md) ────────────────────────
