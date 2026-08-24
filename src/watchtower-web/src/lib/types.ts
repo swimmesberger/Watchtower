@@ -30,6 +30,8 @@ export interface Stack {
   autoDeployMode: AutoDeployMode
   /** Local time of day ("HH:mm") for scheduled auto-deploy. Null unless mode is 'scheduled'. */
   autoDeployTime: string | null
+  /** Operator intent: a 'stopped' stack is disabled — containers stopped, deploys rejected. */
+  desiredState: StackDesiredState
   lastDeployStatus: 'success' | 'failed' | 'running' | 'queued' | null
   lastDeployedAt: string | null
   /** Commit SHA checked out by the last successful deploy. Null until a deploy succeeds. */
@@ -46,6 +48,8 @@ export interface Stack {
 }
 
 export type AutoDeployMode = 'off' | 'onChange' | 'scheduled'
+
+export type StackDesiredState = 'running' | 'stopped'
 
 export interface DeployEvent {
   id: number

@@ -5937,6 +5937,9 @@
                   "null"
                 ]
               },
+              "desiredState": {
+                "type": "string"
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -6001,6 +6004,7 @@
               "webhookEnabled",
               "autoDeployMode",
               "autoDeployTime",
+              "desiredState",
               "lastDeployStatus",
               "lastDeployedAt",
               "lastDeployedCommit",
@@ -6150,6 +6154,9 @@
                   "null"
                 ]
               },
+              "desiredState": {
+                "type": "string"
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -6214,6 +6221,7 @@
               "webhookEnabled",
               "autoDeployMode",
               "autoDeployTime",
+              "desiredState",
               "lastDeployStatus",
               "lastDeployedAt",
               "lastDeployedCommit",
@@ -6417,6 +6425,9 @@
                   "null"
                 ]
               },
+              "desiredState": {
+                "type": "string"
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -6481,6 +6492,7 @@
               "webhookEnabled",
               "autoDeployMode",
               "autoDeployTime",
+              "desiredState",
               "lastDeployStatus",
               "lastDeployedAt",
               "lastDeployedCommit",
@@ -6629,6 +6641,9 @@
                     "null"
                   ]
                 },
+                "desiredState": {
+                  "type": "string"
+                },
                 "lastDeployStatus": {
                   "type": [
                     "string",
@@ -6693,6 +6708,7 @@
                 "webhookEnabled",
                 "autoDeployMode",
                 "autoDeployTime",
+                "desiredState",
                 "lastDeployStatus",
                 "lastDeployedAt",
                 "lastDeployedCommit",
@@ -6818,6 +6834,298 @@
         },
         "required": [
           "envVars"
+        ]
+      }
+    },
+    "stacks.start": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "desiredState": {
+                "type": "string"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
+              "desiredState",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "lastDeployedCommit",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "newCommitSha",
+              "updatesCheckedAt"
+            ]
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stack",
+          "started"
+        ]
+      }
+    },
+    "stacks.stop": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "desiredState": {
+                "type": "string"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
+              "desiredState",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "lastDeployedCommit",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "newCommitSha",
+              "updatesCheckedAt"
+            ]
+          }
+        },
+        "required": [
+          "stack"
         ]
       }
     },
@@ -6958,6 +7266,9 @@
                   "null"
                 ]
               },
+              "desiredState": {
+                "type": "string"
+              },
               "lastDeployStatus": {
                 "type": [
                   "string",
@@ -7022,6 +7333,7 @@
               "webhookEnabled",
               "autoDeployMode",
               "autoDeployTime",
+              "desiredState",
               "lastDeployStatus",
               "lastDeployedAt",
               "lastDeployedCommit",

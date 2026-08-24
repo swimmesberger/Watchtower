@@ -132,6 +132,37 @@ public class ComposeCliService {
         return RunAsync([.. args], dockerConfigDir: null, onLine: null, ct);
     }
 
+    /// <summary>
+    /// Runs <c>docker compose stop</c> for a project identified by name alone — the stack-level
+    /// "disable" (ADR-0025). Containers are stopped but kept, so a later start is fast and loses
+    /// nothing.
+    /// </summary>
+    /// <remarks>
+    /// Like <see cref="DownProjectAsync"/>, there is no repository checkout to point <c>--file</c> at
+    /// outside a deploy, so the project is resolved from the <c>com.docker.compose.project</c> labels
+    /// on its containers. A project with nothing running is a no-op success.
+    /// </remarks>
+    /// <param name="projectName">Value passed to --project-name; the compose project to stop.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Exit code and captured output.</returns>
+    public virtual Task<(int ExitCode, string Output)> StopProjectAsync(string projectName, CancellationToken ct) =>
+        RunAsync(["compose", "--project-name", projectName, "stop"], dockerConfigDir: null, onLine: null, ct);
+
+    /// <summary>
+    /// Runs <c>docker compose start</c> for a project identified by name alone — brings a stopped
+    /// stack's existing containers back without a deploy (ADR-0025).
+    /// </summary>
+    /// <remarks>
+    /// Resolves the project from container labels like <see cref="StopProjectAsync"/>. A project with
+    /// no containers at all cannot be started this way — callers check for that case and tell the
+    /// operator to deploy instead.
+    /// </remarks>
+    /// <param name="projectName">Value passed to --project-name; the compose project to start.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Exit code and captured output.</returns>
+    public virtual Task<(int ExitCode, string Output)> StartProjectAsync(string projectName, CancellationToken ct) =>
+        RunAsync(["compose", "--project-name", projectName, "start"], dockerConfigDir: null, onLine: null, ct);
+
     /// <summary>Runs one compose invocation, streaming its combined output.</summary>
     /// <remarks>
     /// The single point where an assembled argument list leaves the process, and therefore the seam a

@@ -157,6 +157,9 @@ export const api = {
       await rpc('stacks.delete', { id })
     },
     deploy: async (id: number) => (await rpc('stacks.deploy', { id })).deploy as DeployAccepted,
+    stop: async (id: number) => (await rpc('stacks.stop', { id })).stack as Stack,
+    start: async (id: number) =>
+      (await rpc('stacks.start', { id })) as { stack: Stack; started: boolean },
     events: async (id: number) => (await rpc('stacks.events', { stackId: id })).events as DeployEvent[],
     getEnv: async (id: number) => (await rpc('stacks.getEnv', { stackId: id })).envVars as StackEnvVar[],
     setEnv: async (id: number, vars: StackEnvVarInput[]) =>

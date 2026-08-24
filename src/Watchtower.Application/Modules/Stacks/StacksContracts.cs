@@ -15,6 +15,7 @@ public sealed record StackDto(
     bool WebhookEnabled,
     string AutoDeployMode,
     string? AutoDeployTime,
+    string DesiredState,
     string? LastDeployStatus,
     DateTimeOffset? LastDeployedAt,
     string? LastDeployedCommit,
@@ -44,8 +45,12 @@ public static class StackMapping {
         s.Id, s.Name, s.RepositoryUrl, s.ComposeFilePath, s.Branch, s.ComposeProjectName,
         s.CredentialId, s.WebhookToken, s.WebhookEnabled,
         ModeToDto(s.AutoDeployMode), s.AutoDeployTime,
+        StateToDto(s.DesiredState),
         s.LastDeployStatus?.ToString().ToLowerInvariant(), s.LastDeployedAt, s.LastDeployedCommit, s.CreatedAt,
         check?.HasUpdates, check?.OutdatedImages, check?.NewCommitSha, check?.CheckedAt);
+
+    /// <summary>Enum → lowercase wire value: "running", "stopped".</summary>
+    public static string StateToDto(StackDesiredState state) => state.ToString().ToLowerInvariant();
 
     /// <summary>Enum → camelCase wire value: "off", "onChange", "scheduled".</summary>
     public static string ModeToDto(AutoDeployMode mode) =>
