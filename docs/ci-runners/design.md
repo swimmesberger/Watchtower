@@ -213,7 +213,11 @@ Mechanisms:
    ListResolvedRegistries`), and the orchestrator pushes the `REGISTRY` variable plus the
    `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` secrets each reconcile pass the value hash
    differs (rotation re-pushes automatically; failures backoff 5 min and surface in the CI
-   tab). Arbitrary name→credential mappings remain future work.
+   tab, and every `ci.updateRepo` save clears the backoff so fixing the PAT + saving retries
+   immediately). Selecting a registry probes the PAT's Secrets/Variables access up front —
+   the sync stays optional, so a PAT without those permissions is fine until a registry is
+   selected. Syncs and CI config changes are audited (category `ci`). Arbitrary
+   name→credential mappings remain future work.
    Sync runs on mapping changes and **automatically on credential rotation** — rotate once
    in Watchtower, every repo using that credential is re-pushed. Secret values cannot be
    read back from GitHub, so Watchtower stores a hash of the last-synced value per mapping

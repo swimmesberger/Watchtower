@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -21,7 +22,9 @@ namespace Watchtower.Application.Modules.Ci.Handlers;
 public sealed class EnableForStack(
     WatchtowerDbContext db,
     GitHubApiClient gitHub,
-    CiRunnerOrchestrator orchestrator)
+    CiRunnerOrchestrator orchestrator,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<EnableForStack.Command, Result<EnableForStack.Response>> {
     /// <param name="CredentialId">
     /// Credential holding the runner-admin PAT. Null uses the stack's clone credential.
@@ -84,6 +87,11 @@ public sealed class EnableForStack(
             db.CiRepos.Add(repo);
         }
         await db.SaveChangesAsync(ct);
+
+        await audit.RecordAsync("ci", "repo.enable", repo.FullName,
+            $"{(existing is null ? "enabled" : "re-enabled")} CI runners via stack '{stack.Name}' "
+            + $"with credential '{credential.Name}'",
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         orchestrator.RequestReconcile();
         var status = orchestrator.Status.TryGetValue(repo.Id, out var s) ? s : null;

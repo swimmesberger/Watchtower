@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -9,7 +10,11 @@ namespace Watchtower.Application.Modules.Ci.Handlers;
 /// deregisters (best effort), and removes. The credential and cache volumes are left in place.
 /// </summary>
 [Handler("ci.removeRepo")]
-public sealed class RemoveRepo(WatchtowerDbContext db, CiRunnerOrchestrator orchestrator)
+public sealed class RemoveRepo(
+    WatchtowerDbContext db,
+    CiRunnerOrchestrator orchestrator,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<RemoveRepo.Command, Result<RemoveRepo.Response>> {
     public sealed record Command(int Id);
 
@@ -22,6 +27,11 @@ public sealed class RemoveRepo(WatchtowerDbContext db, CiRunnerOrchestrator orch
 
         db.CiRepos.Remove(repo);
         await db.SaveChangesAsync(ct);
+
+        await audit.RecordAsync("ci", "repo.remove", repo.FullName,
+            "removed CI runners (runner containers reaped on the next reconcile pass; "
+            + "cache volumes and synced GitHub values left in place)",
+            actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         orchestrator.RequestReconcile();
         return new Response(true);
