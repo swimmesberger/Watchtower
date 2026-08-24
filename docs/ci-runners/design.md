@@ -140,11 +140,19 @@ Runner container spec:
 The manually-managed VM had warm caches; a fresh container has none. Per-repo named
 volumes mounted into every runner of that repo (implemented):
 
-- `watchtower-ci-tool-{repo}` → `/home/runner/_work/_tool` (setup-* action toolcache;
-  also `DOTNET_INSTALL_DIR={toolcache}/dotnet`, because setup-dotnet installs to that
-  env var's dir rather than `RUNNER_TOOL_CACHE`)
+- `watchtower-ci-tool-{repo}` → `/opt/hostedtoolcache`, exposed as `RUNNER_TOOL_CACHE`
+  (setup-* action toolcache, same path GitHub-hosted images use; also
+  `DOTNET_INSTALL_DIR={toolcache}/dotnet`, because setup-dotnet installs to that env
+  var's dir rather than `RUNNER_TOOL_CACHE`)
 - `watchtower-ci-pkg-{repo}` → `/home/runner/_pkg`, exposed via runner env inherited by
   job steps: `NUGET_PACKAGES=…/nuget`, `npm_config_cache=…/npm`, `GOMODCACHE=…/gomod`
+
+No mount may live under `/home/runner/_work`: dockerd creates missing mountpoint parents
+as root, and a root-owned `_work` breaks the runner user's `_work/_temp` creation at job
+start (`UnauthorizedAccessException` in `TempDirectoryManager`). Fresh named volumes are
+root-owned too, so before first use the orchestrator runs a one-shot root container
+(`watchtower.managed=ci-volume-init`) that chowns the two volume roots to the `runner`
+user — once per repo per orchestrator lifetime, idempotent.
 
 The workspace itself stays ephemeral (clean checkout per job). Volumes are removable via
 the existing Volumes module; GC/pruning is future work. Pre-warming the toolcache from the

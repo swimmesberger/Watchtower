@@ -1376,6 +1376,8 @@ public sealed record DockerCreateContainerBody {
     public string[]? Cmd { get; init; }
     /// <summary>Environment variables in "KEY=VALUE" format.</summary>
     public string[]? Env { get; init; }
+    /// <summary>User (name or uid, optionally ":group") to run the container as; null keeps the image default.</summary>
+    public string? User { get; init; }
     /// <summary>Container labels (e.g. an ownership marker so Watchtower can find its managed containers).</summary>
     public Dictionary<string, string>? Labels { get; init; }
     /// <summary>Ports the container exposes, keyed "443/tcp"; each value is an empty object.</summary>
