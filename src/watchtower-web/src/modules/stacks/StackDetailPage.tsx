@@ -2,7 +2,7 @@ import { useCallback, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useParams } from '@tanstack/react-router'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
-import { ChevronRight, Play } from 'lucide-react'
+import { ChevronRight, Play, Square } from 'lucide-react'
 import { stackDetailTabs, type HistoryRowControls } from '@/platform/points'
 import { api } from '@/lib/api'
 import { Banner } from '@/components/ui/banner'
@@ -86,6 +86,27 @@ export function StackDetailPage() {
     onError: (err: Error) => toast.error('Deploy failed', err.message),
   })
 
+  const isStopped = stack?.desiredState === 'stopped'
+
+  const stop = useMutation({
+    mutationFn: () => api.stacks.stop(stackId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      toast.success(`Stopped ${stack?.name ?? 'stack'}. It stays stopped until you start it again.`)
+    },
+    onError: (err: Error) => toast.error('Stop failed', err.message),
+  })
+
+  const start = useMutation({
+    mutationFn: () => api.stacks.start(stackId),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      if (data.started) toast.success(`Started ${stack?.name ?? 'stack'}.`)
+      else toast.info('Stack is enabled again — deploy it to create its containers.')
+    },
+    onError: (err: Error) => toast.error('Start failed', err.message),
+  })
+
   function viewFailedLog() {
     // Find the most recent failed event and expand + scroll to it.
     const failed = [...events].find((e) => e.status === 'failed')
@@ -147,21 +168,56 @@ export function StackDetailPage() {
             · {stack.composeFilePath}
           </p>
         </div>
-        {/* Desktop deploy button; mobile uses the FAB below. */}
-        <Button
-          variant="primary"
-          loading={deploy.isPending || isDeploying}
-          disabled={deploy.isPending || isDeploying}
-          onClick={() => deploy.mutate()}
-          className="hidden md:inline-flex"
-        >
-          {!(deploy.isPending || isDeploying) && <Play />}
-          Deploy
-        </Button>
+        {/* Desktop actions; mobile uses the FAB below. */}
+        <div className="hidden items-center gap-2 md:flex">
+          <Button
+            variant="secondary"
+            loading={stop.isPending || start.isPending}
+            disabled={isDeploying || stop.isPending || start.isPending}
+            onClick={() => (isStopped ? start.mutate() : stop.mutate())}
+          >
+            {isStopped ? (
+              <>
+                <Play /> Start
+              </>
+            ) : (
+              <>
+                <Square /> Stop
+              </>
+            )}
+          </Button>
+          <Button
+            variant="primary"
+            loading={deploy.isPending || isDeploying}
+            disabled={deploy.isPending || isDeploying || isStopped}
+            onClick={() => deploy.mutate()}
+          >
+            {!(deploy.isPending || isDeploying) && <Play />}
+            Deploy
+          </Button>
+        </div>
       </div>
 
       {/* Status banner hero */}
-      {isDeploying ? (
+      {isStopped ? (
+        <Banner
+          tone="info"
+          title="This stack is stopped"
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={start.isPending}
+              onClick={() => start.mutate()}
+            >
+              Start
+            </Button>
+          }
+        >
+          Its containers are stopped and deploys are rejected until you start it again — including
+          across Watchtower and host restarts.
+        </Banner>
+      ) : isDeploying ? (
         <Banner tone="info" title="Deployment in progress…">
           Watchtower is pulling images and (re)starting containers.
         </Banner>
@@ -198,18 +254,31 @@ export function StackDetailPage() {
         ))}
       </Tabs>
 
-      {/* Mobile Deploy FAB (52px, above the bottom tab bar) */}
+      {/* Mobile FAB (52px, above the bottom tab bar): deploy normally, start when stopped. */}
       <div className="fixed bottom-bottombar right-4 z-20 mb-3 md:hidden">
-        <Button
-          variant="primary"
-          aria-label="Deploy stack"
-          loading={deploy.isPending || isDeploying}
-          disabled={deploy.isPending || isDeploying}
-          onClick={() => deploy.mutate()}
-          className="size-[52px] rounded-full p-0 shadow-[var(--sh-lg)]"
-        >
-          {!(deploy.isPending || isDeploying) && <Play />}
-        </Button>
+        {isStopped ? (
+          <Button
+            variant="primary"
+            aria-label="Start stack"
+            loading={start.isPending}
+            disabled={start.isPending}
+            onClick={() => start.mutate()}
+            className="size-[52px] rounded-full p-0 shadow-[var(--sh-lg)]"
+          >
+            {!start.isPending && <Play />}
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            aria-label="Deploy stack"
+            loading={deploy.isPending || isDeploying}
+            disabled={deploy.isPending || isDeploying}
+            onClick={() => deploy.mutate()}
+            className="size-[52px] rounded-full p-0 shadow-[var(--sh-lg)]"
+          >
+            {!(deploy.isPending || isDeploying) && <Play />}
+          </Button>
+        )}
       </div>
     </div>
   )

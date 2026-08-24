@@ -131,6 +131,10 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         // model so a row written without one — by the SQLite importer, say — stops its containers, which
         // is what every stack did before quiesce modes existed.
         b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
+        // Stored as the enum name ("Running"/"Stopped"); the API maps it to lowercase. The default is
+        // on the model so rows written without one — by the SQLite importer, say — count as running,
+        // which is what every stack was before desired state existed (ADR-0025).
+        b.Property(x => x.DesiredState).HasConversion<string>().HasDefaultValue(StackDesiredState.Running);
         b.HasIndex(x => x.Name).IsUnique();
         // The compose project name is compared case-insensitively (StackProjectNames.IsTakenAsync) but
         // stored as the operator typed it, so the supporting index is on lower(compose_project_name).

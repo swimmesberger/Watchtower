@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
-import { Boxes, Play, Plus, Trash2, X } from 'lucide-react'
+import { Boxes, Play, Plus, Square, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Stack } from '@/lib/types'
 import { absoluteTitle, timeAgo } from '@/lib/format'
@@ -78,6 +78,29 @@ export function StacksPage() {
     },
   })
 
+  const stop = useMutation({
+    mutationFn: (stack: Stack) => api.stacks.stop(stack.id),
+    onSuccess: (_data, stack) => {
+      toast.success(`Stopped ${stack.name}. It stays stopped until you start it again.`)
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+    },
+    onError: (err: Error, stack) => {
+      toast.error(`Failed to stop ${stack.name}: ${err.message}`)
+    },
+  })
+
+  const start = useMutation({
+    mutationFn: (stack: Stack) => api.stacks.start(stack.id),
+    onSuccess: (data, stack) => {
+      if (data.started) toast.success(`Started ${stack.name}.`)
+      else toast.info(`${stack.name} is enabled again — deploy it to create its containers.`)
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+    },
+    onError: (err: Error, stack) => {
+      toast.error(`Failed to start ${stack.name}: ${err.message}`)
+    },
+  })
+
   const remove = useMutation({
     mutationFn: (stack: Stack) => api.stacks.delete(stack.id),
     onSuccess: (_data, stack) => {
@@ -103,11 +126,45 @@ export function StacksPage() {
         size="sm"
         variant="secondary"
         loading={pending}
-        disabled={isDeploying(stack)}
+        disabled={isDeploying(stack) || stack.desiredState === 'stopped'}
         onClick={() => deploy.mutate(stack)}
       >
         <Play /> Deploy
       </Button>
+    )
+  }
+
+  function StopStartButton({ stack }: { stack: Stack }) {
+    const stopped = stack.desiredState === 'stopped'
+    const pending =
+      (stop.isPending && stop.variables?.id === stack.id) ||
+      (start.isPending && start.variables?.id === stack.id)
+    return (
+      <Tooltip
+        label={
+          stopped
+            ? 'Start the stack’s containers'
+            : 'Stop all containers; the stack stays stopped until started again'
+        }
+      >
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={pending}
+          disabled={isDeploying(stack)}
+          onClick={() => (stopped ? start.mutate(stack) : stop.mutate(stack))}
+        >
+          {stopped ? (
+            <>
+              <Play /> Start
+            </>
+          ) : (
+            <>
+              <Square /> Stop
+            </>
+          )}
+        </Button>
+      </Tooltip>
     )
   }
 
@@ -159,7 +216,12 @@ export function StacksPage() {
     {
       key: 'status',
       header: 'Status',
-      cell: (s) => <StatusBadge status={s.lastDeployStatus} />,
+      cell: (s) =>
+        s.desiredState === 'stopped' ? (
+          <Badge tone="neutral">Stopped</Badge>
+        ) : (
+          <StatusBadge status={s.lastDeployStatus} />
+        ),
     },
     {
       key: 'lastDeployed',
@@ -180,6 +242,7 @@ export function StacksPage() {
       cell: (s) => (
         <div className="flex items-center justify-end gap-1">
           <DeployButton stack={s} />
+          <StopStartButton stack={s} />
           <DeleteButton stack={s} />
         </div>
       ),
@@ -197,7 +260,11 @@ export function StacksPage() {
           <StatusDot status={s.lastDeployStatus} />
           {s.name}
         </Link>
-        <StatusBadge status={s.lastDeployStatus} />
+        {s.desiredState === 'stopped' ? (
+          <Badge tone="neutral">Stopped</Badge>
+        ) : (
+          <StatusBadge status={s.lastDeployStatus} />
+        )}
       </div>
 
       <p className="truncate font-mono text-[13px] text-text-2">
@@ -216,7 +283,10 @@ export function StacksPage() {
       </p>
 
       <div className="flex items-center justify-between border-t border-border pt-3">
-        <DeployButton stack={s} />
+        <div className="flex items-center gap-1">
+          <DeployButton stack={s} />
+          <StopStartButton stack={s} />
+        </div>
         <DeleteButton stack={s} />
       </div>
     </div>

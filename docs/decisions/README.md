@@ -43,3 +43,4 @@ live here.
 - [ADR-0022: The reverse proxy runs in Watchtower's own process (YARP + ACME), and is the default](0022-in-process-yarp-proxy.md)
 - [ADR-0023: Login hosts are Watchtower self-routes](0023-login-hosts-are-watchtower-self-routes.md)
 - [ADR-0024: PostgreSQL is the only database, and the proxy/auth plane keeps its state in it](0024-postgresql-only-and-state-in-the-database.md)
+- [ADR-0025: Stacks can be stopped and started as a whole, and the stop is a persisted desired state](0025-stack-desired-state.md)

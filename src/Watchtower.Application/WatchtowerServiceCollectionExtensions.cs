@@ -364,6 +364,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // Pull-based deployment — per-stack opt-in (AutoDeployMode), so no global toggle: the
         // minute tick is a single cheap database query when nothing is configured.
         services.AddHostedService<AutoDeployBackgroundService>();
+        // Stack desired state (ADR-0025): one startup pass that re-stops deliberately stopped
+        // stacks whose containers a Docker restart policy revived, retrying while the daemon
+        // comes up, then exits.
+        services.AddHostedService<StackDesiredStateReconciler>();
 
         return services;
     }

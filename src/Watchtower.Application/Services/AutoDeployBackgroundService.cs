@@ -131,7 +131,10 @@ public sealed class AutoDeployBackgroundService(
     private List<Stack> LoadAutoDeployStacks() {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return [.. db.Stacks.AsNoTracking().Where(s => s.AutoDeployMode != AutoDeployMode.Off).OrderBy(s => s.Name)];
+        // Stopped stacks are deliberately disabled (ADR-0025): no polling, no scheduled deploys.
+        return [.. db.Stacks.AsNoTracking()
+            .Where(s => s.AutoDeployMode != AutoDeployMode.Off && s.DesiredState != StackDesiredState.Stopped)
+            .OrderBy(s => s.Name)];
     }
 
     /// <summary>Drops tracking state for stacks that were deleted or whose mode changed.</summary>

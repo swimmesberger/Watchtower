@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Watchtower.Api.Authentication;
 using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
@@ -148,7 +149,7 @@ public static class WatchtowerHttpEndpoints {
             int id, HttpRequest request, WatchtowerDbContext db, DeployQueueService deployQueue, CancellationToken ct) => {
             var stack = await db.Stacks.AsNoTracking()
                 .Where(s => s.Id == id)
-                .Select(s => new { s.WebhookEnabled, s.WebhookToken })
+                .Select(s => new { s.WebhookEnabled, s.WebhookToken, s.DesiredState })
                 .FirstOrDefaultAsync(ct);
 
             if (stack is null || !stack.WebhookEnabled)
@@ -159,6 +160,11 @@ public static class WatchtowerHttpEndpoints {
                 if (!string.Equals(authHeader, $"Bearer {stack.WebhookToken}", StringComparison.Ordinal))
                     return Results.Unauthorized();
             }
+
+            // A stopped stack is deliberately disabled (ADR-0025); a CI push must not revive it.
+            // After the token check, so only an authorized caller learns the state.
+            if (stack.DesiredState == StackDesiredState.Stopped)
+                return Results.Conflict("Stack is stopped — start it in Watchtower before deploying.");
 
             var result = deployQueue.Enqueue(id, "webhook");
             return Results.Accepted($"/api/stacks/{id}/events",

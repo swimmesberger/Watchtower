@@ -22,6 +22,20 @@ public enum AutoDeployMode {
     Scheduled,
 }
 
+/// <summary>
+/// The lifecycle state an operator wants a stack in (ADR-0025). Observed container state is read
+/// live from Docker; this is the intent Watchtower persists and enforces.
+/// </summary>
+public enum StackDesiredState {
+    /// <summary>Normal operation: the stack's containers run and every deploy path is open.</summary>
+    Running,
+    /// <summary>
+    /// The stack is deliberately stopped ("disabled"): its containers are stopped, deploys are
+    /// rejected, and the startup reconcile re-stops containers a Docker restart policy revived.
+    /// </summary>
+    Stopped,
+}
+
 /// <summary>A named Docker Compose stack backed by a git repository.</summary>
 public sealed class Stack {
     public int Id { get; set; }
@@ -69,6 +83,13 @@ public sealed class Stack {
     /// <summary>Status of the last deploy.</summary>
     public DeployStatus? LastDeployStatus { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// The operator's intent for the stack's lifecycle (ADR-0025). <see cref="StackDesiredState.Stopped"/>
+    /// survives Watchtower restarts: every deploy path refuses the stack and the startup reconcile
+    /// re-stops containers that a Docker restart policy brought back after a host reboot.
+    /// </summary>
+    public StackDesiredState DesiredState { get; set; } = StackDesiredState.Running;
 
     /// <summary>When true the backup schedule includes this stack (ADR-0016). Manual runs work regardless.</summary>
     public bool BackupEnabled { get; set; }

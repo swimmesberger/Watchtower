@@ -203,6 +203,14 @@ public class DeployQueueService : IHostedService, IDisposable {
             return;
         }
 
+        // Backstop for deploys enqueued before (or racing) a stacks.stop: a stopped stack is
+        // deliberately disabled (ADR-0025) and a deploy would bring its containers back up.
+        if (stack.DesiredState == StackDesiredState.Stopped) {
+            CompleteEvent(eventId, "failed", "[Watchtower] Stack is stopped — start it before deploying.");
+            UpdateDeployStatus(stackId, DeployStatus.Failed);
+            return;
+        }
+
         MarkRunning(eventId);
         UpdateDeployStatus(stackId, DeployStatus.Running);
 
