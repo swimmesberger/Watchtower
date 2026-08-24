@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Flame, Github, Hammer, Play } from 'lucide-react'
+import { Boxes, Flame, Github, Hammer, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CiRepo, CiToolchainProfile, Stack } from '@/lib/types'
+import type { CiRegistrySync, CiRepo, CiToolchainProfile, Stack } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -198,7 +198,11 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
   const [maxRunners, setMaxRunners] = useState(repo.maxConcurrentRunners)
 
   const update = useMutation({
-    mutationFn: (changes: Partial<Pick<CiRepo, 'enabled' | 'maxConcurrentRunners' | 'allowDockerSocket'>>) =>
+    mutationFn: (
+      changes: Partial<
+        Pick<CiRepo, 'enabled' | 'maxConcurrentRunners' | 'allowDockerSocket' | 'syncRegistryUrl'>
+      >,
+    ) =>
       api.ci.updateRepo({
         id: repo.id,
         enabled: changes.enabled ?? repo.enabled,
@@ -207,6 +211,8 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
         runnerImage: repo.runnerImage,
         extraLabels: repo.extraLabels,
         allowDockerSocket: changes.allowDockerSocket ?? repo.allowDockerSocket,
+        syncRegistryUrl:
+          changes.syncRegistryUrl !== undefined ? changes.syncRegistryUrl : repo.syncRegistryUrl,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['stacks', stack.id, 'ci'] }),
     onError: (err: Error) => toast.error('Update failed', err.message),
@@ -297,6 +303,9 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
         </CardContent>
       </Card>
 
+      {/* Registry sync (docs/ci-runners/design.md, Secrets §1) */}
+      <RegistrySyncCard repo={repo} onSelect={(url) => update.mutate({ syncRegistryUrl: url })} />
+
       {/* Toolchains + cache warming */}
       <Card>
         <CardContent className="space-y-3">
@@ -336,5 +345,123 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+const NO_REGISTRY = 'none'
+
+/** Badge for the registry -> GitHub Actions sync state. */
+function RegistrySyncBadge({ sync }: { sync: CiRegistrySync }) {
+  switch (sync.status) {
+    case 'synced':
+      return <Badge tone="ok" size="sm">synced</Badge>
+    case 'failed':
+      return <Badge tone="danger" size="sm">sync failed</Badge>
+    default:
+      return <Badge tone="neutral" size="sm">sync pending</Badge>
+  }
+}
+
+const LOGIN_SNIPPET = `- uses: docker/login-action@v3
+  with:
+    registry: \${{ vars.REGISTRY }}
+    username: \${{ secrets.REGISTRY_USERNAME }}
+    password: \${{ secrets.REGISTRY_PASSWORD }}`
+
+/**
+ * Pick a registry (Watchtower-configured or from the host docker config) whose credentials are
+ * pushed to the repo's GitHub Actions config: the REGISTRY variable plus the REGISTRY_USERNAME /
+ * REGISTRY_PASSWORD secrets. Re-pushed automatically when the credential rotates.
+ */
+function RegistrySyncCard({
+  repo,
+  onSelect,
+}: {
+  repo: CiRepo
+  onSelect: (url: string | null) => void
+}) {
+  const { data: registryData } = useQuery({
+    queryKey: ['registries'],
+    queryFn: api.registries.listWithHost,
+  })
+  const registries = registryData?.registries ?? []
+  const hostRegistries = registryData?.hostRegistries ?? []
+
+  // Watchtower registries first (they win on URL collision), then remaining host entries.
+  const options = [
+    ...registries
+      .filter((r) => r.credentialId != null)
+      .map((r) => ({ url: r.url, label: `${r.name} (${r.url})` })),
+    ...hostRegistries
+      .filter((h) => h.username != null)
+      .map((h) => ({ url: h.url, label: `${h.url} — docker config` })),
+  ]
+  // A previously selected registry that no longer resolves still needs to render (and be clearable).
+  if (repo.syncRegistryUrl && !options.some((o) => o.url === repo.syncRegistryUrl)) {
+    options.push({ url: repo.syncRegistryUrl, label: `${repo.syncRegistryUrl} — no longer found` })
+  }
+
+  const sync = repo.registrySync
+
+  return (
+    <Card>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Boxes className="size-4 text-text-2" aria-hidden />
+            <span className="text-sm font-medium text-text">Registry for workflows</span>
+          </div>
+          {sync && <RegistrySyncBadge sync={sync} />}
+        </div>
+
+        <p className="text-[13px] text-text-2">
+          Syncs the selected registry to the repository&rsquo;s GitHub Actions configuration as the{' '}
+          <code className="font-mono text-[12px]">REGISTRY</code> variable plus the{' '}
+          <code className="font-mono text-[12px]">REGISTRY_USERNAME</code> /{' '}
+          <code className="font-mono text-[12px]">REGISTRY_PASSWORD</code> secrets, and re-syncs
+          when the credential rotates. The PAT needs the repository Secrets and Variables (read and
+          write) permissions.
+        </p>
+
+        <Field label="Registry" hint="Watchtower registries and host docker-config logins.">
+          <Select
+            value={repo.syncRegistryUrl ?? NO_REGISTRY}
+            onValueChange={(v) => onSelect(v === NO_REGISTRY ? null : v)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="No registry sync" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_REGISTRY}>None</SelectItem>
+              {options.map((o) => (
+                <SelectItem key={o.url} value={o.url}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+
+        {sync?.status === 'failed' && sync.error && (
+          <Banner tone="danger" title="Registry sync is failing (retried automatically)">
+            {sync.error}
+          </Banner>
+        )}
+
+        {repo.syncRegistryUrl && (
+          <div className="space-y-1">
+            <p className="text-[12px] text-text-3">
+              Log in from a workflow with{' '}
+              {sync?.syncedAt
+                ? `the synced values (last synced ${new Date(sync.syncedAt).toLocaleString()}):`
+                : 'the values once synced:'}
+            </p>
+            <pre className="overflow-x-auto rounded-md bg-surface-2 px-2.5 py-1.5 font-mono text-[12px] text-text">
+              {LOGIN_SNIPPET}
+            </pre>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

@@ -9,6 +9,16 @@ export interface Registry {
   createdAt: string
 }
 
+/**
+ * A read-only registry entry from the host docker config (managed by `docker login` on the host).
+ * Usable for pulls and as a CI sync source; not editable in Watchtower. Username is null for
+ * credential-helper entries.
+ */
+export interface HostRegistry {
+  url: string
+  username: string | null
+}
+
 export interface Credential {
   id: number
   name: string
@@ -1134,6 +1144,17 @@ export interface CiRunnerStatus {
   backoffUntil: string | null
 }
 
+/**
+ * State of the registry -> GitHub Actions sync (REGISTRY variable + REGISTRY_USERNAME /
+ * REGISTRY_PASSWORD secrets). Null on a `CiRepo` until a sync registry is selected.
+ */
+export interface CiRegistrySync {
+  /** 'synced' | 'pending' (push not attempted yet or values changed) | 'failed'. */
+  status: 'synced' | 'pending' | 'failed'
+  syncedAt: string | null
+  error: string | null
+}
+
 /** A GitHub repository with CI runners managed by this Watchtower instance. */
 export interface CiRepo {
   id: number
@@ -1149,6 +1170,8 @@ export interface CiRepo {
   createdAt: string
   runnerStatus: CiRunnerStatus | null
   toolchain: CiToolchainProfile | null
+  syncRegistryUrl: string | null
+  registrySync: CiRegistrySync | null
 }
 
 /**

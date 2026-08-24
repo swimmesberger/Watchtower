@@ -11,8 +11,9 @@ namespace Watchtower.Application.Services;
 /// just-in-time runner registration, runner cleanup, credential validation, and the repo picker.
 /// Stateless singleton; the PAT is passed per call (it comes from the repo's <c>Credential</c>)
 /// and never leaves this process — runner containers only ever see single-use JIT configs.
-/// Unsealed with a virtual scope probe so handler tests can stub GitHub out (the
-/// <see cref="GitCloneService"/> precedent); everything else stays non-virtual.
+/// Unsealed with virtual members where tests stub GitHub out (the <see cref="GitCloneService"/>
+/// precedent): the scope probe plus the secrets/variables sync calls; everything else stays
+/// non-virtual.
 /// </summary>
 public class GitHubApiClient : IDisposable {
     private readonly HttpClient _client;
@@ -84,6 +85,55 @@ public class GitHubApiClient : IDisposable {
         return await JsonSerializer.DeserializeAsync(stream, GitHubJsonContext.Default.ListGitHubRepoInfo, ct) ?? [];
     }
 
+    /// <summary>
+    /// Fetches the repo's Actions public key for sealed-box secret encryption
+    /// (<c>GET /repos/{owner}/{repo}/actions/secrets/public-key</c>). Requires Secrets (read).
+    /// </summary>
+    public virtual async Task<GitHubActionsPublicKey> GetActionsPublicKeyAsync(
+        string owner, string repo, string token, CancellationToken ct = default) {
+        using var request = NewRequest(HttpMethod.Get, $"repos/{owner}/{repo}/actions/secrets/public-key", token);
+        var response = await _client.SendAsync(request, ct);
+        await EnsureSuccessAsync(response, ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(stream, GitHubJsonContext.Default.GitHubActionsPublicKey, ct)
+            ?? throw new InvalidOperationException("Null response fetching the Actions public key");
+    }
+
+    /// <summary>
+    /// Creates or updates one repo Actions secret with an already sealed value
+    /// (<c>PUT /repos/{owner}/{repo}/actions/secrets/{name}</c>). Requires Secrets (write).
+    /// </summary>
+    public virtual async Task PutActionsSecretAsync(
+        string owner, string repo, string name, string encryptedValue, string keyId, string token,
+        CancellationToken ct = default) {
+        var body = new GitHubSecretPutRequest { EncryptedValue = encryptedValue, KeyId = keyId };
+        var json = JsonSerializer.Serialize(body, GitHubJsonContext.Default.GitHubSecretPutRequest);
+        using var request = NewRequest(HttpMethod.Put, $"repos/{owner}/{repo}/actions/secrets/{name}", token);
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _client.SendAsync(request, ct);
+        await EnsureSuccessAsync(response, ct);
+    }
+
+    /// <summary>
+    /// Creates or updates one repo Actions variable — PATCH first (the common re-sync path),
+    /// falling back to POST when the variable does not exist yet. Requires Variables (write).
+    /// </summary>
+    public virtual async Task SetActionsVariableAsync(
+        string owner, string repo, string name, string value, string token, CancellationToken ct = default) {
+        var body = new GitHubVariableRequest { Name = name, Value = value };
+        var json = JsonSerializer.Serialize(body, GitHubJsonContext.Default.GitHubVariableRequest);
+
+        using var patch = NewRequest(HttpMethod.Patch, $"repos/{owner}/{repo}/actions/variables/{name}", token);
+        patch.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _client.SendAsync(patch, ct);
+        if (response.StatusCode == HttpStatusCode.NotFound) {
+            using var post = NewRequest(HttpMethod.Post, $"repos/{owner}/{repo}/actions/variables", token);
+            post.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            response = await _client.SendAsync(post, ct);
+        }
+        await EnsureSuccessAsync(response, ct);
+    }
+
     private static HttpRequestMessage NewRequest(HttpMethod method, string url, string token) {
         var request = new HttpRequestMessage(method, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -127,8 +177,27 @@ public sealed record GitHubRepoInfo {
     [JsonPropertyName("pushed_at")] public DateTimeOffset? PushedAt { get; init; }
 }
 
+/// <summary>Repo Actions public key for sealed-box secret encryption.</summary>
+public sealed record GitHubActionsPublicKey {
+    [JsonPropertyName("key_id")] public required string KeyId { get; init; }
+    [JsonPropertyName("key")] public required string Key { get; init; }
+}
+
+public sealed record GitHubSecretPutRequest {
+    [JsonPropertyName("encrypted_value")] public required string EncryptedValue { get; init; }
+    [JsonPropertyName("key_id")] public required string KeyId { get; init; }
+}
+
+public sealed record GitHubVariableRequest {
+    [JsonPropertyName("name")] public required string Name { get; init; }
+    [JsonPropertyName("value")] public required string Value { get; init; }
+}
+
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(GitHubJitConfigRequest))]
 [JsonSerializable(typeof(GitHubJitConfigResponse))]
 [JsonSerializable(typeof(List<GitHubRepoInfo>))]
+[JsonSerializable(typeof(GitHubActionsPublicKey))]
+[JsonSerializable(typeof(GitHubSecretPutRequest))]
+[JsonSerializable(typeof(GitHubVariableRequest))]
 internal sealed partial class GitHubJsonContext : JsonSerializerContext;

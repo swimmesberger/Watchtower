@@ -61,6 +61,26 @@ public sealed class CiRepo {
     /// <summary>Tail output of the last failed warmer run; null after a success. Never fatal.</summary>
     public string? LastWarmError { get; set; }
 
+    /// <summary>
+    /// Registry whose credentials are synced to the repo's GitHub Actions secrets/variables
+    /// (docs/ci-runners/design.md, Secrets §1): <c>REGISTRY</c> variable plus
+    /// <c>REGISTRY_USERNAME</c>/<c>REGISTRY_PASSWORD</c> secrets. The key into the merged registry
+    /// view (host docker config + Watchtower registries); null disables the sync.
+    /// </summary>
+    public string? SyncRegistryUrl { get; set; }
+
+    /// <summary>
+    /// Hash of the registry values last pushed successfully. The orchestrator re-pushes only when
+    /// this differs from the hash of the currently resolved values (credential rotation, URL edit).
+    /// </summary>
+    public string? RegistrySyncedHash { get; set; }
+
+    /// <summary>When the last successful registry sync finished.</summary>
+    public DateTimeOffset? RegistrySyncedAt { get; set; }
+
+    /// <summary>Why the last registry sync failed; null after a success. Never blocks runners.</summary>
+    public string? LastRegistrySyncError { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>"owner/name" as used by the GitHub API and container labels.</summary>

@@ -9,6 +9,7 @@ namespace Watchtower.Application.Modules.Registries;
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(RegistryDto))]
+[JsonSerializable(typeof(HostRegistryDto))]
 [JsonSerializable(typeof(ListRegistries.Query), TypeInfoPropertyName = "ListRegistriesQuery")]
 [JsonSerializable(typeof(ListRegistries.Response), TypeInfoPropertyName = "ListRegistriesResponse")]
 [JsonSerializable(typeof(CreateRegistry.Command), TypeInfoPropertyName = "CreateRegistryCommand")]

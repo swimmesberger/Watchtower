@@ -46,6 +46,7 @@
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
     <!-- SFTP backup storage provider (ADR-0016). -->
     <PackageReference Include="SSH.NET" />
+    <PackageReference Include="Sodium.Core" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -113,6 +115,14 @@ public sealed class CiRunnerOrchestrator(
                 logger.LogError(ex, "Reconcile failed for CI repo {Repo}", repo.FullName);
                 RecordFailure(repo.Id, ex.Message);
             }
+            try {
+                await SyncRegistryAsync(repo, ct);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                throw;
+            } catch (Exception ex) {
+                // Registry sync problems must never take the runner reconcile down with them.
+                logger.LogWarning(ex, "Registry secret sync failed for CI repo {Repo}", repo.FullName);
+            }
         }
     }
 
@@ -203,6 +213,77 @@ public sealed class CiRunnerOrchestrator(
         var containerId = await docker.CreateContainerAsync(body, runnerName, ct);
         await docker.StartContainerAsync(containerId, ct);
         logger.LogInformation("Spawned CI runner {Runner} for {Repo}", runnerName, repo.FullName);
+    }
+
+    // ── Registry secret sync (docs/ci-runners/design.md, Secrets §1) ─────────
+
+    /// <summary>
+    /// Pushes the selected registry's credentials to the repo's GitHub Actions config: the
+    /// <c>REGISTRY</c> variable plus the sealed-box <c>REGISTRY_USERNAME</c>/<c>REGISTRY_PASSWORD</c>
+    /// secrets. Values come from the merged registry view (host docker config + Watchtower
+    /// registries) at every pass, so a rotated credential re-pushes automatically via the hash
+    /// compare — no GitHub call happens while the hash matches. Runs independently of
+    /// <see cref="CiRepo.Enabled"/> so a temporarily disabled repo cannot drift.
+    /// </summary>
+    private async Task SyncRegistryAsync(CiRepo repo, CancellationToken ct) {
+        if (repo.SyncRegistryUrl is null || repo.Credential is null)
+            return;
+        var status = _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus());
+        if (status.RegistrySyncRetryAt is { } retryAt && retryAt > DateTimeOffset.UtcNow)
+            return;
+
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var resolved = scope.ServiceProvider.GetRequiredService<RegistryAuthBuilder>()
+            .ListResolvedRegistries()
+            .FirstOrDefault(r => string.Equals(r.Url, repo.SyncRegistryUrl, StringComparison.OrdinalIgnoreCase));
+
+        var tracked = await db.CiRepos.FirstOrDefaultAsync(r => r.Id == repo.Id, ct);
+        if (tracked is null)
+            return;
+
+        if (resolved is null || resolved.Username is null || resolved.Password is null) {
+            await RecordSyncFailureAsync(db, tracked, status,
+                $"Registry '{repo.SyncRegistryUrl}' no longer resolves to a credential — it was removed "
+                + "from the host docker config or its Watchtower registry lost its credential.", ct);
+            return;
+        }
+
+        var hash = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes($"{resolved.Url}\n{resolved.Username}\n{resolved.Password}")));
+        if (hash == tracked.RegistrySyncedHash && tracked.LastRegistrySyncError is null)
+            return;
+
+        try {
+            var token = repo.Credential.Token;
+            var key = await gitHub.GetActionsPublicKeyAsync(repo.Owner, repo.Name, token, ct);
+            await gitHub.PutActionsSecretAsync(repo.Owner, repo.Name, "REGISTRY_USERNAME",
+                GitHubSecretSealer.Seal(key.Key, resolved.Username), key.KeyId, token, ct);
+            await gitHub.PutActionsSecretAsync(repo.Owner, repo.Name, "REGISTRY_PASSWORD",
+                GitHubSecretSealer.Seal(key.Key, resolved.Password), key.KeyId, token, ct);
+            await gitHub.SetActionsVariableAsync(repo.Owner, repo.Name, "REGISTRY", resolved.Url, token, ct);
+
+            tracked.RegistrySyncedHash = hash;
+            tracked.RegistrySyncedAt = DateTimeOffset.UtcNow;
+            tracked.LastRegistrySyncError = null;
+            status.ClearRegistrySyncRetry();
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation("Synced registry {Registry} to GitHub Actions config of {Repo}",
+                resolved.Url, repo.FullName);
+        } catch (HttpRequestException ex) {
+            var message = ex.Message.Contains("403")
+                ? $"{ex.Message} The PAT likely lacks the repository Secrets (read and write) and "
+                  + "Variables (read and write) permissions the registry sync needs."
+                : ex.Message;
+            await RecordSyncFailureAsync(db, tracked, status, message, ct);
+        }
+    }
+
+    private static async Task RecordSyncFailureAsync(
+        WatchtowerDbContext db, CiRepo tracked, CiRepoRunnerStatus status, string message, CancellationToken ct) {
+        tracked.LastRegistrySyncError = message;
+        status.DeferRegistrySyncRetry();
+        await db.SaveChangesAsync(ct);
     }
 
     // ── Toolcache warming (docs/ci-runners/design.md) ────────────────────────
@@ -389,6 +470,16 @@ public sealed class CiRepoRunnerStatus {
     public DateTimeOffset? BackoffUntil { get; private set; }
     /// <summary>True while a toolcache warmer container for this repo is running.</summary>
     public bool WarmerRunning { get; private set; }
+
+    /// <summary>
+    /// Earliest next registry-sync attempt after a failure (in-memory: a restart simply retries
+    /// once). Keeps a persistently failing sync at one GitHub round-trip per interval, not per pass.
+    /// </summary>
+    public DateTimeOffset? RegistrySyncRetryAt { get; private set; }
+
+    internal void DeferRegistrySyncRetry() => RegistrySyncRetryAt = DateTimeOffset.UtcNow.AddMinutes(5);
+
+    internal void ClearRegistrySyncRetry() => RegistrySyncRetryAt = null;
 
     internal void Update(int desired, int running) {
         DesiredRunners = desired;
