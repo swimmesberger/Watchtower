@@ -174,8 +174,10 @@ public sealed class AcmeHttpClientTrustTests : IDisposable {
                         await using (var tls = new SslStream(connection.GetStream())) {
                             try {
                                 await tls.AuthenticateAsServerAsync(certificate, false, false);
+                                await DrainRequestAsync(tls, _stopping.Token);
                                 await tls.WriteAsync(Response, _stopping.Token);
                                 await tls.FlushAsync(_stopping.Token);
+                                await tls.ShutdownAsync();
                             } catch (Exception) {
                                 // A client that refused the certificate hangs up here; that is the test.
                             }
@@ -186,6 +188,24 @@ public sealed class AcmeHttpClientTrustTests : IDisposable {
         }
 
         public string Url { get; private init; } = "";
+
+        /// <summary>
+        /// Reads the request through its header terminator before the response is sent. Closing a
+        /// socket that still holds received-but-unread data aborts the connection (RST) instead of
+        /// closing it, and on Windows that abort also discards the response already sent — the
+        /// client then fails with "connection aborted" even though the handshake and the write both
+        /// succeeded. Draining first, and closing with a TLS close_notify, keeps the close orderly
+        /// on every platform.
+        /// </summary>
+        private static async Task DrainRequestAsync(SslStream tls, CancellationToken ct) {
+            var buffer = new byte[4096];
+            var request = new StringBuilder();
+            while (!request.ToString().Contains("\r\n\r\n", StringComparison.Ordinal)) {
+                var read = await tls.ReadAsync(buffer, ct);
+                if (read == 0) return;
+                request.Append(Encoding.ASCII.GetString(buffer, 0, read));
+            }
+        }
 
         public static TlsEchoServer Start(LoopbackCa ca) {
             var listener = new TcpListener(IPAddress.Loopback, 0);

@@ -186,7 +186,7 @@ public sealed class ProxyIngressEndpointReloadTests {
                 endpoint.ListenOptions.Protocols = HttpProtocols.Http1AndHttp2;
                 endpoint.ListenOptions.UseHttps(new TlsHandshakeCallbackOptions {
                     OnConnection = _ => ValueTask.FromResult(new SslServerAuthenticationOptions {
-                        ServerCertificate = X509Certificate2.CreateFromPem(chain.PemChain, chain.KeyPem),
+                        ServerCertificate = ServableCertificate(chain),
                     }),
                 });
             });
@@ -195,6 +195,16 @@ public sealed class ProxyIngressEndpointReloadTests {
         var app = builder.Build();
         app.MapGet("/", () => "ok");
         return app;
+    }
+
+    /// <summary>
+    /// The chain's leaf in a form SChannel can serve: <c>CreateFromPem</c> attaches the private key
+    /// ephemerally, which Windows refuses for TLS — the handshake dies as an EOF on the client — so
+    /// the pair goes through PKCS#12 exactly as the certificate store does.
+    /// </summary>
+    private static X509Certificate2 ServableCertificate(TestChain chain) {
+        using var pem = X509Certificate2.CreateFromPem(chain.PemChain, chain.KeyPem);
+        return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), password: null);
     }
 
     /// <summary>The subject of the certificate a TLS handshake against <paramref name="port"/> served.</summary>

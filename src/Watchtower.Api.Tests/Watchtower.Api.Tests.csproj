@@ -38,6 +38,7 @@
     <!-- Same reasoning for the throwaway certificate chains: the ingress-reload spike needs a real
          certificate to complete a real TLS handshake against a real Kestrel. -->
     <Compile Include="..\Watchtower.Application.Tests\TestCertificates.cs" Link="TestCertificates.cs" />
+    <Compile Include="..\Watchtower.Application.Tests\LeakedCertificateCleanupFixture.cs" Link="LeakedCertificateCleanupFixture.cs" />
     <!-- And for the stand-in settings store both assemblies drive the ingress reload through. -->
     <Compile Include="..\Watchtower.Application.Tests\ReloadableSettings.cs" Link="ReloadableSettings.cs" />
   </ItemGroup>

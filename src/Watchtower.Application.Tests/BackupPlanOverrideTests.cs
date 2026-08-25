@@ -243,6 +243,8 @@ public sealed class BackupPlanOverrideTests {
             ["empty"] = new(),
         });
 
+        // The literal's newlines are whatever the checkout gave this file (CRLF under
+        // core.autocrlf=true); Render's contract is LF, so only the expected side is normalized.
         Assert.Equal("""
             services:
               cache:
@@ -255,7 +257,7 @@ public sealed class BackupPlanOverrideTests {
               uploads:
                 labels:
                   watchtower.backup.stop: "pause"
-            """.TrimEnd(), snippet);
+            """.TrimEnd().ReplaceLineEndings("\n"), snippet);
     }
 
     [Fact]
