@@ -90,6 +90,11 @@ builder.Services.ConfigureHttpJsonOptions(o => {
     o.SerializerOptions.TypeInfoResolverChain.Insert(0, WatchtowerHttpJsonContext.Default);
 });
 
+// The per-product throttle on the release webhook (ADR-0026). A singleton service the endpoint asks,
+// rather than the rate-limiting middleware, because that middleware is only added when central
+// authentication is on and this endpoint has to be throttled either way — see ReleaseWebhookRateLimiter.
+builder.Services.AddSingleton<ReleaseWebhookRateLimiter>();
+
 // CORS for development: when the SPA runs on the Vite dev server (a different origin — e.g. under the
 // Aspire AppHost, which injects the API URL as VITE_API_URL) it calls /rpc, /api/* and the SSE streams
 // cross-origin. In production the SPA is served same-origin from wwwroot, so no CORS is applied.

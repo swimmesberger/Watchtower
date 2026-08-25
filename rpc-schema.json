@@ -4584,6 +4584,32 @@
               },
               "templateCount": {
                 "type": "integer"
+              },
+              "releaseWebhookEnabled": {
+                "type": "boolean"
+              },
+              "latestRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "createdAt"
+                ]
               }
             },
             "required": [
@@ -4597,12 +4623,151 @@
               "credentialName",
               "createdAt",
               "stackCount",
-              "templateCount"
+              "templateCount",
+              "releaseWebhookEnabled",
+              "latestRelease"
             ]
           }
         },
         "required": [
           "product"
+        ]
+      }
+    },
+    "products.createRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "commitSha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "productId",
+          "version",
+          "images"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "release": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "commitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": "string"
+              },
+              "createdVia": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "publishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "sourceRunUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "digest": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "repository",
+                    "tag",
+                    "digest"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "productId",
+              "productName",
+              "version",
+              "commitSha",
+              "branch",
+              "createdVia",
+              "createdAt",
+              "publishedAt",
+              "sourceRunUrl",
+              "notes",
+              "images"
+            ]
+          }
+        },
+        "required": [
+          "release"
         ]
       }
     },
@@ -4616,6 +4781,30 @@
         },
         "required": [
           "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "products.deleteRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
         ]
       },
       "result": {
@@ -4690,6 +4879,32 @@
               },
               "templateCount": {
                 "type": "integer"
+              },
+              "releaseWebhookEnabled": {
+                "type": "boolean"
+              },
+              "latestRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "createdAt"
+                ]
               }
             },
             "required": [
@@ -4703,7 +4918,9 @@
               "credentialName",
               "createdAt",
               "stackCount",
-              "templateCount"
+              "templateCount",
+              "releaseWebhookEnabled",
+              "latestRelease"
             ]
           },
           "stacks": {
@@ -4796,12 +5013,131 @@
                 "tenantCount"
               ]
             }
+          },
+          "releaseWebhookToken": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "product",
           "stacks",
-          "templates"
+          "templates",
+          "releaseWebhookToken"
+        ]
+      }
+    },
+    "products.getRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "release": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "commitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": "string"
+              },
+              "createdVia": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "publishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "sourceRunUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "digest": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "repository",
+                    "tag",
+                    "digest"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "productId",
+              "productName",
+              "version",
+              "commitSha",
+              "branch",
+              "createdVia",
+              "createdAt",
+              "publishedAt",
+              "sourceRunUrl",
+              "notes",
+              "images"
+            ]
+          }
+        },
+        "required": [
+          "release"
         ]
       }
     },
@@ -4859,6 +5195,32 @@
                 },
                 "templateCount": {
                   "type": "integer"
+                },
+                "releaseWebhookEnabled": {
+                  "type": "boolean"
+                },
+                "latestRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "createdAt"
+                  ]
                 }
               },
               "required": [
@@ -4872,13 +5234,164 @@
                 "credentialName",
                 "createdAt",
                 "stackCount",
-                "templateCount"
+                "templateCount",
+                "releaseWebhookEnabled",
+                "latestRelease"
               ]
             }
           }
         },
         "required": [
           "products"
+        ]
+      }
+    },
+    "products.listReleases": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "type": "integer",
+            "default": 20
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "releases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "commitSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "createdVia": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "publishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "sourceRunUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "imageCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "version",
+                "commitSha",
+                "branch",
+                "createdVia",
+                "createdAt",
+                "publishedAt",
+                "sourceRunUrl",
+                "imageCount"
+              ]
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "releases",
+          "hasMore"
+        ]
+      }
+    },
+    "products.rotateReleaseToken": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "token",
+          "enabled"
+        ]
+      }
+    },
+    "products.setReleaseWebhook": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "productId",
+          "enabled"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
         ]
       }
     },
@@ -4972,6 +5485,32 @@
               },
               "templateCount": {
                 "type": "integer"
+              },
+              "releaseWebhookEnabled": {
+                "type": "boolean"
+              },
+              "latestRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "createdAt"
+                ]
               }
             },
             "required": [
@@ -4985,7 +5524,9 @@
               "credentialName",
               "createdAt",
               "stackCount",
-              "templateCount"
+              "templateCount",
+              "releaseWebhookEnabled",
+              "latestRelease"
             ]
           }
         },

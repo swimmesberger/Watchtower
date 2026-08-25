@@ -82,12 +82,9 @@ export function ProductNewPage() {
       </Link>
 
       <h1 className="mt-3 text-2xl font-semibold tracking-tight text-text">New product</h1>
-      {/* Stage 1 has no releases, so the sentence describes only what exists. Restore the design
-          doc's wording ("its compose file, its builds, and the releases your CI publishes") when
-          stage 3 ships the Releases tab. */}
       <p className="mt-1 text-[13px] text-text-2">
-        A product is a git repository Watchtower can deploy — its compose file and the stacks that
-        run it.
+        A product is a git repository Watchtower can deploy — its compose file, its builds, and the
+        releases your CI publishes.
       </p>
 
       <form onSubmit={submit} className="mt-6 space-y-6">

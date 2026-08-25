@@ -105,6 +105,41 @@ public sealed record WatchtowerOptions {
     public int ResolveMaxConcurrentDeploys() => Math.Clamp(MaxConcurrentDeploys, 1, 32);
 
     /// <summary>
+    /// How many release-webhook calls one product may make per minute
+    /// (<c>POST /api/webhooks/products/{id}/release</c>). A CI job reports one release per build, so the
+    /// default leaves a wide margin; the limit exists because each accepted call fans out registry
+    /// requests, and a looping workflow must not turn into a registry storm.
+    /// Clamped to 1–1000 by <see cref="ResolveReleaseWebhookRateLimit"/>; default 20.
+    /// </summary>
+    public int ReleaseWebhookRateLimitPerMinute { get; init; } = DefaultReleaseWebhookRateLimitPerMinute;
+
+    /// <summary>The default for <see cref="ReleaseWebhookRateLimitPerMinute"/>.</summary>
+    public const int DefaultReleaseWebhookRateLimitPerMinute = 20;
+
+    /// <summary>
+    /// The per-product release webhook limit, clamped to a sane range: a mistyped 0 must not lock a
+    /// product's CI out altogether, and a mistyped 100000 must not be no limit at all.
+    /// </summary>
+    public int ResolveReleaseWebhookRateLimit() => Math.Clamp(ReleaseWebhookRateLimitPerMinute, 1, 1000);
+
+    /// <summary>
+    /// How many release-webhook calls one <em>client address</em> may make per minute, whether or not
+    /// it holds a token. The per-product limit above only engages after authentication, so this is what
+    /// bounds an anonymous caller: deliberately generous, because every CI runner behind one NAT shares
+    /// an address, and it only has to stop hammering rather than shape legitimate traffic.
+    /// Clamped to 1–10000 by <see cref="ResolveReleaseWebhookClientRateLimit"/>; default 60.
+    /// </summary>
+    public int ReleaseWebhookClientRateLimitPerMinute { get; init; } =
+        DefaultReleaseWebhookClientRateLimitPerMinute;
+
+    /// <summary>The default for <see cref="ReleaseWebhookClientRateLimitPerMinute"/>.</summary>
+    public const int DefaultReleaseWebhookClientRateLimitPerMinute = 60;
+
+    /// <summary>The per-client release webhook limit, clamped like the per-product one.</summary>
+    public int ResolveReleaseWebhookClientRateLimit() =>
+        Math.Clamp(ReleaseWebhookClientRateLimitPerMinute, 1, 10000);
+
+    /// <summary>
     /// Metrics backend selection and its optional InfluxDB reader settings (ADR-0007).
     /// Bound from <c>WATCHTOWER__METRICS__*</c> (e.g. <c>WATCHTOWER__METRICS__BACKEND=influxdb</c>,
     /// <c>WATCHTOWER__METRICS__INFLUX__URL=…</c>).

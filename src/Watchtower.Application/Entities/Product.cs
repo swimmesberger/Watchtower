@@ -58,10 +58,36 @@ public sealed class Product {
     public int? CiRepoId { get; set; }
     public CiRepo? CiRepo { get; set; }
 
+    /// <summary>
+    /// Bearer token the product's CI presents to the release webhook
+    /// (<c>POST /api/webhooks/products/{id}/release</c>), prefixed <c>wtrel_</c>. Null until one is
+    /// generated, which is also one of the two conditions under which the endpoint answers 404 (see
+    /// <see cref="ReleaseWebhookEnabled"/>).
+    /// </summary>
+    /// <remarks>
+    /// Plaintext, like <see cref="Stack.WebhookToken"/> and <see cref="Credential.Token"/>: the value
+    /// has to be readable back to be shown for copying and — from the secret-sync stage on — pushed to
+    /// the repository's Actions secrets. A hash would make it unrecoverable and force a rotation every
+    /// time somebody needed it. Unique across products so a presented token names at most one.
+    /// </remarks>
+    public string? ReleaseWebhookToken { get; set; }
+
+    /// <summary>
+    /// Whether the release webhook accepts calls. False until a token is generated: rotating the token
+    /// (<c>products.rotateReleaseToken</c>) enables it, and enabling it
+    /// (<c>products.setReleaseWebhook</c>) generates a token when there is none — so "enabled" and
+    /// "has a token" only ever come apart in the direction the endpoint treats as closed. Disabling
+    /// deliberately keeps the token, so re-enabling does not invalidate the secret already sitting in
+    /// somebody's CI configuration.
+    /// </summary>
+    public bool ReleaseWebhookEnabled { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>The running copies of this product.</summary>
     public ICollection<Stack> Stacks { get; set; } = [];
     /// <summary>The tenancy templates that instantiate this product.</summary>
     public ICollection<StackTemplate> Templates { get; set; } = [];
+    /// <summary>The builds of this product, newest last by id. Deleted with the product.</summary>
+    public ICollection<Release> Releases { get; set; } = [];
 }

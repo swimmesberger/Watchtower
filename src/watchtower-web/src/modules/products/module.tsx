@@ -4,6 +4,7 @@ import { defineModule, contribute, redirectUnless } from '@/platform/contributio
 import { productDetailTabs, sidebarItems } from '@/platform/points'
 import { rootRoute } from '@/platform/root-route'
 import { OverviewTab } from './OverviewTab'
+import { ReleasesTab } from './ReleasesTab'
 import { SettingsTab } from './SettingsTab'
 
 export const productsManifest = defineModule({
@@ -30,6 +31,13 @@ export const productsManifest = defineModule({
         value: 'overview',
         order: 10,
         component: ({ product }) => <OverviewTab product={product} />,
+      },
+      {
+        id: 'releases',
+        label: 'Releases',
+        value: 'releases',
+        order: 20,
+        component: ({ product }) => <ReleasesTab product={product} />,
       },
       {
         id: 'settings',

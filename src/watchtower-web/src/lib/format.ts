@@ -43,6 +43,15 @@ export function shortDigest(digest: string | null | undefined): string {
 }
 
 /**
+ * Keeps both ends of a long opaque value and elides the middle: `sha256:1111…1111`. For digests in a
+ * table, where the algorithm and the tail are what a person compares by eye and the middle is noise.
+ * Values short enough to fit are returned untouched.
+ */
+export function truncateMiddle(value: string, head = 18, tail = 8): string {
+  return value.length <= head + tail + 1 ? value : `${value.slice(0, head)}…${value.slice(-tail)}`
+}
+
+/**
  * Duration between two ISO timestamps as a compact string, e.g. "12s", "1m 30s".
  * If `end` is null/undefined, measures against now.
  */

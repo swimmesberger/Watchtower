@@ -45,6 +45,86 @@ export interface Product {
   stackCount: number
   /** How many templates instantiate it, each with its own tenants. */
   templateCount: number
+  /** Whether this product's CI may report releases to the webhook. */
+  releaseWebhookEnabled: boolean
+  /** The newest release, or null while the product has none. */
+  latestRelease: ProductReleaseSummary | null
+}
+
+/** The newest release of a product, as much as a header line or a catalogue row needs. */
+export interface ProductReleaseSummary {
+  id: number
+  version: string
+  createdAt: string
+}
+
+/** How a release arrived. */
+export type ReleaseSource = 'webhook' | 'manual'
+
+/** One row of the Releases tab. The digests live behind the row expansion (`products.getRelease`). */
+export interface Release {
+  id: number
+  version: string
+  commitSha: string | null
+  branch: string
+  createdVia: ReleaseSource
+  createdAt: string
+  /** When the build itself was published, if the reporter said. Display only — the list is ordered by id. */
+  publishedAt: string | null
+  sourceRunUrl: string | null
+  imageCount: number
+}
+
+/** One image a release pins. */
+export interface ReleaseImage {
+  repository: string
+  tag: string | null
+  digest: string
+}
+
+/** The expanded release: its images and its notes. */
+export interface ReleaseDetail {
+  id: number
+  productId: number
+  productName: string
+  version: string
+  commitSha: string | null
+  branch: string
+  createdVia: ReleaseSource
+  createdAt: string
+  publishedAt: string | null
+  sourceRunUrl: string | null
+  notes: string | null
+  images: ReleaseImage[]
+}
+
+/** `products.listReleases`: one keyset page, newest first. */
+export interface ReleasePage {
+  releases: Release[]
+  /** Whether an older page exists — what "Show older" keys on. */
+  hasMore: boolean
+}
+
+/** `products.createRelease`: recording a build by hand. */
+export interface CreateReleaseRequest {
+  version: string
+  commitSha?: string | null
+  images: string[]
+  notes?: string | null
+}
+
+/** `products.rotateReleaseToken`: the new token, and the webhook it just enabled. */
+export interface ReleaseTokenRotation {
+  enabled: boolean
+  token: string
+}
+
+/**
+ * `products.setReleaseWebhook`. No token: enabling may have generated one, and the value is read from
+ * `products.get` — the one place it is served.
+ */
+export interface ReleaseWebhookState {
+  enabled: boolean
 }
 
 /** One stack deploying a product, as `products.get` rosters it. */
@@ -75,6 +155,11 @@ export interface ProductDetail {
   product: Product
   stacks: ProductStack[]
   templates: ProductTemplate[]
+  /**
+   * The release webhook bearer, or null when none has been generated. Only on the detail response —
+   * the catalogue lists every product and must not carry every product's secret.
+   */
+  releaseWebhookToken: string | null
 }
 
 export interface CreateProductRequest {

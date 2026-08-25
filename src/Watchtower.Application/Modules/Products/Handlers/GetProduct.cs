@@ -12,10 +12,18 @@ public sealed class GetProduct(WatchtowerDbContext db)
     : IHandler<GetProduct.Query, Result<GetProduct.Response>> {
     public sealed record Query(int Id) : IQuery;
 
+    /// <param name="ReleaseWebhookToken">
+    /// The product's release webhook bearer, or null when none has been generated. On the detail
+    /// response rather than on <see cref="ProductDto"/> deliberately: the Releases tab has to be able
+    /// to show it for copying (an operator pastes it into the repository's Actions secrets by hand
+    /// until secret sync lands), while the catalogue — which lists every product — must not carry
+    /// every product's secret.
+    /// </param>
     public sealed record Response(
         ProductDto Product,
         IReadOnlyList<ProductStackDto> Stacks,
-        IReadOnlyList<ProductTemplateDto> Templates);
+        IReadOnlyList<ProductTemplateDto> Templates,
+        string? ReleaseWebhookToken);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var product = await db.Products.AsNoTracking()
@@ -58,7 +66,15 @@ public sealed class GetProduct(WatchtowerDbContext db)
                 t.Id, t.Name, t.BranchOverride ?? product.DefaultBranch, t.BranchOverride, t.Instances.Count))
             .ToListAsync(ct);
 
-        var dto = ProductMapping.ToDto(product, product.Credential?.Name, stacks.Count, templates.Count);
-        return new Response(dto, stacks, templates);
+        // Newest is the highest id (ADR-0026) — the ordering never comes from a timestamp.
+        var latest = await db.Releases.AsNoTracking()
+            .Where(r => r.ProductId == product.Id)
+            .OrderByDescending(r => r.Id)
+            .Select(r => new ProductReleaseSummaryDto(r.Id, r.Version, r.CreatedAt))
+            .FirstOrDefaultAsync(ct);
+
+        var dto = ProductMapping.ToDto(
+            product, product.Credential?.Name, stacks.Count, templates.Count, latest);
+        return new Response(dto, stacks, templates, product.ReleaseWebhookToken);
     }
 }

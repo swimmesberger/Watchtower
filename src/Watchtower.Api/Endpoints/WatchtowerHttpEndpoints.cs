@@ -33,6 +33,9 @@ public static class WatchtowerHttpEndpoints {
     /// </remarks>
     public static WebApplication MapWatchtowerHttpEndpoints(this WebApplication app, bool authEnabled) {
         MapWebhook(app);
+        // The product release webhook (ADR-0026): the same anonymous-with-its-own-bearer shape as the
+        // deploy webhook above, in its own file because it carries a payload and a pipeline.
+        ProductReleaseWebhook.Map(app);
         Protect(MapDeployOutputStream(app), authEnabled);
         Protect(MapContainerLogStream(app), authEnabled);
         Protect(MapVolumeDownload(app), authEnabled);
@@ -155,11 +158,16 @@ public static class WatchtowerHttpEndpoints {
             if (stack is null || !stack.WebhookEnabled)
                 return Results.NotFound();
 
-            if (!string.IsNullOrEmpty(stack.WebhookToken)) {
-                var authHeader = request.Headers.Authorization.ToString();
-                if (!string.Equals(authHeader, $"Bearer {stack.WebhookToken}", StringComparison.Ordinal))
-                    return Results.Unauthorized();
-            }
+            // Constant-time, and a stack with no token now fails instead of skipping the check
+            // (ADR-0026's "worth retrofitting in the same change"). Two things change here: the
+            // comparison no longer exits on the first differing byte, and an *enabled webhook with an
+            // empty token* — previously an unauthenticated deploy trigger for anyone who knew the
+            // stack id — is refused. BearerTokens.Verify refuses an empty stored value by contract,
+            // which is what closes that hole; the operator's fix is to set a token or disable the
+            // webhook. The scheme prefix is matched case-insensitively, as HTTP requires.
+            var presented = BearerTokens.ExtractBearer(request.Headers.Authorization.ToString());
+            if (!BearerTokens.Verify(presented, stack.WebhookToken))
+                return Results.Unauthorized();
 
             // A stopped stack is deliberately disabled (ADR-0025); a CI push must not revive it.
             // After the token check, so only an authorized caller learns the state.

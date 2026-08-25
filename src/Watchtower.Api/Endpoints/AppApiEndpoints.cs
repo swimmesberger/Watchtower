@@ -238,4 +238,7 @@ public static class AppApiEndpoints {
 [JsonSerializable(typeof(MgmtCreateTenantRequest))]
 [JsonSerializable(typeof(WatchtowerHttpEndpoints.WebhookDeployResult))]
 [JsonSerializable(typeof(WatchtowerAccessEndpoints.AppsResponse))]
+[JsonSerializable(typeof(ProductReleaseWebhook.Request), TypeInfoPropertyName = "ReleaseWebhookRequest")]
+[JsonSerializable(typeof(ProductReleaseWebhook.Response), TypeInfoPropertyName = "ReleaseWebhookResponse")]
+[JsonSerializable(typeof(ProductReleaseWebhook.ErrorResponse), TypeInfoPropertyName = "ReleaseWebhookError")]
 public sealed partial class WatchtowerHttpJsonContext : JsonSerializerContext;

@@ -14,8 +14,28 @@ import { EmptyState } from '@/components/ui/empty-state'
 const repoLabel = (url: string) => url.replace(/^https:\/\/github\.com\//, '')
 
 /**
+ * The newest build of this product, or an em dash. Version plus age, never the commit: the catalogue
+ * answers "which of these has CI behind it, and is it recent?", and the commit is a detail of the
+ * release rather than of the product.
+ */
+function LatestRelease({ product }: { product: Product }) {
+  const latest = product.latestRelease
+  if (!latest) return <span className="text-[13px] text-text-3">—</span>
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className="truncate font-medium text-[13px] text-text">{latest.version}</span>
+      <span className="tnum text-[13px] text-text-3" title={absoluteTitle(latest.createdAt)}>
+        {timeAgo(latest.createdAt)}
+      </span>
+    </span>
+  )
+}
+
+/**
  * Deliberately four columns and no status column: status belongs to the instances, and a fifth
  * column is what would turn this into a second Stacks page (design.md §Übersichtlichkeit audit).
+ * "Latest release" is the fourth the design names, which is why it took the place of the creation
+ * date rather than joining it — a product's age is the least useful thing this page could say.
  */
 function InstanceBadges({ product }: { product: Product }) {
   return (
@@ -76,13 +96,9 @@ export function ProductsPage() {
       cell: (p) => <InstanceBadges product={p} />,
     },
     {
-      key: 'created',
-      header: 'Created',
-      cell: (p) => (
-        <span className="tnum text-[13px] text-text-2" title={absoluteTitle(p.createdAt)}>
-          {timeAgo(p.createdAt)}
-        </span>
-      ),
+      key: 'latestRelease',
+      header: 'Latest release',
+      cell: (p) => <LatestRelease product={p} />,
     },
   ]
 
@@ -100,6 +116,7 @@ export function ProductsPage() {
         <InstanceBadges product={p} />
       </div>
       <p className="truncate font-mono text-[13px] text-text-2">{repoLabel(p.repositoryUrl)}</p>
+      {p.latestRelease && <LatestRelease product={p} />}
     </div>
   )
 
@@ -140,9 +157,7 @@ export function ProductsPage() {
             <EmptyState
               icon={Package}
               title="No products yet"
-              // Stage 1 has no releases. Restore the design doc's wording ("its compose file, and
-              // optionally the releases your CI builds") when stage 3 ships the Releases tab.
-              description="A product is a git repository Watchtower deploys — its compose file and the stacks running it."
+              description="A product is a git repository Watchtower deploys — its compose file, and optionally the releases your CI builds."
               action={
                 // Stacked rather than side by side: the second line is an alternative route for a
                 // different persona, not a secondary button competing with the primary one.

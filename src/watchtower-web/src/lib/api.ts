@@ -48,6 +48,11 @@ import type {
   NetworkPortsResult,
   Product,
   ProductDetail,
+  CreateReleaseRequest,
+  ReleaseDetail,
+  ReleasePage,
+  ReleaseTokenRotation,
+  ReleaseWebhookState,
   PruneOrphansResult,
   ProxyConfig,
   ProxyStatus,
@@ -160,6 +165,33 @@ export const api = {
     delete: async (id: number) => {
       await rpc('products.delete', { id })
     },
+
+    // ── releases (ADR-0026 stage 3) ──────────────────────────────────────
+    // Keyset paging on the id: `before` is the last id of the page you have, not an offset, so a
+    // release published while somebody pages cannot shift the window.
+    listReleases: async (productId: number, before?: number, limit = 20) =>
+      (await rpc('products.listReleases', {
+        productId,
+        before: before ?? null,
+        limit,
+      })) as ReleasePage,
+    getRelease: async (releaseId: number) =>
+      (await rpc('products.getRelease', { releaseId })).release as ReleaseDetail,
+    createRelease: async (productId: number, data: CreateReleaseRequest) =>
+      (await rpc('products.createRelease', {
+        productId,
+        version: data.version,
+        images: data.images,
+        commitSha: data.commitSha ?? null,
+        notes: data.notes ?? null,
+      })).release as ReleaseDetail,
+    deleteRelease: async (releaseId: number) => {
+      await rpc('products.deleteRelease', { releaseId })
+    },
+    rotateReleaseToken: async (productId: number) =>
+      (await rpc('products.rotateReleaseToken', { productId })) as ReleaseTokenRotation,
+    setReleaseWebhook: async (productId: number, enabled: boolean) =>
+      (await rpc('products.setReleaseWebhook', { productId, enabled })) as ReleaseWebhookState,
   },
 
   stacks: {

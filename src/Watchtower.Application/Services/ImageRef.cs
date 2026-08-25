@@ -142,6 +142,31 @@ public sealed record ImageRef(string Registry, string Repository, string? Tag, s
     }
 
     /// <summary>
+    /// The registry host a configured registry URL names, in the same normalized form
+    /// <see cref="Registry"/> carries — so an entry of the resolved registry view can be matched
+    /// against an image's registry.
+    /// </summary>
+    /// <remarks>
+    /// The view's keys are whatever docker config or an operator wrote down:
+    /// <c>https://index.docker.io/v1/</c>, <c>ghcr.io</c>, <c>https://registry.example.com</c>,
+    /// <c>localhost:5000</c>. Scheme and path are dropped, the host is lower-cased, and the Docker Hub
+    /// aliases collapse onto <see cref="DockerHubRegistry"/> — the same four rules
+    /// <see cref="TryParse"/> applies, which is the point of having this here rather than at the call
+    /// site.
+    /// </remarks>
+    /// <param name="registryUrl">A registry URL or bare host; null or blank yields an empty string.</param>
+    public static string NormalizeRegistryHost(string? registryUrl) {
+        if (string.IsNullOrWhiteSpace(registryUrl)) return string.Empty;
+        var text = registryUrl.Trim();
+        var scheme = text.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0) text = text[(scheme + 3)..];
+        var slash = text.IndexOf('/', StringComparison.Ordinal);
+        if (slash >= 0) text = text[..slash];
+        text = text.ToLowerInvariant();
+        return DockerHubAliases.Contains(text, StringComparer.Ordinal) ? DockerHubRegistry : text;
+    }
+
+    /// <summary>
     /// The OCI digest shape: an algorithm, a colon, and a lower-case hexadecimal encoding of at least
     /// 32 characters (<c>sha256:…</c>, and <c>sha512:…</c> without naming either).
     /// </summary>

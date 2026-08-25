@@ -137,6 +137,56 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
             .WithMany()
             .HasForeignKey(x => x.CiRepoId)
             .OnDelete(DeleteBehavior.SetNull);
+        // The release webhook looks a product up by the presented bearer token, so the column is
+        // indexed; unique so one token can never name two products. PostgreSQL treats NULLs as
+        // distinct, so any number of products may still have no token.
+        b.HasIndex(x => x.ReleaseWebhookToken).IsUnique();
+    }
+}
+
+[EntityConfiguration]
+public sealed class ReleaseConfiguration : IEntityTypeConfiguration<Release> {
+    public void Configure(EntityTypeBuilder<Release> b) {
+        b.ToTable("releases");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Version).IsRequired();
+        b.Property(x => x.Branch).IsRequired();
+        b.Property(x => x.Fingerprint).IsRequired();
+        b.Property(x => x.CreatedVia).IsRequired();
+        // The two rules release intake is built on. Unique on version because it is the label an
+        // operator picks a release by, and unique on the fingerprint because that is the idempotency
+        // key — the pre-checks in ReleaseIntakeService exist for the message, these indexes are what
+        // make two concurrent identical webhook calls produce one release.
+        b.HasIndex(x => new { x.ProductId, x.Version }).IsUnique();
+        b.HasIndex(x => new { x.ProductId, x.Fingerprint }).IsUnique();
+        // The listing query: newest-first keyset paging within one product
+        // (`WHERE product_id = @p AND id < @before ORDER BY id DESC`). Neither unique index above can
+        // serve it, because both carry a non-id second column.
+        b.HasIndex(x => new { x.ProductId, x.Id });
+        // Cascade: a release is meaningless without its product, and products.delete already refuses
+        // while any stack or template still references one — so this only ever fires for a product
+        // nothing deploys.
+        b.HasOne(x => x.Product)
+            .WithMany(p => p.Releases)
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class ReleaseImageConfiguration : IEntityTypeConfiguration<ReleaseImage> {
+    public void Configure(EntityTypeBuilder<ReleaseImage> b) {
+        b.ToTable("release_images");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Repository).IsRequired();
+        b.Property(x => x.Digest).IsRequired();
+        // One build produces one image per repository; two rows for the same repository would leave
+        // "which digest does this release pin for ghcr.io/acme/api?" with two answers.
+        b.HasIndex(x => new { x.ReleaseId, x.Repository }).IsUnique();
+        b.HasOne(x => x.Release)
+            .WithMany(r => r.Images)
+            .HasForeignKey(x => x.ReleaseId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 

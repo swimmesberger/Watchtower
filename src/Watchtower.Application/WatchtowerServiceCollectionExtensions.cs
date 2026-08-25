@@ -69,6 +69,12 @@ public static class WatchtowerServiceCollectionExtensions {
         // Find-or-create over the product catalogue (ADR-0026), shared by stacks.create and
         // templates.create so both keep their inline repository fields and resolve to one product.
         services.AddScoped<ProductCatalog>();
+        // Release intake (ADR-0026 decision 3), shared by the product release webhook and
+        // products.createRelease so both validate, resolve and fingerprint identically. The digest
+        // resolver is the one part that leaves the machine and is registered separately — a test
+        // substitutes it, which is what keeps intake testable without a registry.
+        services.AddScoped<ReleaseIntakeService>();
+        services.AddSingleton<IReleaseDigestResolver, RegistryDigestResolver>();
         // Realms (docs/central-auth/design.md §13). The resolver is the one place a host, a route or a
         // configuration value is turned into a population; the context is which population the current
         // request's credential lookups may see, and defaults to the operator realm so nothing that predates

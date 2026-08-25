@@ -176,8 +176,11 @@ deliberate link — a stale row is harmless once no read believes it.
 stack deploy webhook and following it exactly: product missing or `ReleaseWebhookEnabled == false`
 → **404** (never an existence oracle); bad bearer → **401**; token comparison via
 `CryptographicOperations.FixedTimeEquals` (and the stack webhook's ordinal compare is worth
-retrofitting in the same change). Fixed-window rate limit partitioned by product id (~20/min, the
-`LoginRateLimiting` shape); body capped at ~16 KB, max 20 images.
+retrofitting in the same change — that retrofit also stops an *enabled webhook with an empty token*
+from accepting unauthenticated deploys, which is a behaviour change worth a release-note line).
+Fixed-window rate limit partitioned by product id (~20/min, the `LoginRateLimiting` shape), plus a
+generous per-client-address one taken before the product lookup because the route is anonymous; body
+capped at ~16 KB, max 20 images.
 
 ```json
 {
@@ -227,6 +230,24 @@ repository matches no compose service is ignored, and a matching repository need
 exists in *your* registry — so the realistic damage is a forced redeploy or a rollback to an older
 legitimate digest. Rejecting images whose registry host is unknown closes the rest; every accepted
 release is audited with the caller IP.
+
+Three properties of that gate are accepted rather than closed:
+
+- **`docker.io` is always admitted** — an unqualified image lives there and a default install has no
+  Hub credential to recognize it by, so a leaked token can pin any *public* Hub digest. The
+  repository still has to match a compose service, the pin is pre-validated before it is applied, and
+  the rollout is visible; those are the mitigations. Requiring Hub to be configured explicitly would
+  make the common case fail closed for no gain against an attacker who already holds the token.
+- **An enabled product answers 401 rather than 404.** The 404 covers "missing, disabled, no token",
+  so an attacker enumerating ids learns which products have the webhook *switched on*. Accepted: the
+  token is 256 bits of CSPRNG output, the disclosure is a boolean about configuration rather than
+  about anything deployed, and collapsing 401 into 404 would leave a CI author with a wrong token
+  unable to tell it from a wrong id.
+- **Pre-authentication cost is bounded by a second limit.** The per-product window only engages once
+  a caller has proved it holds the token — otherwise a stranger could lock a product's CI out by
+  spending its budget — so a generous per-client-address window
+  (`Watchtower:ReleaseWebhookClientRateLimitPerMinute`, default 60) is taken first, before the
+  product lookup runs.
 
 ### The workflow step
 

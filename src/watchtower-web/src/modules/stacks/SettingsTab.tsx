@@ -122,9 +122,10 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     : `Overrides the inherited branch (${stack.branch}) for this stack.`
 
   const url = webhookUrl(stackId)
-  const curlHint = form.webhookToken
-    ? `curl -X POST -H "Authorization: Bearer <token>" ${url}`
-    : `curl -X POST ${url}`
+  // Always the authenticated form: an enabled webhook without a token now refuses every call
+  // (ADR-0026 retrofitted the deploy webhook onto the constant-time bearer check), so a copyable
+  // command without the header would only produce a 401.
+  const curlHint = `curl -X POST -H "Authorization: Bearer <token>" ${url}`
 
   return (
     <form onSubmit={handleSave} className="max-w-2xl space-y-8">
@@ -232,13 +233,14 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               <>
                 {!form.webhookToken && (
                   <Banner tone="warn" title="No token set">
-                    This webhook is public and can be triggered without authentication.
+                    Every call to this webhook is refused until you set one. Blank no longer means
+                    “anyone may deploy this stack”.
                   </Banner>
                 )}
 
                 <Field
                   label="Webhook token"
-                  hint="Sent as a Bearer token by your CI. Leave blank to allow unauthenticated deploys (not recommended)."
+                  hint="Sent as a Bearer token by your CI. Required — an enabled webhook without one refuses every call."
                 >
                   <SecretField
                     value={form.webhookToken ?? ''}
