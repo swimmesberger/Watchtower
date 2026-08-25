@@ -9,6 +9,7 @@ namespace Watchtower.Application.Modules.Stacks;
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(StackDto))]
+[JsonSerializable(typeof(StackReleaseRefDto))]
 [JsonSerializable(typeof(DeployEventDto))]
 [JsonSerializable(typeof(StackEnvVarDto))]
 [JsonSerializable(typeof(StackEnvVarInput))]
@@ -41,4 +42,6 @@ namespace Watchtower.Application.Modules.Stacks;
 [JsonSerializable(typeof(GetStackAppApi.Response), TypeInfoPropertyName = "GetStackAppApiResponse")]
 [JsonSerializable(typeof(SetStackAppApi.Command), TypeInfoPropertyName = "SetStackAppApiCommand")]
 [JsonSerializable(typeof(SetStackAppApi.Response), TypeInfoPropertyName = "SetStackAppApiResponse")]
+[JsonSerializable(typeof(SetStackRelease.Command), TypeInfoPropertyName = "SetStackReleaseCommand")]
+[JsonSerializable(typeof(SetStackRelease.Response), TypeInfoPropertyName = "SetStackReleaseResponse")]
 public sealed partial class StacksJsonContext : JsonSerializerContext;

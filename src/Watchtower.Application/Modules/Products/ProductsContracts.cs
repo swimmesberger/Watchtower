@@ -11,6 +11,10 @@ namespace Watchtower.Application.Modules.Products;
 /// secret, and the catalogue lists every product.
 /// </param>
 /// <param name="LatestRelease">The newest release, or null while the product has none.</param>
+/// <param name="ReleaseMode">
+/// <c>"git"</c> or <c>"releases"</c> — the switch that decides which update mechanism this product's
+/// stacks use, and which of the two panels their pages render (invariant 4).
+/// </param>
 public sealed record ProductDto(
     int Id,
     string Name,
@@ -24,7 +28,8 @@ public sealed record ProductDto(
     int StackCount,
     int TemplateCount,
     bool ReleaseWebhookEnabled,
-    ProductReleaseSummaryDto? LatestRelease);
+    ProductReleaseSummaryDto? LatestRelease,
+    string ReleaseMode);
 
 /// <summary>The newest release of a product, as much of it as a header line or a catalogue row needs.</summary>
 public sealed record ProductReleaseSummaryDto(int Id, string Version, DateTimeOffset CreatedAt);
@@ -95,7 +100,23 @@ public static class ProductMapping {
         ProductReleaseSummaryDto? latestRelease = null) => new(
         p.Id, p.Name, p.Description, p.RepositoryUrl, p.ComposeFilePath, p.DefaultBranch,
         p.CredentialId, credentialName, p.CreatedAt, stackCount, templateCount,
-        p.ReleaseWebhookEnabled, latestRelease);
+        p.ReleaseWebhookEnabled, latestRelease, ReleaseModeToDto(p.ReleaseMode));
+
+    /// <summary>Enum → lowercase wire value: "git", "releases".</summary>
+    public static string ReleaseModeToDto(ProductReleaseMode mode) => mode.ToString().ToLowerInvariant();
+
+    /// <summary>Parses the wire value; null when it is not one of the two names.</summary>
+    /// <remarks>
+    /// An explicit switch rather than <c>Enum.TryParse</c>, which also accepts the underlying numbers
+    /// ("0", "1") and any future member's name — turning the wire contract into "whatever the enum
+    /// happens to contain" and letting a caller select a mode by ordinal, which no client should be able
+    /// to do. Casing is tolerated because the wire form is lower-case and hand-written JSON is not.
+    /// </remarks>
+    public static ProductReleaseMode? ParseReleaseMode(string? mode) => mode?.Trim().ToLowerInvariant() switch {
+        "git" => ProductReleaseMode.Git,
+        "releases" => ProductReleaseMode.Releases,
+        _ => null,
+    };
 
     /// <summary>The list row for a release; <paramref name="imageCount"/> is counted by the query.</summary>
     public static ReleaseDto ToDto(Release r, int imageCount) => new(

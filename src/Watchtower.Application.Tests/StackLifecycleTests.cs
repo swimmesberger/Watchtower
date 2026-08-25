@@ -168,7 +168,7 @@ public sealed class StackLifecycleTests {
         }
 
         var queue = host.Services.GetRequiredService<DeployQueueService>();
-        await queue.ExecuteDeployAsync(stackId, eventId, removeVolumes: null, Ct);
+        await queue.ExecuteDeployAsync(stackId, eventId, DeployTriggers.Manual, removeVolumes: null, Ct);
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();

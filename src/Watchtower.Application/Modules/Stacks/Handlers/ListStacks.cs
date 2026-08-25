@@ -18,6 +18,9 @@ public sealed class ListStacks(WatchtowerDbContext db, StackUpdateRevalidator re
             // product, and a tenant's branch from its template's override (ADR-0026).
             .Include(s => s.Product)
             .Include(s => s.Template)
+            // Invariant 6: no surface may render a Deploy button without the version it would deploy.
+            .Include(s => s.PinnedRelease)
+            .Include(s => s.LastDeployedRelease)
             .OrderBy(s => s.Name)
             .ToListAsync(ct);
         var items = stacks.Select(s => StackMapping.ToDto(s, s.UpdateCheck)).ToList();

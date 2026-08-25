@@ -75,6 +75,14 @@ public static class WatchtowerServiceCollectionExtensions {
         // substitutes it, which is what keeps intake testable without a registry.
         services.AddScoped<ReleaseIntakeService>();
         services.AddSingleton<IReleaseDigestResolver, RegistryDigestResolver>();
+        // Release fan-out (design.md §Convergent fan-out): reads the target predicate through the scoped
+        // context and enqueues onto the singleton deploy queue. Shared by the release webhook and
+        // products.deployRelease so "which stacks does a release reach" has one answer.
+        services.AddScoped<ReleaseRolloutService>();
+        // The pin/rollback pre-flight (design.md §"Image pinning"): every image of the target release is
+        // HEADed before anything is written, so a garbage-collected digest is a refusal rather than a
+        // mid-rollback surprise.
+        services.AddScoped<ReleaseImageValidator>();
         // Realms (docs/central-auth/design.md §13). The resolver is the one place a host, a route or a
         // configuration value is turned into a population; the context is which population the current
         // request's credential lookups may see, and defaults to the operator realm so nothing that predates

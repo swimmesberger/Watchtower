@@ -6,14 +6,21 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.Products.Handlers;
 
 /// <summary>
-/// Removes a release and the images it pins. Allowed unconditionally in this stage because nothing
-/// references a release yet — it is a record, not a dependency.
+/// Removes a release and the images it pins, unless a stack is pinned to it.
 /// </summary>
 /// <remarks>
-/// <b>Stage 4 must add the pinned guard.</b> Once <c>Stack.PinnedReleaseId</c> exists it is a
-/// <c>Restrict</c> foreign key on purpose (ADR-0026 decision 4): deleting a pinned release must be
-/// refused, naming the stacks that pin it, rather than silently flipping them back to latest-tracking —
-/// a deploy-behaviour change caused by a delete somewhere else. Until then there is nothing to check.
+/// <para>
+/// <b>The pinned guard</b> (ADR-0026 decision 4): deleting a release a stack pins would silently flip
+/// that stack back to latest-tracking, changing what it deploys because of an action taken somewhere
+/// else entirely. It is refused, naming the stacks, so the operator unpins deliberately or picks a
+/// different release. The <c>Restrict</c> foreign key behind <c>Stack.PinnedReleaseId</c> is the
+/// backstop — this check exists for the message.
+/// </para>
+/// <para>
+/// <c>Stack.LastDeployedReleaseId</c> and <c>DeployEvent.ReleaseId</c> are deliberately <em>not</em>
+/// blockers: both are records of the past, both are <c>SET NULL</c>, and refusing a delete because
+/// something once deployed the release would make pruning impossible.
+/// </para>
 /// </remarks>
 [Handler("products.deleteRelease")]
 public sealed class DeleteRelease(WatchtowerDbContext db, AuditLog audit, ICurrentUser currentUser)
@@ -31,6 +38,17 @@ public sealed class DeleteRelease(WatchtowerDbContext db, AuditLog audit, ICurre
         if (release is null)
             return AppError.NotFound($"Release {command.ReleaseId} not found.");
 
+        var pinnedBy = await db.Stacks.AsNoTracking()
+            .Where(s => s.PinnedReleaseId == release.Id)
+            .OrderBy(s => s.Name)
+            .Select(s => s.Name)
+            .ToListAsync(ct);
+        if (pinnedBy.Count > 0) {
+            return AppError.Conflict(
+                $"Release '{release.Version}' is pinned by {Describe(pinnedBy)}. Move them to another "
+                + "release, or clear their pin, before deleting it.");
+        }
+
         var target = $"{release.Product.Name}/{release.Version}";
         var detail = $"commit {ReleaseFingerprint.DescribeCommit(release.CommitSha)}; "
             + $"created via {release.CreatedVia}";
@@ -45,5 +63,17 @@ public sealed class DeleteRelease(WatchtowerDbContext db, AuditLog audit, ICurre
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         return new Response(command.ReleaseId);
+    }
+
+    /// <summary>
+    /// The blocking stacks, named. Capped so a fleet-wide pin produces a readable sentence rather than a
+    /// two-hundred-name wall — the count is what matters past the first few.
+    /// </summary>
+    private static string Describe(IReadOnlyList<string> stackNames) {
+        const int shown = 5;
+        var names = string.Join(", ", stackNames.Take(shown).Select(n => $"'{n}'"));
+        return stackNames.Count <= shown
+            ? $"stack(s) {names}"
+            : $"{stackNames.Count} stacks, including {names}";
     }
 }

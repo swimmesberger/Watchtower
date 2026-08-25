@@ -71,6 +71,13 @@ internal sealed class RecordingComposeCliService()
     /// <summary>stderr the stubbed <c>config</c> returns.</summary>
     public string ConfigDiagnostics { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Awaited at the start of every <c>config</c> call. How a test holds one deploy open while it
+    /// enqueues the next — <c>config</c> is the probe point because every deploy that runs at all makes
+    /// exactly one, and a short-circuited deploy makes none.
+    /// </summary>
+    public Func<Task>? OnConfig { get; set; }
+
     /// <summary>Exit codes the stubbed <c>pull</c> and <c>up</c> report.</summary>
     public int PullExitCode { get; set; }
 
@@ -86,9 +93,10 @@ internal sealed class RecordingComposeCliService()
     public ComposeInvocation Invocation(string command) =>
         Invocations.Single(i => i.Command == command);
 
-    protected override Task<ComposeConfigResult> RunCapturedAsync(string[] args, CancellationToken ct) {
+    protected override async Task<ComposeConfigResult> RunCapturedAsync(string[] args, CancellationToken ct) {
         Record(args);
-        return Task.FromResult(new ComposeConfigResult(ConfigExitCode, ConfigJson, ConfigDiagnostics));
+        if (OnConfig is { } hook) await hook();
+        return new ComposeConfigResult(ConfigExitCode, ConfigJson, ConfigDiagnostics);
     }
 
     protected override Task<(int ExitCode, string Output)> RunAsync(
@@ -158,21 +166,45 @@ internal sealed class ConcurrencyProbeComposeCliService()
         Task.FromResult((0, "stubbed compose"));
 }
 
+/// <summary>One clone a deploy asked for, as the recording git service saw it.</summary>
+/// <param name="Command">
+/// <c>clone</c> for a branch-head clone, <c>clone-at-commit</c> for the release-pinned form — the
+/// distinction the back-compat guarantee turns on.
+/// </param>
+/// <param name="RepositoryUrl">The remote, without any embedded token.</param>
+/// <param name="Branch">The branch the deploy resolved.</param>
+/// <param name="CommitSha">The commit, for <c>clone-at-commit</c> only.</param>
+internal sealed record GitInvocation(
+    string Command, string RepositoryUrl, string Branch, string? CommitSha = null);
+
 /// <summary>
-/// A git clone that materializes an empty checkout directory instead of contacting a remote. Every
-/// stack in a test names a repository that does not exist, and a clone is the first thing a deploy
-/// does, so nothing downstream is reachable without this.
+/// A git clone that materializes an empty checkout directory instead of contacting a remote, and
+/// records what it was asked for. Every stack in a test names a repository that does not exist, and a
+/// clone is the first thing a deploy does, so nothing downstream is reachable without this.
 /// </summary>
+/// <remarks>
+/// The recording half is what makes "a Git-mode deploy clones exactly as it always did" a checkable
+/// claim rather than an intention: the two clone forms are different git commands, and which one a
+/// deploy chooses is the first observable difference between the two product modes.
+/// </remarks>
 internal sealed class StubGitCloneService : GitCloneService {
     /// <summary>The commit the stubbed checkout reports; a plausible 40-character SHA.</summary>
     public const string HeadCommit = "0123456789abcdef0123456789abcdef01234567";
 
+    private readonly List<GitInvocation> _clones = [];
+
     /// <summary>The commit the last <see cref="CloneAtCommitAsync"/> was asked for, or null for a branch clone.</summary>
     public string? RequestedCommit { get; private set; }
+
+    /// <summary>Every clone this service was asked for, in order.</summary>
+    public IReadOnlyList<GitInvocation> Clones {
+        get { lock (_clones) return [.. _clones]; }
+    }
 
     public override Task<(int ExitCode, string Output)> CloneAsync(
         string repositoryUrl, string branch, string? token, string targetDir,
         Action<string>? onLine, CancellationToken ct) {
+        lock (_clones) _clones.Add(new GitInvocation("clone", repositoryUrl, branch));
         Directory.CreateDirectory(targetDir);
         return Task.FromResult((0, "stubbed clone"));
     }
@@ -180,6 +212,7 @@ internal sealed class StubGitCloneService : GitCloneService {
     public override Task<(int ExitCode, string Output)> CloneAtCommitAsync(
         string repositoryUrl, string branch, string commitSha, string? token, string targetDir,
         Action<string>? onLine, CancellationToken ct) {
+        lock (_clones) _clones.Add(new GitInvocation("clone-at-commit", repositoryUrl, branch, commitSha));
         RequestedCommit = commitSha;
         Directory.CreateDirectory(targetDir);
         return Task.FromResult((0, "stubbed clone at commit"));
@@ -188,4 +221,19 @@ internal sealed class StubGitCloneService : GitCloneService {
     /// <summary>The commit a pinned clone was asked for, or the branch clone's stubbed head.</summary>
     public override Task<string?> GetHeadCommitAsync(string repoDir, CancellationToken ct) =>
         Task.FromResult<string?>(RequestedCommit ?? HeadCommit);
+
+    /// <summary>What <c>ls-remote</c> answers; null means the branch could not be resolved.</summary>
+    public string? RemoteHead { get; init; }
+
+    /// <summary>
+    /// Every branch this service was asked the remote head of. Empty is the assertion in release mode
+    /// for a pinned stack, which is not tracking a branch at all.
+    /// </summary>
+    public List<string> RemoteHeadLookups { get; } = [];
+
+    public override Task<string?> GetRemoteHeadAsync(
+        string repositoryUrl, string branch, string? token, CancellationToken ct) {
+        lock (RemoteHeadLookups) RemoteHeadLookups.Add(branch);
+        return Task.FromResult(RemoteHead);
+    }
 }

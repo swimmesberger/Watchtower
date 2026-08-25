@@ -375,6 +375,88 @@ public sealed class ReleaseIntakeTests {
         Assert.Empty(resolver.Asked);
     }
 
+    // ── the mode flip and the roll-out hook ──────────────────────────────────
+
+    /// <summary>
+    /// The moment a product's stacks stop deploying branch heads (ADR-0026 decision 5): the first
+    /// accepted release flips the mode, in the same write, and says so in the trail.
+    /// </summary>
+    [Fact]
+    public async Task Publish_FlipsAGitModeProductIntoReleaseModeAndAuditsIt() {
+        using var host = StartHost(new StubDigestResolver { Digest = ApiDigest });
+        var productId = await SeedProductAsync(host);
+        Assert.Equal(ProductReleaseMode.Git, await ModeAsync(host, productId));
+
+        var result = await PublishAsync(host, Request(productId, [$"docker.io/acme/api@{ApiDigest}"]));
+
+        Assert.Equal(ReleaseIntakeStatus.Created, result.Status);
+        Assert.Equal(ProductReleaseMode.Releases, await ModeAsync(host, productId));
+        var audit = Assert.Single(await AuditAsync(host, ReleaseIntakeService.ModeChangeAction));
+        Assert.Equal("shop", audit.Target);
+        Assert.Contains("first release", audit.Detail!, StringComparison.Ordinal);
+        Assert.Contains("Git → Releases", audit.Detail!, StringComparison.Ordinal);
+        // Actor-less: the webhook has nobody signed in behind it.
+        Assert.Null(audit.Actor);
+    }
+
+    /// <summary>
+    /// The flip happens once. A second release of a product already in release mode changes nothing and
+    /// records no second mode change — and neither does a replay of the first.
+    /// </summary>
+    [Fact]
+    public async Task Publish_DoesNotRecordASecondModeChange() {
+        using var host = StartHost(new StubDigestResolver { Digest = ApiDigest });
+        var productId = await SeedProductAsync(host);
+        var first = Request(productId, [$"docker.io/acme/api@{ApiDigest}"], version: "1.0.0");
+
+        await PublishAsync(host, first);
+        await PublishAsync(host, first);   // the retried curl
+        await PublishAsync(host, Request(productId, [$"docker.io/acme/api@{WorkerDigest}"], version: "1.0.1"));
+
+        Assert.Single(await AuditAsync(host, ReleaseIntakeService.ModeChangeAction));
+        Assert.Equal(ProductReleaseMode.Releases, await ModeAsync(host, productId));
+    }
+
+    /// <summary>
+    /// A refused release leaves the mode alone — the flip rides in the same write as the insert, so
+    /// there is no state in which a product deploys releases it does not have.
+    /// </summary>
+    [Fact]
+    public async Task Publish_LeavesTheModeAloneWhenTheReleaseIsRefused() {
+        using var host = StartHost(new StubDigestResolver { Digest = ApiDigest });
+        var productId = await SeedProductAsync(host);
+
+        var refused = await PublishAsync(host, Request(productId, ["registry.invalid/acme/api:1"]));
+
+        Assert.Equal(ReleaseIntakeStatus.Invalid, refused.Status);
+        Assert.Equal(ProductReleaseMode.Git, await ModeAsync(host, productId));
+        Assert.Empty(await AuditAsync(host, ReleaseIntakeService.ModeChangeAction));
+    }
+
+    /// <summary>
+    /// The roll-out hook runs for a created release and never for a replay — the property that makes
+    /// <c>curl --retry</c> safe to put in a workflow — and its count reaches the audit row.
+    /// </summary>
+    [Fact]
+    public async Task Publish_RunsTheRolloutHookOnceAndOnlyForACreatedRelease() {
+        using var host = StartHost(new StubDigestResolver { Digest = ApiDigest });
+        var productId = await SeedProductAsync(host);
+        var request = Request(productId, [$"docker.io/acme/api@{ApiDigest}"], version: "1.0.0");
+        var calls = 0;
+
+        var created = await PublishWithHookAsync(host, request, () => { calls++; return 3; });
+        var replay = await PublishWithHookAsync(host, request, () => { calls++; return 3; });
+
+        Assert.Equal(ReleaseIntakeStatus.Created, created.Status);
+        Assert.Equal(3, created.StacksEnqueued);
+        Assert.Equal(ReleaseIntakeStatus.Replayed, replay.Status);
+        Assert.Equal(0, replay.StacksEnqueued);
+        Assert.Equal(1, calls);
+
+        var publish = Assert.Single(await AuditAsync(host, ReleaseIntakeService.PublishAction));
+        Assert.Contains("3 stack(s) enqueued", publish.Detail!, StringComparison.Ordinal);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static AuthTestHost StartHost(IReleaseDigestResolver resolver) =>
@@ -391,6 +473,21 @@ public sealed class ReleaseIntakeTests {
         await using var scope = host.Services.CreateAsyncScope();
         var intake = scope.ServiceProvider.GetRequiredService<ReleaseIntakeService>();
         return await intake.PublishAsync(request, Ct);
+    }
+
+    /// <summary>Publishes with a roll-out hook, so the "created only" rule is observable.</summary>
+    private static async Task<ReleaseIntakeResult> PublishWithHookAsync(
+        AuthTestHost host, ReleaseIntakeRequest request, Func<int> onCreated) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var intake = scope.ServiceProvider.GetRequiredService<ReleaseIntakeService>();
+        return await intake.PublishAsync(request, (_, _) => Task.FromResult(onCreated()), Ct);
+    }
+
+    private static async Task<ProductReleaseMode> ModeAsync(AuthTestHost host, int productId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Products.AsNoTracking()
+            .Where(p => p.Id == productId).Select(p => p.ReleaseMode).FirstAsync(Ct);
     }
 
     private static async Task<int> SeedProductAsync(AuthTestHost host) {

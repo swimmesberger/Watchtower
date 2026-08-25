@@ -82,8 +82,8 @@ public sealed class ProductReleaseWebhookTests {
     // ── the accepted release ─────────────────────────────────────────────────
 
     /// <summary>
-    /// The 201 body a workflow reads. <c>stacksEnqueued</c> is 0 and stays 0 in this stage: releases are
-    /// recorded, nothing is deployed (stage 4 is what makes it non-zero).
+    /// The 201 body a workflow reads. <c>stacksEnqueued</c> is 0 here because the product has no stacks
+    /// at all — the fan-out has its own cases below.
     /// </summary>
     [Fact]
     public async Task AnAcceptedReleaseIsCreatedWithTheDocumentedBody() {
@@ -114,6 +114,54 @@ public sealed class ProductReleaseWebhookTests {
         var release = Assert.Single(await ReleasesAsync(factory));
         Assert.Equal(Release.ViaWebhook, release.CreatedVia);
         Assert.Equal("main", release.Branch);
+    }
+
+    // ── the fan-out ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// An accepted release rolls out to the product's latest-tracking, running, <c>OnChange</c> stacks
+    /// and reports how many it reached — <c>stacksEnqueued</c> is what the workflow's log line shows.
+    /// </summary>
+    /// <remarks>
+    /// The whole path, through the real endpoint: the mode flip, the commit of the insert, and the
+    /// enqueue that follows it. The deploys carry no release id (invariant 3) — the enqueue's trigger is
+    /// all this asserts, because what a deploy then resolves is <c>ReleaseDeployTests</c>' subject.
+    /// </remarks>
+    [Fact]
+    public async Task AnAcceptedReleaseIsRolledOutToTheProductsOnChangeStacks() {
+        using var factory = new WatchtowerApiFactory();
+        var productId = await SeedProductAsync(factory, "shop", enabled: true, token: Token);
+        var tracking = await SeedStackAsync(factory, "tracking", productId, AutoDeployMode.OnChange);
+        await SeedStackAsync(factory, "manual-only", productId, AutoDeployMode.Off);
+        using var client = factory.CreateApiClient();
+
+        var response = await client.SendAsync(Report(productId, Token), Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+        Assert.Equal(1, body.RootElement.GetProperty("stacksEnqueued").GetInt32());
+        Assert.Equal([(tracking, "release")], factory.DeployQueue.Calls);
+    }
+
+    /// <summary>
+    /// A replayed report enqueues nothing. This is what makes <c>curl --retry</c> safe to put in a
+    /// workflow: a retry after a timeout must not redeploy a fleet.
+    /// </summary>
+    [Fact]
+    public async Task ARepeatedReportEnqueuesNothing() {
+        using var factory = new WatchtowerApiFactory();
+        var productId = await SeedProductAsync(factory, "shop", enabled: true, token: Token);
+        await SeedStackAsync(factory, "tracking", productId, AutoDeployMode.OnChange);
+        using var client = factory.CreateApiClient();
+
+        await client.SendAsync(Report(productId, Token), Ct);
+        var replay = await client.SendAsync(Report(productId, Token), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        using var body = JsonDocument.Parse(await replay.Content.ReadAsStringAsync(Ct));
+        Assert.Equal(0, body.RootElement.GetProperty("stacksEnqueued").GetInt32());
+        // One enqueue in total, from the first call.
+        Assert.Single(factory.DeployQueue.Calls);
     }
 
     /// <summary>
@@ -364,6 +412,26 @@ public sealed class ProductReleaseWebhookTests {
     private static async Task<string> MessageAsync(HttpResponseMessage response) {
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
         return body.RootElement.GetProperty("message").GetString()!;
+    }
+
+    /// <summary>A stack of an existing product — the fan-out's raw material.</summary>
+    private static async Task<int> SeedStackAsync(
+        WatchtowerApiFactory factory, string name, int productId, AutoDeployMode autoDeploy) {
+        var stackId = 0;
+        await factory.WithScopeAsync(async services => {
+            var db = services.GetRequiredService<WatchtowerDbContext>();
+            var stack = new Stack {
+                Name = name,
+                ComposeProjectName = name,
+                ProductId = productId,
+                AutoDeployMode = autoDeploy,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Stacks.Add(stack);
+            await db.SaveChangesAsync(Ct);
+            stackId = stack.Id;
+        });
+        return stackId;
     }
 
     private static async Task<int> SeedProductAsync(

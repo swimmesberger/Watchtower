@@ -30,8 +30,11 @@ namespace Watchtower.Api.Endpoints;
 /// from intake's outcome onto the status-code table in the design doc.
 /// </para>
 /// <para>
-/// <b>Nothing is deployed.</b> <c>stacksEnqueued</c> is always 0 in this stage — the field is in the
-/// response now so the workflow that reads it does not change shape when stage 4 makes it non-zero.
+/// <b>A created release fans out; a replayed one does not.</b> Intake flips the product into release
+/// mode and records the release; this endpoint then asks <see cref="ReleaseRolloutService"/> to enqueue
+/// the latest-tracking, running, <c>OnChange</c> stacks and answers with the count. A replay — the
+/// retried <c>curl</c> — is answered with the existing release and enqueues nothing, which is the
+/// property that makes <c>curl --retry</c> safe to put in a workflow.
 /// </para>
 /// </remarks>
 public static class ProductReleaseWebhook {
@@ -67,8 +70,9 @@ public static class ProductReleaseWebhook {
     public sealed record ImageResult(string Repository, string Digest);
 
     /// <param name="StacksEnqueued">
-    /// Always 0 in this stage: releases are recorded, nothing is deployed. Stage 4's
-    /// <c>ReleaseRolloutService</c> is what makes this non-zero (design.md §Convergent fan-out).
+    /// How many stacks this release was rolled out to — latest-tracking, running and <c>OnChange</c>
+    /// (design.md §Convergent fan-out). Zero for a replayed call, and for a product whose stacks all
+    /// opted out.
     /// </param>
     public sealed record Response(
         int ReleaseId,
@@ -87,6 +91,7 @@ public static class ProductReleaseWebhook {
             HttpRequest request,
             WatchtowerDbContext db,
             ReleaseIntakeService intake,
+            ReleaseRolloutService rollout,
             ReleaseWebhookRateLimiter limiter,
             CancellationToken ct) => {
             // Before anything touches the database: this route is anonymous, so an unauthenticated
@@ -147,13 +152,19 @@ public static class ProductReleaseWebhook {
                     RunUrl: payload.RunUrl,
                     Notes: payload.Notes,
                     CallerIp: request.HttpContext.Connection.RemoteIpAddress?.ToString()),
+                // The roll-out, handed to intake so it runs for a created release and never for a
+                // replay, and so the audit row can name the number of stacks it reached. This endpoint
+                // is a minimal-API route with no framework transaction, so by the time this is called
+                // the release is committed and the deploys it enqueues can resolve it.
+                async (_, hookCt) => (await rollout.EnqueueForProductAsync(id, hookCt)).StacksEnqueued,
                 ct);
 
             return result.Status switch {
-                ReleaseIntakeStatus.Created => Results.Json(Describe(result.Release!),
+                ReleaseIntakeStatus.Created => Results.Json(
+                    Describe(result.Release!, result.StacksEnqueued),
                     statusCode: StatusCodes.Status201Created),
                 // A retried curl: the same release, no fan-out, nothing written a second time.
-                ReleaseIntakeStatus.Replayed => Results.Json(Describe(result.Release!)),
+                ReleaseIntakeStatus.Replayed => Results.Json(Describe(result.Release!, stacksEnqueued: 0)),
                 ReleaseIntakeStatus.VersionConflict => Results.Json(new ErrorResponse(result.Error!),
                     statusCode: StatusCodes.Status409Conflict),
                 ReleaseIntakeStatus.RegistryUnavailable => RegistryUnavailable(result.Error!),
@@ -164,15 +175,14 @@ public static class ProductReleaseWebhook {
         });
 
     /// <summary>The accepted release, in the shape the workflow reads.</summary>
-    private static Response Describe(Release release) => new(
+    private static Response Describe(Release release, int stacksEnqueued) => new(
         release.Id,
         release.Version,
         release.CommitSha,
         [.. release.Images
             .OrderBy(i => i.Repository, StringComparer.Ordinal)
             .Select(i => new ImageResult(i.Repository, i.Digest))],
-        // Stage 4 replaces this with the fan-out's count.
-        StacksEnqueued: 0);
+        stacksEnqueued);
 
     /// <summary>
     /// Reads at most <see cref="MaxBodyBytes"/> from the request, or null when the body is larger.

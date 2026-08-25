@@ -1,6 +1,35 @@
 namespace Watchtower.Application.Entities;
 
 /// <summary>
+/// Which of the two update mechanisms a product uses (ADR-0026 decision 5, docs/products/design.md
+/// §"Two modes, one switch"). Exactly one of them is ever active, and exactly one of them is ever
+/// rendered — the Updates panel in <see cref="Git"/> mode, the Version panel in <see cref="Releases"/>
+/// mode.
+/// </summary>
+/// <remarks>
+/// Stored as the enum name with <see cref="Git"/> as the schema default, so every row that existed
+/// before releases did — and every product created since — is in <see cref="Git"/> mode and therefore
+/// deploys byte-for-byte as it did before ADR-0026. That is the back-compat contract, and it is a
+/// property of the default rather than of any code path: the release machinery is gated on
+/// <see cref="Releases"/> everywhere it exists.
+/// </remarks>
+public enum ProductReleaseMode {
+    /// <summary>
+    /// Branch-HEAD clone, registry-digest and git-head polling, today's Updates panel and
+    /// <see cref="AutoDeployMode"/> labels. The default, and what every migrated product starts as.
+    /// </summary>
+    Git,
+
+    /// <summary>
+    /// Deploys are releases: latest is the release with the highest <see cref="Release.Id"/>, and a
+    /// deploy checks out that release's commit and pins its image digests. Flipped on automatically by
+    /// the first accepted release (audited), and revertible by an operator through
+    /// <c>products.update</c>.
+    /// </summary>
+    Releases,
+}
+
+/// <summary>
 /// A git repository that defines a deployable application: where the code lives, which compose file
 /// describes it, which branch it tracks by default and which credential clones it (ADR-0026). Every
 /// <see cref="Stack"/> and every <see cref="StackTemplate"/> references one — a stack is a running
@@ -81,6 +110,19 @@ public sealed class Product {
     /// somebody's CI configuration.
     /// </summary>
     public bool ReleaseWebhookEnabled { get; set; }
+
+    /// <summary>
+    /// Which update mechanism this product's stacks use (ADR-0026 decision 5). <c>Git</c> until the
+    /// first release is accepted, which flips it to <c>Releases</c> in the same transaction that
+    /// records the release (<see cref="Services.ReleaseIntakeService"/>); an operator can flip it back
+    /// through <c>products.update</c>, and the next accepted release flips it forward again.
+    /// </summary>
+    /// <remarks>
+    /// The one switch every release-aware code path is gated on. While it says <c>Git</c> nothing about
+    /// deploying, polling or auto-deploying differs from before ADR-0026 — releases may already exist
+    /// and simply sit there as records.
+    /// </remarks>
+    public ProductReleaseMode ReleaseMode { get; set; } = ProductReleaseMode.Git;
 
     public DateTimeOffset CreatedAt { get; set; }
 

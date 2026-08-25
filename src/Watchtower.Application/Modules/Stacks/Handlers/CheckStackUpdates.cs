@@ -16,6 +16,9 @@ public sealed class CheckStackUpdates(WatchtowerDbContext db, StackUpdateService
         var stack = await db.Stacks.AsNoTracking()
             .Include(s => s.Product)
             .Include(s => s.Template)
+            // Invariant 6: no surface may render a Deploy button without the version it would deploy.
+            .Include(s => s.PinnedRelease)
+            .Include(s => s.LastDeployedRelease)
             .FirstOrDefaultAsync(s => s.Id == command.Id, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {command.Id} not found");

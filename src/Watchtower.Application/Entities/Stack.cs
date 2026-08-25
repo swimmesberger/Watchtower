@@ -54,6 +54,36 @@ public sealed class Stack {
     /// (see <see cref="Services.ProductSourceResolver"/>).
     /// </summary>
     public string? BranchOverride { get; set; }
+    /// <summary>
+    /// The release this stack is pinned to, or null for the default "track latest" (ADR-0026
+    /// decision 4). There is deliberately no tracking-mode enum: null <em>is</em> latest-tracking, so
+    /// the two states cannot disagree.
+    /// </summary>
+    /// <remarks>
+    /// A pin is an explicit "stay here" and therefore the opt-out from <em>all</em> automation
+    /// (design.md §"Auto-deploy precedence", rule 2): release fan-out skips it, the schedule window
+    /// skips it, and polling never deployed it in release mode anyway. A manual deploy redeploys the
+    /// pin. The foreign key is <c>Restrict</c> on purpose — deleting a pinned release is refused,
+    /// naming the stacks, rather than silently flipping them back to latest.
+    /// </remarks>
+    public int? PinnedReleaseId { get; set; }
+    public Release? PinnedRelease { get; set; }
+
+    /// <summary>
+    /// The release the last successful deploy actually applied, or null when no release-mode deploy has
+    /// succeeded yet. Written at the end of a deploy, from the release resolved at execution time — so
+    /// a coalesced deploy records what ran, not what was asked for.
+    /// </summary>
+    /// <remarks>
+    /// The comparison behind three separate behaviours: the release-triggered short-circuit
+    /// ("already on this release — nothing to do"), the scheduled-window "is there something newer",
+    /// and the update check's <c>AvailableReleaseId</c>. <c>SET NULL</c> rather than <c>Restrict</c>:
+    /// this is a record of the past, and deleting an old release must not be refused because something
+    /// once deployed it.
+    /// </remarks>
+    public int? LastDeployedReleaseId { get; set; }
+    public Release? LastDeployedRelease { get; set; }
+
     /// <summary>Value passed to <c>--project-name</c>; defaults to the stack name with spaces hyphenated.</summary>
     public required string ComposeProjectName { get; set; }
     /// <summary>Bearer token protecting the deploy webhook endpoint. Null when the webhook is unauthenticated.</summary>

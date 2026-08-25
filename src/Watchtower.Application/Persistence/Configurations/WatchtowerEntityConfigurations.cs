@@ -141,6 +141,11 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
         // indexed; unique so one token can never name two products. PostgreSQL treats NULLs as
         // distinct, so any number of products may still have no token.
         b.HasIndex(x => x.ReleaseWebhookToken).IsUnique();
+        // Stored as the enum name ("Git"/"Releases"). The default is on the model, not only in the
+        // migration, so every environment scaffolds a schema in which a product written without one is
+        // in Git mode — the back-compat contract of ADR-0026 decision 5 expressed as a column default
+        // rather than as something the code has to remember.
+        b.Property(x => x.ReleaseMode).HasConversion<string>().HasDefaultValue(ProductReleaseMode.Git);
     }
 }
 
@@ -234,6 +239,22 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
             .HasForeignKey(x => x.TemplateId)
             .OnDelete(DeleteBehavior.SetNull);
         b.HasIndex(x => new { x.TemplateId, x.TenantSlug }).IsUnique();
+        // Restrict (ADR-0026 decision 4): deleting a release a stack pins would silently flip that stack
+        // back to latest-tracking — a deploy-behaviour change caused by a delete somewhere else.
+        // products.deleteRelease refuses first and names the stacks; this is the backstop.
+        b.HasOne(x => x.PinnedRelease)
+            .WithMany()
+            .HasForeignKey(x => x.PinnedReleaseId)
+            .OnDelete(DeleteBehavior.Restrict);
+        // SetNull, unlike the pin: this records what once ran, and pruning an old release must not be
+        // refused because a stack still remembers deploying it.
+        b.HasOne(x => x.LastDeployedRelease)
+            .WithMany()
+            .HasForeignKey(x => x.LastDeployedReleaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // The fan-out predicate and products.deleteRelease's guard both look stacks up by the release
+        // they pin; PostgreSQL treats NULLs as distinct, so latest-tracking stacks cost nothing here.
+        b.HasIndex(x => x.PinnedReleaseId);
     }
 }
 
@@ -291,6 +312,14 @@ public sealed class DeployEventConfiguration : IEntityTypeConfiguration<DeployEv
             .WithMany(s => s.DeployEvents)
             .HasForeignKey(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
+        // SetNull: the rollout view groups deploy events by release, but a deleted release must not
+        // take the history of what it deployed with it.
+        b.HasOne(x => x.Release)
+            .WithMany()
+            .HasForeignKey(x => x.ReleaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // The rollout view's grouping (succeeded / failed / queued per release).
+        b.HasIndex(x => x.ReleaseId);
     }
 }
 
@@ -657,6 +686,13 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
             v => new Dictionary<string, string>(v, StringComparer.OrdinalIgnoreCase));
         b.Property(x => x.OutdatedImageDigests)
             .HasConversion(v => FormatDigests(v), v => ParseDigests(v), digestComparer);
+        // Same newline-separated text as OutdatedImages, and deliberately the same shape: it is the
+        // Releases-mode counterpart of that list (a container name never contains a newline).
+        b.Property(x => x.DriftedContainers)
+            .HasConversion(
+                v => string.Join('\n', v),
+                v => v.Length == 0 ? Array.Empty<string>() : v.Split('\n', StringSplitOptions.RemoveEmptyEntries),
+                comparer);
         b.HasOne(x => x.Stack)
             .WithOne(s => s.UpdateCheck)
             .HasForeignKey<StackUpdateCheck>(x => x.StackId)

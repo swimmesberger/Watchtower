@@ -4610,6 +4610,9 @@
                   "version",
                   "createdAt"
                 ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -4625,7 +4628,8 @@
               "stackCount",
               "templateCount",
               "releaseWebhookEnabled",
-              "latestRelease"
+              "latestRelease",
+              "releaseMode"
             ]
           }
         },
@@ -4819,6 +4823,52 @@
         ]
       }
     },
+    "products.deployRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "releaseId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "stacksEnqueued": {
+            "type": "integer"
+          },
+          "deployEventIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "releaseId",
+          "version",
+          "stacksEnqueued",
+          "deployEventIds"
+        ]
+      }
+    },
     "products.get": {
       "params": {
         "type": "object",
@@ -4905,6 +4955,9 @@
                   "version",
                   "createdAt"
                 ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -4920,7 +4973,8 @@
               "stackCount",
               "templateCount",
               "releaseWebhookEnabled",
-              "latestRelease"
+              "latestRelease",
+              "releaseMode"
             ]
           },
           "stacks": {
@@ -5221,6 +5275,9 @@
                     "version",
                     "createdAt"
                   ]
+                },
+                "releaseMode": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -5236,7 +5293,8 @@
                 "stackCount",
                 "templateCount",
                 "releaseWebhookEnabled",
-                "latestRelease"
+                "latestRelease",
+                "releaseMode"
               ]
             }
           }
@@ -5427,6 +5485,13 @@
               "null"
             ],
             "default": null
+          },
+          "releaseMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -5511,6 +5576,9 @@
                   "version",
                   "createdAt"
                 ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -5526,7 +5594,8 @@
               "stackCount",
               "templateCount",
               "releaseWebhookEnabled",
-              "latestRelease"
+              "latestRelease",
+              "releaseMode"
             ]
           }
         },
@@ -7743,6 +7812,69 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -7768,7 +7900,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -7982,6 +8121,69 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -8007,7 +8209,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -8268,6 +8477,69 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -8293,7 +8565,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -8499,6 +8778,69 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "releaseMode": {
+                  "type": "string"
+                },
+                "trackingMode": {
+                  "type": "string"
+                },
+                "pinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "lastDeployedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "availableReleaseId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "availableReleaseVersion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "driftedContainers": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "required": [
@@ -8524,7 +8866,14 @@
                 "hasUpdates",
                 "outdatedImages",
                 "newCommitSha",
-                "updatesCheckedAt"
+                "updatesCheckedAt",
+                "releaseMode",
+                "trackingMode",
+                "pinnedRelease",
+                "lastDeployedRelease",
+                "availableReleaseId",
+                "availableReleaseVersion",
+                "driftedContainers"
               ]
             }
           }
@@ -8642,6 +8991,257 @@
         },
         "required": [
           "envVars"
+        ]
+      }
+    },
+    "stacks.setRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "releaseId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deploy": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "stackId",
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "desiredState": {
+                "type": "string"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "productId",
+              "productName",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "branchOverride",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
+              "desiredState",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "lastDeployedCommit",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "newCommitSha",
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
+            ]
+          },
+          "deployed": {
+            "type": "boolean"
+          },
+          "deployEventId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "stack",
+          "deployed",
+          "deployEventId"
         ]
       }
     },
@@ -8770,6 +9370,69 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -8795,7 +9458,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           },
           "started": {
@@ -8933,6 +9603,69 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -8958,7 +9691,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -9169,6 +9909,69 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -9194,7 +9997,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },

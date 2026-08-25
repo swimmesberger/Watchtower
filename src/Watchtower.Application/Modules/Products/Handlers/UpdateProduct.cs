@@ -1,5 +1,6 @@
 using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 
@@ -20,6 +21,10 @@ namespace Watchtower.Application.Modules.Products.Handlers;
 public sealed class UpdateProduct(
     WatchtowerDbContext db, ProductCatalog catalog, AuditLog audit, ICurrentUser currentUser)
     : IHandler<UpdateProduct.Command, Result<UpdateProduct.Response>> {
+    /// <param name="ReleaseMode">
+    /// <c>"git"</c> or <c>"releases"</c>, or null to leave it as it is — the operator's manual override
+    /// of the switch the first release flips automatically (ADR-0026 decision 5).
+    /// </param>
     public sealed record Command(
         int Id,
         string Name,
@@ -27,7 +32,8 @@ public sealed class UpdateProduct(
         string ComposeFilePath,
         string DefaultBranch,
         string? Description = null,
-        int? CredentialId = null);
+        int? CredentialId = null,
+        string? ReleaseMode = null);
 
     public sealed record Response(ProductDto Product);
 
@@ -53,6 +59,23 @@ public sealed class UpdateProduct(
                 + "Two products over one source would make the stack-create lookup ambiguous.");
         }
 
+        // The mode override, validated before anything is written. Releases mode with no release would
+        // leave every stack of the product resolving null and deploying branch heads while the UI
+        // rendered a Version panel with nothing in it — refused rather than allowed to look broken.
+        ProductReleaseMode? requestedMode = null;
+        if (!string.IsNullOrWhiteSpace(command.ReleaseMode)) {
+            requestedMode = ProductMapping.ParseReleaseMode(command.ReleaseMode);
+            if (requestedMode is null)
+                return AppError.Validation($"'{command.ReleaseMode}' is not a release mode (git, releases).");
+            if (requestedMode == ProductReleaseMode.Releases
+                && product.ReleaseMode != ProductReleaseMode.Releases
+                && !await db.Releases.AnyAsync(r => r.ProductId == product.Id, ct)) {
+                return AppError.Validation(
+                    $"Product '{product.Name}' has no releases yet, so it cannot deploy them. Report one "
+                    + "through the release webhook, or record one by hand, and the mode switches itself.");
+            }
+        }
+
         string? credentialName = null;
         if (command.CredentialId is { } credentialId) {
             credentialName = await db.Credentials.AsNoTracking()
@@ -70,6 +93,9 @@ public sealed class UpdateProduct(
         // the update detail: "who changed the credential behind this product, and when" is the question
         // asked after a clone starts failing, and it should be answerable by filtering the trail.
         var previousCredentialId = product.CredentialId;
+        var previousMode = product.ReleaseMode;
+        var modeChanged = requestedMode is { } mode && mode != previousMode;
+        if (modeChanged) product.ReleaseMode = requestedMode!.Value;
         var repositoryMoved = !string.Equals(product.RepositoryUrl, repositoryUrl, StringComparison.Ordinal);
         var changes = new List<string>();
         if (!string.Equals(product.Name, name, StringComparison.Ordinal))
@@ -112,6 +138,15 @@ public sealed class UpdateProduct(
             await audit.RecordAsync(
                 ProductMapping.AuditCategory, "product.credential.change", product.Name,
                 $"credential {Describe(previousCredentialId)} → {credentialName ?? "none"}",
+                actor: actor, ct: ct);
+        }
+        // Its own action, and the same one the automatic first-release flip records, so "when did this
+        // product change how it updates, and who did it" is one filter — whichever end moved it.
+        if (modeChanged) {
+            await audit.RecordAsync(
+                ProductMapping.AuditCategory, ReleaseIntakeService.ModeChangeAction, product.Name,
+                $"{previousMode} → {product.ReleaseMode} ({stackCount} stack(s) affected from their "
+                + "next deploy)",
                 actor: actor, ct: ct);
         }
 

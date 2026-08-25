@@ -12,10 +12,32 @@ namespace Watchtower.Application.Services;
 public sealed record LocalImageState(string Id, IReadOnlyList<string> RepoDigests);
 
 /// <summary>Result of a single stack update check (detached from EF tracking).</summary>
+/// <remarks>
+/// Carries both modes' vocabularies for the reason spelled out on <see cref="StackUpdateCheck"/>: which
+/// fields are populated, and what <paramref name="HasUpdates"/> means, depends on the product's
+/// <see cref="ProductReleaseMode"/>. The two "is there something to deploy?" properties are separate on
+/// purpose — <see cref="HasChanges"/> is the <c>Git</c>-mode question and
+/// <see cref="HasNewerRelease"/> the <c>Releases</c>-mode one, and a caller has to say which it is
+/// asking.
+/// </remarks>
+/// <param name="AvailableReleaseId"><c>Releases</c> mode: the newer release, when there is one.</param>
+/// <param name="AvailableReleaseVersion">Its version label, for display.</param>
+/// <param name="DriftedContainers">
+/// <c>Releases</c> mode: running containers whose image is not what the deployed release pins.
+/// </param>
 public sealed record StackUpdateResult(
-    int StackId, bool HasUpdates, string[] OutdatedImages, string? NewCommitSha, DateTimeOffset CheckedAt) {
-    /// <summary>True when a redeploy would pick up something new (newer image or new commit).</summary>
+    int StackId, bool HasUpdates, string[] OutdatedImages, string? NewCommitSha, DateTimeOffset CheckedAt,
+    int? AvailableReleaseId,
+    string? AvailableReleaseVersion,
+    string[] DriftedContainers) {
+    /// <summary>
+    /// <c>Git</c> mode: a redeploy would pick up something new (newer image or new commit). Not the
+    /// release-mode question — there, a new commit is information, not a trigger.
+    /// </summary>
     public bool HasChanges => HasUpdates || NewCommitSha is not null;
+
+    /// <summary><c>Releases</c> mode: a release newer than the deployed one exists.</summary>
+    public bool HasNewerRelease => AvailableReleaseId is not null;
 }
 
 /// <summary>
@@ -50,6 +72,13 @@ public class StackUpdateService(
     }
 
     /// <summary>Checks a single stack and persists the result.</summary>
+    /// <remarks>
+    /// Two checks, not one, selected by the product's <see cref="ProductReleaseMode"/> (design.md
+    /// §"Update checks and drift"). <c>Git</c> mode is exactly what it has always been: registry digests
+    /// plus a git-head comparison. <c>Releases</c> mode replaces the registry poll entirely — the
+    /// per-tenant HEAD storm disappears — and asks two local questions instead. The stack must have its
+    /// product loaded.
+    /// </remarks>
     public async Task<StackUpdateResult> CheckStackAsync(Stack stack, CancellationToken ct = default) {
         logger.LogInformation("Checking image updates for stack {StackName} (project={Project})", stack.Name, stack.ComposeProjectName);
 
@@ -60,6 +89,9 @@ public class StackUpdateService(
             var cred = GetCredential(credId);
             if (cred is not null) (username, token) = cred.Value;
         }
+
+        if (ReleaseResolver.UsesReleases(ReleaseResolver.RequireProduct(stack)))
+            return await CheckReleaseModeAsync(stack, source, token, ct);
 
         // Git: does the tracked branch have a commit newer than the last deploy? Runs even when
         // no containers are up — a compose-file change should still be detected and deployable.
@@ -95,6 +127,93 @@ public class StackUpdateService(
 
         return Upsert(stack.Id, outdatedImages.Count > 0, [.. outdatedImages], outdatedDigests, newCommitSha);
     }
+
+    /// <summary>
+    /// The <c>Releases</c>-mode check (design.md §"Update checks and drift"): is there a newer release,
+    /// and is the stack really running the one it last deployed?
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>No registry is contacted.</b> Release availability is a database comparison, and drift is a
+    /// <c>docker inspect</c> — which is the point: comparing a <em>pinned</em> digest against a moving
+    /// tag would report "outdated" forever and fight the pin, and doing it per tenant per interval is
+    /// the HEAD storm ADR-0026 removes.
+    /// </para>
+    /// <para>
+    /// <b><see cref="StackUpdateCheck.NewCommitSha"/> stays informational here.</b> It is still
+    /// populated — "there are unreleased commits on the branch" is worth showing — but it never sets
+    /// <see cref="StackUpdateCheck.HasUpdates"/>, which in this mode means "a newer release exists" and
+    /// nothing else. A stack is deployed from releases; a commit that no release was built from is not
+    /// something a redeploy would pick up. The check is skipped entirely for a pinned stack, which is
+    /// not tracking the branch at all.
+    /// </para>
+    /// <para>
+    /// <see cref="StackUpdateCheck.AvailableReleaseId"/> <em>is</em> computed for a pinned stack, because
+    /// the pin chip shows how far behind it is. Automation ignores it (design.md §"Auto-deploy
+    /// precedence", rule 2) — a pin is an explicit "stay here", and the badge is what makes that
+    /// visible rather than silent.
+    /// </para>
+    /// </remarks>
+    private async Task<StackUpdateResult> CheckReleaseModeAsync(
+        Stack stack, ProductSource source, string? token, CancellationToken ct) {
+        // Newest is the highest id (invariant 7) — never a timestamp.
+        var newest = LoadNewestRelease(stack.ProductId);
+        var available = newest is not null && newest.Id != stack.LastDeployedReleaseId ? newest : null;
+
+        var newCommitSha = stack.PinnedReleaseId is null
+            ? await CheckForNewCommitAsync(stack, source, token, ct)
+            : null;
+
+        var drifted = await DetectDriftAsync(stack, ct);
+
+        if (available is not null)
+            logger.LogInformation(
+                "Newer release available for stack {StackName}: {Version}", stack.Name, available.Version);
+
+        // OutdatedImages and its digest map stay empty: they are the Git-mode vocabulary, and leaving
+        // stale entries behind would make the badge claim a registry poll that never happened.
+        return Upsert(
+            stack.Id, hasUpdates: available is not null, [], [], newCommitSha,
+            available?.Id, available?.Version, drifted);
+    }
+
+    /// <summary>
+    /// Running containers whose image is not one of the digests the stack's deployed release pins.
+    /// Empty when no release has been deployed yet, when it pins nothing, or when nothing is running.
+    /// </summary>
+    /// <remarks>
+    /// Only containers whose repository the release actually pins are judged: a stack's <c>postgres:16</c>
+    /// sidecar is not part of the release and is never drift. A container whose image cannot be parsed or
+    /// inspected is skipped rather than reported — "we could not tell" and "it is wrong" are different
+    /// answers, and only one of them belongs on a badge.
+    /// </remarks>
+    private async Task<string[]> DetectDriftAsync(Stack stack, CancellationToken ct) {
+        if (stack.LastDeployedReleaseId is not { } releaseId) return [];
+        var pinned = LoadReleaseDigests(releaseId);
+        if (pinned.Count == 0) return [];
+
+        var containers = await GetProjectContainersAsync(stack.ComposeProjectName, ct);
+        var drifted = new List<string>();
+        foreach (var container in containers) {
+            if (ct.IsCancellationRequested) break;
+            if (!ImageRef.TryParse(container.Image, out var reference)) continue;
+            if (!pinned.TryGetValue(reference.CanonicalRepository, out var digest)) continue;
+            var local = await InspectLocalImageAsync(container.Image, ct);
+            if (local is null || local.RepoDigests.Count == 0) continue;
+            if (local.RepoDigests.Contains(digest, StringComparer.Ordinal)) continue;
+            logger.LogInformation(
+                "Container {Container} of stack {StackName} is not running the deployed release's image",
+                ContainerName(container), stack.Name);
+            drifted.Add(ContainerName(container));
+        }
+        return [.. drifted.Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal)];
+    }
+
+    /// <summary>The container's first Docker name without its leading slash, or its short id.</summary>
+    private static string ContainerName(DockerContainerInfo container) =>
+        container.Names.FirstOrDefault()?.TrimStart('/') is { Length: > 0 } name
+            ? name
+            : container.Id[..Math.Min(12, container.Id.Length)];
 
     /// <summary>
     /// Re-checks a stack's cached update state against what is actually running on the host, and clears
@@ -270,16 +389,49 @@ public class StackUpdateService(
             .FirstOrDefault();
     }
 
+    /// <summary>The product's newest release — highest id (invariant 7) — or null when it has none.</summary>
+    private ReleaseSummary? LoadNewestRelease(int productId) {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return db.Releases.AsNoTracking()
+            .Where(r => r.ProductId == productId)
+            .OrderByDescending(r => r.Id)
+            .Select(r => new ReleaseSummary(r.Id, r.Version))
+            .FirstOrDefault();
+    }
+
+    /// <summary>The digests a release pins, keyed by canonical repository.</summary>
+    private Dictionary<string, string> LoadReleaseDigests(int releaseId) {
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        // Ordinal: the stored repository is already ImageRef's lower-cased canonical form, and so is
+        // what the container's image parses to — a looser comparer here would hide a normalization bug.
+        return db.ReleaseImages.AsNoTracking()
+            .Where(i => i.ReleaseId == releaseId)
+            .Select(i => new { i.Repository, i.Digest })
+            .ToDictionary(i => i.Repository, i => i.Digest, StringComparer.Ordinal);
+    }
+
+    /// <summary>Just enough of a release to name it on a badge.</summary>
+    private sealed record ReleaseSummary(int Id, string Version);
+
     private StackUpdateCheck? LoadUpdateCheck(int stackId) {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return db.StackUpdateChecks.AsNoTracking().FirstOrDefault(c => c.StackId == stackId);
     }
 
+    /// <summary>
+    /// Writes the whole row, both modes' columns included — a check always states the complete answer,
+    /// so switching a product's mode cannot leave the other mode's fields behind to be read as current.
+    /// </summary>
     private StackUpdateResult Upsert(
         int stackId, bool hasUpdates, string[] outdatedImages,
-        Dictionary<string, string> outdatedImageDigests, string? newCommitSha) {
+        Dictionary<string, string> outdatedImageDigests, string? newCommitSha,
+        int? availableReleaseId = null, string? availableReleaseVersion = null,
+        string[]? driftedContainers = null) {
         var checkedAt = DateTimeOffset.UtcNow;
+        var drifted = driftedContainers ?? [];
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var existing = db.StackUpdateChecks.FirstOrDefault(c => c.StackId == stackId);
@@ -288,6 +440,9 @@ public class StackUpdateService(
                 StackId = stackId, HasUpdates = hasUpdates, OutdatedImages = outdatedImages,
                 OutdatedImageDigests = outdatedImageDigests,
                 NewCommitSha = newCommitSha, CheckedAt = checkedAt,
+                AvailableReleaseId = availableReleaseId,
+                AvailableReleaseVersion = availableReleaseVersion,
+                DriftedContainers = drifted,
             });
         } else {
             existing.HasUpdates = hasUpdates;
@@ -295,9 +450,14 @@ public class StackUpdateService(
             existing.OutdatedImageDigests = outdatedImageDigests;
             existing.NewCommitSha = newCommitSha;
             existing.CheckedAt = checkedAt;
+            existing.AvailableReleaseId = availableReleaseId;
+            existing.AvailableReleaseVersion = availableReleaseVersion;
+            existing.DriftedContainers = drifted;
         }
         db.SaveChanges();
-        return new StackUpdateResult(stackId, hasUpdates, outdatedImages, newCommitSha, checkedAt);
+        return new StackUpdateResult(
+            stackId, hasUpdates, outdatedImages, newCommitSha, checkedAt,
+            availableReleaseId, availableReleaseVersion, drifted);
     }
 
     /// <summary>
@@ -336,6 +496,7 @@ public class StackUpdateService(
         existing.HasUpdates = existing.OutdatedImages.Length > 0;
         db.SaveChanges();
         return new StackUpdateResult(
-            stackId, existing.HasUpdates, existing.OutdatedImages, existing.NewCommitSha, existing.CheckedAt);
+            stackId, existing.HasUpdates, existing.OutdatedImages, existing.NewCommitSha, existing.CheckedAt,
+            existing.AvailableReleaseId, existing.AvailableReleaseVersion, existing.DriftedContainers);
     }
 }

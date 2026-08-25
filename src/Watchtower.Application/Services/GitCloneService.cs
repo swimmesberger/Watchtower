@@ -133,7 +133,12 @@ public class GitCloneService {
     /// Resolves the commit SHA at the head of <paramref name="branch"/> on the remote without cloning
     /// (via <c>git ls-remote</c>). Returns null when the branch doesn't exist or the remote is unreachable.
     /// </summary>
-    public async Task<string?> GetRemoteHeadAsync(
+    /// <remarks>
+    /// Virtual like the two clones: it is the third call this service makes off the machine, and
+    /// "release mode does not poll the branch for a pinned stack" is only checkable if a test can see
+    /// whether it happened.
+    /// </remarks>
+    public virtual async Task<string?> GetRemoteHeadAsync(
         string repositoryUrl, string branch, string? token, CancellationToken ct) {
         var authenticatedUrl = token is null ? repositoryUrl : EmbedToken(repositoryUrl, token);
         var (exitCode, output) = await RunGitAsync(

@@ -33,6 +33,8 @@ namespace Watchtower.Application.Modules.Products;
 [JsonSerializable(typeof(CreateRelease.Response), TypeInfoPropertyName = "CreateReleaseResponse")]
 [JsonSerializable(typeof(DeleteRelease.Command), TypeInfoPropertyName = "DeleteReleaseCommand")]
 [JsonSerializable(typeof(DeleteRelease.Response), TypeInfoPropertyName = "DeleteReleaseResponse")]
+[JsonSerializable(typeof(DeployRelease.Command), TypeInfoPropertyName = "DeployReleaseCommand")]
+[JsonSerializable(typeof(DeployRelease.Response), TypeInfoPropertyName = "DeployReleaseResponse")]
 [JsonSerializable(typeof(RotateReleaseToken.Command), TypeInfoPropertyName = "RotateReleaseTokenCommand")]
 [JsonSerializable(typeof(RotateReleaseToken.Response), TypeInfoPropertyName = "RotateReleaseTokenResponse")]
 [JsonSerializable(typeof(SetReleaseWebhook.Command), TypeInfoPropertyName = "SetReleaseWebhookCommand")]

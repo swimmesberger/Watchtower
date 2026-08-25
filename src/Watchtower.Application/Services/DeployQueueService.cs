@@ -142,6 +142,13 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// volume lists so a recreate is never silently downgraded to a plain deploy.
     /// </param>
     /// <remarks>
+    /// Coalescing merges <em>upwards</em> in both dimensions — volumes and trigger. The trigger rule
+    /// exists because a pending slot's trigger decides whether the deploy that eventually runs may
+    /// short-circuit: an operator's <c>manual</c> coalesced onto a pending <c>release</c> must run the
+    /// full pipeline, or the deploy button would report success having done nothing. See
+    /// <see cref="DeployTriggers.MayShortCircuit"/>.
+    /// </remarks>
+    /// <remarks>
     /// Virtual, and the class is not sealed, so a test host can accept work without spawning a worker:
     /// the worker clones a repository and shells out to compose, neither of which exists in a test, and
     /// it would do so on a background thread racing the test's own database connection.
@@ -170,12 +177,23 @@ public class DeployQueueService : IHostedService, IDisposable {
             }
 
             // Deploy running AND one already pending — coalesce onto the existing pending event.
-            // Merge rule: the pending slot keeps the UNION of volume lists, and a recreate trigger
-            // supersedes a plain-deploy trigger (a plain deploy must never drop a pending recreate).
+            // Two merge rules, both of the same shape: the coalesced request must never come out
+            // weaker than either request that went in.
+            //
+            // 1. Volumes: the pending slot keeps the UNION of the two lists, so a plain deploy landing
+            //    on a pending recreate cannot silently drop the data wipe.
+            // 2. Trigger: a trigger that may NOT short-circuit supersedes one that may. Without this, an
+            //    operator's "manual" landing on a pending "release" would run as a release deploy and
+            //    no-op away — the deploy button doing nothing, with a success to show for it. The
+            //    reverse ("release" onto a pending "manual") keeps "manual", because a full deploy is
+            //    never the wrong answer to a fan-out.
+            if (!DeployTriggers.MayShortCircuit(triggeredBy))
+                slot.PendingTriggeredBy = triggeredBy;
             var merged = UnionVolumes(slot.PendingRemoveVolumes, removeVolumes);
             slot.PendingRemoveVolumes = merged;
+            // Last, so it outranks the trigger rule above: a recreate is the strongest request there is.
             if (merged is { Count: > 0 })
-                slot.PendingTriggeredBy = "volume-recreate";
+                slot.PendingTriggeredBy = DeployTriggers.VolumeRecreate;
             return new DeployEnqueueResult(slot.PendingEventId.Value, "queued");
         }
     }
@@ -203,7 +221,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         int stackId, StackSlot slot, int eventId, string triggeredBy,
         IReadOnlyList<string>? removeVolumes, CancellationToken ct) {
         do {
-            await ExecuteDeployAsync(stackId, eventId, removeVolumes, ct);
+            await ExecuteDeployAsync(stackId, eventId, triggeredBy, removeVolumes, ct);
 
             lock (slot.Lock) {
                 if (slot.PendingEventId is null) {
@@ -240,9 +258,27 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// to wait re-reads its stack afterwards, because the wait is unbounded and nothing cancels a
     /// parked deploy when the stack is stopped, repointed or deleted underneath it.
     /// </para>
+    /// <para>
+    /// <b>Releases (ADR-0026) enter here and nowhere earlier.</b> The target release is resolved from
+    /// the stack read on the far side of the gate — the same staleness rule the stopped-stack re-check
+    /// follows, so a pin written or a mode reverted while the deploy was parked is honoured. Everything
+    /// release-shaped below is gated on <c>ReleaseMode == Releases</c>: for a product in <c>Git</c> mode
+    /// <see cref="ReleaseResolver"/> answers null before it queries anything, and the clone, the
+    /// override and the recorded outcome are byte-for-byte what they were before releases existed.
+    /// </para>
     /// </remarks>
+    /// <param name="stackId">The stack to deploy.</param>
+    /// <param name="eventId">The tracking <see cref="DeployEvent"/>.</param>
+    /// <param name="triggeredBy">
+    /// What asked for this deploy (<see cref="DeployTriggers"/>). Passed down rather than read back off
+    /// the event row because coalescing can supersede a pending event's trigger without rewriting it,
+    /// and the short-circuit below must key on the trigger this run actually carries.
+    /// </param>
+    /// <param name="removeVolumes">Named volumes to delete before pull/up; null for a plain deploy.</param>
+    /// <param name="ct">Cancellation token.</param>
     internal async Task ExecuteDeployAsync(
-        int stackId, int eventId, IReadOnlyList<string>? removeVolumes, CancellationToken ct) {
+        int stackId, int eventId, string triggeredBy, IReadOnlyList<string>? removeVolumes,
+        CancellationToken ct) {
         var stack = GetStack(stackId);
         if (stack is null) {
             CompleteEvent(eventId, "failed", "[Watchtower] Stack not found — it may have been deleted.");
@@ -306,6 +342,42 @@ public class DeployQueueService : IHostedService, IDisposable {
                 gateHeld = true;
             }
 
+            // 0b. Which release is this deploy of? Null for a Git-mode product — the mode check happens
+            //     at this call site, so a Git-mode deploy does not even open a scope. Resolved from the
+            //     post-gate stack read, so a pin or a mode change that landed during the wait is the one
+            //     that applies — and resolved BEFORE the deploy is marked running, so a short-circuited
+            //     one never claims to have started.
+            var release = ReleaseResolver.UsesReleases(ReleaseResolver.RequireProduct(stack))
+                ? await ResolveReleaseAsync(stack, ct)
+                : null;
+            if (release is not null) {
+                // Stamped as soon as it is known, so even a deploy that fails at the clone reports which
+                // release it was trying to apply.
+                RecordEventRelease(eventId, release.Id);
+
+                // The convergence short-circuit (design.md §Convergent fan-out): a fan-out only ever
+                // asks a stack to reach the newest release, so one that is already there has nothing to
+                // do. Restricted to the "release" trigger — every other one converges compose, env and
+                // configuration too — and to a plain deploy, because a coalesced volume recreate must
+                // never be swallowed by it.
+                //
+                // Recorded on the event and NOWHERE else — which is why it is decided before
+                // MarkRunning below. The event is terminal and successful, because "nothing to do" is a
+                // successful outcome for the fan-out that asked. But Stack.LastDeployedAt and
+                // Stack.LastDeployStatus describe the last deploy that actually ran, and a stack's
+                // "deployed 2 minutes ago" must not start meaning "a release arrived and we decided it
+                // was already there" — otherwise every tenant of a product would show a fresh deploy
+                // timestamp after every release, whether or not anything was deployed to it. The event
+                // never passes through `running` either, for the same reason: it never ran.
+                if (DeployTriggers.MayShortCircuit(triggeredBy)
+                    && removeVolumes is null or { Count: 0 }
+                    && stack.LastDeployedReleaseId == release.Id) {
+                    WriteHeader($"[Watchtower] Already on {release.Version} — nothing to do.");
+                    CompleteEvent(eventId, "success", output.ToString());
+                    return;
+                }
+            }
+
             MarkRunning(eventId);
             UpdateDeployStatus(stackId, DeployStatus.Running);
 
@@ -313,10 +385,22 @@ public class DeployQueueService : IHostedService, IDisposable {
             var source = ProductSourceResolver.Resolve(stack);
             var gitToken = source.CredentialId is { } credId ? GetCredentialToken(credId) : null;
 
-            // 2. Clone the repository.
+            if (release is not null) {
+                WriteHeader(release.CommitSha is { } sha
+                    ? $"[Watchtower] Deploying release {release.Version} (commit {sha[..8]})"
+                    : $"[Watchtower] Deploying release {release.Version} "
+                      + $"(no commit recorded — deploying the head of '{source.Branch}')");
+            }
+
+            // 2. Clone the repository — at the release's commit when it recorded one, so the compose
+            //    file, entrypoints and migrations of a rollback travel back with the images. A release
+            //    without a commit still pins its digests; only the checkout falls back to the branch.
             WriteHeader($"[Watchtower] Cloning {source.RepositoryUrl} @ {source.Branch}");
-            var cloneResult = await _git.CloneAsync(
-                source.RepositoryUrl, source.Branch, gitToken, tempRepoDir, OnSubprocessLine, ct);
+            var cloneResult = release?.CommitSha is { } commitSha
+                ? await _git.CloneAtCommitAsync(
+                    source.RepositoryUrl, source.Branch, commitSha, gitToken, tempRepoDir, OnSubprocessLine, ct)
+                : await _git.CloneAsync(
+                    source.RepositoryUrl, source.Branch, gitToken, tempRepoDir, OnSubprocessLine, ct);
             output.Append(cloneResult.Output);
             UpdateOutput(eventId, output.ToString());
             if (cloneResult.ExitCode != 0) {
@@ -423,8 +507,11 @@ public class DeployQueueService : IHostedService, IDisposable {
                 return;
             }
 
+            // One parse of the resolved project, two policies over it: the engine reads the services
+            // once and no two readers can disagree about what it said.
+            var services = ComposeOverrideFile.ParseServices(configResult.Json);
             var plan = EnvInjectionPlan.Create(new EnvInjectionRequest(
-                ComposeOverrideFile.ParseServices(configResult.Json),
+                services,
                 stackId,
                 appApiToken,
                 publicBaseUrl,
@@ -433,13 +520,28 @@ public class DeployQueueService : IHostedService, IDisposable {
             foreach (var warning in plan.Warnings)
                 WriteHeader($"[Watchtower] {warning}");
 
-            if (ComposeOverrideFile.Render(plan) is { } overrideContent) {
+            // 4c. Image pinning (ADR-0026 decision 6), and only in Releases mode: null here is what
+            //     makes Render produce exactly the document it produced before this stage.
+            ImagePinPlan? imagePlan = null;
+            if (release is not null) {
+                imagePlan = ImagePinPlan.Create(
+                    services,
+                    [.. release.Images.Select(i => new ReleaseImageRef(i.Repository, i.Digest))]);
+                foreach (var warning in imagePlan.Warnings)
+                    WriteHeader($"[Watchtower] {warning}");
+            }
+
+            if (ComposeOverrideFile.Render(plan, imagePlan) is { } overrideContent) {
                 overrideFilePath = Path.Combine(
                     Path.GetTempPath(), $"watchtower-override-{Guid.NewGuid():N}.yml");
                 await File.WriteAllTextAsync(overrideFilePath, overrideContent, ct);
                 // It may carry the App API token, so it gets the same treatment as the generated .env.
                 if (!OperatingSystem.IsWindows())
                     File.SetUnixFileMode(overrideFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                // Digests are not secrets, so the pin lines name them in full — "which build is this
+                // stack actually running" has to be answerable from the deploy log alone.
+                foreach (var pin in imagePlan?.Services ?? [])
+                    WriteHeader($"[Watchtower] Pinning service '{pin.ServiceName}' to {pin.Image}");
                 foreach (var service in plan.Services)
                     WriteHeader(
                         $"[Watchtower] Injecting {string.Join(", ", service.Variables.Select(v => v.Key))} "
@@ -477,6 +579,11 @@ public class DeployQueueService : IHostedService, IDisposable {
                 DeleteUpdateCheck(stackId);
                 if (deployedCommit is not null)
                     RecordDeployedCommit(stackId, deployedCommit);
+                // What this stack is now on. Written from the release resolved at execution time, so a
+                // coalesced deploy records what ran rather than what was asked for — the value the
+                // short-circuit, the scheduled window and the update check all compare against.
+                if (release is not null)
+                    RecordDeployedRelease(stackId, release.Id);
                 // (Re)wire this stack's routes into the reverse proxy: recreated service containers must
                 // rejoin the edge network and Caddy must reload. No-op when the proxy is disabled;
                 // best-effort so a proxy hiccup never fails an otherwise successful deploy.
@@ -830,6 +937,37 @@ public class DeployQueueService : IHostedService, IDisposable {
             .OrderBy(v => v.Key)
             .Select(v => new ValueTuple<string, string>(v.Key, v.Value))
             .ToList();
+    }
+
+    /// <summary>
+    /// The release this deploy is of — <c>PinnedReleaseId ?? newest</c> (<see cref="ReleaseResolver"/>).
+    /// </summary>
+    /// <remarks>
+    /// Only called once <see cref="ReleaseResolver.UsesReleases"/> has said there is something to
+    /// resolve, so a <c>Git</c>-mode deploy opens no scope and touches no <c>DbContext</c> for an answer
+    /// that is null by construction. The resolver re-checks the same predicate — it is the contract, and
+    /// this is the fast path in front of it.
+    /// </remarks>
+    private async Task<Release?> ResolveReleaseAsync(Stack stack, CancellationToken ct) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await ReleaseResolver.ResolveAsync(stack, db, _logger, ct);
+    }
+
+    /// <summary>Stamps the resolved release onto the tracking event.</summary>
+    private void RecordEventRelease(int eventId, int releaseId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.DeployEvents.Where(e => e.Id == eventId)
+            .ExecuteUpdate(s => s.SetProperty(e => e.ReleaseId, releaseId));
+    }
+
+    /// <summary>Records the release a successful deploy left the stack on.</summary>
+    private void RecordDeployedRelease(int stackId, int releaseId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.Stacks.Where(s => s.Id == stackId)
+            .ExecuteUpdate(s => s.SetProperty(x => x.LastDeployedReleaseId, releaseId));
     }
 
     private void RecordDeployedCommit(int stackId, string commitSha) {

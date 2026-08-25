@@ -270,7 +270,7 @@ public sealed class DeployEnvInjectionTests {
                    host.Services.GetRequiredService<CaddyManager>(),
                    host.Services.GetRequiredService<IOptionsMonitor<WatchtowerOptions>>(),
                    NullLogger<DeployQueueService>.Instance)) {
-            await queue.ExecuteDeployAsync(stackId, eventId, removeVolumes: null, ct);
+            await queue.ExecuteDeployAsync(stackId, eventId, DeployTriggers.Manual, removeVolumes: null, ct);
         }
 
         await using var scope = host.Services.CreateAsyncScope();

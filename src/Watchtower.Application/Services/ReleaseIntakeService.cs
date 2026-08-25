@@ -66,8 +66,13 @@ public sealed record ReleaseIntakeRequest(
 /// release carries no loaded <c>Product</c> navigation, so every caller that renders the release would
 /// otherwise repeat the same lookup.
 /// </remarks>
+/// <param name="StacksEnqueued">
+/// How many stacks the caller's roll-out hook enqueued, or 0 when there was none and for every status
+/// other than <see cref="ReleaseIntakeStatus.Created"/> — a replay deploys nothing.
+/// </param>
 public sealed record ReleaseIntakeResult(
-    ReleaseIntakeStatus Status, Release? Release, string? Error, string? ProductName = null) {
+    ReleaseIntakeStatus Status, Release? Release, string? Error, string? ProductName = null,
+    int StacksEnqueued = 0) {
     public bool IsAccepted => Status is ReleaseIntakeStatus.Created or ReleaseIntakeStatus.Replayed;
 }
 
@@ -99,8 +104,21 @@ public sealed record ReleaseIntakeResult(
 /// stolen token buys is a redeploy of images that were already yours.
 /// </para>
 /// <para>
-/// <b>Nothing here deploys anything.</b> Stage 3 records releases and stops; the fan-out that reads
-/// them arrives with stage 4 (design.md §Convergent fan-out).
+/// <b>Nothing here deploys anything</b>, still. What a <em>created</em> release does have is one side
+/// effect: a product in <see cref="ProductReleaseMode.Git"/> flips to
+/// <see cref="ProductReleaseMode.Releases"/> in the same <c>SaveChanges</c> as the insert (ADR-0026
+/// decision 5), which is the moment its stacks stop deploying branch heads. Fanning the release out to
+/// them is the caller's job — the webhook and <c>products.deployRelease</c> both go through
+/// <see cref="ReleaseRolloutService"/> — because a rollout is a transport-level decision (a replayed
+/// call must not re-deploy anything) and because it must happen after the insert commits, not inside it.
+/// </para>
+/// <para>
+/// <b>Accepted:</b> the flip carries <c>Product</c>'s <c>xmin</c> concurrency token, so a product edit
+/// landing in the microseconds between the read and the save makes that one call fail with a
+/// concurrency exception and write nothing. It is retryable and self-correcting (the retry finds the
+/// mode already flipped and skips it), it can only happen on the single call in a product's life that
+/// flips the mode, and the alternative — an unconditional second statement — would trade it for a
+/// window in which a release exists while the product still deploys branch heads.
 /// </para>
 /// </remarks>
 public class ReleaseIntakeService(
@@ -126,6 +144,12 @@ public class ReleaseIntakeService(
     public const string PublishAction = "release.publish";
 
     /// <summary>
+    /// Audit action recorded whenever <see cref="Product.ReleaseMode"/> changes — actor-less when the
+    /// first release flipped it, attributed when an operator did through <c>products.update</c>.
+    /// </summary>
+    public const string ModeChangeAction = "release.mode.change";
+
+    /// <summary>
     /// Savepoint the speculative insert rolls back to when it loses the race to an identical concurrent
     /// call. A savepoint rather than a bare catch because a failed statement poisons the surrounding
     /// PostgreSQL transaction when the caller has one — the re-read would fail too
@@ -137,10 +161,39 @@ public class ReleaseIntakeService(
     /// Records a release, or explains why it cannot. Never throws for a caller error: every refusal is
     /// a <see cref="ReleaseIntakeResult"/> the transport maps to its own status.
     /// </summary>
-    public async Task<ReleaseIntakeResult> PublishAsync(ReleaseIntakeRequest request, CancellationToken ct) {
+    public Task<ReleaseIntakeResult> PublishAsync(ReleaseIntakeRequest request, CancellationToken ct) =>
+        PublishAsync(request, onCreated: null, ct);
+
+    /// <inheritdoc cref="PublishAsync(ReleaseIntakeRequest, CancellationToken)"/>
+    /// <param name="request">What to record.</param>
+    /// <param name="onCreated">
+    /// Optional roll-out hook, invoked once for a <em>newly created</em> release and never for a replay
+    /// or a refusal, returning how many stacks it enqueued. It runs after the insert and before the
+    /// audit row, so the trail says what the release actually reached rather than what it was expected
+    /// to.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <b>A caller that holds an open transaction must not supply <paramref name="onCreated"/>.</b> The
+    /// hook runs after <c>SaveChanges</c>, which commits only when nothing else owns a transaction on
+    /// this context; inside one, the release is still uncommitted when the hook fires. The enqueued
+    /// deploys resolve their release when they run, on other threads and through other connections, so
+    /// they would not see it — each would resolve the previous release, or none, and the fan-out would
+    /// deploy the wrong thing to the whole fleet.
+    /// <para>
+    /// The release webhook is a safe caller: it is a minimal-API endpoint that opens no transaction of
+    /// its own, so its <c>SaveChanges</c> is the commit. Several handlers do open one — which is why
+    /// <c>products.createRelease</c> records and stops, and <c>products.deployRelease</c> is the
+    /// separate, explicit way to roll a release out.
+    /// </para>
+    /// </remarks>
+    public async Task<ReleaseIntakeResult> PublishAsync(
+        ReleaseIntakeRequest request,
+        Func<Release, CancellationToken, Task<int>>? onCreated,
+        CancellationToken ct) {
         var product = await db.Products.AsNoTracking()
             .Where(p => p.Id == request.ProductId)
-            .Select(p => new { p.Id, p.Name, p.DefaultBranch })
+            .Select(p => new { p.Id, p.Name, p.DefaultBranch, p.ReleaseMode })
             .FirstOrDefaultAsync(ct);
         if (product is null)
             return Refuse(ReleaseIntakeStatus.ProductNotFound, $"Product {request.ProductId} not found.");
@@ -222,6 +275,16 @@ public class ReleaseIntakeService(
             })],
         };
 
+        // The mode flip rides in the same SaveChanges as the insert (ADR-0026 decision 5): a product
+        // whose first release exists but that is still in Git mode would keep deploying branch heads
+        // while its Releases tab said otherwise, and there is no sequence of two writes that cannot be
+        // interrupted between them. Tracked, not ExecuteUpdate, precisely so it participates.
+        Product? flipped = null;
+        if (product.ReleaseMode == ProductReleaseMode.Git) {
+            flipped = await db.Products.FirstAsync(p => p.Id == product.Id, ct);
+            flipped.ReleaseMode = ProductReleaseMode.Releases;
+        }
+
         var transaction = db.Database.CurrentTransaction;
         if (transaction is not null) await transaction.CreateSavepointAsync(InsertSavepoint, ct);
         try {
@@ -235,11 +298,22 @@ public class ReleaseIntakeService(
             if (transaction is not null) await transaction.RollbackToSavepointAsync(InsertSavepoint, ct);
             db.Entry(release).State = EntityState.Detached;
             foreach (var image in release.Images) db.Entry(image).State = EntityState.Detached;
+            // The flip lost with the insert — at the database because the whole statement batch rolled
+            // back, and here because a change tracker still holding it Modified would smuggle it into
+            // whatever the caller saves next. Restored rather than reloaded: the value it had is known.
+            if (flipped is not null) {
+                flipped.ReleaseMode = ProductReleaseMode.Git;
+                db.Entry(flipped).State = EntityState.Unchanged;
+            }
 
             return await FindByFingerprintAsync(product.Id, fingerprint, ct) is { } winner
                 ? new ReleaseIntakeResult(ReleaseIntakeStatus.Replayed, winner, null, product.Name)
                 : Refuse(ReleaseIntakeStatus.VersionConflict, VersionTaken(product.Name, version));
         }
+
+        // The roll-out, before the audit row so the trail can say what it reached. The release is
+        // committed by now on every path allowed to supply a hook — see the remarks on this overload.
+        var stacksEnqueued = onCreated is null ? 0 : await onCreated(release, ct);
 
         // Actor-less for the webhook — nobody is signed in — with the caller address in the detail, so a
         // release published by a stolen token is still attributable to where it came from.
@@ -247,10 +321,27 @@ public class ReleaseIntakeService(
         await audit.RecordAsync(
             ProductCatalog.AuditCategory, PublishAction, $"{product.Name}/{version}",
             $"source {request.CreatedVia}; commit {ReleaseFingerprint.DescribeCommit(commit)}; "
-            + $"{images.Count} image(s){origin}",
+            + $"{images.Count} image(s); {stacksEnqueued} stack(s) enqueued{origin}",
             actor: request.Actor, ct: ct);
 
-        return new ReleaseIntakeResult(ReleaseIntakeStatus.Created, release, null, product.Name);
+        // Its own row rather than a clause inside the publish detail: "when did this product start
+        // deploying releases, and what caused it" is the question asked after the first release moved a
+        // fleet off branch heads, and it should be answerable by filtering the trail on one action.
+        if (flipped is not null) {
+            // Almost always the product's first release, but not necessarily: an operator can revert a
+            // product to Git mode, and the next release flips it forward again. One extra indexed read
+            // on a path that runs once per product (or once per revert) buys a detail line that is true
+            // in both cases instead of one that quietly lies in the second.
+            var isFirst = !await db.Releases.AsNoTracking()
+                .AnyAsync(r => r.ProductId == product.Id && r.Id != release.Id, ct);
+            await audit.RecordAsync(
+                ProductCatalog.AuditCategory, ModeChangeAction, product.Name,
+                $"{(isFirst ? "first release" : "release")} '{version}' flipped Git → Releases",
+                actor: request.Actor, ct: ct);
+        }
+
+        return new ReleaseIntakeResult(
+            ReleaseIntakeStatus.Created, release, null, product.Name, stacksEnqueued);
     }
 
     /// <summary>One image as it will be stored, after any tag lookup.</summary>
@@ -324,21 +415,12 @@ public class ReleaseIntakeService(
     }
 
     /// <summary>
-    /// The registries this instance knows, keyed by normalized host: the host docker config merged with
-    /// the configured registries, exactly the view a deploy pulls with.
+    /// The registries this instance knows, keyed by normalized host — see
+    /// <see cref="ReleaseImageValidator.KnownHosts"/>, which the pin pre-flight shares so intake's
+    /// registry gate and that pre-flight cannot disagree about which credential belongs to a host.
     /// </summary>
-    private Dictionary<string, ResolvedRegistry> KnownRegistryHosts() {
-        var known = new Dictionary<string, ResolvedRegistry>(StringComparer.Ordinal);
-        foreach (var registry in registries.ListResolvedRegistries()) {
-            var host = ImageRef.NormalizeRegistryHost(registry.Url);
-            // Watchtower-configured entries win over host docker-config ones, matching the precedence
-            // ListResolvedRegistries itself applies when two spellings collapse onto one host.
-            if (host.Length == 0) continue;
-            if (known.TryGetValue(host, out var existing) && !existing.FromHostConfig) continue;
-            known[host] = registry;
-        }
-        return known;
-    }
+    private Dictionary<string, ResolvedRegistry> KnownRegistryHosts() =>
+        ReleaseImageValidator.KnownHosts(registries);
 
     /// <summary>
     /// Docker Hub is always allowed — it is where an unqualified image lives and needs no credential to

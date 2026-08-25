@@ -11,6 +11,33 @@ namespace Watchtower.Application.Modules.Stacks;
 /// stack. They stay on the DTO so every existing reader — the frontend, the management API, scripts —
 /// keeps working unchanged; writing them is what changed, and that is <c>products.update</c>'s job.
 /// </remarks>
+/// <param name="ReleaseMode">
+/// The product's update mechanism, <c>"git"</c> or <c>"releases"</c> — the switch that decides which of
+/// the two panels a stack page renders, never both (invariant 4).
+/// </param>
+/// <param name="HasUpdates">
+/// <b>Means different things in the two modes, and must be read together with
+/// <paramref name="ReleaseMode"/>.</b> In <c>"git"</c> mode: at least one container image has a newer
+/// version in the registry, listed in <paramref name="OutdatedImages"/>. In <c>"releases"</c> mode: a
+/// newer <em>release</em> exists, named by <paramref name="AvailableReleaseId"/> — no registry is
+/// polled, so <paramref name="OutdatedImages"/> is empty and <paramref name="NewCommitSha"/> is
+/// informational ("unreleased commits on the branch") rather than a reason to deploy. Null when the
+/// stack has never been checked.
+/// </param>
+/// <param name="TrackingMode">
+/// Derived, not stored: <c>"pinned"</c> when <paramref name="PinnedRelease"/> is set, else
+/// <c>"latest"</c>. There is no tracking-mode column, and a nullable pin plus a derived label is why
+/// there cannot be an invalid combination of the two.
+/// </param>
+/// <param name="PinnedRelease">The release this stack is pinned to, or null when it tracks latest.</param>
+/// <param name="LastDeployedRelease">The release the last successful deploy applied, when there was one.</param>
+/// <param name="AvailableReleaseId">
+/// From the cached update check: the newer release, when one exists. Computed for pinned stacks too —
+/// the pin chip shows how far behind it is — although automation ignores it there.
+/// </param>
+/// <param name="DriftedContainers">
+/// From the cached update check: running containers that are not on the deployed release's images.
+/// </param>
 public sealed record StackDto(
     int Id,
     string Name,
@@ -34,7 +61,17 @@ public sealed record StackDto(
     bool? HasUpdates,
     string[]? OutdatedImages,
     string? NewCommitSha,
-    DateTimeOffset? UpdatesCheckedAt);
+    DateTimeOffset? UpdatesCheckedAt,
+    string ReleaseMode,
+    string TrackingMode,
+    StackReleaseRefDto? PinnedRelease,
+    StackReleaseRefDto? LastDeployedRelease,
+    int? AvailableReleaseId,
+    string? AvailableReleaseVersion,
+    string[]? DriftedContainers);
+
+/// <summary>A release named on a stack: enough to render a chip, not enough to need a second call.</summary>
+public sealed record StackReleaseRefDto(int Id, string Version);
 
 /// <summary>A single deploy event for history display.</summary>
 public sealed record DeployEventDto(
@@ -52,11 +89,26 @@ public sealed record DeployAcceptedDto(int DeployEventId, string Status);
 
 /// <summary>In-memory projection helpers (not translatable to SQL).</summary>
 public static class StackMapping {
+    /// <summary>Enum → lowercase wire value: "git", "releases".</summary>
+    public static string ReleaseModeToDto(ProductReleaseMode mode) => mode.ToString().ToLowerInvariant();
+
+    /// <summary>The derived tracking label: a pin makes it "pinned", its absence "latest".</summary>
+    /// <remarks>
+    /// Derived rather than stored on purpose (ADR-0026's rejected <c>TrackingMode</c> enum): a column
+    /// would add an invalid-state axis — "pinned with no pin" — for a distinction the DTO can compute.
+    /// </remarks>
+    public const string TrackingLatest = "latest";
+
+    /// <inheritdoc cref="TrackingLatest"/>
+    public const string TrackingPinned = "pinned";
+
     /// <summary>
     /// Projects a stack. <paramref name="s"/> must have its product loaded — and its template too when
     /// it is a tenant — because the source fields are resolved, not stored
     /// (<see cref="ProductSourceResolver"/>).
     /// </summary>
+    /// <param name="s">The stack; <c>PinnedRelease</c> and <c>LastDeployedRelease</c> are projected when included.</param>
+    /// <param name="check">The cached update check, when the caller loaded one.</param>
     public static StackDto ToDto(Stack s, StackUpdateCheck? check) {
         var source = ProductSourceResolver.Resolve(s);
         return new StackDto(
@@ -67,8 +119,20 @@ public static class StackMapping {
         ModeToDto(s.AutoDeployMode), s.AutoDeployTime,
         StateToDto(s.DesiredState),
         s.LastDeployStatus?.ToString().ToLowerInvariant(), s.LastDeployedAt, s.LastDeployedCommit, s.CreatedAt,
-        check?.HasUpdates, check?.OutdatedImages, check?.NewCommitSha, check?.CheckedAt);
+        check?.HasUpdates, check?.OutdatedImages, check?.NewCommitSha, check?.CheckedAt,
+        ReleaseModeToDto(s.Product.ReleaseMode),
+        s.PinnedReleaseId is null ? TrackingLatest : TrackingPinned,
+        ReleaseRef(s.PinnedRelease),
+        ReleaseRef(s.LastDeployedRelease),
+        check?.AvailableReleaseId, check?.AvailableReleaseVersion, check?.DriftedContainers);
     }
+
+    /// <summary>
+    /// The chip for a release navigation, or null when it is absent — either because the stack has no
+    /// such release or because the caller did not <c>Include</c> it.
+    /// </summary>
+    private static StackReleaseRefDto? ReleaseRef(Release? release) =>
+        release is null ? null : new StackReleaseRefDto(release.Id, release.Version);
 
     /// <summary>Enum → lowercase wire value: "running", "stopped".</summary>
     public static string StateToDto(StackDesiredState state) => state.ToString().ToLowerInvariant();

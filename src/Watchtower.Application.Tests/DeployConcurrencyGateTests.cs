@@ -36,7 +36,8 @@ public sealed class DeployConcurrencyGateTests {
             var eventId = await AddDeployEventAsync(host, stackId);
             deploys.Add(Task.Run(
                 () => queue.ExecuteDeployAsync(
-                    stackId, eventId, removeVolumes: null, TestContext.Current.CancellationToken),
+                    stackId, eventId, DeployTriggers.Manual, removeVolumes: null,
+                    TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken));
         }
         await Task.WhenAll(deploys);
@@ -65,10 +66,10 @@ public sealed class DeployConcurrencyGateTests {
         var firstEvent = await AddDeployEventAsync(host, firstId);
         var secondEvent = await AddDeployEventAsync(host, secondId);
 
-        var first = Task.Run(() => queue.ExecuteDeployAsync(firstId, firstEvent, null, ct), ct);
+        var first = Task.Run(() => queue.ExecuteDeployAsync(firstId, firstEvent, DeployTriggers.Manual, null, ct), ct);
         // Let the first deploy take the only permit before the second one asks for it.
         await WaitUntilAsync(async () => await StatusOfAsync(host, firstEvent) == "running", ct);
-        var second = Task.Run(() => queue.ExecuteDeployAsync(secondId, secondEvent, null, ct), ct);
+        var second = Task.Run(() => queue.ExecuteDeployAsync(secondId, secondEvent, DeployTriggers.Manual, null, ct), ct);
 
         // While the first holds the permit, the second is exactly what it says it is: queued.
         await WaitUntilAsync(
@@ -103,9 +104,9 @@ public sealed class DeployConcurrencyGateTests {
         var runningEvent = await AddDeployEventAsync(host, runningId);
         var waitingEvent = await AddDeployEventAsync(host, stoppedId);
 
-        var holder = Task.Run(() => queue.ExecuteDeployAsync(runningId, runningEvent, null, ct), ct);
+        var holder = Task.Run(() => queue.ExecuteDeployAsync(runningId, runningEvent, DeployTriggers.Manual, null, ct), ct);
         await WaitUntilAsync(async () => await StatusOfAsync(host, runningEvent) == "running", ct);
-        var waiting = Task.Run(() => queue.ExecuteDeployAsync(stoppedId, waitingEvent, null, ct), ct);
+        var waiting = Task.Run(() => queue.ExecuteDeployAsync(stoppedId, waitingEvent, DeployTriggers.Manual, null, ct), ct);
         await WaitUntilAsync(
             async () => (await OutputOfAsync(host, waitingEvent)).Contains(
                 "Waiting for a deploy slot", StringComparison.Ordinal),

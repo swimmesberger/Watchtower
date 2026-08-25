@@ -30,6 +30,14 @@ namespace Watchtower.Application.Services;
 /// Every evaluation runs a full <see cref="StackUpdateService"/> check, so the UI badge stays fresh
 /// as a side effect. Deploys go through <see cref="DeployQueueService"/> and coalesce as usual.
 /// </summary>
+/// <remarks>
+/// The description above is <c>Git</c> mode, and it is unchanged by ADR-0026. In <c>Releases</c> mode
+/// the same three <see cref="AutoDeployMode"/> intents keep their meaning with the mechanism swapped
+/// from pull to push: <see cref="AutoDeployMode.OnChange"/> is driven by the release webhook and is
+/// skipped here, and <see cref="AutoDeployMode.Scheduled"/> compares the newest release against
+/// <see cref="Stack.LastDeployedReleaseId"/> at its window. A pinned stack is skipped in <em>both</em>
+/// modes — see <see cref="IsEligible"/>.
+/// </remarks>
 public sealed class AutoDeployBackgroundService(
     StackUpdateService stackUpdate,
     DeployQueueService deployQueue,
@@ -70,17 +78,46 @@ public sealed class AutoDeployBackgroundService(
         var now = DateTimeOffset.Now; // server-local: AutoDeployTime is a local wall-clock time
         foreach (var stack in stacks) {
             if (ct.IsCancellationRequested) break;
+            if (!IsEligible(stack)) continue;
             switch (stack.AutoDeployMode) {
                 case AutoDeployMode.OnChange when IsPollDue(stack.Id, now):
                     _lastPollAt[stack.Id] = now;
-                    await EvaluateAsync(stack, triggeredBy: "auto-update", ct);
+                    await EvaluateAsync(stack, DeployTriggers.AutoUpdate, ct);
                     break;
                 case AutoDeployMode.Scheduled when IsScheduleDue(stack, now):
                     _lastScheduledDate[stack.Id] = DateOnly.FromDateTime(now.LocalDateTime);
-                    await EvaluateAsync(stack, triggeredBy: "schedule", ct);
+                    await EvaluateAsync(stack, DeployTriggers.Schedule, ct);
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Whether this service may deploy <paramref name="stack"/> at all, before any window or interval
+    /// is considered — the two rules <c>Releases</c> mode adds (design.md §"Auto-deploy precedence").
+    /// </summary>
+    /// <remarks>
+    /// The two rules, in the order design.md §"Auto-deploy precedence" gives them:
+    /// <list type="number">
+    /// <item><b>Rule 2 — a pinned stack never auto-deploys</b>, by any route, <em>in either mode</em>. A
+    /// pin is an explicit "stay here", and the precedence list puts it above the mode question on
+    /// purpose. The case that decides it is an operator reverting a product to <c>Git</c> mode while
+    /// stacks are pinned: reading the pin as release-mode-only would quietly resume branch-head
+    /// auto-deploys on exactly the stacks somebody had asked to hold still, and the revert is not where
+    /// anyone would look for that. Clearing the pin (<c>stacks.setRelease(null)</c>) is how a stack
+    /// rejoins automation, and it works in Git mode for this reason.</item>
+    /// <item><b>Rule 3 — an <c>OnChange</c> stack of a <c>Releases</c>-mode product is skipped</b>,
+    /// because in that mode its trigger is the release arriving: <see cref="ReleaseRolloutService"/>
+    /// enqueues it the moment the webhook accepts, and polling here would race the fan-out to enqueue
+    /// the identical convergent deploy. Its badge stays fresh through the separate update-check
+    /// schedule.</item>
+    /// </list>
+    /// Everything else in <c>Git</c> mode is untouched (rule 4).
+    /// </remarks>
+    internal static bool IsEligible(Stack stack) {
+        if (stack.PinnedReleaseId is not null) return false;
+        if (!ReleaseResolver.UsesReleases(ReleaseResolver.RequireProduct(stack))) return true;
+        return stack.AutoDeployMode != AutoDeployMode.OnChange;
     }
 
     private bool IsPollDue(int stackId, DateTimeOffset now) {
@@ -109,16 +146,29 @@ public sealed class AutoDeployBackgroundService(
         return pastWindow && lastRun < today;
     }
 
+    /// <summary>
+    /// Runs a full update check — which keeps the UI badge fresh either way — and deploys when it
+    /// reports something this mode counts as new.
+    /// </summary>
+    /// <remarks>
+    /// The question differs by mode, which is why <see cref="StackUpdateResult"/> exposes two properties
+    /// rather than one: in <c>Git</c> mode a new image digest <em>or</em> a new commit is a reason to
+    /// deploy; in <c>Releases</c> mode only a newer release is, because a commit no release was built
+    /// from is not something a redeploy would pick up (design.md §"Update checks and drift").
+    /// </remarks>
     private async Task EvaluateAsync(Stack stack, string triggeredBy, CancellationToken ct) {
         try {
+            var releasesMode = ReleaseResolver.UsesReleases(ReleaseResolver.RequireProduct(stack));
             var result = await stackUpdate.CheckStackAsync(stack, ct);
-            if (!result.HasChanges) return;
+            if (!(releasesMode ? result.HasNewerRelease : result.HasChanges)) return;
 
-            var reason = (result.HasUpdates, result.NewCommitSha) switch {
-                (true, not null) => $"new image(s) + commit {result.NewCommitSha[..8]}",
-                (true, null) => $"outdated image(s): {string.Join(", ", result.OutdatedImages)}",
-                (false, var sha) => $"new commit {sha![..8]}",
-            };
+            var reason = releasesMode
+                ? $"release {result.AvailableReleaseVersion}"
+                : (result.HasUpdates, result.NewCommitSha) switch {
+                    (true, not null) => $"new image(s) + commit {result.NewCommitSha[..8]}",
+                    (true, null) => $"outdated image(s): {string.Join(", ", result.OutdatedImages)}",
+                    (false, var sha) => $"new commit {sha![..8]}",
+                };
             logger.LogInformation("Auto-deploying stack {StackName} ({Reason})", stack.Name, reason);
             deployQueue.Enqueue(stack.Id, triggeredBy);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
