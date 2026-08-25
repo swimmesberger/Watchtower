@@ -41,8 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Non-root user. /data no longer holds any state Watchtower needs: since ADR-0024 the keys, the
 # data-protection key ring, the ACME account and the issued certificates are rows in PostgreSQL like
 # everything else, so any instance can serve any host. The mount stays for the one upgrade that needs
-# it — a pre-upgrade watchtower.db until `--import-sqlite` carries it across, and the old
-# /data/auth-keys and /data/proxy-certs until the first normal start imports them
+# it — the old /data/auth-keys and /data/proxy-certs until the first normal start imports them
 # (docs/upgrading.md). A fresh install can drop it.
 RUN groupadd -r watchtower && useradd -r -g watchtower watchtower \
     && mkdir -p /data && chown watchtower:watchtower /data

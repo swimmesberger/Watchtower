@@ -31,11 +31,6 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="EFCore.NamingConventions" />
-    <!-- SQLite, for the one-shot `import-sqlite` command only (Services/SqliteImport): it reads a
-         pre-ADR-0024 database file and COPYs it into PostgreSQL. No EF SQLite provider is referenced. -->
-    <PackageReference Include="Microsoft.Data.Sqlite" />
-    <!-- Referenced directly so the pinned e_sqlite3 native version (GHSA-2m69-gcr7-jv3q) actually applies. -->
-    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
     <!-- PersistKeysToDbContext: the data-protection key ring is rows in WatchtowerDbContext, not files
          on a volume (ADR-0024 decision 4). -->
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" />

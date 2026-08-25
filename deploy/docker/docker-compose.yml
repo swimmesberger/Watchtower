@@ -9,20 +9,12 @@
 #   3. Set POSTGRES_PASSWORD to something of your own (a .env file next to this one works).
 #   4. docker compose up -d
 #
-# UPGRADING from a Watchtower that stored everything in /data/watchtower.db: add the postgres service
-# below, set WATCHTOWER__DATABASE__CONNECTIONSTRING, keep the data volume mounted, and start —
-#
-#   docker compose up -d
-#
-# There is no import step. The first start finds the old /data/watchtower.db beside an empty PostgreSQL
-# database and carries it across itself, along with /data/auth-keys and /data/proxy-certs — which is what
-# keeps everyone signed in and stops every certificate being re-ordered. Nothing is deleted, so the
-# rollback is redeploying the old image. Afterwards the data volume holds nothing Watchtower needs.
-# For a database kept somewhere other than /data/watchtower.db, import it by hand instead:
-#
-#   docker compose run --rm watchtower --import-sqlite /srv/wherever/watchtower.db
-#
-# See docs/upgrading.md.
+# UPGRADING from a Watchtower that stored everything in /data/watchtower.db: the SQLite importer was
+# removed on 2026-08-25, so upgrade through an intermediate image built before that date first — see
+# docs/upgrading.md. The first start still carries /data/auth-keys and /data/proxy-certs into the
+# database — which is what keeps everyone signed in and stops every certificate being re-ordered.
+# Nothing is deleted, so the rollback is redeploying the old image. Afterwards the data volume holds
+# nothing Watchtower needs.
 #
 # The UI is served on http://localhost:8080 — the management plane, published on the loopback interface
 # below. Put it behind an authenticating reverse proxy (e.g. Cloudflare Access, Authelia) — Watchtower

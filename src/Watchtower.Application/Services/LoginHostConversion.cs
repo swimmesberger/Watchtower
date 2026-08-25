@@ -16,10 +16,10 @@ namespace Watchtower.Application.Services;
 /// <para>
 /// The other half — every realm's stored <c>auth_host</c> — used to be carried by the
 /// <c>ConvertLoginHostsToRoutes</c> migration, which ADR-0024 regenerated away with the rest of the
-/// SQLite history. A database that still holds that column is now carried by <c>--import-sqlite</c>
-/// instead (see <c>SqliteImporter.ConvertLegacyLoginHostsAsync</c> and docs/upgrading.md).
+/// SQLite history, and then by the one-shot SQLite importer, itself removed once every installation
+/// had migrated to PostgreSQL (see docs/upgrading.md).
 /// <c>Auth:Host</c> was never a column: it lives in the settings store, in an environment variable, or in
-/// <c>appsettings.json</c>, so neither a migration nor the importer can see it. That is why this half
+/// <c>appsettings.json</c>, so no migration could have seen it. That is why this half
 /// still runs here, on the first start after the upgrade — and it writes audit rows, because by this
 /// point the audit trail exists and a scoped service can use it.
 /// </para>

@@ -51,14 +51,6 @@ public static class WatchtowerSettingPaths {
     /// </summary>
     public const string AuthFileStateImported = "Watchtower:Auth:FileStateImported";
 
-    /// <summary>
-    /// Internal marker: <see cref="Services.SqliteImport.SqliteAutoImport"/> has already decided about
-    /// the legacy <c>/data/watchtower.db</c> on this database. Not a user setting — never offered in the
-    /// UI and deliberately not env-pinnable. The file is never deleted by Watchtower, so without a
-    /// sentinel an operator who emptied the estate and restarted would find the old one back.
-    /// </summary>
-    public const string DatabaseSqliteImported = "Watchtower:Database:SqliteImported";
-
     // ── Proxy (proxy.updateConfig) ───────────────────────────────────────────
     public const string ProxyEnabled = "Watchtower:Proxy:Enabled";
     public const string ProxyProvider = "Watchtower:Proxy:Provider";

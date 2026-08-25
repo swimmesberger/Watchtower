@@ -33,8 +33,7 @@ public static class WatchtowerConnectionString {
         Find(configuration) ?? throw new InvalidOperationException(
             $"No PostgreSQL connection string configured. Set '{ConfigurationKey}' "
             + $"(WATCHTOWER__DATABASE__CONNECTIONSTRING) or 'ConnectionStrings:{ConnectionStringName}'. "
-            + "Watchtower has required PostgreSQL since ADR-0024; an existing SQLite installation is "
-            + "carried across once with `--import-sqlite <path>` (see docs/upgrading.md).");
+            + "Watchtower has required PostgreSQL since ADR-0024 (see docs/upgrading.md).");
 
     /// <summary>Resolves the connection string, or null when neither key is set.</summary>
     public static string? Find(IConfiguration configuration) {

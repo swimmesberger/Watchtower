@@ -9,6 +9,12 @@
   [docs/multi-node-readiness.md](../multi-node-readiness.md) (the inventory and sequencing this ADR
   executes the first two steps of).
 
+> **Note (2026-08-25).** The one-shot importer of decision 2 — `--import-sqlite <path>` and the
+> automatic first-start import — has been removed, every known installation having migrated to
+> PostgreSQL. The decision itself stands as recorded; this note retires the tool, not the choice.
+> A pre-ADR-0024 installation now upgrades through an intermediate image built before 2026-08-25
+> (see [docs/upgrading.md](../upgrading.md)).
+
 ## Context
 
 Watchtower stored everything in one SQLite file. That was the right call for a single box — no
