@@ -54,15 +54,16 @@ public class StackUpdateService(
         logger.LogInformation("Checking image updates for stack {StackName} (project={Project})", stack.Name, stack.ComposeProjectName);
 
         // Resolve optional registry credentials for this stack.
+        var source = ProductSourceResolver.Resolve(stack);
         string? username = null, token = null;
-        if (stack.CredentialId is { } credId) {
+        if (source.CredentialId is { } credId) {
             var cred = GetCredential(credId);
             if (cred is not null) (username, token) = cred.Value;
         }
 
         // Git: does the tracked branch have a commit newer than the last deploy? Runs even when
         // no containers are up — a compose-file change should still be detected and deployable.
-        var newCommitSha = await CheckForNewCommitAsync(stack, token, ct);
+        var newCommitSha = await CheckForNewCommitAsync(stack, source, token, ct);
 
         var projectContainers = await GetProjectContainersAsync(stack.ComposeProjectName, ct);
 
@@ -157,12 +158,13 @@ public class StackUpdateService(
     /// otherwise null. Also null when the stack was never deployed (no baseline to compare against)
     /// or the remote can't be reached — a check failure must not trigger a deploy.
     /// </summary>
-    private async Task<string?> CheckForNewCommitAsync(Stack stack, string? token, CancellationToken ct) {
+    private async Task<string?> CheckForNewCommitAsync(
+        Stack stack, ProductSource source, string? token, CancellationToken ct) {
         if (string.IsNullOrEmpty(stack.LastDeployedCommit)) return null;
         try {
-            var remoteHead = await git.GetRemoteHeadAsync(stack.RepositoryUrl, stack.Branch, token, ct);
+            var remoteHead = await git.GetRemoteHeadAsync(source.RepositoryUrl, source.Branch, token, ct);
             if (remoteHead is null) {
-                logger.LogDebug("Could not resolve remote head for stack {StackName} ({Branch})", stack.Name, stack.Branch);
+                logger.LogDebug("Could not resolve remote head for stack {StackName} ({Branch})", stack.Name, source.Branch);
                 return null;
             }
             if (string.Equals(remoteHead, stack.LastDeployedCommit, StringComparison.OrdinalIgnoreCase))
@@ -242,13 +244,20 @@ public class StackUpdateService(
     private List<Stack> LoadAllStacks() {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return db.Stacks.AsNoTracking().OrderBy(s => s.Name).ToList();
+        return db.Stacks.AsNoTracking()
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .OrderBy(s => s.Name)
+            .ToList();
     }
 
     private Stack? LoadStack(int stackId) {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return db.Stacks.AsNoTracking().FirstOrDefault(s => s.Id == stackId);
+        return db.Stacks.AsNoTracking()
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .FirstOrDefault(s => s.Id == stackId);
     }
 
     private (string Username, string Token)? GetCredential(int credentialId) {

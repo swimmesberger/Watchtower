@@ -808,6 +808,66 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("metric_host_samples", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ComposeFilePath")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("compose_file_path");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("CredentialId")
+                        .HasColumnType("integer")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("DefaultBranch")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("default_branch");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("RepositoryUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("repository_url");
+
+                    b.Property<uint>("xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id")
+                        .HasName("pk_products");
+
+                    b.HasIndex("CredentialId")
+                        .HasDatabaseName("ix_products_credential_id");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_products_name");
+
+                    b.ToTable("products", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.ProxyCertificate", b =>
                 {
                     b.Property<int>("Id")
@@ -1214,15 +1274,9 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("backup_stop_containers");
 
-                    b.Property<string>("Branch")
-                        .IsRequired()
+                    b.Property<string>("BranchOverride")
                         .HasColumnType("text")
-                        .HasColumnName("branch");
-
-                    b.Property<string>("ComposeFilePath")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("compose_file_path");
+                        .HasColumnName("branch_override");
 
                     b.Property<string>("ComposeProjectName")
                         .IsRequired()
@@ -1232,10 +1286,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
-
-                    b.Property<int?>("CredentialId")
-                        .HasColumnType("integer")
-                        .HasColumnName("credential_id");
 
                     b.Property<string>("DesiredState")
                         .IsRequired()
@@ -1265,10 +1315,9 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
-                    b.Property<string>("RepositoryUrl")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("repository_url");
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer")
+                        .HasColumnName("product_id");
 
                     b.Property<int?>("TemplateId")
                         .HasColumnType("integer")
@@ -1299,12 +1348,12 @@ namespace Watchtower.Application.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_stacks_app_api_token");
 
-                    b.HasIndex("CredentialId")
-                        .HasDatabaseName("ix_stacks_credential_id");
-
                     b.HasIndex("Name")
                         .IsUnique()
                         .HasDatabaseName("ix_stacks_name");
+
+                    b.HasIndex("ProductId")
+                        .HasDatabaseName("ix_stacks_product_id");
 
                     b.HasIndex("TemplateId", "TenantSlug")
                         .IsUnique()
@@ -1395,23 +1444,13 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
-                    b.Property<string>("Branch")
-                        .IsRequired()
+                    b.Property<string>("BranchOverride")
                         .HasColumnType("text")
-                        .HasColumnName("branch");
-
-                    b.Property<string>("ComposeFilePath")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("compose_file_path");
+                        .HasColumnName("branch_override");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
-
-                    b.Property<int?>("CredentialId")
-                        .HasColumnType("integer")
-                        .HasColumnName("credential_id");
 
                     b.Property<string>("DomainPattern")
                         .IsRequired()
@@ -1423,14 +1462,13 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer")
+                        .HasColumnName("product_id");
+
                     b.Property<int>("RealmId")
                         .HasColumnType("integer")
                         .HasColumnName("realm_id");
-
-                    b.Property<string>("RepositoryUrl")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("repository_url");
 
                     b.Property<int>("TargetPort")
                         .HasColumnType("integer")
@@ -1444,12 +1482,12 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_stack_templates");
 
-                    b.HasIndex("CredentialId")
-                        .HasDatabaseName("ix_stack_templates_credential_id");
-
                     b.HasIndex("Name")
                         .IsUnique()
                         .HasDatabaseName("ix_stack_templates_name");
+
+                    b.HasIndex("ProductId")
+                        .HasDatabaseName("ix_stack_templates_product_id");
 
                     b.HasIndex("RealmId")
                         .HasDatabaseName("ix_stack_templates_realm_id");
@@ -1785,6 +1823,17 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
+                        .WithMany()
+                        .HasForeignKey("CredentialId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_products_credentials_credential_id");
+
+                    b.Navigation("Credential");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Realm", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Route", "LoginRoute")
@@ -1856,11 +1905,12 @@ namespace Watchtower.Application.Persistence.Migrations
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
                 {
-                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
-                        .WithMany()
-                        .HasForeignKey("CredentialId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_stacks_credentials_credential_id");
+                    b.HasOne("Watchtower.Application.Entities.Product", "Product")
+                        .WithMany("Stacks")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_stacks_products_product_id");
 
                     b.HasOne("Watchtower.Application.Entities.StackTemplate", "Template")
                         .WithMany("Instances")
@@ -1868,7 +1918,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_stacks_stack_templates_template_id");
 
-                    b.Navigation("Credential");
+                    b.Navigation("Product");
 
                     b.Navigation("Template");
                 });
@@ -1899,11 +1949,12 @@ namespace Watchtower.Application.Persistence.Migrations
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
                 {
-                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
-                        .WithMany()
-                        .HasForeignKey("CredentialId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_stack_templates_credentials_credential_id");
+                    b.HasOne("Watchtower.Application.Entities.Product", "Product")
+                        .WithMany("Templates")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_stack_templates_products_product_id");
 
                     b.HasOne("Watchtower.Application.Entities.Realm", "Realm")
                         .WithMany()
@@ -1912,7 +1963,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_stack_templates_realms_realm_id");
 
-                    b.Navigation("Credential");
+                    b.Navigation("Product");
 
                     b.Navigation("Realm");
                 });
@@ -1984,6 +2035,13 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_user_recovery_codes_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>
+                {
+                    b.Navigation("Stacks");
+
+                    b.Navigation("Templates");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>

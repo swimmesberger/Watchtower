@@ -17,9 +17,6 @@ public sealed class BackupManifestTests {
     private static Stack TestStack() => new() {
         Id = 7,
         Name = "web-app",
-        RepositoryUrl = "https://example.invalid/web-app.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = "web-app",
     };
 

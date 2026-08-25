@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Tests;
 using Xunit;
 
 namespace Watchtower.Api.Tests;
@@ -43,10 +44,8 @@ public sealed class StackWebhookDesiredStateTests {
             var db = services.GetRequiredService<WatchtowerDbContext>();
             var stack = new Stack {
                 Name = "shop",
-                RepositoryUrl = "https://github.com/acme/shop.git",
-                ComposeFilePath = "docker-compose.yml",
-                Branch = "main",
                 ComposeProjectName = "shop",
+                Product = TestProducts.New("shop", "https://github.com/acme/shop.git"),
                 WebhookEnabled = true,
                 DesiredState = desiredState,
                 CreatedAt = DateTimeOffset.UtcNow,

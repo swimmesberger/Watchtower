@@ -13,6 +13,7 @@ public sealed class GetTemplate(WatchtowerDbContext db)
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var template = await db.StackTemplates.AsNoTracking()
             .Include(t => t.BaseEnvVars)
+            .Include(t => t.Product)
             .FirstOrDefaultAsync(t => t.Id == query.Id, ct);
         if (template is null)
             return AppError.NotFound($"Template {query.Id} not found");

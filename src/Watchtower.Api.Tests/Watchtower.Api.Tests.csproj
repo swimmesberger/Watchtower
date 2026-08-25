@@ -40,6 +40,9 @@
     <Compile Include="..\Watchtower.Application.Tests\TestCertificates.cs" Link="TestCertificates.cs" />
     <!-- And for the stand-in settings store both assemblies drive the ingress reload through. -->
     <Compile Include="..\Watchtower.Application.Tests\ReloadableSettings.cs" Link="ReloadableSettings.cs" />
+    <!-- And for the product fixtures: since ADR-0026 a stack cannot exist without a product, so both
+         assemblies' estates need one, and both should default it the same way. -->
+    <Compile Include="..\Watchtower.Application.Tests\TestProducts.cs" Link="TestProducts.cs" />
   </ItemGroup>
 
 </Project>

@@ -113,15 +113,34 @@ public sealed class RegistryConfiguration : IEntityTypeConfiguration<Registry> {
 }
 
 [EntityConfiguration]
+public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
+    public void Configure(EntityTypeBuilder<Product> b) {
+        b.ToTable("products");
+        b.HasKey(x => x.Id);
+        // Several writers meet on a product (the edit handler today; the release webhook and the
+        // Actions-secret sync in later stages of ADR-0026), so it carries xmin like Stack and Realm.
+        b.UseXminAsConcurrencyToken();
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.RepositoryUrl).IsRequired();
+        b.Property(x => x.ComposeFilePath).IsRequired();
+        b.Property(x => x.DefaultBranch).IsRequired();
+        b.HasIndex(x => x.Name).IsUnique();
+        // Deliberately no unique index on the repository URL: a second compose file in the same
+        // repository is a second product (ADR-0026 decision 2).
+        b.HasOne(x => x.Credential)
+            .WithMany()
+            .HasForeignKey(x => x.CredentialId)
+            .OnDelete(DeleteBehavior.SetNull);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
     public void Configure(EntityTypeBuilder<Stack> b) {
         b.ToTable("stacks");
         b.HasKey(x => x.Id);
         b.UseXminAsConcurrencyToken();
         b.Property(x => x.Name).IsRequired();
-        b.Property(x => x.RepositoryUrl).IsRequired();
-        b.Property(x => x.ComposeFilePath).IsRequired();
-        b.Property(x => x.Branch).IsRequired();
         b.Property(x => x.ComposeProjectName).IsRequired();
         // Stored as the enum name (e.g. "Success"); the API maps it to lowercase for the client.
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
@@ -144,10 +163,13 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         // the column must be indexed. Unique guards against two stacks ever sharing a token; PostgreSQL
         // treats NULLs as distinct, so any number of stacks may still have no token yet.
         b.HasIndex(x => x.AppApiToken).IsUnique();
-        b.HasOne(x => x.Credential)
-            .WithMany()
-            .HasForeignKey(x => x.CredentialId)
-            .OnDelete(DeleteBehavior.SetNull);
+        // Restrict, like a realm's categories: deleting a product must not silently take every stack
+        // deploying it. The products.delete handler refuses while anything still references it, and
+        // names the blockers.
+        b.HasOne(x => x.Product)
+            .WithMany(p => p.Stacks)
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Restrict);
         // Tenant instances link back to their template; deleting a template detaches (not deletes) them.
         // (TemplateId, TenantSlug) is unique — PostgreSQL treats NULLs as distinct, so standalone stacks
         // (both null) never collide.
@@ -165,9 +187,6 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
         b.ToTable("stack_templates");
         b.HasKey(x => x.Id);
         b.Property(x => x.Name).IsRequired();
-        b.Property(x => x.RepositoryUrl).IsRequired();
-        b.Property(x => x.ComposeFilePath).IsRequired();
-        b.Property(x => x.Branch).IsRequired();
         b.Property(x => x.DomainPattern).IsRequired();
         b.Property(x => x.TargetServiceName).IsRequired();
         // Deliberately global, not (realm_id, name): a template name is what an operator picks a category
@@ -179,10 +198,12 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
             .WithMany()
             .HasForeignKey(x => x.RealmId)
             .OnDelete(DeleteBehavior.Restrict);
-        b.HasOne(x => x.Credential)
-            .WithMany()
-            .HasForeignKey(x => x.CredentialId)
-            .OnDelete(DeleteBehavior.SetNull);
+        // Restrict for the same reason as on Stack: a product delete that took its templates — and
+        // with them every tenant — would be a blast radius discovered afterwards.
+        b.HasOne(x => x.Product)
+            .WithMany(p => p.Templates)
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

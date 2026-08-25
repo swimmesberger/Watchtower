@@ -4,9 +4,10 @@ namespace Watchtower.Application.Entities;
 /// A reusable definition that is instantiated once per tenant. Each instance is a normal
 /// <see cref="Stack"/> (linked via <see cref="Stack.TemplateId"/> and carrying a
 /// <see cref="Stack.TenantSlug"/>) with its own isolated containers, network, and volumes — Compose
-/// namespaces everything by project name. Creating a tenant copies the template's repo/compose/branch
-/// into a new stack, merges the base env vars with per-tenant overrides, and adds a managed route
-/// derived from <see cref="DomainPattern"/>.
+/// namespaces everything by project name. Creating a tenant points the new stack at the template's
+/// <see cref="Product"/> by reference (ADR-0026 — nothing is copied, so source edits propagate),
+/// merges the base env vars with per-tenant overrides, and adds a managed route derived from
+/// <see cref="DomainPattern"/>.
 /// </summary>
 public sealed class StackTemplate {
     public int Id { get; set; }
@@ -28,13 +29,21 @@ public sealed class StackTemplate {
     /// operator sees.
     /// </summary>
     public required string Name { get; set; }
-    public required string RepositoryUrl { get; set; }
-    /// <summary>Path to the compose file within the repository.</summary>
-    public required string ComposeFilePath { get; set; }
-    public required string Branch { get; set; }
-    /// <summary>Optional git credential, copied onto each tenant stack. Null when the credential is deleted.</summary>
-    public int? CredentialId { get; set; }
-    public Credential? Credential { get; set; }
+
+    /// <summary>
+    /// The product every tenant of this template runs (ADR-0026). Required and <c>Restrict</c>, like
+    /// <see cref="Stack.ProductId"/>. Changing it while the template has tenants is refused — it would
+    /// repoint every one of them at a different codebase.
+    /// </summary>
+    public int ProductId { get; set; }
+    public Product? Product { get; set; }
+
+    /// <summary>
+    /// Branch this template's tenants deploy instead of <see cref="Entities.Product.DefaultBranch"/>.
+    /// Null inherits the product default; an individual tenant may still override it again
+    /// (see <see cref="Services.ProductSourceResolver"/>).
+    /// </summary>
+    public string? BranchOverride { get; set; }
 
     /// <summary>Domain template for tenants, with a <c>{tenant}</c> placeholder, e.g. <c>{tenant}.example.com</c>.</summary>
     public required string DomainPattern { get; set; }

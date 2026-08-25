@@ -4008,6 +4008,502 @@
         ]
       }
     },
+    "products.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "defaultBranch"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "defaultBranch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "repositoryUrl",
+              "composeFilePath",
+              "defaultBranch",
+              "credentialId",
+              "credentialName",
+              "createdAt",
+              "stackCount",
+              "templateCount"
+            ]
+          }
+        },
+        "required": [
+          "product"
+        ]
+      }
+    },
+    "products.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "products.get": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "defaultBranch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "repositoryUrl",
+              "composeFilePath",
+              "defaultBranch",
+              "credentialId",
+              "credentialName",
+              "createdAt",
+              "stackCount",
+              "templateCount"
+            ]
+          },
+          "stacks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "templateId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tenantSlug": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployStatus": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "branch",
+                "branchOverride",
+                "templateId",
+                "tenantSlug",
+                "lastDeployStatus",
+                "lastDeployedAt"
+              ]
+            }
+          },
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tenantCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "branch",
+                "branchOverride",
+                "tenantCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "product",
+          "stacks",
+          "templates"
+        ]
+      }
+    },
+    "products.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "repositoryUrl": {
+                  "type": "string"
+                },
+                "composeFilePath": {
+                  "type": "string"
+                },
+                "defaultBranch": {
+                  "type": "string"
+                },
+                "credentialId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "credentialName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "stackCount": {
+                  "type": "integer"
+                },
+                "templateCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "description",
+                "repositoryUrl",
+                "composeFilePath",
+                "defaultBranch",
+                "credentialId",
+                "credentialName",
+                "createdAt",
+                "stackCount",
+                "templateCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "products"
+        ]
+      }
+    },
+    "products.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "defaultBranch"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "defaultBranch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "repositoryUrl",
+              "composeFilePath",
+              "defaultBranch",
+              "credentialId",
+              "credentialName",
+              "createdAt",
+              "stackCount",
+              "templateCount"
+            ]
+          }
+        },
+        "required": [
+          "product"
+        ]
+      }
+    },
     "proxy.checkDns": {
       "params": {
         "type": "object",
@@ -6115,6 +6611,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -6123,6 +6625,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -6209,9 +6717,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -6304,6 +6815,13 @@
                 "value"
               ]
             }
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -6332,6 +6850,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -6340,6 +6864,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -6426,9 +6956,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -6603,6 +7136,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -6611,6 +7150,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -6697,9 +7242,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -6819,6 +7367,12 @@
                 "name": {
                   "type": "string"
                 },
+                "productId": {
+                  "type": "integer"
+                },
+                "productName": {
+                  "type": "string"
+                },
                 "repositoryUrl": {
                   "type": "string"
                 },
@@ -6827,6 +7381,12 @@
                 },
                 "branch": {
                   "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "composeProjectName": {
                   "type": "string"
@@ -6913,9 +7473,12 @@
               "required": [
                 "id",
                 "name",
+                "productId",
+                "productName",
                 "repositoryUrl",
                 "composeFilePath",
                 "branch",
+                "branchOverride",
                 "composeProjectName",
                 "credentialId",
                 "webhookToken",
@@ -7075,6 +7638,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -7083,6 +7652,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -7169,9 +7744,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -7223,6 +7801,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -7231,6 +7815,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -7317,9 +7907,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -7444,6 +8037,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -7452,6 +8051,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -7538,9 +8143,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -8246,6 +8854,13 @@
               "null"
             ],
             "default": null
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8272,6 +8887,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -8280,6 +8901,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "credentialId": {
                 "type": [
@@ -8310,9 +8937,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "credentialId",
               "domainPattern",
               "targetServiceName",
@@ -8400,6 +9030,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -8408,6 +9044,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "credentialId": {
                 "type": [
@@ -8438,9 +9080,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "credentialId",
               "domainPattern",
               "targetServiceName",
@@ -8550,6 +9195,12 @@
                 "name": {
                   "type": "string"
                 },
+                "productId": {
+                  "type": "integer"
+                },
+                "productName": {
+                  "type": "string"
+                },
                 "repositoryUrl": {
                   "type": "string"
                 },
@@ -8558,6 +9209,12 @@
                 },
                 "branch": {
                   "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "credentialId": {
                   "type": [
@@ -8588,9 +9245,12 @@
               "required": [
                 "id",
                 "name",
+                "productId",
+                "productName",
                 "repositoryUrl",
                 "composeFilePath",
                 "branch",
+                "branchOverride",
                 "credentialId",
                 "domainPattern",
                 "targetServiceName",
@@ -8841,6 +9501,13 @@
               "null"
             ],
             "default": null
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8868,6 +9535,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -8876,6 +9549,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "credentialId": {
                 "type": [
@@ -8906,9 +9585,12 @@
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "credentialId",
               "domainPattern",
               "targetServiceName",
@@ -9583,6 +10265,9 @@
         ]
       },
       "Networks": {
+        "features": []
+      },
+      "Products": {
         "features": []
       },
       "Proxy": {

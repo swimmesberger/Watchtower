@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -19,9 +20,7 @@ internal static class TenancyTestEstate {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var template = new StackTemplate {
             Name = name,
-            RepositoryUrl = $"https://example.invalid/{name}.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
+            Product = TestProducts.New(name),
             DomainPattern = domainPattern,
             TargetServiceName = "web",
             TargetPort = 8080,
@@ -44,12 +43,11 @@ internal static class TenancyTestEstate {
         string? composeProjectName = null) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = $"https://example.invalid/{name}.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = composeProjectName ?? name,
+            ProductId = await ProductIdForAsync(db, templateId, name, ct),
             TemplateId = templateId,
             TenantSlug = tenantSlug,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -95,5 +93,20 @@ internal static class TenancyTestEstate {
             CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
+    /// The product a tenant stack must reference: its template's, since ADR-0026 links rather than
+    /// copies. A standalone stack gets one of its own, named after it.
+    /// </summary>
+    private static async Task<int> ProductIdForAsync(
+        WatchtowerDbContext db, int? templateId, string name, CancellationToken ct) {
+        if (templateId is { } id) {
+            return await db.StackTemplates.Where(t => t.Id == id).Select(t => t.ProductId).FirstAsync(ct);
+        }
+        var product = TestProducts.New(name);
+        db.Products.Add(product);
+        await db.SaveChangesAsync(ct);
+        return product.Id;
     }
 }

@@ -208,10 +208,8 @@ public sealed class LoginCodeTests {
         var name = domain.Split('.')[0];
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = $"https://example.invalid/{name}.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = name,
+            Product = TestProducts.New(name),
         };
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(ct);

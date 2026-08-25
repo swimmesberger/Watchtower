@@ -133,6 +133,9 @@ public sealed class AutoDeployBackgroundService(
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         // Stopped stacks are deliberately disabled (ADR-0025): no polling, no scheduled deploys.
         return [.. db.Stacks.AsNoTracking()
+            // The update check resolves the source from these (ADR-0026).
+            .Include(s => s.Product)
+            .Include(s => s.Template)
             .Where(s => s.AutoDeployMode != AutoDeployMode.Off && s.DesiredState != StackDesiredState.Stopped)
             .OrderBy(s => s.Name)];
     }

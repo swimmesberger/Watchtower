@@ -255,11 +255,9 @@ public sealed class CiStackLinkTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = repositoryUrl,
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = name,
-            CredentialId = credentialId,
+            // The repository and the clone credential the CI link resolves from live on the product now.
+            Product = TestProducts.New(name, repositoryUrl, credentialId: credentialId),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Stacks.Add(stack);

@@ -53,10 +53,8 @@ public sealed class BackupScheduleJobTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = $"https://example.com/{name}.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = name,
+            Product = TestProducts.New(name),
             BackupEnabled = true,
             BackupCron = cron,
             LastScheduledBackupAt = last,
@@ -162,8 +160,8 @@ public sealed class BackupScheduleJobTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var stack = new Stack {
-                Name = "quiet", RepositoryUrl = "https://example.com/quiet.git", ComposeFilePath = "docker-compose.yml",
-                Branch = "main", ComposeProjectName = "quiet", BackupEnabled = false,
+                Name = "quiet", ComposeProjectName = "quiet", BackupEnabled = false,
+                Product = TestProducts.New("quiet"),
             };
             db.Stacks.Add(stack);
             await db.SaveChangesAsync(Ct);

@@ -18,11 +18,14 @@ public sealed class GetStackCi(WatchtowerDbContext db, CiRunnerOrchestrator orch
     public sealed record Response(CiStackCiDto Ci);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        var stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == query.StackId, ct);
+        var stack = await db.Stacks.AsNoTracking()
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .FirstOrDefaultAsync(s => s.Id == query.StackId, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {query.StackId} not found.");
 
-        if (GitHubRepoUrl.TryParse(stack.RepositoryUrl) is not var (owner, name))
+        if (GitHubRepoUrl.TryParse(ProductSourceResolver.Resolve(stack).RepositoryUrl) is not var (owner, name))
             return new Response(new CiStackCiDto(IsGitHub: false, Owner: null, Name: null, Repo: null));
 
         var repo = await db.CiRepos.AsNoTracking().FirstOrDefaultAsync(

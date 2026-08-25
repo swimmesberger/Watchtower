@@ -98,7 +98,9 @@ public sealed class TenantProvisioningService(
         if (envOverrides is { Count: > 0 } && TenancyMapping.FirstDuplicateKey(envOverrides) is { } dup)
             return Failed(TenantProvisionStatus.Validation, $"Duplicate env var key: '{dup}'");
 
-        var template = await db.StackTemplates.Include(t => t.BaseEnvVars)
+        var template = await db.StackTemplates
+            .Include(t => t.BaseEnvVars)
+            .Include(t => t.Product)
             .FirstOrDefaultAsync(t => t.Id == templateId, ct);
         if (template is null)
             return Failed(TenantProvisionStatus.TemplateNotFound, $"Template {templateId} not found");
@@ -124,11 +126,11 @@ public sealed class TenantProvisioningService(
 
         var stack = new Stack {
             Name = stackName,
-            RepositoryUrl = template.RepositoryUrl,
-            ComposeFilePath = template.ComposeFilePath,
-            Branch = template.Branch,
+            // By reference, never copied (ADR-0026): the copy-at-provision bug — a template's source
+            // edits never reaching the tenants it had already stamped — disappears by construction.
+            // BranchOverride stays null so the tenant inherits the template's own override, if any.
+            ProductId = template.ProductId,
             ComposeProjectName = projectName,
-            CredentialId = template.CredentialId,
             TemplateId = template.Id,
             TenantSlug = normalized,
             // Each tenant instance is its own stack and gets its own App API token — a tenant can

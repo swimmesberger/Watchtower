@@ -75,8 +75,9 @@ controlled version rollout (most tenants on the newest build, some pinned).
 - Release fan-out makes unbounded parallel deploys routine, so a global concurrency gate
   (`Watchtower:MaxConcurrentDeploys`) becomes a prerequisite — it also fixes the latent
   `templates.deployAll` thundering herd.
-- The SQLite import path needs a conversion step for the NOT NULL `product_id` (the importer copies
-  column-by-name and would fail before any fixup); this must be built and tested deliberately.
+- The SQLite import path is left behind: every instance already runs PostgreSQL, so the importer
+  gets no `product_id` conversion step — a legacy import now fails at the NOT NULL. Removing the
+  importer entirely is a separate cleanup outside this ADR.
 - A product's first release visibly switches its latest-tracking stacks from branch-HEAD to
   release deploys — announced, audited, and possibly to an older commit than the branch head; the
   UI warns when latest's commit is not the head.

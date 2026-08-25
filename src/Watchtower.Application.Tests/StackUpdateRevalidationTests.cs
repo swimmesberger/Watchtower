@@ -412,10 +412,8 @@ public sealed class StackUpdateRevalidationTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = "https://example.invalid/demo.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = Project,
+            Product = TestProducts.New(name, "https://example.invalid/demo.git"),
             CreatedAt = CheckedAt,
         };
         db.Stacks.Add(stack);
@@ -453,7 +451,11 @@ public sealed class StackUpdateRevalidationTests {
     private static async Task<Stack> LoadStackAsync(AuthTestHost host, int stackId) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return await db.Stacks.AsNoTracking().SingleAsync(s => s.Id == stackId, Ct);
+        // With the product, as every production loader does: the source the check resolves lives there.
+        return await db.Stacks.AsNoTracking()
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .SingleAsync(s => s.Id == stackId, Ct);
     }
 
     /// <summary>

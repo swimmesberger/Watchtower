@@ -36,9 +36,6 @@ public sealed class BackupQuiesceExecutionTests {
 
     private static Stack TheStack() => new() {
         Name = "web-app",
-        RepositoryUrl = "https://example.com/web-app.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = "web-app",
     };
 

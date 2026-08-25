@@ -309,13 +309,14 @@ public class DeployQueueService : IHostedService, IDisposable {
             MarkRunning(eventId);
             UpdateDeployStatus(stackId, DeployStatus.Running);
 
-            // 1. Resolve git credential for cloning.
-            var gitToken = stack.CredentialId is { } credId ? GetCredentialToken(credId) : null;
+            // 1. Resolve the effective source (product + overrides, ADR-0026) and its git credential.
+            var source = ProductSourceResolver.Resolve(stack);
+            var gitToken = source.CredentialId is { } credId ? GetCredentialToken(credId) : null;
 
             // 2. Clone the repository.
-            WriteHeader($"[Watchtower] Cloning {stack.RepositoryUrl} @ {stack.Branch}");
+            WriteHeader($"[Watchtower] Cloning {source.RepositoryUrl} @ {source.Branch}");
             var cloneResult = await _git.CloneAsync(
-                stack.RepositoryUrl, stack.Branch, gitToken, tempRepoDir, OnSubprocessLine, ct);
+                source.RepositoryUrl, source.Branch, gitToken, tempRepoDir, OnSubprocessLine, ct);
             output.Append(cloneResult.Output);
             UpdateOutput(eventId, output.ToString());
             if (cloneResult.ExitCode != 0) {
@@ -332,11 +333,11 @@ public class DeployQueueService : IHostedService, IDisposable {
             // 2a. CI toolchain detection piggybacks on the clone (docs/ci-runners/design.md): when
             //     this repository has CI runners enabled, refresh its detected toolchain profile from
             //     the working tree. Best-effort by contract — the recorder swallows its own failures.
-            if (await RecordCiToolchainsAsync(stack.RepositoryUrl, tempRepoDir, ct) is { } toolchainSummary)
+            if (await RecordCiToolchainsAsync(source.RepositoryUrl, tempRepoDir, ct) is { } toolchainSummary)
                 WriteHeader($"[Watchtower] {toolchainSummary}");
 
             // TrimStart ensures an accidentally absolute path is treated as relative to the cloned repo root.
-            var composePath = Path.Combine(tempRepoDir, stack.ComposeFilePath.TrimStart('/', '\\'));
+            var composePath = Path.Combine(tempRepoDir, source.ComposeFilePath.TrimStart('/', '\\'));
 
             // 2b. Volume-recreate flow: bring the stack down (keeps named volumes) then delete each
             // selected volume before the pull/up recreates them empty. A 409 (still referenced) fails
@@ -562,10 +563,17 @@ public class DeployQueueService : IHostedService, IDisposable {
         }
     }
 
+    /// <summary>
+    /// The stack with everything the deploy needs to resolve its source: the product carries the
+    /// repository, compose path and credential, the template its branch override (ADR-0026).
+    /// </summary>
     private Stack? GetStack(int stackId) {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return db.Stacks.AsNoTracking().FirstOrDefault(s => s.Id == stackId);
+        return db.Stacks.AsNoTracking()
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .FirstOrDefault(s => s.Id == stackId);
     }
 
     private string? GetCredentialToken(int credentialId) {

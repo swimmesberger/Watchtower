@@ -14,6 +14,10 @@ public sealed class ListStacks(WatchtowerDbContext db, StackUpdateRevalidator re
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var stacks = await db.Stacks.AsNoTracking()
             .Include(s => s.UpdateCheck)
+            // Two more joins rather than N+1 lazy loads: the DTO's source fields are resolved from the
+            // product, and a tenant's branch from its template's override (ADR-0026).
+            .Include(s => s.Product)
+            .Include(s => s.Template)
             .OrderBy(s => s.Name)
             .ToListAsync(ct);
         var items = stacks.Select(s => StackMapping.ToDto(s, s.UpdateCheck)).ToList();

@@ -76,10 +76,8 @@ public sealed class OptimisticConcurrencyTests {
 
     private static Stack NewStack(string name) => new() {
         Name = name,
-        RepositoryUrl = $"https://example.invalid/{name}.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = name,
+        Product = TestProducts.New(name),
     };
 }
 

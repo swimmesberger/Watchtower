@@ -258,7 +258,9 @@ public sealed class RealmScopedSurfaceTests {
 
         await using var scope = host.Services.CreateAsyncScope();
         var result = await SendAsync<UpdateTemplate.Command, UpdateTemplate.Response>(
-            scope.ServiceProvider, EditTemplate(template, "shop-renamed", realmId: null));
+            scope.ServiceProvider,
+            EditTemplate(template, "shop-renamed", realmId: null,
+                repositoryUrl: "https://example.invalid/shop.git"));
 
         // A populated category is still editable — it is only the realm that is pinned.
         Assert.True(result.IsSuccess, Describe(result));
@@ -385,10 +387,17 @@ public sealed class RealmScopedSurfaceTests {
         null,
         realmId);
 
-    private static UpdateTemplate.Command EditTemplate(int id, string name, int? realmId) => new(
+    /// <param name="repositoryUrl">
+    /// What the form posts back for the (now product-owned) source. Defaults to the URL
+    /// <see cref="AccessTestEstate.AddRealmTemplateAsync"/> derives from the template's <em>original</em>
+    /// name — since ADR-0026 templates.update refuses a repository URL that actually changed, so a
+    /// rename has to keep posting the source it was loaded with.
+    /// </param>
+    private static UpdateTemplate.Command EditTemplate(
+        int id, string name, int? realmId, string? repositoryUrl = null) => new(
         id,
         name,
-        $"https://example.invalid/{name}.git",
+        repositoryUrl ?? $"https://example.invalid/{name}.git",
         "docker-compose.yml",
         "main",
         null,

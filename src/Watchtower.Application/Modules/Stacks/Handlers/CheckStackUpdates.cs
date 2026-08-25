@@ -13,7 +13,10 @@ public sealed class CheckStackUpdates(WatchtowerDbContext db, StackUpdateService
     public sealed record Response(StackDto Stack);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        var stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == command.Id, ct);
+        var stack = await db.Stacks.AsNoTracking()
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .FirstOrDefaultAsync(s => s.Id == command.Id, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {command.Id} not found");
 

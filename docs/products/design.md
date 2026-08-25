@@ -324,6 +324,22 @@ collapse into one pending deploy that runs the newer release — never the super
 `DeployEvent.ReleaseId` is stamped at execution, so a coalesced event reports what actually ran.
 Trigger names: `"release"` (fan-out), `"release-manual"` (operator pin/deploy).
 
+Why not fan out the *specific* release that triggered? Because a captured release id is the variant
+with the race. With the gate draining a 200-stack fan-out over minutes, a v43 published mid-drain
+interleaves with v42's still-queued payloads — a stack can run v43 and then its queued "deploy v42",
+ending on a **downgrade** caused purely by queue timing. Guarding against that means "skip if newer
+already deployed" logic, i.e. execution-time resolution rebuilt with more moving parts. The
+convergent rule has no lost update instead: v43's fan-out enqueues only after its insert commits, so
+every latest-tracking stack either resolves v43 directly or is re-enqueued by v43's fan-out (landing
+in the pending slot) — provably ending on the true newest, never moving backwards. "Deploy exactly
+this release regardless of what CI does next" is the *pin* intent, which is why the roll-out dialog
+defaults to pinning.
+
+One refinement: a release-triggered deploy short-circuits (completes as a no-op, noted in the event)
+when the resolved release equals `LastDeployedReleaseId` — this absorbs the redundant re-deploy of a
+stack that already converged early. Safe **only** for trigger `"release"`: manual, webhook and
+scheduled deploys must never skip, because a deploy also converges config, env and compose changes.
+
 **Global concurrency gate — a prerequisite, not a nicety.** `DeployQueueService` starts one worker
 per stack with no global cap; `templates.deployAll` already makes that a latent problem and release
 fan-out makes it routine (200 × clone + pull + up against one registry and one daemon). A
@@ -715,10 +731,11 @@ One EF migration (`migrationBuilder.Sql`, deterministic, transactional with the 
 `ci_repo_id` stays null and is resolved lazily on first read (URL parsing in SQL isn't worth it).
 A best-effort `Down` recreates the columns from the product join.
 
-**The SQLite importer must be taught about this** — it copies column-by-name into the fresh schema,
-and a legacy `stacks` table has no `product_id`, so the NOT NULL fails the COPY before any fixup
-could run. Add a conversion step beside `ConvertLegacyLoginHostsAsync`: relax the constraint, copy,
-run the same backfill, re-add. No existing test would catch the omission — write one.
+**The SQLite import path is dead and deliberately not taught about this.** Every known Watchtower
+instance has already migrated to PostgreSQL (confirmed 2026-08-25), so `SqliteImporter` gets no
+`product_id` conversion step — a legacy import would now fail at the NOT NULL, which is acceptable
+for a path with no remaining users. Removing the importer (and its upgrade docs) entirely is a
+separate cleanup task outside this roadmap.
 
 ## Staged roadmap
 

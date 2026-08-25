@@ -267,10 +267,8 @@ public sealed class StackLifecycleTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = $"https://github.com/acme/{name}.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = name,
+            Product = TestProducts.New(name, $"https://github.com/acme/{name}.git"),
             DesiredState = desiredState,
             CreatedAt = DateTimeOffset.UtcNow,
         };

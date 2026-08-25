@@ -12,6 +12,8 @@ public sealed class ListTemplates(WatchtowerDbContext db)
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var rows = await db.StackTemplates.AsNoTracking()
+            // The source fields are resolved from the product since ADR-0026.
+            .Include(t => t.Product)
             .OrderBy(t => t.Name)
             .Select(t => new { Template = t, Count = t.Instances.Count })
             .ToListAsync(ct);

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Tenancy;
 
@@ -8,12 +9,19 @@ namespace Watchtower.Application.Modules.Tenancy;
 /// The population this category's tenants serve (docs/central-auth/design.md §13). Every route created
 /// from the template inherits it, which is what decides who may enter a tenant.
 /// </param>
+/// <remarks>
+/// As on <c>StackDto</c>, the four source fields are read-only projections of the effective source
+/// since ADR-0026: they live on the product, and <c>products.update</c> is what changes them.
+/// </remarks>
 public sealed record StackTemplateDto(
     int Id,
     string Name,
+    int ProductId,
+    string ProductName,
     string RepositoryUrl,
     string ComposeFilePath,
     string Branch,
+    string? BranchOverride,
     int? CredentialId,
     string DomainPattern,
     string TargetServiceName,
@@ -49,9 +57,17 @@ public sealed record TemplateGrantDto(int StackId, string StackName, bool AllowD
 
 /// <summary>In-memory projection + validation helpers (not translatable to SQL).</summary>
 public static partial class TenancyMapping {
-    public static StackTemplateDto ToDto(StackTemplate t, int instanceCount) => new(
-        t.Id, t.Name, t.RepositoryUrl, t.ComposeFilePath, t.Branch, t.CredentialId,
-        t.DomainPattern, t.TargetServiceName, t.TargetPort, t.RealmId, t.CreatedAt, instanceCount);
+    /// <summary>
+    /// Projects a template. <paramref name="t"/> must have its product loaded — the source fields are
+    /// resolved from it (<see cref="ProductSourceResolver"/>).
+    /// </summary>
+    public static StackTemplateDto ToDto(StackTemplate t, int instanceCount) {
+        var source = ProductSourceResolver.Resolve(t);
+        return new StackTemplateDto(
+            t.Id, t.Name, t.ProductId, t.Product!.Name,
+            source.RepositoryUrl, source.ComposeFilePath, source.Branch, t.BranchOverride, source.CredentialId,
+            t.DomainPattern, t.TargetServiceName, t.TargetPort, t.RealmId, t.CreatedAt, instanceCount);
+    }
 
     [GeneratedRegex("^[a-z0-9][a-z0-9-]*$")]
     private static partial Regex SlugPattern();

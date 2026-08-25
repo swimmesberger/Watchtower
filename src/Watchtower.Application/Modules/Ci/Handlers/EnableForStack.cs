@@ -34,16 +34,21 @@ public sealed class EnableForStack(
     public sealed record Response(CiRepoDto Repo);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        var stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == command.StackId, ct);
+        var stack = await db.Stacks.AsNoTracking()
+            // The repository and the clone credential live on the product (ADR-0026).
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            .FirstOrDefaultAsync(s => s.Id == command.StackId, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {command.StackId} not found.");
 
-        if (GitHubRepoUrl.TryParse(stack.RepositoryUrl) is not var (owner, name))
+        var source = ProductSourceResolver.Resolve(stack);
+        if (GitHubRepoUrl.TryParse(source.RepositoryUrl) is not var (owner, name))
             return AppError.Validation(
                 $"Stack '{stack.Name}' does not deploy from a github.com repository "
-                + $"({stack.RepositoryUrl}). CI runners require GitHub Actions.");
+                + $"({source.RepositoryUrl}). CI runners require GitHub Actions.");
 
-        var credentialId = command.CredentialId ?? stack.CredentialId;
+        var credentialId = command.CredentialId ?? source.CredentialId;
         if (credentialId is not { } resolvedCredentialId)
             return AppError.Validation(
                 $"Stack '{stack.Name}' has no git credential to reuse. Choose a credential holding a "

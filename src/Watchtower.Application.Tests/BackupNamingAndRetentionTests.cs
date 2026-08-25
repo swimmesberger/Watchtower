@@ -112,9 +112,6 @@ public sealed class BackupNamingAndRetentionTests {
 
     private static Stack StackWithStops() => new() {
         Name = "web-app",
-        RepositoryUrl = "https://example.com/web-app.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = "web-app",
         BackupStopContainers = true,
     };

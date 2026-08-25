@@ -66,6 +66,9 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();
+        // Find-or-create over the product catalogue (ADR-0026), shared by stacks.create and
+        // templates.create so both keep their inline repository fields and resolve to one product.
+        services.AddScoped<ProductCatalog>();
         // Realms (docs/central-auth/design.md §13). The resolver is the one place a host, a route or a
         // configuration value is turned into a population; the context is which population the current
         // request's credential lookups may see, and defaults to the operator realm so nothing that predates

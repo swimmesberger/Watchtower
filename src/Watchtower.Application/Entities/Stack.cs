@@ -36,19 +36,26 @@ public enum StackDesiredState {
     Stopped,
 }
 
-/// <summary>A named Docker Compose stack backed by a git repository.</summary>
+/// <summary>A named Docker Compose stack: one running copy of a <see cref="Entities.Product"/>.</summary>
 public sealed class Stack {
     public int Id { get; set; }
     public required string Name { get; set; }
-    public required string RepositoryUrl { get; set; }
-    /// <summary>Path to the compose file within the repository.</summary>
-    public required string ComposeFilePath { get; set; }
-    public required string Branch { get; set; }
+    /// <summary>
+    /// The product this stack runs (ADR-0026). Required and <c>Restrict</c>: deleting a product while
+    /// anything still deploys it is refused rather than cascaded. The repository URL, compose file path
+    /// and clone credential live there, so a source edit reaches every stack of the product.
+    /// </summary>
+    public int ProductId { get; set; }
+    public Product? Product { get; set; }
+    /// <summary>
+    /// Branch this stack deploys instead of <see cref="Entities.Product.DefaultBranch"/> — how
+    /// production-on-<c>main</c> and staging-on-<c>develop</c> share one product. Null inherits, via the
+    /// template's own override when the stack is a tenant
+    /// (see <see cref="Services.ProductSourceResolver"/>).
+    /// </summary>
+    public string? BranchOverride { get; set; }
     /// <summary>Value passed to <c>--project-name</c>; defaults to the stack name with spaces hyphenated.</summary>
     public required string ComposeProjectName { get; set; }
-    /// <summary>Optional link to a credential used for git cloning. Set to null when the credential is deleted.</summary>
-    public int? CredentialId { get; set; }
-    public Credential? Credential { get; set; }
     /// <summary>Bearer token protecting the deploy webhook endpoint. Null when the webhook is unauthenticated.</summary>
     public string? WebhookToken { get; set; }
     /// <summary>When true the webhook endpoint is active; when false it returns 404.</summary>

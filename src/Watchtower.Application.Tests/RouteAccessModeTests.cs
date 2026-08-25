@@ -164,9 +164,7 @@ public sealed class RouteAccessModeTests {
     /// <summary>A stack that satisfies the entity's required members; a route needs one to hang off.</summary>
     private static Stack NewStack(string name) => new() {
         Name = name,
-        RepositoryUrl = $"https://example.invalid/{name}.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = name,
+        Product = TestProducts.New(name),
     };
 }

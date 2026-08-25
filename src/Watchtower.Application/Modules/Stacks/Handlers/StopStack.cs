@@ -24,6 +24,8 @@ public sealed class StopStack(
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var stack = await db.Stacks
             .Include(s => s.UpdateCheck)
+            .Include(s => s.Product)
+            .Include(s => s.Template)
             .FirstOrDefaultAsync(s => s.Id == command.Id, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {command.Id} not found");
