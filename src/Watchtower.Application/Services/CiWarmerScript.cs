@@ -16,8 +16,14 @@ namespace Watchtower.Application.Services;
 /// A warm failure is surfaced on the repo and never blocks runners or deploys.
 /// </summary>
 public static partial class CiWarmerScript {
-    /// <summary>Where the toolcache volume is mounted in runner and warmer containers alike.</summary>
-    public const string ToolCacheDir = "/home/runner/_work/_tool";
+    /// <summary>
+    /// Where the toolcache volume is mounted in runner and warmer containers alike. Deliberately
+    /// outside <c>/home/runner/_work</c>: a mountpoint under <c>_work</c> makes dockerd create
+    /// <c>_work</c> itself as root, and the runner user then cannot create <c>_work/_temp</c> when
+    /// a job arrives. Runners get <c>RUNNER_TOOL_CACHE</c> pointed here (the GitHub-hosted images
+    /// use the same path), so setup-* actions probe it unchanged.
+    /// </summary>
+    public const string ToolCacheDir = "/opt/hostedtoolcache";
 
     /// <summary>
     /// Builds the warmer script for <paramref name="profile"/>, or null when the profile names no
