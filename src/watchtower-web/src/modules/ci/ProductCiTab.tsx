@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Boxes, Flame, Github, Hammer, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CiRegistrySync, CiRepo, CiToolchainProfile, Stack } from '@/lib/types'
+import type { CiRegistrySync, CiRepo, CiToolchainProfile, Product } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -22,7 +22,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 
-// ── CI tab — per-stack GitHub Actions runners (docs/ci-runners/design.md) ────────
+// ── CI tab — per-product GitHub Actions runners (docs/ci-runners/design.md) ──────
+//
+// CI belongs to the repository, so it lives on the product (ADR-0026): one runner pool and one
+// toolcache shared by every stack deploying it, configured in one place instead of on whichever
+// instance the operator happened to open.
 
 const toolchainLabels: Record<string, string> = {
   dotnet: '.NET',
@@ -65,15 +69,15 @@ function WarmBadge({ profile }: { profile: CiToolchainProfile }) {
   }
 }
 
-export function StackCiTab({ stack }: { stack: Stack }) {
+export function ProductCiTab({ product }: { product: Product }) {
   const {
     data: ci,
     isLoading,
     isError,
     refetch,
   } = useQuery({
-    queryKey: ['stacks', stack.id, 'ci'],
-    queryFn: () => api.ci.getStackCi(stack.id),
+    queryKey: ['product', product.id, 'ci'],
+    queryFn: () => api.ci.getProductCi(product.id),
     // Runner slots and warm state are live orchestrator data — poll while CI is enabled.
     refetchInterval: (q) => (q.state.data?.repo?.enabled ? 10_000 : false),
   })
@@ -100,22 +104,22 @@ export function StackCiTab({ stack }: { stack: Stack }) {
       <EmptyState
         icon={Github}
         title="CI runners need a GitHub repository"
-        description={`This stack deploys from ${stack.repositoryUrl}, which is not a github.com repository. Watchtower-managed runners register with GitHub Actions, so only GitHub repositories can use them.`}
+        description={`This product deploys from ${product.repositoryUrl}, which is not a github.com repository. Watchtower-managed runners register with GitHub Actions, so only GitHub repositories can use them.`}
       />
     )
   }
 
   return ci.repo ? (
-    <CiRepoPanel stack={stack} repo={ci.repo} />
+    <CiRepoPanel product={product} repo={ci.repo} />
   ) : (
-    <EnableCiCard stack={stack} owner={ci.owner!} name={ci.name!} />
+    <EnableCiCard product={product} owner={ci.owner!} name={ci.name!} />
   )
 }
 
 /** The "not enabled yet" card: explains what enabling does and probes the PAT up front. */
-function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; name: string }) {
+function EnableCiCard({ product, owner, name }: { product: Product; owner: string; name: string }) {
   const qc = useQueryClient()
-  const [credentialId, setCredentialId] = useState<number | null>(stack.credentialId)
+  const [credentialId, setCredentialId] = useState<number | null>(product.credentialId)
   const [error, setError] = useState<string | null>(null)
 
   const { data: credentials = [] } = useQuery({
@@ -124,10 +128,10 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
   })
 
   const enable = useMutation({
-    mutationFn: () => api.ci.enableForStack(stack.id, credentialId),
+    mutationFn: () => api.ci.enableForProduct(product.id, credentialId),
     onSuccess: (repo) => {
       setError(null)
-      qc.invalidateQueries({ queryKey: ['stacks', stack.id, 'ci'] })
+      qc.invalidateQueries({ queryKey: ['product', product.id, 'ci'] })
       toast.success(`CI runners enabled for ${repo.fullName}.`)
     },
     // The server names the exact missing PAT permission — show its message verbatim.
@@ -146,7 +150,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
             Enabling CI registers ephemeral, just-in-time runners for{' '}
             <span className="font-mono text-text">{owner}/{name}</span> — no tokens are copied into
             containers, each runner takes one job and exits, and per-repo caches keep builds fast.
-            Stacks deploying the same repository share one runner pool.
+            Products deploying the same repository share one runner pool.
           </p>
 
           <Field
@@ -164,7 +168,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
                 {credentials.map((c) => (
                   <SelectItem key={c.id} value={String(c.id)}>
                     {c.name} ({c.username})
-                    {c.id === stack.credentialId ? ' — used for cloning' : ''}
+                    {c.id === product.credentialId ? ' — used for cloning' : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -192,7 +196,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
 }
 
 /** The enabled view: runner slots, detected toolchains + cache warmth, and runner settings. */
-function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
+function CiRepoPanel({ product, repo }: { product: Product; repo: CiRepo }) {
   const qc = useQueryClient()
   const status = repo.runnerStatus
   const [maxRunners, setMaxRunners] = useState(repo.maxConcurrentRunners)
@@ -214,7 +218,7 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
         syncRegistryUrl:
           changes.syncRegistryUrl !== undefined ? changes.syncRegistryUrl : repo.syncRegistryUrl,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stacks', stack.id, 'ci'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['product', product.id, 'ci'] }),
     onError: (err: Error) => toast.error('Update failed', err.message),
   })
 
@@ -339,7 +343,7 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
           ) : (
             <p className="text-[13px] text-text-2">
               Not detected yet — the toolchain profile is read from the repository during the next
-              deploy of this stack.
+              deploy of this product.
             </p>
           )}
         </CardContent>

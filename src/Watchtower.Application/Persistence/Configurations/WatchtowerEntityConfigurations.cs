@@ -131,6 +131,12 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
             .WithMany()
             .HasForeignKey(x => x.CredentialId)
             .OnDelete(DeleteBehavior.SetNull);
+        // SetNull, and deliberately not unique: removing a repo from CI must not take the products that
+        // deploy it, and several products (different compose files in one repository) share one CI repo.
+        b.HasOne(x => x.CiRepo)
+            .WithMany()
+            .HasForeignKey(x => x.CiRepoId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

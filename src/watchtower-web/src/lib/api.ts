@@ -25,8 +25,8 @@ import type {
   ContainerEnvVar,
   ContainerMetrics,
   AddTenantRequest,
+  CiLink,
   CiRepo,
-  StackCi,
   CertificateInfo,
   CreateCredentialRequest,
   CreateRealmRequest,
@@ -228,9 +228,11 @@ export const api = {
   },
 
   ci: {
-    getStackCi: async (stackId: number) => (await rpc('ci.getStackCi', { stackId })).ci as StackCi,
-    enableForStack: async (stackId: number, credentialId?: number | null) =>
-      (await rpc('ci.enableForStack', { stackId, credentialId: credentialId ?? null })).repo as CiRepo,
+    getProductCi: async (productId: number) =>
+      (await rpc('ci.getProductCi', { productId })).ci as CiLink,
+    enableForProduct: async (productId: number, credentialId?: number | null) =>
+      (await rpc('ci.enableForProduct', { productId, credentialId: credentialId ?? null }))
+        .repo as CiRepo,
     updateRepo: async (repo: {
       id: number
       enabled: boolean

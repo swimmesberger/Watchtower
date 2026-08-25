@@ -43,6 +43,21 @@ public sealed class Product {
     public int? CredentialId { get; set; }
     public Credential? Credential { get; set; }
 
+    /// <summary>
+    /// The GitHub repository whose Actions runners and Actions-secret sync belong to this product
+    /// (ADR-0026 decision 7). Null when CI was never enabled, when the remote is not on github.com, or
+    /// when the link has simply not been resolved yet — it is recorded lazily on the first CI read that
+    /// finds a <see cref="Entities.CiRepo"/> matching the parsed <c>owner/name</c>, and cleared by
+    /// <c>products.update</c> when the repository URL moves. Set to null when the CI repo is deleted.
+    /// </summary>
+    /// <remarks>
+    /// The FK replaces re-parsing <see cref="RepositoryUrl"/> on every read. <c>CiRepo</c> stays a
+    /// separate entity rather than columns here because it is GitHub-specific infrastructure and several
+    /// products (a second compose file in the same repository) legitimately share one.
+    /// </remarks>
+    public int? CiRepoId { get; set; }
+    public CiRepo? CiRepo { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>The running copies of this product.</summary>

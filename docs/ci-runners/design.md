@@ -286,24 +286,32 @@ Sovereign mode is shelved, not planned; this section stays as the record of the 
 should the trade-off ever be revisited (e.g. a forge migration, where act is the natural
 engine anyway).
 
-## Stack-linked CI, toolchain detection & cache pre-warming
+## Product-linked CI, toolchain detection & cache pre-warming
 
-Status: implemented (2026-08-18). Stacks are where repositories already live in
-Watchtower — the natural place to turn CI on. This section covers the stack↔CI link, the
-toolchain profile detected from deploy clones, and the toolcache warmer driven by it.
+Status: implemented (2026-08-18); moved from the stack to the product 2026-08-25 (ADR-0026
+decision 7). Products are where repositories live in Watchtower — the natural place to turn
+CI on. This section covers the product↔CI link, the toolchain profile detected from deploy
+clones, and the toolcache warmer driven by it.
 
-### "Enable CI" per stack
+### "Enable CI" per product
 
-A stack's `RepositoryUrl` is parsed into `owner/name` (`GitHubRepoUrl`, github.com HTTPS
-and SSH forms only — other forges can't get Actions runners and say so). `ci.enableForStack`
-creates — or re-enables — the `CiRepo` for that pair; since CI repos are unique on
-`owner/name`, **multiple stacks deploying the same repository share one runner pool and one
-cache**. `ci.getStackCi` is the read side the stack page's CI tab polls: parse result,
+A product's `RepositoryUrl` is parsed into `owner/name` (`GitHubRepoUrl`, github.com HTTPS
+and SSH forms only — other forges can't get Actions runners and say so).
+`ci.enableForProduct` creates — or re-enables — the `CiRepo` for that pair and records it as
+`Product.CiRepoId`; since CI repos are unique on `owner/name`, **every stack deploying the
+product (and every other product over the same repository) shares one runner pool and one
+cache**. `ci.getProductCi` is the read side the product page's CI tab polls: parse result,
 linked repo, runner status, toolchain profile.
 
-Credentials: the stack's clone credential usually holds a Contents-read PAT, while runner
+The FK replaced URL string matching, and is filled in lazily: a product whose `CiRepoId` is
+null — everything the ADR-0026 backfill created — is resolved from its repository URL on the
+first CI read (`CiRepoResolver`), which then records the answer. `products.update` clears the
+link when the repository URL moves, so the next read re-resolves it. `ci.getStackCi` and
+`ci.enableForStack` survive as thin forwards through `stack.ProductId` for one release.
+
+Credentials: the product's clone credential usually holds a Contents-read PAT, while runner
 registration needs repository **Administration (read and write)**. The chosen credential —
-explicit, or defaulting to the stack's — is probed via `ValidateRepoAccessAsync` before
+explicit, or defaulting to the product's — is probed via `ValidateRepoAccessAsync` before
 anything is written, and a wrong-scoped PAT fails with a message naming the missing
 permission and the way out (choose/create a runner-admin credential). Re-enabling with the
 already-validated credential skips the probe.
@@ -312,8 +320,8 @@ already-validated credential skips the probe.
 
 Every deploy already clones the repository, so detection piggybacks on that clone at zero
 extra cost: right after a successful clone, `CiToolchainRecorder` (best-effort by contract —
-it can never fail a deploy) detects a **toolchain profile** for the matching CI repo, if one
-is configured. Signals, strongest first:
+it can never fail a deploy) detects a **toolchain profile** for the CI repo the deployed
+stack's product links to, if one is configured. Signals, strongest first:
 
 1. `.github/workflows/*.yml` `setup-dotnet`/`setup-node`/`setup-go` steps and their
    `*-version:` inputs (inline, block-scalar and flow-list forms; matrix expressions are

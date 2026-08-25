@@ -18,21 +18,30 @@ public sealed class CiToolchainRecorder(
 
     /// <summary>
     /// Detects the toolchain profile of <paramref name="cloneDir"/> and persists it on the CI repo
-    /// matching <paramref name="repositoryUrl"/>, when one is configured. No-op for non-GitHub
-    /// remotes and for repositories without CI enabled. Returns a short human-readable summary for
+    /// linked to product <paramref name="productId"/>, when one is configured. No-op for non-GitHub
+    /// remotes and for products without CI enabled. Returns a short human-readable summary for
     /// the deploy log, or null when nothing was recorded.
     /// </summary>
-    public async Task<string?> TryRecordAsync(string repositoryUrl, string cloneDir, CancellationToken ct) {
+    /// <remarks>
+    /// Keyed by product, not by URL: the link is <see cref="Entities.Product.CiRepoId"/> since ADR-0026,
+    /// and the resolver falls back to parsing the repository URL (recording the FK when it finds a
+    /// match) for products that predate it.
+    /// </remarks>
+    public async Task<string?> TryRecordAsync(int productId, string cloneDir, CancellationToken ct) {
         try {
-            if (GitHubRepoUrl.TryParse(repositoryUrl) is not var (owner, name))
-                return null;
-
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            var repo = await db.CiRepos.FirstOrDefaultAsync(
-                r => r.Owner.ToLower() == owner.ToLower() && r.Name.ToLower() == name.ToLower(), ct);
-            if (repo is null)
+            var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == productId, ct);
+            if (product is null)
                 return null;
+
+            var link = await scope.ServiceProvider.GetRequiredService<CiRepoResolver>()
+                .ResolveAsync(product, ct);
+            // Attach the resolved (no-tracking) repo so the profile write below goes through EF as an
+            // update rather than an insert.
+            if (link.Repo is not { } repo)
+                return null;
+            db.CiRepos.Attach(repo);
 
             var profile = CiToolchainDetector.Detect(cloneDir);
             var json = profile.ToJson();
@@ -55,7 +64,7 @@ public sealed class CiToolchainRecorder(
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception ex) {
-            logger.LogWarning(ex, "CI toolchain detection failed for {Url}; deploy continues", repositoryUrl);
+            logger.LogWarning(ex, "CI toolchain detection failed for product {ProductId}; deploy continues", productId);
             return null;
         }
     }

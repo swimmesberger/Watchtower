@@ -451,7 +451,66 @@ public sealed class ProductsRpcTests {
         Assert.False(await db.AuditEvents.AsNoTracking().AnyAsync(e => e.Action == "product.update", Ct));
     }
 
+    /// <summary>
+    /// Moving a product's remote invalidates its CI link, because "which GitHub repo is this?" just got
+    /// a new answer (ADR-0026 decision 7). It is cleared rather than re-resolved here so there stays one
+    /// resolution path — the next <c>ci.getProductCi</c> parses the new URL and records what it finds.
+    /// </summary>
+    [Fact]
+    public async Task Update_ClearsTheCiRepoLinkWhenTheRepositoryUrlChanges() {
+        using var host = AuthTestHost.Start();
+        int productId, ciRepoId;
+        await using (var setup = host.Services.CreateAsyncScope()) {
+            var db = setup.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var credential = new Credential {
+                Name = "bot", Username = "git", Token = "t", CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Credentials.Add(credential);
+            await db.SaveChangesAsync(Ct);
+            var ciRepo = new CiRepo {
+                Owner = "acme", Name = "shop", CredentialId = credential.Id, Enabled = true,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.CiRepos.Add(ciRepo);
+            await db.SaveChangesAsync(Ct);
+            ciRepoId = ciRepo.Id;
+            productId = await AddProductAsync(setup.ServiceProvider, "shop", Repo, "main");
+            // The state ci.enableForProduct leaves behind, written directly so this test does not
+            // depend on the CI module's handlers.
+            await db.Products.Where(p => p.Id == productId)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.CiRepoId, ciRepoId), Ct);
+        }
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var update = ActivatorUtilities.CreateInstance<UpdateProduct>(scope.ServiceProvider);
+
+        // An edit that leaves the URL alone leaves the link alone.
+        Assert.True((await update.HandleAsync(
+            new UpdateProduct.Command(productId, "shop", Repo, Compose, "develop"), Ct)).IsSuccess);
+        Assert.Equal(ciRepoId, await CiRepoIdAsync(host, productId));
+
+        Assert.True((await update.HandleAsync(
+            new UpdateProduct.Command(productId, "shop", "https://github.com/acme/shop-next.git", Compose, "develop"),
+            Ct)).IsSuccess);
+        Assert.Null(await CiRepoIdAsync(host, productId));
+
+        await using var check = host.Services.CreateAsyncScope();
+        var readDb = check.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        // The CI repo itself survives — other products may still deploy it, and its runners keep running.
+        Assert.True(await readDb.CiRepos.AsNoTracking().AnyAsync(r => r.Id == ciRepoId, Ct));
+        var row = await readDb.AuditEvents.AsNoTracking()
+            .Where(e => e.Action == "product.update").OrderByDescending(e => e.Id).FirstAsync(Ct);
+        Assert.Contains("CI repository link cleared", row.Detail!, StringComparison.Ordinal);
+    }
+
     // ── Fixture ──────────────────────────────────────────────────────────────
+
+    private static async Task<int?> CiRepoIdAsync(AuthTestHost host, int productId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Products.AsNoTracking()
+            .Where(p => p.Id == productId).Select(p => p.CiRepoId).FirstAsync(Ct);
+    }
 
     private static async Task<Result<CreateStack.Response>> CreateStackAsync(
         IServiceProvider services, string name, string repositoryUrl, string composeFilePath, string branch,

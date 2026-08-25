@@ -1260,11 +1260,11 @@ export interface CiRepo {
 }
 
 /**
- * The CI view of one stack: whether its repository is on github.com (only those can get Actions
- * runners) and the linked CI repo when enabled. Stacks deploying the same repository share one
- * CI repo — one runner pool, one toolcache.
+ * The CI view of one product: whether its repository is on github.com (only those can get Actions
+ * runners) and the linked CI repo when enabled. Products over the same repository share one CI
+ * repo — one runner pool, one toolcache — as do all the stacks deploying them.
  */
-export interface StackCi {
+export interface CiLink {
   isGitHub: boolean
   owner: string | null
   name: string | null

@@ -70,10 +70,11 @@ public sealed class UpdateProduct(
         // the update detail: "who changed the credential behind this product, and when" is the question
         // asked after a clone starts failing, and it should be answerable by filtering the trail.
         var previousCredentialId = product.CredentialId;
+        var repositoryMoved = !string.Equals(product.RepositoryUrl, repositoryUrl, StringComparison.Ordinal);
         var changes = new List<string>();
         if (!string.Equals(product.Name, name, StringComparison.Ordinal))
             changes.Add($"renamedFrom={product.Name}");
-        if (!string.Equals(product.RepositoryUrl, repositoryUrl, StringComparison.Ordinal)) {
+        if (repositoryMoved) {
             changes.Add(
                 $"REPOSITORY CHANGED {product.RepositoryUrl} → {repositoryUrl} "
                 + $"({stackCount} stack(s), {templateCount} template(s) will deploy it from their next deploy)");
@@ -91,6 +92,14 @@ public sealed class UpdateProduct(
         product.ComposeFilePath = composeFilePath;
         product.DefaultBranch = defaultBranch;
         product.CredentialId = command.CredentialId;
+        if (repositoryMoved && product.CiRepoId is not null) {
+            // The CI link is a cached answer to "which GitHub repo is this?", and the question just got
+            // a new answer. Clearing rather than re-resolving here keeps one resolution path: the next
+            // CI read parses the new URL and records what it finds (ADR-0026 decision 7). The CiRepo row
+            // itself is untouched — other products may still deploy it, and its runners keep running.
+            product.CiRepoId = null;
+            changes.Add("CI repository link cleared (re-resolved from the new URL on the next CI read)");
+        }
         await db.SaveChangesAsync(ct);
 
         var actor = await audit.ActorAsync(currentUser, ct);

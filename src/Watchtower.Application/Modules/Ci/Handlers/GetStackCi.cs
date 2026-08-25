@@ -1,38 +1,33 @@
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Persistence;
-using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Ci.Handlers;
 
 /// <summary>
-/// The CI view of one stack: whether its repository URL is a GitHub repo (only those can get
-/// runners), and the linked <see cref="CiRepoDto"/> — runner status and toolchain profile included —
-/// when CI is enabled for that repository. The link is implicit via <c>owner/name</c>: stacks
-/// deploying the same repository share one CI repo, one runner pool and one toolcache.
+/// The CI view of the product a stack is a running copy of — a thin forward to
+/// <see cref="GetProductCi"/>, kept so clients pinned to the stack-scoped call keep working while the
+/// CI surface moves to the product page (ADR-0026 decision 7).
 /// </summary>
+/// <remarks>
+/// <b>Forwarding shim, scheduled for removal.</b> CI belongs to the repository, never to one running
+/// copy of it: the answer this returns is exactly <c>ci.getProductCi(stack.ProductId)</c>. Delete it
+/// once no client calls it — the frontend already reads the product-scoped method.
+/// </remarks>
 [Handler("ci.getStackCi")]
-public sealed class GetStackCi(WatchtowerDbContext db, CiRunnerOrchestrator orchestrator)
+public sealed class GetStackCi(
+    WatchtowerDbContext db, IHandler<GetProductCi.Query, Result<GetProductCi.Response>> getProductCi)
     : IHandler<GetStackCi.Query, Result<GetStackCi.Response>> {
     public sealed record Query(int StackId) : IQuery;
 
-    public sealed record Response(CiStackCiDto Ci);
+    public sealed record Response(CiLinkDto Ci);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        var stack = await db.Stacks.AsNoTracking()
-            .Include(s => s.Product)
-            .Include(s => s.Template)
-            .FirstOrDefaultAsync(s => s.Id == query.StackId, ct);
-        if (stack is null)
+        var productId = await db.Stacks.AsNoTracking()
+            .Where(s => s.Id == query.StackId).Select(s => (int?)s.ProductId).FirstOrDefaultAsync(ct);
+        if (productId is not { } id)
             return AppError.NotFound($"Stack {query.StackId} not found.");
 
-        if (GitHubRepoUrl.TryParse(ProductSourceResolver.Resolve(stack).RepositoryUrl) is not var (owner, name))
-            return new Response(new CiStackCiDto(IsGitHub: false, Owner: null, Name: null, Repo: null));
-
-        var repo = await db.CiRepos.AsNoTracking().FirstOrDefaultAsync(
-            r => r.Owner.ToLower() == owner.ToLower() && r.Name.ToLower() == name.ToLower(), ct);
-        var dto = repo is null
-            ? null
-            : CiMapping.ToDto(repo, orchestrator.Status.TryGetValue(repo.Id, out var s) ? s : null);
-        return new Response(new CiStackCiDto(IsGitHub: true, owner, name, dto));
+        var forwarded = await getProductCi.HandleAsync(new GetProductCi.Query(id), ct);
+        return forwarded.IsSuccess ? new Response(forwarded.Value.Ci) : forwarded.Error;
     }
 }

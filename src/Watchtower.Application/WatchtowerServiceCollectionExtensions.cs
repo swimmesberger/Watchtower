@@ -320,6 +320,9 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<GitHubApiClient>();
         services.AddSingleton<CiRunnerOrchestrator>();
         services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
+        // Product → CI repo link (ADR-0026 decision 7): reads go through the FK, and the resolver
+        // records it the first time it can derive one from the repository URL.
+        services.AddScoped<CiRepoResolver>();
         // Toolchain detection piggybacks on deploy clones; the recorder persists the profile and
         // wakes the orchestrator so the toolcache warmer converges (docs/ci-runners/design.md).
         services.AddSingleton<CiToolchainRecorder>();

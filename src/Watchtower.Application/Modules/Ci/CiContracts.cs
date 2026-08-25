@@ -62,11 +62,11 @@ public sealed record CiToolchainProfileDto(
 public sealed record CiAvailableRepoDto(string FullName, bool Private, string DefaultBranch, DateTimeOffset? PushedAt);
 
 /// <summary>
-/// The CI view of one stack: whether its repository can get runners at all (GitHub only), and the
-/// linked <see cref="CiRepoDto"/> when CI is enabled. Multiple stacks of the same repository share
-/// one CI repo — and therefore one runner pool and one toolcache.
+/// The CI view of one product: whether its repository can get runners at all (GitHub only), and the
+/// linked <see cref="CiRepoDto"/> when CI is enabled. Products over the same repository share one CI
+/// repo — and therefore one runner pool and one toolcache — as do all the stacks deploying them.
 /// </summary>
-public sealed record CiStackCiDto(
+public sealed record CiLinkDto(
     bool IsGitHub,
     string? Owner,
     string? Name,

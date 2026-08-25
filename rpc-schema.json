@@ -1327,6 +1327,240 @@
         ]
       }
     },
+    "ci.enableForProduct": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "fullName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "maxConcurrentRunners": {
+                "type": "integer"
+              },
+              "runnerImage": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "extraLabels": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "allowDockerSocket": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "runnerStatus": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "desiredRunners": {
+                    "type": "integer"
+                  },
+                  "runningRunners": {
+                    "type": "integer"
+                  },
+                  "totalSpawned": {
+                    "type": "integer"
+                  },
+                  "lastError": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastErrorAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "backoffUntil": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "desiredRunners",
+                  "runningRunners",
+                  "totalSpawned",
+                  "lastError",
+                  "lastErrorAt",
+                  "backoffUntil"
+                ]
+              },
+              "toolchain": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "toolchains": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "version",
+                        "source"
+                      ]
+                    }
+                  },
+                  "hasDockerfile": {
+                    "type": "boolean"
+                  },
+                  "detectedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "warmStatus": {
+                    "type": "string"
+                  },
+                  "lastWarmedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "lastWarmError": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "toolchains",
+                  "hasDockerfile",
+                  "detectedAt",
+                  "warmStatus",
+                  "lastWarmedAt",
+                  "lastWarmError"
+                ]
+              },
+              "syncRegistryUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "registrySync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "owner",
+              "name",
+              "fullName",
+              "credentialId",
+              "enabled",
+              "maxConcurrentRunners",
+              "runnerImage",
+              "extraLabels",
+              "allowDockerSocket",
+              "createdAt",
+              "runnerStatus",
+              "toolchain",
+              "syncRegistryUrl",
+              "registrySync"
+            ]
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    },
     "ci.enableForStack": {
       "params": {
         "type": "object",
@@ -1558,6 +1792,262 @@
         },
         "required": [
           "repo"
+        ]
+      }
+    },
+    "ci.getProductCi": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ci": {
+            "type": "object",
+            "properties": {
+              "isGitHub": {
+                "type": "boolean"
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repo": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "fullName": {
+                    "type": "string"
+                  },
+                  "credentialId": {
+                    "type": "integer"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "maxConcurrentRunners": {
+                    "type": "integer"
+                  },
+                  "runnerImage": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "extraLabels": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "allowDockerSocket": {
+                    "type": "boolean"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "runnerStatus": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "desiredRunners": {
+                        "type": "integer"
+                      },
+                      "runningRunners": {
+                        "type": "integer"
+                      },
+                      "totalSpawned": {
+                        "type": "integer"
+                      },
+                      "lastError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "lastErrorAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "backoffUntil": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "desiredRunners",
+                      "runningRunners",
+                      "totalSpawned",
+                      "lastError",
+                      "lastErrorAt",
+                      "backoffUntil"
+                    ]
+                  },
+                  "toolchain": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "toolchains": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string"
+                            },
+                            "version": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "version",
+                            "source"
+                          ]
+                        }
+                      },
+                      "hasDockerfile": {
+                        "type": "boolean"
+                      },
+                      "detectedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "warmStatus": {
+                        "type": "string"
+                      },
+                      "lastWarmedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "lastWarmError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "toolchains",
+                      "hasDockerfile",
+                      "detectedAt",
+                      "warmStatus",
+                      "lastWarmedAt",
+                      "lastWarmError"
+                    ]
+                  },
+                  "syncRegistryUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "registrySync": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "status": {
+                        "type": "string"
+                      },
+                      "syncedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "syncedAt",
+                      "error"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "owner",
+                  "name",
+                  "fullName",
+                  "credentialId",
+                  "enabled",
+                  "maxConcurrentRunners",
+                  "runnerImage",
+                  "extraLabels",
+                  "allowDockerSocket",
+                  "createdAt",
+                  "runnerStatus",
+                  "toolchain",
+                  "syncRegistryUrl",
+                  "registrySync"
+                ]
+              }
+            },
+            "required": [
+              "isGitHub",
+              "owner",
+              "name",
+              "repo"
+            ]
+          }
+        },
+        "required": [
+          "ci"
         ]
       }
     },
