@@ -32,6 +32,7 @@ import type {
   CreateRealmRequest,
   CreateRegistryRequest,
   CreateRouteRequest,
+  CreateProductRequest,
   CreateStackRequest,
   CreateTemplateRequest,
   Credential,
@@ -45,6 +46,8 @@ import type {
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
+  Product,
+  ProductDetail,
   PruneOrphansResult,
   ProxyConfig,
   ProxyStatus,
@@ -67,6 +70,7 @@ import type {
   UpdateAutomationRequest,
   UpdateCredentialRequest,
   UpdateMetricsConfigRequest,
+  UpdateProductRequest,
   UpdateProxyConfigRequest,
   UpdateRealmRequest,
   UpdateRegistryRequest,
@@ -129,12 +133,42 @@ export const api = {
     },
   },
 
+  products: {
+    list: async () => (await rpc('products.list', {})).products as Product[],
+    // The whole envelope: the rosters are what the detail page is for, so splitting them into a
+    // second call would only make the page fetch twice for one screen.
+    get: async (id: number) => (await rpc('products.get', { id })) as ProductDetail,
+    create: async (data: CreateProductRequest) =>
+      (await rpc('products.create', {
+        name: data.name,
+        repositoryUrl: data.repositoryUrl,
+        composeFilePath: data.composeFilePath,
+        defaultBranch: data.defaultBranch,
+        description: data.description ?? null,
+        credentialId: data.credentialId ?? null,
+      })).product as Product,
+    update: async (id: number, data: UpdateProductRequest) =>
+      (await rpc('products.update', {
+        id,
+        name: data.name,
+        repositoryUrl: data.repositoryUrl,
+        composeFilePath: data.composeFilePath,
+        defaultBranch: data.defaultBranch,
+        description: data.description ?? null,
+        credentialId: data.credentialId ?? null,
+      })).product as Product,
+    delete: async (id: number) => {
+      await rpc('products.delete', { id })
+    },
+  },
+
   stacks: {
     list: async () => (await rpc('stacks.list', {})).stacks as Stack[],
     get: async (id: number) => (await rpc('stacks.get', { id })).stack as Stack,
     create: async (data: CreateStackRequest) =>
       (await rpc('stacks.create', {
         name: data.name,
+        productId: data.productId ?? null,
         repositoryUrl: data.repositoryUrl,
         composeFilePath: data.composeFilePath,
         branch: data.branch,
@@ -381,6 +415,7 @@ export const api = {
     create: async (data: CreateTemplateRequest) =>
       (await rpc('templates.create', {
         name: data.name,
+        productId: data.productId ?? null,
         repositoryUrl: data.repositoryUrl,
         composeFilePath: data.composeFilePath,
         branch: data.branch,

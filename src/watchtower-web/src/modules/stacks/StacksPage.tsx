@@ -33,12 +33,13 @@ function isDeploying(stack: Stack): boolean {
   return stack.lastDeployStatus === 'running' || stack.lastDeployStatus === 'queued'
 }
 
-const repoLabel = (url: string) => url.replace(/^https:\/\/github\.com\//, '')
-
 export function StacksPage() {
   const qc = useQueryClient()
   const { status } = stacksApi.useSearch()
   const navigate = stacksApi.useNavigate()
+  // The catalogue page is gated on the Products module, so the product cell only links when it is
+  // somewhere the reader can actually land.
+  const productsEnabled = stacksApi.useRouteContext().caps.isModuleEnabled('Products')
 
   const [pendingDelete, setPendingDelete] = useState<Stack | null>(null)
 
@@ -168,6 +169,28 @@ export function StacksPage() {
     )
   }
 
+  /** The product a stack runs, linked only when the catalogue page is actually reachable. */
+  function ProductCell({ stack }: { stack: Stack }) {
+    const className = 'block max-w-[20ch] truncate text-[13px] text-text-2'
+    if (!productsEnabled) {
+      return (
+        <span className={className} title={stack.repositoryUrl}>
+          {stack.productName}
+        </span>
+      )
+    }
+    return (
+      <Link
+        to="/products/$id"
+        params={{ id: String(stack.productId) }}
+        className={cn(className, 'hover:text-brand')}
+        title={stack.repositoryUrl}
+      >
+        {stack.productName}
+      </Link>
+    )
+  }
+
   function DeleteButton({ stack }: { stack: Stack }) {
     return (
       <Tooltip label="Delete stack">
@@ -200,13 +223,11 @@ export function StacksPage() {
       ),
     },
     {
-      key: 'repo',
-      header: 'Repository',
-      cell: (s) => (
-        <span className="block max-w-[22ch] truncate font-mono text-[13px] text-text-2">
-          {repoLabel(s.repositoryUrl)}
-        </span>
-      ),
+      key: 'product',
+      header: 'Product',
+      // Replaces the Repository column rather than joining it: the product carries the identity and
+      // the repository URL rides along as its tooltip, keeping this list at the width it had.
+      cell: (s) => <ProductCell stack={s} />,
     },
     {
       key: 'branch',
@@ -267,8 +288,9 @@ export function StacksPage() {
         )}
       </div>
 
-      <p className="truncate font-mono text-[13px] text-text-2">
-        {repoLabel(s.repositoryUrl)} · {s.branch}
+      {/* Mobile parity with the table: the product names the source, the branch qualifies it. */}
+      <p className="truncate text-[13px] text-text-2" title={s.repositoryUrl}>
+        {s.productName} · <span className="font-mono">{s.branch}</span>
       </p>
 
       <p className="text-[13px] text-text-2">

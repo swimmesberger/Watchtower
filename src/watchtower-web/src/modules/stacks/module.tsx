@@ -49,11 +49,20 @@ export const stacksRoute = createRoute({
   },
 })
 
+interface StackNewSearch {
+  /** Preselects "Existing product" in the Source card — how the product page starts a deployment. */
+  productId?: number
+}
+
 export const stackNewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/stacks/new',
   beforeLoad: redirectUnless({ module: 'Stacks' }, '/'),
   component: lazyRouteComponent(() => import('./StackNewPage'), 'StackNewPage'),
+  validateSearch: (search: Record<string, unknown>): StackNewSearch => {
+    const id = Number(search.productId)
+    return Number.isInteger(id) && id > 0 ? { productId: id } : {}
+  },
 })
 
 interface StackDetailSearch {

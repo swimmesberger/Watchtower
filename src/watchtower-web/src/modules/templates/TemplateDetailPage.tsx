@@ -55,6 +55,8 @@ export function TemplateDetailPage() {
   // would fail with Forbidden for a non-admin and the card would lie about there being no grants.
   // templates.removeTenant is NOT admin-gated, so the per-tenant remove action stays visible.
   const canManageGrants = caps.hasRole('Admin')
+  // Whether the product named in the source line is somewhere the reader can actually land.
+  const productsEnabled = caps.isModuleEnabled('Products')
   // Same gate, same reason: realms.list is [RequireRole("Admin")], so a non-administrator reading a
   // template must not fetch a roster it would only be refused. The realm line then simply isn't shown.
   const { nameOrNull } = useRealms({ enabled: canManageGrants })
@@ -371,7 +373,24 @@ export function TemplateDetailPage() {
 
       <Card>
         <CardContent className="space-y-1 text-[13px] text-text-2">
-          <p className="font-mono">{template.repositoryUrl} · {template.branch}</p>
+          {/* The source moved onto the product (ADR-0026); the line points at where it is edited —
+              as plain text when the Products module is off and that page would redirect away. */}
+          <p>
+            From product{' '}
+            {productsEnabled ? (
+              <Link
+                to="/products/$id"
+                params={{ id: String(template.productId) }}
+                className="font-medium text-text hover:text-brand"
+              >
+                {template.productName}
+              </Link>
+            ) : (
+              <span className="font-medium text-text">{template.productName}</span>
+            )}{' '}
+            — <span className="font-mono">{template.repositoryUrl}</span> ·{' '}
+            <span className="font-mono">{template.branch}</span>
+          </p>
           <p className="font-mono">{template.domainPattern} → {template.targetServiceName}:{template.targetPort}</p>
           {/* The realm decides which accounts every tenant of this template signs in with, and which
               login host they are sent to — read-only here, and the server refuses a move once the

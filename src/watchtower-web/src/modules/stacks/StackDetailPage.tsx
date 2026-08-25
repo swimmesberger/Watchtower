@@ -17,6 +17,8 @@ export function StackDetailPage() {
   const { id } = useParams({ from: '/stacks/$id' })
   const stackId = Number(id)
   const qc = useQueryClient()
+  // Whether the product in the header meta line is somewhere the reader can actually land.
+  const productsEnabled = routeApi.useRouteContext().caps.isModuleEnabled('Products')
 
   // Tabs are contributed via the stackDetailTabs extension point, already sorted by order.
   const tabs = useContributions(stackDetailTabs)
@@ -158,8 +160,23 @@ export function StackDetailPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold tracking-tight text-text">{stack.name}</h1>
+          {/* The source is the product's now, so the repository fragment names it and links to
+              where it is edited — the only change this page carries from ADR-0026. Without the
+              Products module the name stays, plain: its page would redirect straight back out. */}
           <p className="mt-1 truncate font-mono text-[12.5px] text-text-2">
-            {stack.repositoryUrl} · {stack.branch}
+            {productsEnabled ? (
+              <Link
+                to="/products/$id"
+                params={{ id: String(stack.productId) }}
+                className="hover:text-brand"
+                title={stack.repositoryUrl}
+              >
+                {stack.productName}
+              </Link>
+            ) : (
+              <span title={stack.repositoryUrl}>{stack.productName}</span>
+            )}{' '}
+            · {stack.branch}
             {stack.lastDeployedCommit && (
               <span title={`Deployed commit ${stack.lastDeployedCommit}`}>
                 @{stack.lastDeployedCommit.slice(0, 8)}

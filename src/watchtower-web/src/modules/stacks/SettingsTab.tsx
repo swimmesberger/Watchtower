@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useRouteContext } from '@tanstack/react-router'
 import { api } from '@/lib/api'
 import { apiBase } from '@/lib/config'
 import type { AutoDeployMode, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
@@ -24,8 +24,6 @@ import { SectionHeader } from '@/components/ui/section-header'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 
-const NO_CREDENTIAL = 'none'
-
 function webhookUrl(stackId: number): string {
   const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '')
   return `${base}/api/webhooks/stacks/${stackId}/deploy`
@@ -41,18 +39,20 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     queryFn: () => api.stacks.getEnv(stackId),
   })
 
-  const { data: credentials = [] } = useQuery({
-    queryKey: ['credentials'],
-    queryFn: api.credentials.list,
-  })
+  // Only to decide whether the product is linkable; the branch hint below is derived from the stack
+  // DTO alone, because it is the only source that cannot disagree with what the backend compares.
+  const { caps } = useRouteContext({ from: '__root__' })
+  const productsEnabled = caps.isModuleEnabled('Products')
 
-  const [form, setForm] = useState<Omit<UpdateStackRequest, 'envVars'>>({
+  // The three product-owned fields are deliberately absent: stacks.update refuses a *changed* one,
+  // and a value seeded at mount goes stale the moment someone edits the product elsewhere — which
+  // would then fail every save here with a refusal naming a control this form no longer shows.
+  const [form, setForm] = useState<
+    Omit<UpdateStackRequest, 'envVars' | 'repositoryUrl' | 'composeFilePath' | 'credentialId'>
+  >({
     name: stack.name,
-    repositoryUrl: stack.repositoryUrl,
-    composeFilePath: stack.composeFilePath,
     branch: stack.branch,
     composeProjectName: stack.composeProjectName,
-    credentialId: stack.credentialId,
     webhookToken: stack.webhookToken ?? '',
     webhookEnabled: stack.webhookEnabled,
     autoDeployMode: stack.autoDeployMode,
@@ -99,6 +99,11 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     e.preventDefault()
     update.mutate({
       ...form,
+      // Empty is "not supplied" to the handler's Changed() check, and a null credential is only
+      // refused when it names a *different* one — so all three pass without this form owning them.
+      repositoryUrl: '',
+      composeFilePath: '',
+      credentialId: null,
       composeProjectName: form.composeProjectName || null,
       webhookToken: form.webhookToken || null,
       autoDeployTime: form.autoDeployMode === 'scheduled' ? form.autoDeployTime : null,
@@ -107,6 +112,14 @@ export function SettingsTab({ stack }: { stack: Stack }) {
       envVars: envDraft?.filter((v) => v.key.trim() !== ''),
     })
   }
+
+  // Derived from the stack DTO alone. With no override, the effective branch *is* the branch this
+  // stack inherits — the exact value the handler compares against — so it can be named. With one
+  // set, the inherited value is not on the DTO (for a tenant it is the template's override, not the
+  // product default), so the hint states the state instead of guessing a number.
+  const branchHint = stack.branchOverride
+    ? 'Pinned; clear to inherit.'
+    : `Overrides the inherited branch (${stack.branch}) for this stack.`
 
   const url = webhookUrl(stackId)
   const curlHint = form.webhookToken
@@ -122,8 +135,8 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           description="Where the compose project lives and how it’s deployed."
         />
         <Card>
-          <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="Stack name" required className="md:col-span-2">
+          <CardContent className="space-y-4">
+            <Field label="Stack name" required>
               {({ id }) => (
                 <Input
                   id={id}
@@ -135,20 +148,41 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               )}
             </Field>
 
-            <Field label="Repository URL" required className="md:col-span-2">
-              {({ id }) => (
-                <Input
-                  id={id}
-                  mono
-                  value={form.repositoryUrl}
-                  onChange={(e) => set('repositoryUrl', e.target.value)}
-                  placeholder="https://github.com/owner/repo"
-                  required
-                />
+            {/* Demoted, not deleted (design.md §Stack detail): the repository URL, compose file and
+                credential live on the product since ADR-0026 and editing them here now errors
+                server-side, so the control is replaced by a read-only row in the same position that
+                points at where the value moved. */}
+            <div>
+              <p className="text-[13px] text-text-2">
+                From product{' '}
+                {productsEnabled ? (
+                  <Link
+                    to="/products/$id"
+                    params={{ id: String(stack.productId) }}
+                    className="font-medium text-text hover:text-brand"
+                  >
+                    {stack.productName}
+                  </Link>
+                ) : (
+                  // The catalogue page is gated on the module; a link into a route that redirects
+                  // straight back out is worse than plain text.
+                  <span className="font-medium text-text">{stack.productName}</span>
+                )}{' '}
+                — <span className="font-mono">{stack.repositoryUrl}</span> ·{' '}
+                <span className="font-mono">{stack.composeFilePath}</span>
+              </p>
+              {productsEnabled && (
+                <Link
+                  to="/products/$id"
+                  params={{ id: String(stack.productId) }}
+                  className="mt-1 inline-block text-[13px] text-brand hover:underline"
+                >
+                  Edit product
+                </Link>
               )}
-            </Field>
+            </div>
 
-            <Field label="Branch" hint="Defaults to main">
+            <Field label="Branch" hint={branchHint}>
               {({ id, describedBy }) => (
                 <Input
                   id={id}
@@ -161,27 +195,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               )}
             </Field>
 
-            <Field
-              label="Compose file path"
-              hint="Relative to the repo root, e.g. docker-compose.yml"
-            >
-              {({ id, describedBy }) => (
-                <Input
-                  id={id}
-                  aria-describedby={describedBy}
-                  mono
-                  value={form.composeFilePath}
-                  onChange={(e) => set('composeFilePath', e.target.value)}
-                  placeholder="docker-compose.yml"
-                />
-              )}
-            </Field>
-
-            <Field
-              label="Compose project name"
-              hint="Defaults to the stack name"
-              className="md:col-span-2"
-            >
+            <Field label="Compose project name" hint="Defaults to the stack name">
               {({ id, describedBy }) => (
                 <Input
                   id={id}
@@ -200,29 +214,10 @@ export function SettingsTab({ stack }: { stack: Stack }) {
       <section>
         <SectionHeader
           title="Authentication"
-          description="Only needed for private repos or registries."
+          description="Protects the deploy webhook your CI calls. The clone credential lives on the product."
         />
         <Card>
           <CardContent className="space-y-4">
-            <Field label="Credential" hint="Only needed for private repositories">
-              <Select
-                value={form.credentialId != null ? String(form.credentialId) : NO_CREDENTIAL}
-                onValueChange={(v) => set('credentialId', v === NO_CREDENTIAL ? null : Number(v))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="None (public repository)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_CREDENTIAL}>None (public repository)</SelectItem>
-                  {credentials.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name} ({c.username})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-
             <Field label="Webhook">
               <label className="flex items-center gap-3">
                 <Switch

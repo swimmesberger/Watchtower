@@ -26,12 +26,80 @@ export interface Credential {
   createdAt: string
 }
 
-export interface Stack {
+/**
+ * A git repository Watchtower can deploy — its compose file, default branch and clone credential
+ * (ADR-0026). Every stack and every template references one; the source fields they expose are
+ * read-only projections of this.
+ */
+export interface Product {
   id: number
+  name: string
+  description: string | null
+  repositoryUrl: string
+  composeFilePath: string
+  defaultBranch: string
+  credentialId: number | null
+  credentialName: string | null
+  createdAt: string
+  /** How many stacks deploy this product. */
+  stackCount: number
+  /** How many templates instantiate it, each with its own tenants. */
+  templateCount: number
+}
+
+/** One stack deploying a product, as `products.get` rosters it. */
+export interface ProductStack {
+  id: number
+  name: string
+  /** The effective branch: the stack's override when it has one, else the product default. */
+  branch: string
+  branchOverride: string | null
+  templateId: number | null
+  /** Set when the stack is a tenant of `templateId`; null for standalone stacks. */
+  tenantSlug: string | null
+  lastDeployStatus: 'success' | 'failed' | 'running' | 'queued' | null
+  lastDeployedAt: string | null
+}
+
+/** One template instantiating a product, as `products.get` rosters it. */
+export interface ProductTemplate {
+  id: number
+  name: string
+  branch: string
+  branchOverride: string | null
+  tenantCount: number
+}
+
+/** `products.get`: the product plus everything that deploys it. */
+export interface ProductDetail {
+  product: Product
+  stacks: ProductStack[]
+  templates: ProductTemplate[]
+}
+
+export interface CreateProductRequest {
   name: string
   repositoryUrl: string
   composeFilePath: string
+  defaultBranch: string
+  description?: string | null
+  credentialId?: number | null
+}
+
+export type UpdateProductRequest = CreateProductRequest
+
+export interface Stack {
+  id: number
+  name: string
+  /** The product this stack is a running copy of. */
+  productId: number
+  productName: string
+  repositoryUrl: string
+  composeFilePath: string
+  /** The effective branch — `branchOverride` when set, else the product's default. */
   branch: string
+  /** Set only when this stack deploys a branch other than the one it would inherit. */
+  branchOverride: string | null
   composeProjectName: string
   credentialId: number | null
   webhookToken: string | null
@@ -142,6 +210,11 @@ export interface UpdateCredentialRequest {
 
 export interface CreateStackRequest {
   name: string
+  /**
+   * An existing product to deploy. When set the repository fields must be left empty — the product
+   * owns them — and `branch` becomes a per-stack override if it differs from the product default.
+   */
+  productId?: number | null
   repositoryUrl: string
   composeFilePath: string
   branch: string
@@ -783,9 +856,15 @@ export interface ProxyStatus {
 export interface StackTemplate {
   id: number
   name: string
+  /** The product every tenant of this template deploys. */
+  productId: number
+  productName: string
   repositoryUrl: string
   composeFilePath: string
+  /** The effective branch — `branchOverride` when set, else the product's default. */
   branch: string
+  /** Set only when this template's tenants deploy a branch other than the product default. */
+  branchOverride: string | null
   credentialId: number | null
   domainPattern: string
   targetServiceName: string
@@ -831,6 +910,8 @@ export interface TemplateGrant {
 
 export interface CreateTemplateRequest {
   name: string
+  /** An existing product to instantiate. When set the repository fields must be left empty. */
+  productId?: number | null
   repositoryUrl: string
   composeFilePath: string
   branch: string

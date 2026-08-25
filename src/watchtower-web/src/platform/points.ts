@@ -6,7 +6,7 @@
 import type { ComponentType } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { defineExtensionPoint } from './contributions'
-import type { Container, Stack } from '@/lib/types'
+import type { Container, Product, Stack } from '@/lib/types'
 
 /**
  * The sidebar's section vocabulary. The shell owns the groups (label + placement) and modules only name
@@ -68,6 +68,26 @@ export interface StackDetailTab {
 }
 export const stackDetailTabs = defineExtensionPoint<StackDetailTab, StackDetailTabContext>(
   'stacks.detailTabs',
+)
+
+/**
+ * The slot context a product-detail tab receives. A product is *definitional* (ADR-0026), so unlike the
+ * stack page there is no runtime registry to hand through: the product itself is the whole contract, and
+ * a tab that needs the deployment roster reads the `['product', id]` query the page already primed.
+ */
+export interface ProductDetailTabContext {
+  readonly product: Product
+}
+
+/** A tab on the product-detail page. The slot supplies {@link ProductDetailTabContext} to each tab. */
+export interface ProductDetailTab {
+  readonly label: string
+  /** Stable `?tab=` value; also the active-tab key. */
+  readonly value: string
+  readonly component: ComponentType<ProductDetailTabContext>
+}
+export const productDetailTabs = defineExtensionPoint<ProductDetailTab, ProductDetailTabContext>(
+  'products.detailTabs',
 )
 
 /** A section on the dashboard. Sections are self-contained (they fetch their own data). */

@@ -15,6 +15,7 @@ import dashboard from '@/modules/dashboard'
 import groups from '@/modules/groups'
 import infrastructure from '@/modules/infrastructure'
 import metrics from '@/modules/metrics'
+import products from '@/modules/products'
 import proxy from '@/modules/proxy'
 import realms from '@/modules/realms'
 import registries from '@/modules/registries'
@@ -53,6 +54,7 @@ const routeTree = rootRoute.addChildren([
   ...groups.routes,
   ...infrastructure.routes,
   ...metrics.routes,
+  ...products.routes,
   ...proxy.routes,
   ...realms.routes,
   ...registries.routes,
