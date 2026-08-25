@@ -1,6 +1,7 @@
 # Products & Releases — one deployable unit, from hobby stack to tenant fleet
 
 Status: draft (2026-08-25). Decision record: [ADR-0026](../decisions/0026-products-are-the-deployable-unit.md).
+How far the implementation got, and what is owed: [implementation-status.md](implementation-status.md).
 
 ## Motivation
 
