@@ -17,13 +17,16 @@ namespace Watchtower.Application.Services;
 /// </remarks>
 internal static class ComposeOverrideFile {
     /// <summary>
-    /// Extracts the service names and their <see cref="EnvInjectionPlan.InjectTokenLabel"/> values from
-    /// the normalized project JSON.
+    /// Extracts the service names, the images they run, and their
+    /// <see cref="EnvInjectionPlan.InjectTokenLabel"/> and <see cref="EnvInjectionPlan.ReleaseImageLabel"/>
+    /// values from the normalized project JSON.
     /// </summary>
     /// <remarks>
-    /// Only names and that one label are read. The rest of the document is the fully resolved project —
-    /// including every environment value the repository defines — and is deliberately neither parsed
-    /// nor retained.
+    /// Only names, the image and those two labels are read. The rest of the document is the fully
+    /// resolved project — including every environment value the repository defines — and is
+    /// deliberately neither parsed nor retained. The image is the interpolated one Compose resolved, so
+    /// <c>image: ghcr.io/acme/web:${TAG}</c> arrives with the tag already substituted; a build-only
+    /// service declares no image and comes back with null.
     /// </remarks>
     /// <param name="configJson">stdout of <c>docker compose config --format json</c>.</param>
     /// <returns>The services in document order; empty when the document declares none.</returns>
@@ -37,11 +40,19 @@ internal static class ComposeOverrideFile {
 
         var result = new List<EnvInjectionService>();
         foreach (var service in services.EnumerateObject()) {
-            string? label = null;
-            if (service.Value.ValueKind == JsonValueKind.Object
-                && service.Value.TryGetProperty("labels", out var labels))
-                label = ReadLabel(labels, EnvInjectionPlan.InjectTokenLabel);
-            result.Add(new EnvInjectionService(service.Name, label));
+            string? injectToken = null;
+            string? releaseImage = null;
+            string? image = null;
+            if (service.Value.ValueKind == JsonValueKind.Object) {
+                if (service.Value.TryGetProperty("labels", out var labels)) {
+                    injectToken = ReadLabel(labels, EnvInjectionPlan.InjectTokenLabel);
+                    releaseImage = ReadLabel(labels, EnvInjectionPlan.ReleaseImageLabel);
+                }
+                if (service.Value.TryGetProperty("image", out var imageValue)
+                    && imageValue.ValueKind == JsonValueKind.String)
+                    image = imageValue.GetString();
+            }
+            result.Add(new EnvInjectionService(service.Name, injectToken, image, releaseImage));
         }
         return result;
     }

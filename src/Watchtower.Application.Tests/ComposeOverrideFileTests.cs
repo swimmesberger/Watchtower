@@ -30,7 +30,8 @@ public sealed class ComposeOverrideFileTests {
               "environment": { "DATABASE_PASSWORD": "hunter2" },
               "labels": {
                 "com.example.team": "platform",
-                "watchtower.inject-token": "true"
+                "watchtower.inject-token": "true",
+                "watchtower.release-image": "true"
               },
               "networks": { "default": null }
             },
@@ -46,39 +47,77 @@ public sealed class ComposeOverrideFileTests {
         }
         """;
 
+    /// <summary>
+    /// One read of the resolved project carries everything two policies decide from: the injection
+    /// label, and — for image pinning — the resolved image and its own label, both raw.
+    /// </summary>
     [Fact]
-    public void ParseServices_ReadsEveryServiceAndItsLabelValue() {
+    public void ParseServices_ReadsEveryServiceWithItsImageAndBothLabelValues() {
         var services = ComposeOverrideFile.ParseServices(ConfigJson);
 
         Assert.Equal(
-            [new EnvInjectionService("web", "true"),
-             new EnvInjectionService("worker", "false"),
-             new EnvInjectionService("db")],
+            [new EnvInjectionService("web", "true", "ghcr.io/example/web:latest", "true"),
+             new EnvInjectionService("worker", "false", "ghcr.io/example/worker:latest"),
+             new EnvInjectionService("db", null, "postgres:17")],
             services);
     }
 
+    /// <summary>A build-only service declares no image; it is not an error, it is simply not pinnable.</summary>
+    [Fact]
+    public void ParseServices_ToleratesAServiceWithNoImage() {
+        const string json = """
+            {
+              "services": {
+                "web": { "build": { "context": "." }, "labels": { "watchtower.release-image": "true" } }
+              }
+            }
+            """;
+
+        Assert.Equal(
+            [new EnvInjectionService("web", null, null, "true")],
+            ComposeOverrideFile.ParseServices(json));
+    }
+
+    /// <summary>
+    /// Both labels are read out of the <c>KEY=VALUE</c> list form too, and a bare key — Compose's "take
+    /// it from the environment" syntax — carries no value, so it reads as absent rather than as an
+    /// empty (and therefore unusable) one.
+    /// </summary>
     [Fact]
     public void ParseServices_ReadsALabelCarriedAsAList() {
         const string json = """
             {
               "services": {
                 "web": { "labels": ["com.example.team=platform", "watchtower.inject-token=true"] },
-                "worker": { "labels": ["watchtower.inject-token"] }
+                "worker": { "labels": ["watchtower.inject-token"] },
+                "jobs": { "labels": ["watchtower.release-image=false", "watchtower.inject-token=false"] }
               }
             }
             """;
 
         Assert.Equal(
-            [new EnvInjectionService("web", "true"), new EnvInjectionService("worker")],
+            [new EnvInjectionService("web", "true"),
+             new EnvInjectionService("worker"),
+             new EnvInjectionService("jobs", "false", null, "false")],
             ComposeOverrideFile.ParseServices(json));
     }
 
     /// <summary>An unquoted <c>true</c> in YAML can come back as a JSON boolean rather than a string.</summary>
     [Fact]
     public void ParseServices_ReadsALabelThatWasNotQuoted() {
-        const string json = """{ "services": { "web": { "labels": { "watchtower.inject-token": true } } } }""";
+        const string json = """
+            {
+              "services": {
+                "web": {
+                  "labels": { "watchtower.inject-token": true, "watchtower.release-image": false }
+                }
+              }
+            }
+            """;
 
-        Assert.Equal([new EnvInjectionService("web", "true")], ComposeOverrideFile.ParseServices(json));
+        Assert.Equal(
+            [new EnvInjectionService("web", "true", null, "false")],
+            ComposeOverrideFile.ParseServices(json));
     }
 
     [Theory]

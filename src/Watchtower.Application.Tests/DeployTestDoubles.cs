@@ -112,6 +112,53 @@ internal sealed class RecordingComposeCliService()
 }
 
 /// <summary>
+/// A compose CLI that holds each deploy inside its <c>config</c> call for a moment and records how many
+/// deploys were inside it at the same time — the only way to observe the cross-stack gate, which bounds
+/// a region rather than producing a value.
+/// </summary>
+/// <remarks>
+/// <c>config</c> is the probe point because every deploy makes exactly one, and it happens after the
+/// permit has been taken and well before it is released. The hold has to be long enough that deploys
+/// genuinely overlap; the assertion is about the <em>peak</em>, so a slow machine only makes the
+/// overlap more certain, never the test more fragile.
+/// </remarks>
+internal sealed class ConcurrencyProbeComposeCliService()
+    : ComposeCliService(Options.Create(new WatchtowerOptions())) {
+    private int _inFlight;
+    private int _peak;
+    private int _observed;
+
+    /// <summary>How long each deploy is held inside its <c>config</c> call.</summary>
+    public TimeSpan Hold { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>The most deploys that were ever inside the probe at the same time.</summary>
+    public int Peak => Volatile.Read(ref _peak);
+
+    /// <summary>How many deploys reached the probe at all.</summary>
+    public int Observed => Volatile.Read(ref _observed);
+
+    protected override async Task<ComposeConfigResult> RunCapturedAsync(string[] args, CancellationToken ct) {
+        Interlocked.Increment(ref _observed);
+        var current = Interlocked.Increment(ref _inFlight);
+        // Compare-and-swap rather than Math.Max on a read: two deploys arriving together must not both
+        // read the old peak and write the same value back.
+        int peak;
+        while (current > (peak = Volatile.Read(ref _peak))
+               && Interlocked.CompareExchange(ref _peak, current, peak) != peak) { /* retry */ }
+        try {
+            await Task.Delay(Hold, ct);
+        } finally {
+            Interlocked.Decrement(ref _inFlight);
+        }
+        return new ComposeConfigResult(0, """{ "services": { "app": {} } }""", string.Empty);
+    }
+
+    protected override Task<(int ExitCode, string Output)> RunAsync(
+        string[] args, string? dockerConfigDir, Action<string>? onLine, CancellationToken ct) =>
+        Task.FromResult((0, "stubbed compose"));
+}
+
+/// <summary>
 /// A git clone that materializes an empty checkout directory instead of contacting a remote. Every
 /// stack in a test names a repository that does not exist, and a clone is the first thing a deploy
 /// does, so nothing downstream is reachable without this.
@@ -120,6 +167,9 @@ internal sealed class StubGitCloneService : GitCloneService {
     /// <summary>The commit the stubbed checkout reports; a plausible 40-character SHA.</summary>
     public const string HeadCommit = "0123456789abcdef0123456789abcdef01234567";
 
+    /// <summary>The commit the last <see cref="CloneAtCommitAsync"/> was asked for, or null for a branch clone.</summary>
+    public string? RequestedCommit { get; private set; }
+
     public override Task<(int ExitCode, string Output)> CloneAsync(
         string repositoryUrl, string branch, string? token, string targetDir,
         Action<string>? onLine, CancellationToken ct) {
@@ -127,6 +177,15 @@ internal sealed class StubGitCloneService : GitCloneService {
         return Task.FromResult((0, "stubbed clone"));
     }
 
+    public override Task<(int ExitCode, string Output)> CloneAtCommitAsync(
+        string repositoryUrl, string branch, string commitSha, string? token, string targetDir,
+        Action<string>? onLine, CancellationToken ct) {
+        RequestedCommit = commitSha;
+        Directory.CreateDirectory(targetDir);
+        return Task.FromResult((0, "stubbed clone at commit"));
+    }
+
+    /// <summary>The commit a pinned clone was asked for, or the branch clone's stubbed head.</summary>
     public override Task<string?> GetHeadCommitAsync(string repoDir, CancellationToken ct) =>
-        Task.FromResult<string?>(HeadCommit);
+        Task.FromResult<string?>(RequestedCommit ?? HeadCommit);
 }

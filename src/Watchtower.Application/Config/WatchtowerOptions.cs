@@ -80,6 +80,31 @@ public sealed record WatchtowerOptions {
     public int ImagePruneIntervalMinutes { get; init; } = 1440;
 
     /// <summary>
+    /// How many stacks may deploy at the same time across the whole instance. Per-stack queueing is
+    /// unaffected — a stack still runs one deploy at a time with one pending slot; this only bounds how
+    /// many <em>different</em> stacks clone, pull and <c>up</c> at once, so a bulk action
+    /// (<c>templates.deployAll</c>, and later a release fan-out over hundreds of tenants) cannot point
+    /// the whole fleet at one registry and one Docker daemon in a single burst.
+    /// Clamped to 1–32 by <see cref="ResolveMaxConcurrentDeploys"/>; default 4.
+    /// </summary>
+    /// <remarks>
+    /// Environment/appsettings only, and read once when the deploy queue is constructed: the gate is a
+    /// semaphore held across whole deploys, so resizing it at runtime would let more than the new limit
+    /// run while the deploys holding the old one finish. See ADR-0026.
+    /// </remarks>
+    public int MaxConcurrentDeploys { get; init; } = DefaultMaxConcurrentDeploys;
+
+    /// <summary>The default for <see cref="MaxConcurrentDeploys"/>.</summary>
+    public const int DefaultMaxConcurrentDeploys = 4;
+
+    /// <summary>
+    /// The cross-stack deploy limit, clamped to a sane range (1 … 32) — a mistyped 0 must not stop
+    /// deploying altogether, and a mistyped 400 must not be the thundering herd this setting exists to
+    /// prevent.
+    /// </summary>
+    public int ResolveMaxConcurrentDeploys() => Math.Clamp(MaxConcurrentDeploys, 1, 32);
+
+    /// <summary>
     /// Metrics backend selection and its optional InfluxDB reader settings (ADR-0007).
     /// Bound from <c>WATCHTOWER__METRICS__*</c> (e.g. <c>WATCHTOWER__METRICS__BACKEND=influxdb</c>,
     /// <c>WATCHTOWER__METRICS__INFLUX__URL=…</c>).

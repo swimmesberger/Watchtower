@@ -304,7 +304,9 @@ function StackCard({
   const dotTone = describeDot(stack.lastDeployStatus)
   // Outdated images plus a pending new commit on the tracked branch.
   const updateCount = (stack.outdatedImages?.length ?? 0) + (stack.newCommitSha ? 1 : 0)
-  const isDeploying = stack.lastDeployStatus === 'running'
+  // 'queued' counts: a deploy waiting for its turn (per-stack, or at the instance-wide deploy gate)
+  // is in flight as far as this card is concerned, and a second click would create a second deploy.
+  const isDeploying = stack.lastDeployStatus === 'running' || stack.lastDeployStatus === 'queued'
   const repo = stack.repositoryUrl.replace(/^https?:\/\//, '')
 
   return (

@@ -21,6 +21,9 @@ public sealed record DeployEnqueueResult(int DeployEventId, string Status);
 /// If a third request arrives for the same stack the caller receives the existing
 /// pending event id back (coalesced), avoiding redundant work.
 ///
+/// Across stacks, at most <c>Watchtower:MaxConcurrentDeploys</c> deploys run at once
+/// (<see cref="ExecuteDeployAsync"/> takes <see cref="_deployGate"/> before it starts working).
+///
 /// Registered as a singleton (so RPC handlers and the webhook endpoint can enqueue work) and
 /// as an <see cref="IHostedService"/> for graceful shutdown. All database access is performed
 /// through short-lived scopes resolved from <see cref="IServiceScopeFactory"/> because the
@@ -29,6 +32,24 @@ public sealed record DeployEnqueueResult(int DeployEventId, string Status);
 public class DeployQueueService : IHostedService, IDisposable {
     private readonly ConcurrentDictionary<int, StackSlot> _slots = new();
     private readonly CancellationTokenSource _cts = new();
+
+    /// <summary>
+    /// The cross-stack concurrency gate. One worker per stack with no global cap makes a bulk action
+    /// (<c>templates.deployAll</c>, later a release fan-out) point every tenant's clone, pull and
+    /// <c>up</c> at one registry and one Docker daemon simultaneously; this bounds how many run at
+    /// once. Per-stack queueing above it is untouched — a gated deploy simply waits its turn, and its
+    /// tracking row still says <c>queued</c> while it does.
+    /// </summary>
+    /// <remarks>
+    /// Instance state on a service the host registers as a singleton, so it is process-wide where it
+    /// matters and a test can still stand up an isolated queue. Sized once here rather than per deploy:
+    /// the permits are held across whole deploys, so swapping the semaphore for a resized one would let
+    /// more than the new limit run until the deploys holding the old one finished.
+    /// </remarks>
+    private readonly SemaphoreSlim _deployGate;
+
+    /// <summary>The size of <see cref="_deployGate"/>, kept for the line a waiting deploy prints.</summary>
+    private readonly int _maxConcurrentDeploys;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly GitCloneService _git;
@@ -47,7 +68,8 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// <param name="caddy">Reverse-proxy reconciler invoked after a successful deploy.</param>
     /// <param name="options">
     /// Live Watchtower options; <c>PublicBaseUrl</c> is read per deploy to decide whether
-    /// <c>WATCHTOWER_URL</c> is injected into the stack's environment.
+    /// <c>WATCHTOWER_URL</c> is injected into the stack's environment, and
+    /// <c>MaxConcurrentDeploys</c> once here to size <see cref="_deployGate"/>.
     /// </param>
     /// <param name="logger">Logger.</param>
     public DeployQueueService(
@@ -67,6 +89,8 @@ public class DeployQueueService : IHostedService, IDisposable {
         _proxy = proxy;
         _options = options;
         _logger = logger;
+        _maxConcurrentDeploys = options.CurrentValue.ResolveMaxConcurrentDeploys();
+        _deployGate = new SemaphoreSlim(_maxConcurrentDeploys, _maxConcurrentDeploys);
     }
 
     // IHostedService — no background loop needed; workers start on demand.
@@ -86,6 +110,14 @@ public class DeployQueueService : IHostedService, IDisposable {
             await Task.WhenAny(Task.WhenAll(running), Task.Delay(Timeout.Infinite, cancellationToken));
     }
 
+    /// <remarks>
+    /// <see cref="_deployGate"/> is deliberately not disposed. Dispose runs while deploys may still be
+    /// executing, and a disposed semaphore turns their <c>Release()</c> into an
+    /// <see cref="ObjectDisposedException"/> thrown out of the cleanup block — which would skip the
+    /// deletion of the generated env file, and that file carries the stack's App API token. A
+    /// <see cref="SemaphoreSlim"/> holds nothing to dispose unless its <c>AvailableWaitHandle</c> has
+    /// been used, and this one's never is.
+    /// </remarks>
     public void Dispose() => _cts.Dispose();
 
     /// <summary>
@@ -95,6 +127,12 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// Three outcomes: <c>running</c> (worker started immediately), <c>queued</c> (a deploy is running,
     /// this request was stored as next-to-run), or coalesced (a deploy is running AND one is already
     /// pending — the caller receives the existing pending event id, no new row created).
+    /// <para>
+    /// <c>running</c> is about this <em>stack's</em> queue: it means nothing was ahead of this request,
+    /// so a worker took it straight away. The worker may still wait at the cross-stack gate, which is
+    /// why the tracking row is left saying <c>queued</c> until <see cref="ExecuteDeployAsync"/> has a
+    /// permit and genuinely starts.
+    /// </para>
     /// </remarks>
     /// <param name="removeVolumes">
     /// Optional list of named volumes to delete (via <c>compose down</c> → <c>docker volume rm</c>)
@@ -115,8 +153,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         lock (slot.Lock) {
             if (!slot.IsRunning) {
                 var eventId = CreateEvent(stackId, triggeredBy);
-                MarkRunning(eventId);
-                UpdateDeployStatus(stackId, DeployStatus.Running);
+                UpdateDeployStatus(stackId, DeployStatus.Queued);
                 slot.IsRunning = true;
                 var volumes = removeVolumes;
                 slot.WorkerTask = Task.Run(() => RunSlotAsync(stackId, slot, eventId, triggeredBy, volumes, _cts.Token));
@@ -191,9 +228,18 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// volume is deleted after the clone and before pull/up (the data-wipe recreate flow).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Internal rather than private so a test can drive one deploy to completion on its own thread. The
     /// public entry point is <see cref="Enqueue"/>, which starts a background worker — awaiting a
     /// deploy through it would mean racing that worker for the test's single SQLite connection.
+    /// </para>
+    /// <para>
+    /// The cross-stack gate is taken here, not around the worker loop, so that every path into a deploy
+    /// is bounded by it and the event's <c>running</c> transition happens on the far side of the wait:
+    /// a deploy queued behind the gate reads as queued, which is what it is. A deploy that actually had
+    /// to wait re-reads its stack afterwards, because the wait is unbounded and nothing cancels a
+    /// parked deploy when the stack is stopped, repointed or deleted underneath it.
+    /// </para>
     /// </remarks>
     internal async Task ExecuteDeployAsync(
         int stackId, int eventId, IReadOnlyList<string>? removeVolumes, CancellationToken ct) {
@@ -204,15 +250,14 @@ public class DeployQueueService : IHostedService, IDisposable {
         }
 
         // Backstop for deploys enqueued before (or racing) a stacks.stop: a stopped stack is
-        // deliberately disabled (ADR-0025) and a deploy would bring its containers back up.
+        // deliberately disabled (ADR-0025) and a deploy would bring its containers back up. Checked
+        // again on the far side of the concurrency gate, where an arbitrary amount of time may have
+        // passed since this read.
         if (stack.DesiredState == StackDesiredState.Stopped) {
             CompleteEvent(eventId, "failed", "[Watchtower] Stack is stopped — start it before deploying.");
             UpdateDeployStatus(stackId, DeployStatus.Failed);
             return;
         }
-
-        MarkRunning(eventId);
-        UpdateDeployStatus(stackId, DeployStatus.Running);
 
         var output = new StringBuilder();
         var session = _broadcaster.Create(eventId);
@@ -227,8 +272,43 @@ public class DeployQueueService : IHostedService, IDisposable {
         string? dockerConfigDir = null;
         string? envFilePath = null;
         string? overrideFilePath = null;
+        var gateHeld = false;
 
         try {
+            // 0. Wait for a slot in the instance-wide deploy gate. Inside the try so a shutdown while
+            //    waiting is reported like any other cancelled deploy, and so the permit is released by
+            //    the same finally that cleans everything else up.
+            if (!_deployGate.Wait(0)) {
+                WriteHeader(
+                    $"[Watchtower] Waiting for a deploy slot ({_maxConcurrentDeploys} deploys may run at once)");
+                UpdateOutput(eventId, output.ToString());
+                await _deployGate.WaitAsync(ct);
+                gateHeld = true;
+
+                // The wait can last minutes, and nothing cancels a parked deploy: stacks.stop only
+                // writes the desired state (ADR-0025), and stacks.update only writes the repository
+                // fields. The snapshot taken before the wait is therefore stale, and acting on it would
+                // bring a stack the operator stopped back up, or deploy the repository it just
+                // repointed away from. Re-read it and re-apply the same two refusals.
+                stack = GetStack(stackId);
+                if (stack is null) {
+                    WriteHeader("[Watchtower] Stack not found — it may have been deleted.");
+                    CompleteEvent(eventId, "failed", output.ToString());
+                    return;
+                }
+                if (stack.DesiredState == StackDesiredState.Stopped) {
+                    WriteHeader("[Watchtower] Stack is stopped — start it before deploying.");
+                    CompleteEvent(eventId, "failed", output.ToString());
+                    UpdateDeployStatus(stackId, DeployStatus.Failed);
+                    return;
+                }
+            } else {
+                gateHeld = true;
+            }
+
+            MarkRunning(eventId);
+            UpdateDeployStatus(stackId, DeployStatus.Running);
+
             // 1. Resolve git credential for cloning.
             var gitToken = stack.CredentialId is { } credId ? GetCredentialToken(credId) : null;
 
@@ -416,6 +496,9 @@ public class DeployQueueService : IHostedService, IDisposable {
             CompleteEvent(eventId, "failed", output.ToString());
             UpdateDeployStatus(stackId, DeployStatus.Failed);
         } finally {
+            // Released first: the next stack waiting on the gate should not sit behind this one's
+            // temp-file cleanup.
+            if (gateHeld) _deployGate.Release();
             _broadcaster.Complete(eventId);
             SafeDelete(tempRepoDir);
             if (dockerConfigDir is not null) SafeDelete(dockerConfigDir);
