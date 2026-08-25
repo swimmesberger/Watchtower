@@ -361,8 +361,8 @@ public sealed class RealmsDataModelTests {
     // They were about SQLite's table-rebuild behaviour — that adding a foreign-key column regenerates
     // the table from the model snapshot, and that a rebuild forgetting a column loses its data silently.
     // ADR-0024 regenerated the migration history for PostgreSQL as a single InitialPostgreSql, so there
-    // is no pre-realm migration to step to and no rebuild to distrust; an existing installation is
-    // carried across by `--import-sqlite`, whose own round-trip test replaces them. What those tests
+    // is no pre-realm migration to step to and no rebuild to distrust; existing installations were
+    // carried across by the since-removed `--import-sqlite` one-shot. What those tests
     // asserted about the *model* — the check constraints, the filtered unique indexes, the per-realm
     // credential space, the seeded operator realm — is asserted above, against a real database.
 

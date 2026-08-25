@@ -128,11 +128,11 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
         // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The default is on the
-        // model so a row written without one — by the SQLite importer, say — stops its containers, which
+        // model so a row written without one — by a raw INSERT, say — stops its containers, which
         // is what every stack did before quiesce modes existed.
         b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
         // Stored as the enum name ("Running"/"Stopped"); the API maps it to lowercase. The default is
-        // on the model so rows written without one — by the SQLite importer, say — count as running,
+        // on the model so rows written without one — by a raw INSERT, say — count as running,
         // which is what every stack was before desired state existed (ADR-0025).
         b.Property(x => x.DesiredState).HasConversion<string>().HasDefaultValue(StackDesiredState.Running);
         b.HasIndex(x => x.Name).IsUnique();
