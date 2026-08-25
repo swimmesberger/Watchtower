@@ -462,6 +462,7 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         return new SelfUpdateStatus {
             CredentialId = config.CredentialId,
             DetectedImageName = detected.ImageName,
+            ContainerId = detected.ContainerId,
             IsRunningInContainer = detected.IsRunningInContainer,
             CurrentImageId = currentImageId,
             LatestImageId = runtime.LatestImageId,

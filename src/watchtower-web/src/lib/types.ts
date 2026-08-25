@@ -102,6 +102,8 @@ export type SelfUpdateApplyStage = 'idle' | 'pulling' | 'restarting' | 'error'
 export interface SelfUpdateStatus {
   credentialId: number | null
   detectedImageName: string | null
+  /** Id of the running Watchtower container (null outside Docker) — the UI streams its own logs from it. */
+  containerId: string | null
   isRunningInContainer: boolean
   currentImageId: string | null
   latestImageId: string | null

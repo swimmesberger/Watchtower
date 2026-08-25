@@ -22,6 +22,8 @@ public sealed record SelfUpdateStatus {
 
     // Auto-detected from the running container (null when not in Docker).
     public string? DetectedImageName { get; init; }
+    /// <summary>Id of the running Watchtower container, so the UI can stream its own logs.</summary>
+    public string? ContainerId { get; init; }
     public required bool IsRunningInContainer { get; init; }
 
     // Cached check result (null until first check).
