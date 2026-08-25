@@ -21,9 +21,22 @@ public readonly record struct CiRepoLink(bool IsGitHub, string? Owner, string? N
 /// one place that fills it in for products created — or migrated — before CI was enabled.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Linking is best-effort by design: it is a cache write on a read path, so a lost race or a failed
 /// statement must never turn a CI query into an error. The write is conditional
 /// (<c>WHERE ci_repo_id IS NULL</c>) so the loser of a race is a no-op rather than an overwrite.
+/// </para>
+/// <para>
+/// Because of that guard the link is written once and never corrected: a <c>products.update</c> that
+/// moves the repository URL clears the FK, but a read racing that update can re-record the <em>old</em>
+/// repo just after it. Correction therefore lives on the read path, not in the writer — every lookup
+/// re-checks that the linked repo's <c>owner/name</c> still matches the product's parsed URL and falls
+/// through to the <c>owner/name</c> lookup when it does not. Leaving <see cref="TryLinkAsync"/> a
+/// write-if-null keeps it one statement that cannot overwrite a deliberate link — the FK is what
+/// <c>ci.enableForProduct</c> wrote — and the stale row it may leave behind is then a row nothing
+/// believes: reads ignore it, <c>ci.enableForProduct</c> writes the right id over it, and the next
+/// <c>products.update</c> of the URL clears it.
+/// </para>
 /// </remarks>
 public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolver> logger) {
     /// <summary>
@@ -31,11 +44,15 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
     /// repository URL.
     /// </summary>
     /// <remarks>
-    /// Pass a product loaded <see cref="EntityFrameworkQueryableExtensions.AsNoTracking{TEntity}"/>: the
-    /// link write goes through <c>ExecuteUpdate</c>, which bumps the row's <c>xmin</c> without telling
-    /// the change tracker, so persisting behind a tracked instance would make that instance's next
-    /// <c>SaveChanges</c> fail on concurrency. A tracked product is therefore resolved but not linked —
-    /// writers (<c>ci.enableForProduct</c>) set the FK themselves, and the next read path links it.
+    /// Pass a product loaded <see cref="EntityFrameworkQueryableExtensions.AsNoTracking{TEntity}"/>, and
+    /// make sure <em>no</em> instance of that row is tracked by this <see cref="WatchtowerDbContext"/> —
+    /// the constraint is on the row in this context's identity map, not merely on the object handed in.
+    /// The link write goes through <c>ExecuteUpdate</c>, which bumps the row's <c>xmin</c> without
+    /// telling the change tracker, so any tracked instance of the same row would fail its next
+    /// <c>SaveChanges</c> on a phantom concurrency conflict. A product handed in tracked is therefore
+    /// resolved but not linked — writers (<c>ci.enableForProduct</c>) set the FK themselves, and the next
+    /// read path links it. The guard in <see cref="TryLinkAsync"/> only sees the instance it is given, so
+    /// a caller that loads the row twice (once tracked, once not) has to keep them apart itself.
     /// </remarks>
     public async Task<CiRepoLink> ResolveAsync(Product product, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(product);
@@ -43,10 +60,14 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
             return CiRepoLink.NotGitHub;
 
         // The recorded link wins: it is what ci.enableForProduct wrote, and it survives spelling
-        // differences in the URL. A dangling id cannot normally exist (the FK is SET NULL on delete),
-        // but re-resolving rather than reporting "no CI" is the harmless answer if one ever does.
+        // differences in the URL — but only while it still describes the same repository. A link that no
+        // longer matches the parsed owner/name is stale (a URL change whose FK clear lost a race with a
+        // read's best-effort link write) and is ignored rather than trusted forever. A dangling id cannot
+        // normally exist (the FK is SET NULL on delete), but re-resolving rather than reporting "no CI"
+        // is the harmless answer if one ever does.
         if (product.CiRepoId is { } linkedId
-            && await db.CiRepos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == linkedId, ct) is { } linked) {
+            && await db.CiRepos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == linkedId, ct) is { } linked
+            && Matches(linked, owner, name)) {
             return new CiRepoLink(true, owner, name, linked);
         }
 
@@ -57,13 +78,19 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
     }
 
     /// <summary>
-    /// The tracked <see cref="CiRepo"/> a product would enable CI on: the linked one when the FK is set,
-    /// else the one matching the parsed <c>owner/name</c>. Null when CI was never enabled for it.
+    /// The tracked <see cref="CiRepo"/> a product would enable CI on: the linked one when the FK is set
+    /// and still describes <paramref name="owner"/>/<paramref name="name"/>, else the one matching that
+    /// pair. Null when CI was never enabled for it.
     /// </summary>
+    /// <remarks>
+    /// The same staleness check as <see cref="ResolveAsync"/>, for the same reason: a link left over from
+    /// a previous repository URL must not decide which <see cref="CiRepo"/> a write lands on.
+    /// </remarks>
     public async Task<CiRepo?> FindForWriteAsync(Product product, string owner, string name, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(product);
         if (product.CiRepoId is { } linkedId
-            && await db.CiRepos.FirstOrDefaultAsync(r => r.Id == linkedId, ct) is { } linked) {
+            && await db.CiRepos.FirstOrDefaultAsync(r => r.Id == linkedId, ct) is { } linked
+            && Matches(linked, owner, name)) {
             return linked;
         }
         return await FindByOwnerNameAsync(owner, name, tracked: true, ct);
@@ -77,6 +104,19 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
         (tracked ? db.CiRepos : db.CiRepos.AsNoTracking()).FirstOrDefaultAsync(
             r => r.Owner.ToLower() == owner.ToLower() && r.Name.ToLower() == name.ToLower(), ct);
 
+    /// <summary>Whether a linked repo still is the one the product's URL parses to, GitHub's own casing rules.</summary>
+    private static bool Matches(CiRepo repo, string owner, string name) =>
+        string.Equals(repo.Owner, owner, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(repo.Name, name, StringComparison.OrdinalIgnoreCase);
+
+    /// <remarks>
+    /// The <see cref="EntityState.Detached"/> guard is a check on the instance handed in, but the
+    /// constraint it stands for is wider: no instance of <em>this row</em> may be tracked by this
+    /// <see cref="WatchtowerDbContext"/> when the <c>ExecuteUpdate</c> below bumps its <c>xmin</c> behind
+    /// the change tracker's back. It catches the case that actually occurs — a writer passing its own
+    /// tracked entity — and cannot catch a caller that separately loaded the same row tracked; see the
+    /// remarks on <see cref="ResolveAsync"/>.
+    /// </remarks>
     private async Task TryLinkAsync(Product product, int ciRepoId, CancellationToken ct) {
         if (product.CiRepoId == ciRepoId || db.Entry(product).State is not EntityState.Detached)
             return;

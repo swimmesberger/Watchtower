@@ -304,9 +304,11 @@ cache**. `ci.getProductCi` is the read side the product page's CI tab polls: par
 linked repo, runner status, toolchain profile.
 
 The FK replaced URL string matching, and is filled in lazily: a product whose `CiRepoId` is
-null — everything the ADR-0026 backfill created — is resolved from its repository URL on the
-first CI read (`CiRepoResolver`), which then records the answer. `products.update` clears the
-link when the repository URL moves, so the next read re-resolves it. `ci.getStackCi` and
+null — everything the ADR-0026 product backfill created — is resolved from its repository URL
+on the first CI read (`CiRepoResolver`), which then records the answer. `products.update` clears
+the link when the repository URL moves, so the next read re-resolves it; a read that raced that
+clear can re-record the old repo, so every lookup also re-checks that the linked repo's
+`owner/name` still matches the parsed URL and ignores the link when it does not. `ci.getStackCi` and
 `ci.enableForStack` survive as thin forwards through `stack.ProductId` for one release.
 
 Credentials: the product's clone credential usually holds a Contents-read PAT, while runner

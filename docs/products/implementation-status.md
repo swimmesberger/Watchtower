@@ -5,7 +5,8 @@ Living companion to [design.md](design.md) and
 build; this file says how far it got, what is owed, and what a fresh session needs to know before
 touching stage 3. **Update it at the end of every stage.**
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-25 after stage 2.
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-25 after the
+stage-2 hardening round.
 
 ## Where things stand
 
@@ -16,6 +17,7 @@ Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-0
 | `d9ed0f0` | **1a — product, backend** | `Product` entity owning the source; `Stack`/`StackTemplate` reference it (required, Restrict) with a nullable `BranchOverride`; the four copied source columns dropped; one backfill migration (`ProductBackfillSql`); `ProductSourceResolver` as the single answer to "what does this stack clone"; `ProductCatalog` find-or-create; the `Products` module (`products.list/get/create/update/delete`); DTO back-compat. |
 | `899be78` | **1b — product, frontend** | Products catalogue/create/detail pages, the `productDetailTabs` extension point, the source picker on stack and template creation, the read-only "From product X" row in stack settings, the Product column. |
 | `a978a5e` | **2 — CI link** | `Product.CiRepoId` + `CiRepoResolver` replacing URL string matching, `ci.getProductCi`/`ci.enableForProduct` (the stack-keyed handlers remain as forwards), toolchain recording through the product, CI tab moved from the stack page to the product page. |
+| `c96207d` | **2 — hardening** | The stage-2 review's owed items: `CiRepoResolver` ignores a link whose `owner/name` no longer matches the parsed URL (both `ResolveAsync` and `FindForWriteAsync`) with four tests, correction left to the read path (reasoning in the resolver remarks and design.md), the `CiToolchainRecorder` `Attach` comment naming its dependency on `CiRepo` having no `xmin`, the widened change-tracker remarks, and the "ADR-0026 product backfill" wording. No contract change. |
 
 **Next: stage 3 (releases, read-only)** — `Release`/`ReleaseImage`, the release webhook endpoint
 with digest resolution and fingerprint idempotency, `products.listReleases`, manual
@@ -44,28 +46,16 @@ authority for scope per stage.
 6. **Deploy shows what it will apply.** Once versions exist (stage 4), no surface may render a
    Deploy button without the version it would deploy visible next to it.
 
-## Owed work (reviewed, specified, not applied)
+## Owed work and accepted debt
 
-Stage 2 shipped with reviewer approval; these were queued behind it and never landed:
+The four stage-2 review items that were queued behind the stage landed in the hardening commit
+above. What is left is accepted debt, not owed work:
 
-- **`CiRepoResolver` fast path trusts a stale link.** It returns the FK'd `CiRepo` without checking
-  that its `Owner`/`Name` still match the product's parsed URL. If a `products.update` URL change
-  lands between a CI read and that read's best-effort `TryLinkAsync`, the link is written for the
-  old repo and the fast path then wins forever (recoverable only by editing the URL again). Fix:
-  fall through to `FindByOwnerNameAsync` on mismatch (case-insensitive), in both `ResolveAsync` and
-  `FindForWriteAsync`, plus a test; and decide whether `TryLinkAsync` should correct a stale row or
-  leave it to the read path (document whichever).
-- **`CiToolchainRecorder`'s `Attach`** is only safe because `CiRepo` carries no `xmin` token. Add a
-  comment naming that dependency (see the remark at `WatchtowerEntityConfigurations.cs` ~364) so
-  adding `UseXminAsConcurrencyToken` to `CiRepo` later fails in review, not at runtime.
-- **`CiRepoResolver`'s change-tracker guard remark** should say the constraint is "no tracked
-  instance of this row in this context", not just the instance passed in.
-- **Wording:** "the backfill migration" in `GetProductCi.cs` and `docs/ci-runners/design.md` reads
-  as a `ci_repo_id` backfill (which deliberately does not exist) — say "the ADR-0026 product
-  backfill".
 - **`ProductCatalog`'s savepoint retry branch is untested** — forcing the interleave needs an
-  injection seam inside `FindOrCreateAsync`. The savepoint create/release path is covered by every
-  implicit-create test.
+  injection seam inside `FindOrCreateAsync`, which is more test scaffolding than the branch is
+  worth. Accepted: the savepoint create/release path is covered by every implicit-create test, and
+  the branch itself only rolls back to the savepoint, detaches the speculative entity and loops back
+  into the same re-read. Revisit if it ever grows a decision.
 
 ## Environment and process notes
 
@@ -83,6 +73,12 @@ Stage 2 shipped with reviewer approval; these were queued behind it and never la
   The schema export needs the absolute `$PWD` path — `dotnet run --project` sets the CWD to the
   project directory and would otherwise write the file there. `git diff rpc-schema.json` should show
   only intended additions; every stage so far has been additive-only.
+- **Windows hosts carry known, unrelated test failures** (confirmed at baseline `c4f0c59`, not
+  introduced by this work): a CRLF-sensitive snippet assertion in `BackupPlanOverrideTests`, an
+  audit-ordering case in `AuthEndpointTests`, `ProxyIngressEndpointReloadTests`, and flaky
+  ACME/certificate tests failing in the Windows X509 chain builder ("unknown chain building
+  error"). On Windows, judge a stage by the suites its diff touches plus build/schema; the
+  full-suite green bar applies to Linux/macOS and CI.
 - **Elarion moves faster than model training data.** Read the `elarion` skill before adding
   handlers, modules, entities, or host wiring; copy conventions from `Modules/Tenancy` and
   `Modules/Ci` rather than writing them from memory.

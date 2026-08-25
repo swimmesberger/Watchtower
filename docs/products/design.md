@@ -162,7 +162,11 @@ Stack   *──1 StackTemplate?  (TemplateId, SET NULL — unchanged; a detached
 hashes), its cardinality to products is one-to-many, and non-GitHub products must not carry GitHub
 columns. `GitHubRepoUrl.TryParse` remains the *resolution* mechanism when enabling CI; the FK
 records the answer instead of recomputing it per read. `products.update` clears/re-resolves
-`CiRepoId` when `RepositoryUrl` changes.
+`CiRepoId` when `RepositoryUrl` changes. The FK is a cache, not the truth: `CiRepoResolver` ignores a
+link whose `owner/name` no longer matches the parsed URL (case-insensitively, both on read and on the
+write path) and falls back to the `owner/name` lookup. Correction lives there rather than in the
+lazy link write, which stays a single `WHERE ci_repo_id IS NULL` statement that can never overwrite a
+deliberate link — a stale row is harmless once no read believes it.
 
 ## Release intake
 

@@ -11,9 +11,9 @@ namespace Watchtower.Application.Modules.Ci.Handlers;
 /// </summary>
 /// <remarks>
 /// The link is the <see cref="Entities.Product.CiRepoId"/> FK (ADR-0026 decision 7); products whose FK
-/// is still null — everything created before this stage, and everything the backfill migration made —
-/// are resolved from the repository URL once and then recorded, so the parse happens at most once per
-/// product rather than on every read.
+/// is still null — everything created before this stage, and everything the ADR-0026 product backfill
+/// made — are resolved from the repository URL once and then recorded, so the parse happens at most
+/// once per product rather than on every read.
 /// </remarks>
 [Handler("ci.getProductCi")]
 public sealed class GetProductCi(

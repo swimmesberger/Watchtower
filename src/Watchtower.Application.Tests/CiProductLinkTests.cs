@@ -164,6 +164,34 @@ public sealed class CiProductLinkTests {
         }
     }
 
+    [Fact]
+    public async Task Enable_IgnoresAStaleLink_AndEnablesTheRepositoryTheUrlNowNames() {
+        var gitHub = new StubGitHubApiClient();
+        using var host = AuthTestHost.Start(WithCiLink(gitHub));
+        var credentialId = await AddCredentialAsync(host, "bot");
+        // The product moved to acme/other, but the FK still points at acme/shop — the shape a read that
+        // raced the URL change leaves behind. The write path must follow the URL, not the stale link.
+        var productId = await AddProductAsync(host, "shop", "https://github.com/acme/other.git", credentialId);
+        var shopRepoId = await AddCiRepoAsync(host, credentialId, enabled: false);
+        await LinkAsync(host, productId, shopRepoId);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<EnableForProduct.Command, EnableForProduct.Response>(
+                scope.ServiceProvider, new EnableForProduct.Command(productId));
+
+            Assert.True(result.IsSuccess, result.IsSuccess ? null : result.Error.Message);
+            Assert.Equal("acme/other", result.Value.Repo.FullName);
+            Assert.NotEqual(shopRepoId, result.Value.Repo.Id);
+            // The writer sets the FK itself, which is also how the stale link gets corrected.
+            Assert.Equal(result.Value.Repo.Id, await CiRepoIdAsync(host, productId));
+        }
+
+        // The repository the stale link named was not touched — enabling it would have re-enabled CI on
+        // a repository this product no longer deploys from.
+        Assert.False(await CiRepoEnabledAsync(host, shopRepoId));
+        Assert.Equal([("acme", "other")], gitHub.Probes);
+    }
+
     // ── ci.getProductCi ──────────────────────────────────────────────────────
 
     [Fact]
@@ -249,6 +277,86 @@ public sealed class CiProductLinkTests {
         }
     }
 
+    // ── A link that no longer describes the product's repository ─────────────
+
+    [Fact]
+    public async Task GetProductCi_IgnoresTheLinkedRepo_WhenTheUrlNowParsesToAnotherRepository() {
+        var gitHub = new StubGitHubApiClient();
+        using var host = AuthTestHost.Start(WithCiLink(gitHub));
+        var credentialId = await AddCredentialAsync(host, "bot");
+        // products.update clears the FK when the URL moves, but a CI read that started before the update
+        // can record the *old* repo just after it, and the conditional link write cannot undo that. The
+        // fast path must therefore verify the link rather than trust it — otherwise the product reports
+        // acme/shop's runners forever, recoverable only by editing the URL again.
+        var productId = await AddProductAsync(host, "shop", "https://github.com/acme/other.git", credentialId);
+        var shopRepoId = await AddCiRepoAsync(host, credentialId, enabled: true);
+        var otherRepoId = await AddCiRepoAsync(host, credentialId, enabled: true, owner: "acme", name: "other");
+        await LinkAsync(host, productId, shopRepoId);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<GetProductCi.Query, GetProductCi.Response>(
+                scope.ServiceProvider, new GetProductCi.Query(productId));
+
+            Assert.True(result.IsSuccess);
+            Assert.Equal(("acme", "other"), (result.Value.Ci.Owner, result.Value.Ci.Name));
+            Assert.Equal(otherRepoId, result.Value.Ci.Repo?.Id);
+        }
+
+        // The stale row is deliberately left as it is: the link write stays a single
+        // WHERE ci_repo_id IS NULL statement, and correctness lives on the read path instead.
+        Assert.Equal(shopRepoId, await CiRepoIdAsync(host, productId));
+    }
+
+    [Fact]
+    public async Task GetProductCi_ReportsNoCiRepo_WhenTheUrlMovedToARepositoryWithoutCi() {
+        var gitHub = new StubGitHubApiClient();
+        using var host = AuthTestHost.Start(WithCiLink(gitHub));
+        var credentialId = await AddCredentialAsync(host, "bot");
+        var productId = await AddProductAsync(host, "shop", "https://github.com/acme/other.git", credentialId);
+        var shopRepoId = await AddCiRepoAsync(host, credentialId, enabled: true);
+        await LinkAsync(host, productId, shopRepoId);
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var result = await SendAsync<GetProductCi.Query, GetProductCi.Response>(
+                scope.ServiceProvider, new GetProductCi.Query(productId));
+
+            // Not an error and not the old repo: a parseable GitHub remote with CI not enabled for it,
+            // which is the "Enable CI" state the product page renders.
+            Assert.True(result.IsSuccess);
+            Assert.True(result.Value.Ci.IsGitHub);
+            Assert.Equal(("acme", "other"), (result.Value.Ci.Owner, result.Value.Ci.Name));
+            Assert.Null(result.Value.Ci.Repo);
+        }
+
+        await using (var scope = host.Services.CreateAsyncScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            // A read path creates nothing; it only ever records a link it found.
+            Assert.Equal(1, await db.CiRepos.CountAsync(Ct));
+        }
+        Assert.Equal(shopRepoId, await CiRepoIdAsync(host, productId));
+    }
+
+    [Fact]
+    public async Task GetProductCi_KeepsTheLink_WhenTheUrlDiffersOnlyInCasing() {
+        var gitHub = new StubGitHubApiClient();
+        using var host = AuthTestHost.Start(WithCiLink(gitHub));
+        var credentialId = await AddCredentialAsync(host, "bot");
+        // GitHub compares owner/name case-insensitively, so this is the same repository and the product
+        // must still see its CI. A black-box guard on that outcome rather than on which branch produced
+        // it: the staleness check and the owner/name fall-through are both case-insensitive today, so a
+        // regression has to break both to be visible — and both are what "same repository" means.
+        var productId = await AddProductAsync(host, "shop", "https://github.com/ACME/Shop.git", credentialId);
+        var repoId = await AddCiRepoAsync(host, credentialId, enabled: true);
+        await LinkAsync(host, productId, repoId);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<GetProductCi.Query, GetProductCi.Response>(
+            scope.ServiceProvider, new GetProductCi.Query(productId));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(repoId, result.Value.Ci.Repo?.Id);
+    }
+
     // ── The stack-scoped forwards ────────────────────────────────────────────
 
     [Fact]
@@ -332,11 +440,12 @@ public sealed class CiProductLinkTests {
     }
 
     private static async Task<int> AddCiRepoAsync(
-        AuthTestHost host, int credentialId, bool enabled, CiToolchainProfile? profile = null) {
+        AuthTestHost host, int credentialId, bool enabled, CiToolchainProfile? profile = null,
+        string owner = "acme", string name = "shop") {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var repo = new CiRepo {
-            Owner = "acme", Name = "shop", CredentialId = credentialId, Enabled = enabled,
+            Owner = owner, Name = name, CredentialId = credentialId, Enabled = enabled,
             ToolchainProfileJson = profile?.ToJson(),
             ToolchainDetectedAt = profile is null ? null : DateTimeOffset.UtcNow,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -344,6 +453,24 @@ public sealed class CiProductLinkTests {
         db.CiRepos.Add(repo);
         await db.SaveChangesAsync(Ct);
         return repo.Id;
+    }
+
+    /// <summary>
+    /// Records the FK straight in SQL — the state a lost race leaves behind, which no handler will
+    /// produce on demand.
+    /// </summary>
+    private static async Task LinkAsync(AuthTestHost host, int productId, int ciRepoId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        await db.Products.Where(p => p.Id == productId)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CiRepoId, ciRepoId), Ct);
+    }
+
+    private static async Task<bool> CiRepoEnabledAsync(AuthTestHost host, int ciRepoId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.CiRepos.AsNoTracking()
+            .Where(r => r.Id == ciRepoId).Select(r => r.Enabled).FirstAsync(Ct);
     }
 
     private static async Task<int?> CiRepoIdAsync(AuthTestHost host, int productId) {
