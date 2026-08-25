@@ -7602,6 +7602,12 @@
                   "null"
                 ]
               },
+              "containerId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "isRunningInContainer": {
                 "type": "boolean"
               },
@@ -7803,6 +7809,12 @@
                 ]
               },
               "detectedImageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "containerId": {
                 "type": [
                   "string",
                   "null"
@@ -8039,6 +8051,12 @@
                 ]
               },
               "detectedImageName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "containerId": {
                 "type": [
                   "string",
                   "null"

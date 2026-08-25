@@ -23,6 +23,7 @@ import type {
 } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
 import { absoluteTitle, formatUptime, shortDigest, timeAgo } from '@/lib/format'
+import { ContainerLogs } from '@/components/container-logs'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -2321,6 +2322,13 @@ function SelfUpdateCard({
 
         {/* ── Credential ── */}
         <CredentialRow status={status} onSave={onSave} saving={saving} />
+
+        {/* ── Watchtower's own container logs (stdout/stderr), for diagnosing the instance itself ── */}
+        {status.containerId && (
+          <div className="border-t border-border px-4 py-4 md:px-5">
+            <ContainerLogs containerId={status.containerId} containerName="Watchtower logs" />
+          </div>
+        )}
 
         {/* ── Check error ── */}
         {checkError && (
