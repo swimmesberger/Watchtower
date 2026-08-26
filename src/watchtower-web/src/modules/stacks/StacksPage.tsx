@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { Boxes, Play, Plus, Square, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
+import { deployTargetVersion, usesReleases } from '@/lib/release'
 import type { Stack } from '@/lib/types'
 import { absoluteTitle, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -115,6 +116,7 @@ export function StacksPage() {
   })
 
   const filtered = status ? stacks.filter((s) => matchesFilter(s, status)) : stacks
+  const anyReleaseMode = stacks.some(usesReleases)
 
   function clearFilter() {
     navigate({ search: {} })
@@ -166,6 +168,32 @@ export function StacksPage() {
           )}
         </Button>
       </Tooltip>
+    )
+  }
+
+  /**
+   * Invariant 6 on a list: the cell beside each row's Deploy button states what that button would
+   * apply. In `Git` mode that is the branch, exactly as this column has always shown. In `Releases`
+   * mode the branch is meaningless — the deploy checks out the release's commit — so the chip
+   * becomes the version, with `pinned` beside it when the row is not tracking latest.
+   *
+   * Derived from the list DTO alone (`pin ?? availableReleaseVersion ?? lastDeployedRelease`), so the
+   * page still makes exactly one request. Null only for a Releases-mode product with no releases at
+   * all; the row then shows nothing rather than a made-up value.
+   */
+  function VersionCell({ stack }: { stack: Stack }) {
+    if (!usesReleases(stack)) return <Badge tone="neutral">{stack.branch}</Badge>
+    const target = deployTargetVersion(stack)
+    if (!target) return <span className="text-text-3">—</span>
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <Badge tone="neutral">{target}</Badge>
+        {stack.pinnedRelease && (
+          <Badge tone="neutral" size="sm">
+            pinned
+          </Badge>
+        )}
+      </span>
     )
   }
 
@@ -231,8 +259,12 @@ export function StacksPage() {
     },
     {
       key: 'branch',
-      header: 'Branch',
-      cell: (s) => <Badge tone="neutral">{s.branch}</Badge>,
+      // "Branch" while every product on this box is in Git mode — an install that never opts into
+      // releases sees this page exactly as it always was (design.md §Migration morning-after). The
+      // moment one release-mode stack is listed the column is answering a broader question, and says
+      // so; a Git row's branch is still the version it deploys.
+      header: anyReleaseMode ? 'Version' : 'Branch',
+      cell: (s) => <VersionCell stack={s} />,
     },
     {
       key: 'status',
@@ -288,9 +320,21 @@ export function StacksPage() {
         )}
       </div>
 
-      {/* Mobile parity with the table: the product names the source, the branch qualifies it. */}
+      {/* Mobile parity with the table: the product names the source, and the same cell qualifies it
+          with what a Deploy from this card would apply — the branch, or the release version. */}
       <p className="truncate text-[13px] text-text-2" title={s.repositoryUrl}>
-        {s.productName} · <span className="font-mono">{s.branch}</span>
+        {s.productName} ·{' '}
+        <span className="font-mono">{(usesReleases(s) ? deployTargetVersion(s) : s.branch) ?? '—'}</span>
+        {/* Guarded like the desktop VersionCell: a pin surviving a Releases→Git revert is inert
+            in Git mode and must not decorate a branch label. */}
+        {usesReleases(s) && s.pinnedRelease && (
+          <>
+            {' '}
+            <Badge tone="neutral" size="sm">
+              pinned
+            </Badge>
+          </>
+        )}
       </p>
 
       <p className="text-[13px] text-text-2">

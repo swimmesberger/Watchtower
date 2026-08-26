@@ -27,6 +27,16 @@ export interface Credential {
 }
 
 /**
+ * Which update mechanism a product's deployments use (ADR-0026 §"Two modes, one switch"). `git` is the
+ * default and every migrated product: branch-HEAD clones and registry polling. `releases` is flipped on
+ * by the first accepted release: a deploy is one release's commit plus its image digests.
+ *
+ * **This is the binary the UI hangs on (invariant 4):** the Updates panel renders in `git` mode, the
+ * Version panel in `releases` mode, never both.
+ */
+export type ReleaseMode = 'git' | 'releases'
+
+/**
  * A git repository Watchtower can deploy — its compose file, default branch and clone credential
  * (ADR-0026). Every stack and every template references one; the source fields they expose are
  * read-only projections of this.
@@ -49,6 +59,8 @@ export interface Product {
   releaseWebhookEnabled: boolean
   /** The newest release, or null while the product has none. */
   latestRelease: ProductReleaseSummary | null
+  /** `git` until the first release flips it to `releases`; operator-revertible. */
+  releaseMode: ReleaseMode
 }
 
 /** The newest release of a product, as much as a header line or a catalogue row needs. */
@@ -208,6 +220,52 @@ export interface Stack {
   newCommitSha: string | null
   /** ISO timestamp of the last update check. Null when never checked. */
   updatesCheckedAt: string | null
+  /** The product's update mechanism — the switch between the Updates and Version panels (invariant 4). */
+  releaseMode: ReleaseMode
+  /** Derived from the pin, not stored: `pinned` when `pinnedRelease` is set, else `latest`. */
+  trackingMode: TrackingMode
+  /** The release this stack is pinned to, or null when it tracks latest. */
+  pinnedRelease: StackReleaseRef | null
+  /** The release the last successful deploy applied, when there was one. */
+  lastDeployedRelease: StackReleaseRef | null
+  /**
+   * From the cached update check: the newest release when it differs from `lastDeployedRelease`.
+   * Computed for pinned stacks too — that is what the "behind" chip counts against.
+   */
+  availableReleaseId: number | null
+  /** Its version label, denormalized so a list renders it without a second call. */
+  availableReleaseVersion: string | null
+  /** Running containers not on the deployed release's digests. Null when never checked. */
+  driftedContainers: string[] | null
+}
+
+/** Whether a stack follows the newest release or stays on one it was pinned to. */
+export type TrackingMode = 'latest' | 'pinned'
+
+/** A release named on a stack: enough for a chip, not enough to need a second call. */
+export interface StackReleaseRef {
+  id: number
+  version: string
+}
+
+/**
+ * `stacks.setRelease`. `deployed` is false when the caller asked for no deploy **and** when the stack is
+ * stopped — a stopped stack is pinned successfully and simply not deployed, which is a result to show,
+ * not an error.
+ */
+export interface SetStackReleaseResult {
+  stack: Stack
+  deployed: boolean
+  deployEventId: number | null
+}
+
+/** `products.deployRelease`: what the roll-out actually targeted. */
+export interface DeployReleaseResult {
+  releaseId: number
+  version: string
+  /** Latest-tracking, running stacks only — pinned and stopped ones are skipped. */
+  stacksEnqueued: number
+  deployEventIds: number[]
 }
 
 export type AutoDeployMode = 'off' | 'onChange' | 'scheduled'

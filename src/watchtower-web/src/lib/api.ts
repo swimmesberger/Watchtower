@@ -38,6 +38,7 @@ import type {
   Credential,
   DeployAccepted,
   DeployEvent,
+  DeployReleaseResult,
   DnsCheckResult,
   DockerConfigStatus,
   Group,
@@ -62,6 +63,7 @@ import type {
   RouteAccess,
   RouteAccessView,
   SelfUpdateStatus,
+  SetStackReleaseResult,
   Stack,
   StackTemplate,
   Tenant,
@@ -192,6 +194,20 @@ export const api = {
       (await rpc('products.rotateReleaseToken', { productId })) as ReleaseTokenRotation,
     setReleaseWebhook: async (productId: number, enabled: boolean) =>
       (await rpc('products.setReleaseWebhook', { productId, enabled })) as ReleaseWebhookState,
+
+    /**
+     * Rolls the newest release out to every latest-tracking, running stack of the product.
+     *
+     * `releaseId` is the staleness guard, not the target: pass the id the dialog displayed and the call
+     * is refused with `409` when a newer release landed while the dialog was open. The deploys
+     * themselves resolve `pin ?? newest` at execution time (invariant 3), so what they run is always the
+     * true newest.
+     */
+    deployRelease: async (productId: number, releaseId?: number | null) =>
+      (await rpc('products.deployRelease', {
+        productId,
+        releaseId: releaseId ?? null,
+      })) as DeployReleaseResult,
   },
 
   stacks: {
@@ -239,6 +255,20 @@ export const api = {
     setEnv: async (id: number, vars: StackEnvVarInput[]) =>
       (await rpc('stacks.setEnv', { stackId: id, vars })).envVars as StackEnvVar[],
     checkUpdates: async (id: number) => (await rpc('stacks.checkUpdates', { id })).stack as Stack,
+
+    /**
+     * Pins this stack to one release, or clears the pin so it tracks latest again.
+     *
+     * `deploy: false` is the Version dialog's **Save**, `true` its **Save & deploy**. The images are
+     * pre-flighted server-side, so a release whose digests are gone comes back as a `409` naming the
+     * reference and nothing is written — surface that message verbatim.
+     */
+    setRelease: async (id: number, releaseId: number | null, deploy = true) =>
+      (await rpc('stacks.setRelease', {
+        stackId: id,
+        releaseId,
+        deploy,
+      })) as SetStackReleaseResult,
   },
 
   containers: {

@@ -176,6 +176,13 @@ export function StackNewPage() {
       // The product owns the clone credential; offering a second one here would be a field the
       // backend then refuses.
       credentialId: usingProduct ? null : form.credentialId,
+      // The UI default design.md §"Auto-deploy precedence" mandates for a Releases-mode product: the
+      // model still defaults to Off, and a new instance of a product whose CI publishes releases that
+      // silently ignored them would be the wrong first impression. This form has no automation
+      // selector to pre-set, so the default is applied to the request and stated in the Source card
+      // above; stack Settings is where it is changed.
+      autoDeployMode:
+        usingProduct && selectedProduct.releaseMode === 'releases' ? 'onChange' : undefined,
       webhookEnabled: form.webhookEnabled,
       webhookToken: form.webhookEnabled ? form.webhookToken || null : null,
       ...(envVars.length > 0 ? { envVars } : {}),
@@ -285,6 +292,14 @@ export function StackNewPage() {
                           />
                         )}
                       </Field>
+
+                      {/* States the default the request below carries, rather than leaving it
+                          invisible. */}
+                      {selectedProduct.releaseMode === 'releases' && (
+                        <p className="text-[13px] text-text-2">
+                          New releases deploy automatically. Change this in the stack’s settings.
+                        </p>
+                      )}
                     </>
                   )}
                 </>

@@ -11,6 +11,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { deployTargetVersion, usesReleases } from '@/lib/release'
 import type { ActiveDeployment, Stack } from '@/lib/types'
 import { absoluteTitle, timeAgo, useElapsed } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -302,8 +303,19 @@ function StackCard({
   deploying: boolean
 }) {
   const dotTone = describeDot(stack.lastDeployStatus)
-  // Outdated images plus a pending new commit on the tracked branch.
-  const updateCount = (stack.outdatedImages?.length ?? 0) + (stack.newCommitSha ? 1 : 0)
+  // `hasUpdates` means different things in the two modes and is the only field that is right in
+  // both (StacksContracts.cs): in Releases mode it means "a newer release exists", while
+  // `outdatedImages` is empty by construction and `newCommitSha` is informational — unreleased
+  // commits on the branch, which no redeploy would pick up. Counting those here badged an
+  // up-to-date release-mode stack "1 update".
+  const updateCount = usesReleases(stack)
+    ? stack.hasUpdates
+      ? 1
+      : 0
+    : (stack.outdatedImages?.length ?? 0) + (stack.newCommitSha ? 1 : 0)
+  // Invariant 6: this card offers a Deploy, so it names its target. From the list DTO alone — the
+  // dashboard makes no per-stack request.
+  const deployTarget = usesReleases(stack) ? deployTargetVersion(stack) : null
   // 'queued' counts: a deploy waiting for its turn (per-stack, or at the instance-wide deploy gate)
   // is in flight as far as this card is concerned, and a second click would create a second deploy.
   const isDeploying = stack.lastDeployStatus === 'running' || stack.lastDeployStatus === 'queued'
@@ -375,7 +387,7 @@ function StackCard({
           aria-label={`Deploy ${stack.name}`}
         >
           {!deploying && <Play className="fill-current" />}
-          Deploy
+          {deployTarget ? `Deploy ${deployTarget}` : 'Deploy'}
         </Button>
       </div>
     </Card>

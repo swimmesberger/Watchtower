@@ -28,6 +28,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
+import { DeployLatestButton } from './DeployLatestButton'
 
 // ── Releases tab — one build of this product (ADR-0026 stage 3) ─────────────────
 //
@@ -65,9 +66,15 @@ export function ReleasesTab({ product }: { product: Product }) {
         title="Releases"
         description="Newest first. Each one pins the commit and the image digests a build produced."
         action={
-          <Button variant="secondary" size="sm" onClick={() => setRecording(true)}>
-            <Plus /> Record release manually
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setRecording(true)}>
+              <Plus /> Record release manually
+            </Button>
+            {/* Header-level, not per-row: see the note on DeployLatestButton. */}
+            {product.releaseMode === 'releases' && (
+              <DeployLatestButton product={product} label="Deploy latest to all" size="sm" />
+            )}
+          </div>
         }
       />
 

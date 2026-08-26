@@ -10,6 +10,8 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/use-toast'
+import { deployTargetVersion, usesReleases } from '@/lib/release'
+import { StackVersionFragment, useProductReleases } from './StackVersion'
 
 const routeApi = getRouteApi('/stacks/$id')
 
@@ -78,6 +80,13 @@ export function StackDetailPage() {
     refetchInterval: isDeploying ? 3000 : false,
   })
 
+  // Only in Releases mode, and shared (one cache key) with the header fragment, the Version dialog
+  // and the Overview panel — three readers, one request.
+  const releaseQuery = useProductReleases(
+    stack?.productId ?? 0,
+    stack != null && usesReleases(stack),
+  )
+
   const deploy = useMutation({
     mutationFn: () => api.stacks.deploy(stackId),
     onSuccess: () => {
@@ -139,6 +148,11 @@ export function StackDetailPage() {
     )
   }
 
+  // Null in Git mode, which is what keeps the FAB below the circle it has always been.
+  const deployVersion = usesReleases(stack)
+    ? deployTargetVersion(stack, releaseQuery.data?.releases)
+    : null
+
   return (
     <div className="space-y-6 pb-24 md:pb-0">
       {/* Breadcrumb */}
@@ -176,12 +190,10 @@ export function StackDetailPage() {
             ) : (
               <span title={stack.repositoryUrl}>{stack.productName}</span>
             )}{' '}
-            · {stack.branch}
-            {stack.lastDeployedCommit && (
-              <span title={`Deployed commit ${stack.lastDeployedCommit}`}>
-                @{stack.lastDeployedCommit.slice(0, 8)}
-              </span>
-            )}{' '}
+            {/* The header invariant (design.md §Stack detail): this fragment always states the
+                version the Deploy button would apply — `main@a1b2c3d` in Git mode, the release and
+                its chips in Releases mode, where it is also the way into the Version dialog. */}
+            · <StackVersionFragment stack={stack} />{' '}
             · {stack.composeFilePath}
           </p>
         </div>
@@ -285,15 +297,24 @@ export function StackDetailPage() {
             {!start.isPending && <Play />}
           </Button>
         ) : (
+          // The header invariant covers the FAB too, and a fixed icon-only button outlives the
+          // header line it would have to be read next to. In Releases mode it therefore grows into a
+          // pill carrying the version it would deploy; Git mode keeps the 52px circle it has always
+          // been (its version has never been on the FAB, and Git mode changes nowhere).
           <Button
             variant="primary"
-            aria-label="Deploy stack"
+            aria-label={deployVersion ? `Deploy ${deployVersion}` : 'Deploy stack'}
             loading={deploy.isPending || isDeploying}
             disabled={deploy.isPending || isDeploying}
             onClick={() => deploy.mutate()}
-            className="size-[52px] rounded-full p-0 shadow-[var(--sh-lg)]"
+            className={
+              deployVersion
+                ? 'h-[52px] rounded-full px-5 shadow-[var(--sh-lg)]'
+                : 'size-[52px] rounded-full p-0 shadow-[var(--sh-lg)]'
+            }
           >
             {!(deploy.isPending || isDeploying) && <Play />}
+            {deployVersion && <span className="font-medium">Deploy {deployVersion}</span>}
           </Button>
         )}
       </div>

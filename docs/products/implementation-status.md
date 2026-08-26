@@ -5,8 +5,8 @@ Living companion to [design.md](design.md) and
 build; this file says how far it got, what is owed, and what a fresh session needs to know before
 touching stage 3. **Update it at the end of every stage.**
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 4a
-(release-aware deploys, backend).
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 4b
+(release-aware deploys, frontend).
 
 ## Where things stand
 
@@ -20,13 +20,33 @@ Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-0
 | `18090e1` | **2 — hardening** | The stage-2 review's owed items: `CiRepoResolver` ignores a link whose `owner/name` no longer matches the parsed URL (both `ResolveAsync` and `FindForWriteAsync`) with four tests, correction left to the read path (reasoning in the resolver remarks and design.md), the `CiToolchainRecorder` `Attach` comment naming its dependency on `CiRepo` having no `xmin`, the widened change-tracker remarks, and the "ADR-0026 product backfill" wording. No contract change. |
 | `0140c61` | **3 — releases, read-only** | `Release`/`ReleaseImage` + one additive migration (`AddReleases`) and the product's `ReleaseWebhookToken`/`ReleaseWebhookEnabled`; `ReleaseIntakeService` as the one intake pipeline (branch gate, registry gate, tag→digest resolution behind `IReleaseDigestResolver`, `ReleaseFingerprint`, idempotency) shared by `POST /api/webhooks/products/{id}/release` and `products.createRelease`; the six new `products.*` release methods; `BearerTokens` extracted from `AppApiTokens` for the `wtrel_` token; the Releases tab with the pre-filled CI snippet card, the Overview "Recent releases" section and the catalogue's Latest release column. **No deploy behaviour changes: `stacksEnqueued` is hard-coded 0.** One behaviour change outside releases, from the promised stack-webhook retrofit: `POST /api/webhooks/stacks/{id}/deploy` now verifies its bearer with `BearerTokens.Verify`, so an **enabled webhook with an empty token refuses every call** instead of accepting unauthenticated deploys. Needs a release-note line; the stack Settings copy that advertised the old behaviour was updated with it. |
 | `6bf8997` | **4a — release-aware deploys, backend** | `Product.ReleaseMode` (default `Git`), `Stack.PinnedReleaseId` (Restrict) / `LastDeployedReleaseId` (SetNull), `DeployEvent.ReleaseId` (SetNull) and the update check's `AvailableReleaseId`/`AvailableReleaseVersion`/`DriftedContainers`, in one additive migration (`AddReleaseAwareDeploys`). `ReleaseResolver` (`PinnedReleaseId ?? newest`, resolved at execution time), `ImagePinPlan` + `ComposeOverrideFile.Render(envPlan, imagePlan)`, `ReleaseRolloutService`, `ReleaseImageValidator` (the pin pre-flight), `DeployTriggers`. `ReleaseIntakeService.PublishAsync` flips `Git → Releases` in the same `SaveChanges` as the insert and takes an optional post-commit roll-out hook; the webhook's `stacksEnqueued` is real. `stacks.setRelease`, `products.deployRelease`, the owed `products.deleteRelease` pinned guard, `releaseMode` on `products.update`. `AutoDeployBackgroundService` and `StackUpdateService` gained a mode branch, and `Enqueue`'s coalesce branch gained the trigger-promotion rule that keeps an operator's deploy from merging into a skippable one. **Git mode is byte-for-byte unchanged and that is a golden test.** |
+| `_pending_` | **4b — release-aware deploys, frontend** | The version UX, in three new files plus eight edits and **zero backend changes**. `lib/release.ts` is where both UI invariants are expressed once, as pure functions of the DTOs: `usesReleases` (invariant 4's predicate, mirroring `ReleaseResolver.UsesReleases`), `newestRelease` (one source, live list preferred over the cached check), `deployTargetVersion` (invariant 6's single answer), `availableRelease`, `pinnedBehind`, `behindCount`. It lives in `lib/` because three modules read it and **modules never import each other** — stacks, dashboard and products. `modules/stacks/StackVersion.tsx` turns those answers into the three stack-page surfaces (header fragment, Version dialog, Version panel — the only renderer of the latter); `modules/products/DeployLatestButton.tsx` is the product-scoped roll-out (`products.deployRelease`) shared by the product header and the Releases tab header. Edits: the stack header meta line + mobile FAB (`StackDetailPage`), the Updates-vs-Version ternary and the containers empty state (stack `OverviewTab`), "Automatic rollout" + the pinned-and-disabled select (stack `SettingsTab`), the version chip and mobile card (`StacksPage`), the dashboard card's Deploy label and its mode-aware update badge (`dashboard/sections.tsx`), the `OnChange` creation default (`StackNewPage`), the product primary button (`ProductDetailPage`), the Releases tab header (`ReleasesTab`), and `lib/{types,api}.ts` for the new `StackDto` fields, `stacks.setRelease` and `products.deployRelease`. |
 
-**Next: stage 4b (release-aware deploys, frontend)** — the Version panel and the roll-out/pin dialog,
-the Updates-vs-Version switch driven by `StackDto.releaseMode` (invariant 4), the tracking chip and
-"N behind" badge, the mode-revert control on the product page, and the "latest ≠ branch head"
-warning. Everything it needs already exists on the wire — see **Stage 4b handoff** below. Then 5
-(secret sync), 6 (tenant release policy), 7 (tenant-aware backups). The roadmap table in
-[design.md](design.md#staged-roadmap) is the authority for scope per stage.
+**Next: stage 5 (secret sync)**, then 6 (tenant release policy) and 7 (tenant-aware backups). The
+roadmap table in [design.md](design.md#staged-roadmap) is the authority for scope per stage.
+
+Three things from the design were **deliberately left out of stage 4b's scope**:
+
+- The operator's **mode-revert control** (`products.update` already takes `releaseMode`, so it is a
+  Settings-tab control and nothing more) and the **"latest ≠ branch head" warning** on the product
+  Overview ("2 commits on main since v1") — both belong to whoever next touches the product page, and
+  neither needs new wire data.
+- The Releases tab's **per-row contextual labels** ("Deploy this release" / "Roll back to this
+  release") and the **instance-checklist roll-out dialog** (segmented pin/track, per-instance current
+  versions, pre-rollout-backup checkbox, live consequence sentence). Both are fleet operations over a
+  *chosen* release, which is per-instance pinning — the same thing the Instances Version column and
+  bulk pin are, so all of it lands together in **stage 6**. What 4b ships instead is the one
+  product-level action that is not per-instance: "Deploy latest to all".
+- The pin picker offers the **newest 20 releases and no "Show older"**. The Releases tab pages
+  properly; the dialog is a fixed window, so a pin to a release older than 20 can be read (the header
+  chip names it) but not re-selected from the dropdown, and "N behind" degrades to a bare `behind`
+  chip there rather than guessing a number. Widen `RELEASE_OPTIONS` or give the select its own paging
+  if a fleet ever needs it.
+
+Two zero-release edges in `Releases` mode, both reachable only through a mode revert (a product is
+flipped *into* `Releases` by its first release, so the state cannot occur naturally): the stack
+header reads "no releases yet", and every Deploy affordance — the mobile FAB included, which reverts
+to its Git-mode 52px circle — renders version-less exactly as it did before stage 4.
 
 ## Invariants — do not break these
 
@@ -179,7 +199,17 @@ not owed work:
   defects that a walkthrough surfaced — and in stage 3 the "card collapses once releases exist" bug,
   where the state was initialised from a list that had not loaded yet. On this Windows host the
   browser pane does not composite, so screenshots and synthetic clicks fail; driving the page with
-  `javascript_tool` (`.click()`, native value setters) works and is what stage 3 used.
+  `javascript_tool` (`.click()`, native value setters) works and is what stage 3 used. Stage 4b's
+  recipe, which worked end to end: **podman, not docker** on this host
+  (`podman run -d -p 55433:5432 … postgres:17-alpine`), then
+  `WATCHTOWER__DATABASE__CONNECTIONSTRING=Host=localhost;Port=55433;… Auth__Enabled=false dotnet run
+  --project src/Watchtower.Api -c Release --no-build`, then `npm run dev`. Two things worth knowing
+  next time: **the API's JSON omits nulls**, so every new nullable DTO field arrives as `undefined`
+  and client code must use `!= null` rather than `=== null`; and **error toasts render
+  `role="alert"`, not `role="status"`** — a poll for `[role=status]` silently misses every failure
+  message. Registry-backed paths (release intake's tag→digest resolution and the pin pre-flight) work
+  against real `docker.io` images without a Docker daemon, so a release seeded with `nginx:1.27-alpine`
+  exercises them for real; only the deploy itself fails, which is fine for UI work.
 - **The language server in this worktree reports phantom errors** (missing `Microsoft.*`/`Xunit`
   namespaces, `WatchtowerDbContext` "has no member"). `dotnet build` is the authority; it has been
   clean at every commit.
@@ -229,8 +259,55 @@ is regenerated; `npm run generate:rpc` produces the types.
   `[Watchtower] Deploying release v… (commit ab12cd34)`,
   `[Watchtower] Pinning service 'api' to ghcr.io/acme/api@sha256:…`, and
   `[Watchtower] Already on v… — nothing to do.` for a short-circuited fan-out deploy.
-- **Not built, and 4b's job:** the Version panel itself, the pin/roll-out dialog, the tracking chip
-  and behind-badge, the mode-revert control, the `AutoDeployMode` selector defaulting to `OnChange`
-  when creating a stack from a `Releases`-mode product (design.md §"Auto-deploy precedence" — the
-  model still defaults to `Off`, so this is a UI default), and the relabelling of the three
-  `AutoDeployMode` options in release mode.
+- **Built in 4b** (everything below except the mode-revert control, which is still owed — see the
+  note under the table): the Version panel, the pin dialog, the tracking chip and behind-badge, the
+  `OnChange` creation default and the relabelled `AutoDeployMode` options.
+- **`DeployEventDto` carries no release**, and stage 4b did not add one. `DeployEvent.ReleaseId` is
+  stamped at execution server-side, but the history row would need a per-row lookup to render it, so
+  the rows show no version chip; the expanded deploy output names the release on its first line.
+  A future stage that wants the chip should widen the DTO rather than fetch per row.
+
+### Stage 4b — the three judgement calls, and why
+
+- **The mobile FAB.** The header invariant covers it, and a fixed icon-only circle outlives the
+  header line it would have to be read next to. In `Releases` mode the FAB grows into a pill reading
+  `Deploy 1.4.0`; in `Git` mode it stays the 52px circle it has always been, because Git mode changes
+  nowhere and its version has never been on the FAB. Verified at 375px: 140×52, no page overflow.
+- **The transition line** ("This product now has releases…") needs "exactly one release", and the
+  page already fetches the product's newest 20 for the pin picker — so it is
+  `releases.length === 1 && hasMore === false`, exact, and **no backend field was added**. It clears
+  itself when the second release lands.
+- **The creation default.** `/stacks/new` exposes no automation selector, so the `OnChange` default
+  for a `Releases`-mode product is applied to the create request and *stated* in the Source card
+  ("New releases deploy automatically. Change this in the stack's settings.") rather than left
+  invisible. Changing it is stack Settings' job, as it always was.
+- One presentation note: versions are rendered **exactly as CI reported them** (`1.4.0`), not
+  prefixed with a synthetic `v`. design.md writes `v1.4.0` illustratively; the Releases tab has
+  always shown the raw string, and inventing a prefix would make the UI disagree with the release the
+  operator named.
+- **"N behind" is honest about its window.** It counts the pin's index in the fetched page, so a pin
+  older than 20 releases renders a bare `behind` chip rather than a guessed number. And it is
+  `newest.id != pinnedRelease.id`, not merely "an available release exists" — otherwise saving a pin
+  without deploying would immediately nag about the version just chosen.
+
+**Invariant 6 is enforced on five surfaces, not one**, and they must not drift apart:
+`StackDetailPage`'s header fragment and mobile FAB, the stack Overview's containers empty state and
+Version-panel Deploy, `StacksPage`'s version chip (table + mobile card), and the dashboard's
+`StackCard`. All six labels come from `deployTargetVersion`; the three list surfaces call it with no
+release list, which is exactly the DTO-only fallback chain the function documents, so **no list page
+gained a request**. `StacksPage`'s column header is `Branch` until one release-mode stack is listed
+and `Version` after — an all-Git install still sees the page design.md §Migration morning-after
+promises is unchanged.
+
+**One source for "what is newest", deliberately.** `newestRelease` prefers the live release list over
+`StackUpdateCheck`'s cached `availableRelease*`, because that cache is only rewritten by the periodic
+check: between a CI publish and the next tick the DTO still describes the previous world. The stack
+page reads both (the header had the list, the panel had the DTO) and would otherwise contradict
+itself — with no "Check now" to escape with, since Releases mode deliberately has none. Anything new
+that answers "is there something to deploy" must go through that function rather than read
+`availableReleaseId` directly.
+
+**The dashboard's update badge is mode-aware.** `hasUpdates` is the only field that means the right
+thing in both modes; `outdatedImages` is empty by construction in Releases mode and `newCommitSha` is
+informational there (unreleased commits, which no redeploy picks up), so summing them badged an
+up-to-date release-mode stack "1 update".

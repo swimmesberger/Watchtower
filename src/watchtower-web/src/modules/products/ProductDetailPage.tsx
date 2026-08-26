@@ -10,6 +10,7 @@ import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { DeployLatestButton } from './DeployLatestButton'
 
 const routeApi = getRouteApi('/products/$id')
 
@@ -92,15 +93,19 @@ export function ProductDetailPage() {
             {product.repositoryUrl} · {product.defaultBranch} · {product.composeFilePath}
           </p>
         </div>
-        {/* Exactly one state-dependent primary action. A product nothing deploys is a dead end
-            without it; one that already has instances gets its Deploy action with the releases of a
-            later stage, and a button that cannot act yet is worse than none. */}
-        {instanceCount === 0 && (
+        {/* Exactly one state-dependent primary action (design.md §Product detail page). Nothing
+            deploying it is a dead end without the first; with instances, the action a *product* can
+            take is moving its fleet onto the newest release — which only exists in Releases mode. In
+            Git mode there is still nothing a product-level button could do that the stack page does
+            not already do better, so there is none. */}
+        {instanceCount === 0 ? (
           <Button asChild variant="primary">
             <Link to="/stacks/new" search={{ productId: product.id }}>
               <Plus /> Create deployment
             </Link>
           </Button>
+        ) : (
+          product.releaseMode === 'releases' && <DeployLatestButton product={product} />
         )}
       </div>
 

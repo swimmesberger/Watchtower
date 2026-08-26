@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouteContext } from '@tanstack/react-router'
 import { api } from '@/lib/api'
 import { apiBase } from '@/lib/config'
+import { usesReleases } from '@/lib/release'
 import type { AutoDeployMode, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
 import { EnvVarEditor } from '@/components/env-var-editor'
 import { Banner } from '@/components/ui/banner'
@@ -120,6 +121,11 @@ export function SettingsTab({ stack }: { stack: Stack }) {
   const branchHint = stack.branchOverride
     ? 'Pinned; clear to inherit.'
     : `Overrides the inherited branch (${stack.branch}) for this stack.`
+
+  // The one binary this form reads: it relabels the automation section rather than adding a second
+  // one, and a pin parks the whole section (design.md §Stack detail).
+  const releaseMode = usesReleases(stack)
+  const rolloutPaused = releaseMode && stack.pinnedRelease != null
 
   const url = webhookUrl(stackId)
   // Always the authenticated form: an enabled webhook without a token now refuses every call
@@ -263,11 +269,17 @@ export function SettingsTab({ stack }: { stack: Stack }) {
         </Card>
       </section>
 
-      {/* Automatic deployment (pull-based) */}
+      {/* Automatic deployment — the same three AutoDeployMode values in both modes; only the
+          mechanism they name changes (design.md §"Auto-deploy precedence": one automation field,
+          reinterpreted, never a second one). */}
       <section>
         <SectionHeader
-          title="Automatic deployment"
-          description="Redeploy without an inbound webhook: Watchtower polls the registry for newer images and the git branch for new commits."
+          title={releaseMode ? 'Automatic rollout' : 'Automatic deployment'}
+          description={
+            releaseMode
+              ? 'How this deployment picks up the releases your CI publishes.'
+              : 'Redeploy without an inbound webhook: Watchtower polls the registry for newer images and the git branch for new commits.'
+          }
         />
         <Card>
           <CardContent className="space-y-4">
@@ -275,30 +287,59 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               <Select
                 value={form.autoDeployMode ?? 'off'}
                 onValueChange={(v) => set('autoDeployMode', v as AutoDeployMode)}
+                disabled={rolloutPaused}
               >
-                <SelectTrigger>
+                <SelectTrigger disabled={rolloutPaused}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="off">Disabled</SelectItem>
-                  <SelectItem value="onChange">When an update is detected</SelectItem>
+                  <SelectItem value="off">{releaseMode ? 'Off' : 'Disabled'}</SelectItem>
+                  <SelectItem value="onChange">
+                    {releaseMode ? 'When a new release is published' : 'When an update is detected'}
+                  </SelectItem>
                   <SelectItem value="scheduled">Daily at a fixed time</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
 
-            {form.autoDeployMode === 'onChange' && (
+            {/* Disabled with the reason inline, never hidden: a pin is the opt-out from automation
+                (design.md §"Auto-deploy precedence", rule 2), and removing the control would leave
+                the operator guessing why their setting stopped mattering. */}
+            {rolloutPaused && (
               <p className="text-[13px] text-text-2">
-                Polls on the stack update-check interval (Settings → Automation) and redeploys as
-                soon as a newer image or a new commit on{' '}
-                <span className="font-mono">{form.branch || 'main'}</span> is found.
+                Automatic rollout is paused while this deployment is pinned to{' '}
+                {stack.pinnedRelease!.version}.
               </p>
             )}
 
+            {/* Both mode hints describe automation that is not running while a pin is set, so the
+                paused reason above is the only sentence under the control. */}
+            {!rolloutPaused &&
+              form.autoDeployMode === 'onChange' &&
+              (releaseMode ? (
+                <p className="text-[13px] text-text-2">
+                  Deploys within a minute of your CI reporting a new release.
+                </p>
+              ) : (
+                <p className="text-[13px] text-text-2">
+                  Polls on the stack update-check interval (Settings → Automation) and redeploys as
+                  soon as a newer image or a new commit on{' '}
+                  <span className="font-mono">{form.branch || 'main'}</span> is found.
+                </p>
+              ))}
+
+            {/* The field itself stays — never delete a control someone has set — but its hint would
+                describe a schedule the pin has suspended. */}
             {form.autoDeployMode === 'scheduled' && (
               <Field
                 label="Deploy time"
-                hint="Server-local time. Checks once per day at this time and redeploys only if something new is available."
+                hint={
+                  rolloutPaused
+                    ? undefined
+                    : releaseMode
+                      ? 'Server-local time. Deploys the newest release once per day at this time.'
+                      : 'Server-local time. Checks once per day at this time and redeploys only if something new is available.'
+                }
               >
                 {({ id, describedBy }) => (
                   <Input
@@ -308,6 +349,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
                     className="max-w-40"
                     value={form.autoDeployTime ?? ''}
                     onChange={(e) => set('autoDeployTime', e.target.value)}
+                    disabled={rolloutPaused}
                     required
                   />
                 )}
