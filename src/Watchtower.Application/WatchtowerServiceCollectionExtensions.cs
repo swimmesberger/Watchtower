@@ -332,6 +332,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // status and wake it after config changes. Idle cost with no repos configured: one database
         // query + one Docker label query per pass.
         services.AddSingleton<GitHubApiClient>();
+        // The per-repo GitHub Actions config pass the orchestrator runs beside the runner reconcile:
+        // registry credentials (docs/ci-runners/design.md) and release configuration
+        // (docs/products/design.md §"Secret sync"), independently hashed and independently isolated.
+        services.AddSingleton<CiActionsConfigSync>();
         services.AddSingleton<CiRunnerOrchestrator>();
         services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
         // Product → CI repo link (ADR-0026 decision 7): reads go through the FK, and the resolver

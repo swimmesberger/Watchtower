@@ -129,6 +129,8 @@ export interface CreateReleaseRequest {
 export interface ReleaseTokenRotation {
   enabled: boolean
   token: string
+  /** True when the product syncs its release secrets, so the new token is already on its way to GitHub. */
+  resyncing: boolean
 }
 
 /**
@@ -1412,4 +1414,28 @@ export interface CiLink {
   owner: string | null
   name: string | null
   repo: CiRepo | null
+  /**
+   * Whether this *product's* release configuration is pushed to the repo's Actions config. Per
+   * product, not per repo: the runner pool is shared, the release token never is.
+   */
+  syncReleaseSecrets: boolean
+  /** State of that sync; null while it is off — the same rule `registrySync` follows. */
+  releaseSecretsSync: CiReleaseSecretsSync | null
+  /**
+   * Why this product cannot sync at all, in words, or null when it could: a non-github.com remote, or
+   * CI runners never enabled (no PAT to write with). Both mean the manual token path is the only one,
+   * and the Releases tab keeps its instructions exactly as prominent as before.
+   */
+  releaseSecretsSyncBlocked: string | null
+}
+
+/**
+ * State of the release configuration -> GitHub Actions sync (WATCHTOWER_URL /
+ * WATCHTOWER_PRODUCT_ID variables + the WATCHTOWER_RELEASE_TOKEN secret).
+ */
+export interface CiReleaseSecretsSync {
+  /** 'synced' | 'pending' (push not attempted yet or values changed) | 'failed'. */
+  status: 'synced' | 'pending' | 'failed'
+  syncedAt: string | null
+  error: string | null
 }

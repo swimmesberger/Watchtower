@@ -124,6 +124,43 @@ public sealed class Product {
     /// </remarks>
     public ProductReleaseMode ReleaseMode { get; set; } = ProductReleaseMode.Git;
 
+    /// <summary>
+    /// Whether the CI-runner orchestrator pushes this product's release configuration to the linked
+    /// repository's GitHub Actions config (docs/products/design.md §"Secret sync"): the
+    /// <c>WATCHTOWER_URL</c> and <c>WATCHTOWER_PRODUCT_ID</c> variables plus the sealed-box
+    /// <c>WATCHTOWER_RELEASE_TOKEN</c> secret. Off by default — a hobby install without an admin PAT
+    /// pastes the token by hand instead, and that fallback stays first-class.
+    /// </summary>
+    /// <remarks>
+    /// The secret names are fixed, so at most one product per <see cref="CiRepoId"/> may have this on:
+    /// two products of one monorepo would overwrite each other's token every pass. A filtered unique
+    /// index on <c>(ci_repo_id) WHERE sync_release_secrets</c> makes that unrepresentable;
+    /// <c>ci.setReleaseSecretsSync</c> reports the conflict in words before the index has to.
+    /// </remarks>
+    public bool SyncReleaseSecrets { get; set; }
+
+    /// <summary>
+    /// Hash of the release values last pushed successfully (<c>PublicBaseUrl</c> + product id +
+    /// token). The orchestrator re-pushes only when it differs from the hash of the current values, so
+    /// a rotated token re-syncs by itself and an unchanged one costs no GitHub call.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately independent of <see cref="CiRepo.RegistrySyncedHash"/>: the two contributors share
+    /// a repo and a PAT but nothing else, and a rotated registry credential must not re-push the
+    /// release token (or vice versa).
+    /// </remarks>
+    public string? ActionsSyncedHash { get; set; }
+
+    /// <summary>When the last successful release-secret sync finished.</summary>
+    public DateTimeOffset? ActionsSyncedAt { get; set; }
+
+    /// <summary>
+    /// Why the last release-secret sync failed; null after a success. Durable, so the CI tab can show
+    /// a standing failure (a PAT without Secrets write, an unset <c>Watchtower:PublicBaseUrl</c>)
+    /// rather than leaving the operator to wonder why the workflow still 404s. Never blocks runners.
+    /// </summary>
+    public string? LastActionsSyncError { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>The running copies of this product.</summary>

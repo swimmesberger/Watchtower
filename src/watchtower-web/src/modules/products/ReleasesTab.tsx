@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, ExternalLink, Package, Plus, RotateCw, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Product, Release } from '@/lib/types'
+import type { CiLink, Product, Release } from '@/lib/types'
 import { absoluteTitle, timeAgo, truncateMiddle } from '@/lib/format'
 import { commitUrl } from '@/lib/source'
 import { Badge } from '@/components/ui/badge'
@@ -55,6 +55,14 @@ export function ReleasesTab({ product }: { product: Product }) {
     // Keyset, not offset: the next page starts below the last id this page showed.
     getNextPageParam: (last) =>
       last.hasMore ? last.releases[last.releases.length - 1]?.id : undefined,
+  })
+
+  // The CI link, for the one question this tab asks of it: does Watchtower already put the token in
+  // the repository, or does the operator still have to? Same query key as the CI tab, so the two
+  // share one cache entry and neither pays for the other's read.
+  const ci = useQuery({
+    queryKey: ['product', product.id, 'ci'],
+    queryFn: () => api.ci.getProductCi(product.id),
   })
 
   const rows = releases.data?.pages.flatMap((p) => p.releases) ?? []
@@ -127,7 +135,10 @@ export function ReleasesTab({ product }: { product: Product }) {
         product={product}
         token={detail?.releaseWebhookToken ?? null}
         hasReleases={rows.length > 0}
-        ready={releases.isSuccess}
+        // Both answers, or neither: the card's whole shape depends on the CI link, and rendering the
+        // manual instructions first and pulling them away a beat later is the stage-3 flicker again.
+        ready={releases.isSuccess && !ci.isPending}
+        ci={ci.data ?? null}
       />
 
       <RecordReleaseDialog product={product} open={recording} onOpenChange={setRecording} />
@@ -315,12 +326,15 @@ function ReportFromCiCard({
   token,
   hasReleases,
   ready,
+  ci,
 }: {
   product: Product
   token: string | null
   hasReleases: boolean
   /** Whether the release list has actually answered — see the comment on the default below. */
   ready: boolean
+  /** The CI link, or null when it could not be read — which reads as "no sync", i.e. the manual path. */
+  ci: CiLink | null
 }) {
   // Null until the reader says otherwise, so the default follows the data rather than whatever the
   // first render happened to see — the list is still loading then, and a state initialised from it
@@ -344,20 +358,50 @@ function ReportFromCiCard({
     )
   }
 
-  return <ReportFromCiPanel product={product} token={token} />
+  return <ReportFromCiPanel product={product} token={token} ci={ci} />
 }
 
-function ReportFromCiPanel({ product, token }: { product: Product; token: string | null }) {
+/**
+ * Whether Watchtower is already putting this product's token and URL into the repository — the one
+ * question that decides which half of the card is shown. Both conditions are needed: the switch being
+ * on is an intention, and only a completed push means a workflow referencing `vars.WATCHTOWER_URL`
+ * would actually resolve to something. Pending or failed keeps the manual instructions, which is the
+ * conservative direction — a reader who pastes a secret that was about to arrive anyway loses
+ * nothing; a reader shown a snippet whose variables do not exist yet gets a failing job.
+ */
+function isSecretSyncLive(ci: CiLink | null): boolean {
+  return ci?.syncReleaseSecrets === true && ci.releaseSecretsSync?.status === 'synced'
+}
+
+function ReportFromCiPanel({
+  product,
+  token,
+  ci,
+}: {
+  product: Product
+  token: string | null
+  ci: CiLink | null
+}) {
   const qc = useQueryClient()
   const [showWhat, setShowWhat] = useState(false)
+  const synced = isSecretSyncLive(ci)
+  // The "vice versa" cross-link: offered only where turning the sync on is actually possible, so a
+  // non-GitHub remote or an install with no CI is never pointed at a tab that would tell it no.
+  const syncAvailable = ci !== null && !ci.syncReleaseSecrets && ci.releaseSecretsSyncBlocked == null
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['product', product.id] })
 
   const rotate = useMutation({
     mutationFn: () => api.products.rotateReleaseToken(product.id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidate()
-      toast.success('New release token generated.', 'Update it wherever the old one was stored.')
+      qc.invalidateQueries({ queryKey: ['product', product.id, 'ci'] })
+      toast.success(
+        'New release token generated.',
+        result.resyncing
+          ? 'It is being pushed to the repository’s Actions secrets — no workflow change needed.'
+          : 'Update it wherever the old one was stored.',
+      )
     },
     onError: (err: Error) => toast.error('Couldn’t rotate the token', err.message),
   })
@@ -421,23 +465,46 @@ function ReportFromCiPanel({ product, token }: { product: Product; token: string
           </div>
         </Field>
 
-        {/* Secret sync arrives with stage 5; until then the operator pastes it, so the path is spelled
-            out rather than implied. */}
-        <p className="text-[13px] text-text-2">
-          Add it to the repository: <strong className="font-medium text-text">Settings →
-          Secrets and variables → Actions → New repository secret</strong>, name{' '}
-          <code className="font-mono text-[12px]">WATCHTOWER_RELEASE_TOKEN</code>.
-        </p>
+        {/* Two mutually exclusive halves. Synced: Watchtower already put the token, the URL and the
+            product id in the repository, so there is nothing to place by hand and the snippet reads
+            them as Actions variables. Not synced: the manual path, spelled out exactly as it always
+            was — a hobby user without an admin PAT must never hit a wall here
+            (docs/products/design.md §"Secret sync"). */}
+        {synced ? (
+          <p className="text-[13px] text-text-2">
+            Synced automatically — this token and the two{' '}
+            <code className="font-mono text-[12px]">WATCHTOWER_*</code> variables are kept in{' '}
+            <span className="font-mono">{ci?.repo?.fullName ?? 'the repository'}</span>&rsquo;s
+            Actions configuration, and re-pushed when you rotate it. Nothing to paste; see the{' '}
+            <strong className="font-medium text-text">CI</strong> tab for the sync&rsquo;s state.
+          </p>
+        ) : (
+          <>
+            <p className="text-[13px] text-text-2">
+              Add it to the repository: <strong className="font-medium text-text">Settings →
+              Secrets and variables → Actions → New repository secret</strong>, name{' '}
+              <code className="font-mono text-[12px]">WATCHTOWER_RELEASE_TOKEN</code>.
+            </p>
+            {syncAvailable && (
+              <p className="text-[12px] text-text-3">
+                Watchtower can place it for you instead — turn on release secret sync on the{' '}
+                <strong className="font-medium text-text-2">CI</strong> tab.
+              </p>
+            )}
+          </>
+        )}
 
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[12px] text-text-3">
-              Then add this step after the images are pushed:
+              {synced
+                ? 'Add this step after the images are pushed:'
+                : 'Then add this step after the images are pushed:'}
             </span>
-            <CopyButton value={workflowSnippet(product, webhookUrl)} label="Copy" />
+            <CopyButton value={workflowSnippet(product, webhookUrl, synced)} label="Copy" />
           </div>
           <pre className="overflow-x-auto rounded-md bg-surface-2 px-2.5 py-1.5 font-mono text-[12px] text-text">
-            {workflowSnippet(product, webhookUrl)}
+            {workflowSnippet(product, webhookUrl, synced)}
           </pre>
         </div>
 
@@ -472,18 +539,24 @@ function ReportFromCiPanel({ product, token }: { product: Product; token: string
  * The workflow step, with this product's id, branch and URL already substituted — the point of the
  * card (design.md: "the real win is the pre-filled snippet on the product page").
  *
- * `WATCHTOWER_URL` and `WATCHTOWER_PRODUCT_ID` are deliberately *not* referenced as Actions variables:
- * those arrive with the secret-sync stage, and a snippet naming variables nobody has set would fail
- * with an empty URL. The token is the one value the operator has to place by hand.
+ * Two forms, and which one is right is a fact about the repository rather than a preference.
+ * `${'$'}{{ vars.WATCHTOWER_URL }}` and `${'$'}{{ vars.WATCHTOWER_PRODUCT_ID }}` are the design's own
+ * workflow step and the form to prefer — but only once secret sync has actually pushed those
+ * variables. Until then a snippet naming them would post to an empty URL and fail with nothing to
+ * point at, so the literal URL is substituted instead. The token is `secrets.WATCHTOWER_RELEASE_TOKEN`
+ * either way: synced or pasted, that is where a workflow reads it from.
  */
-function workflowSnippet(product: Product, webhookUrl: string): string {
+function workflowSnippet(product: Product, webhookUrl: string, synced: boolean): string {
   const image = suggestedImage(product)
+  const url = synced
+    ? '${{ vars.WATCHTOWER_URL }}/api/webhooks/products/${{ vars.WATCHTOWER_PRODUCT_ID }}/release'
+    : webhookUrl
   return [
     '- name: Report release to Watchtower',
     `  if: github.ref == 'refs/heads/${product.defaultBranch}'`,
     '  run: |',
     '    curl -sSf -X POST \\',
-    `      "${webhookUrl}" \\`,
+    `      "${url}" \\`,
     '      -H "Authorization: Bearer \${{ secrets.WATCHTOWER_RELEASE_TOKEN }}" \\',
     '      -H "Content-Type: application/json" \\',
     '      -d @- <<JSON',

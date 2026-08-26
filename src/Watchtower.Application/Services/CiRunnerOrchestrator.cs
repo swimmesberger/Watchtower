@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -24,8 +22,8 @@ public sealed class CiRunnerOrchestrator(
     IServiceScopeFactory scopeFactory,
     DockerEngineClient docker,
     GitHubApiClient gitHub,
+    CiActionsConfigSync actionsConfig,
     IOptionsMonitor<WatchtowerOptions> options,
-    AuditLog audit,
     ILogger<CiRunnerOrchestrator> logger) : BackgroundService {
 
     internal const string ManagedLabel = "watchtower.managed";
@@ -43,13 +41,14 @@ public sealed class CiRunnerOrchestrator(
     public IReadOnlyDictionary<int, CiRepoRunnerStatus> Status => _status;
 
     /// <summary>
-    /// Drops the registry-sync failure defer for one repo so the next pass retries immediately.
-    /// Called by <c>ci.updateRepo</c> on every save: a config change is the operator saying "try
+    /// Drops the Actions-sync failure defer for one repo so the next pass retries immediately.
+    /// Called by <c>ci.updateRepo</c>, <c>ci.setReleaseSecretsSync</c> and
+    /// <c>products.rotateReleaseToken</c> on every save: a config change is the operator saying "try
     /// again now" — typically right after fixing the PAT's permissions.
     /// </summary>
-    public void ClearRegistrySyncBackoff(int repoId) {
+    public void ClearActionsSyncBackoff(int repoId) {
         if (_status.TryGetValue(repoId, out var status))
-            status.ClearRegistrySyncRetry();
+            status.ClearActionsSyncRetry();
     }
 
     /// <summary>Wakes the reconcile loop immediately (called by ci.* handlers after config changes).</summary>
@@ -127,12 +126,15 @@ public sealed class CiRunnerOrchestrator(
                 RecordFailure(repo.Id, ex.Message);
             }
             try {
-                await SyncRegistryAsync(repo, ct);
+                // Both Actions-config contributors (registry credentials, release configuration). Each
+                // is already isolated inside the service; this catch is the backstop for anything that
+                // escapes it, because secret-sync problems must never take the runner reconcile down.
+                await actionsConfig.SyncActionsConfigAsync(
+                    repo, _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus()), ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 throw;
             } catch (Exception ex) {
-                // Registry sync problems must never take the runner reconcile down with them.
-                logger.LogWarning(ex, "Registry secret sync failed for CI repo {Repo}", repo.FullName);
+                logger.LogWarning(ex, "Actions config sync failed for CI repo {Repo}", repo.FullName);
             }
         }
     }
@@ -224,91 +226,6 @@ public sealed class CiRunnerOrchestrator(
         var containerId = await docker.CreateContainerAsync(body, runnerName, ct);
         await docker.StartContainerAsync(containerId, ct);
         logger.LogInformation("Spawned CI runner {Runner} for {Repo}", runnerName, repo.FullName);
-    }
-
-    // ── Registry secret sync (docs/ci-runners/design.md, Secrets §1) ─────────
-
-    /// <summary>
-    /// Pushes the selected registry's credentials to the repo's GitHub Actions config: the
-    /// <c>REGISTRY</c> variable plus the sealed-box <c>REGISTRY_USERNAME</c>/<c>REGISTRY_PASSWORD</c>
-    /// secrets. Values come from the merged registry view (host docker config + Watchtower
-    /// registries) at every pass, so a rotated credential re-pushes automatically via the hash
-    /// compare — no GitHub call happens while the hash matches. Runs independently of
-    /// <see cref="CiRepo.Enabled"/> so a temporarily disabled repo cannot drift.
-    /// </summary>
-    private async Task SyncRegistryAsync(CiRepo repo, CancellationToken ct) {
-        if (repo.SyncRegistryUrl is null || repo.Credential is null)
-            return;
-        var status = _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus());
-        if (status.RegistrySyncRetryAt is { } retryAt && retryAt > DateTimeOffset.UtcNow)
-            return;
-
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var resolved = scope.ServiceProvider.GetRequiredService<RegistryAuthBuilder>()
-            .ListResolvedRegistries()
-            .FirstOrDefault(r => string.Equals(r.Url, repo.SyncRegistryUrl, StringComparison.OrdinalIgnoreCase));
-
-        var tracked = await db.CiRepos.FirstOrDefaultAsync(r => r.Id == repo.Id, ct);
-        if (tracked is null)
-            return;
-
-        if (resolved is null || resolved.Username is null || resolved.Password is null) {
-            await RecordSyncFailureAsync(db, tracked, status,
-                $"Registry '{repo.SyncRegistryUrl}' no longer resolves to a credential — it was removed "
-                + "from the host docker config or its Watchtower registry lost its credential.", ct);
-            return;
-        }
-
-        var hash = Convert.ToHexString(SHA256.HashData(
-            Encoding.UTF8.GetBytes($"{resolved.Url}\n{resolved.Username}\n{resolved.Password}")));
-        if (hash == tracked.RegistrySyncedHash && tracked.LastRegistrySyncError is null)
-            return;
-
-        try {
-            var token = repo.Credential.Token;
-            var key = await gitHub.GetActionsPublicKeyAsync(repo.Owner, repo.Name, token, ct);
-            await gitHub.PutActionsSecretAsync(repo.Owner, repo.Name, "REGISTRY_USERNAME",
-                GitHubSecretSealer.Seal(key.Key, resolved.Username), key.KeyId, token, ct);
-            await gitHub.PutActionsSecretAsync(repo.Owner, repo.Name, "REGISTRY_PASSWORD",
-                GitHubSecretSealer.Seal(key.Key, resolved.Password), key.KeyId, token, ct);
-            await gitHub.SetActionsVariableAsync(repo.Owner, repo.Name, "REGISTRY", resolved.Url, token, ct);
-
-            tracked.RegistrySyncedHash = hash;
-            tracked.RegistrySyncedAt = DateTimeOffset.UtcNow;
-            tracked.LastRegistrySyncError = null;
-            status.ClearRegistrySyncRetry();
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation("Synced registry {Registry} to GitHub Actions config of {Repo}",
-                resolved.Url, repo.FullName);
-            // Actor-less: nobody clicked this — the reconcile loop shipped credentials to GitHub,
-            // which is exactly the kind of outward write the trail exists for.
-            await audit.RecordAsync("ci", "registry.sync", repo.FullName,
-                $"pushed the REGISTRY variable and REGISTRY_USERNAME/REGISTRY_PASSWORD secrets for "
-                + $"'{resolved.Url}' to GitHub Actions", ct: ct);
-        } catch (HttpRequestException ex) {
-            var message = ex.Message.Contains("403")
-                ? $"{ex.Message} The PAT likely lacks the repository Secrets (read and write) and "
-                  + "Variables (read and write) permissions the registry sync needs."
-                : ex.Message;
-            await RecordSyncFailureAsync(db, tracked, status, message, ct);
-        }
-    }
-
-    private async Task RecordSyncFailureAsync(
-        WatchtowerDbContext db, CiRepo tracked, CiRepoRunnerStatus status, string message, CancellationToken ct) {
-        // Audited on transitions only: the retry loop re-fails with the same message every few
-        // minutes, and a row per attempt would evict the category's actual history (the CI tab
-        // already shows the standing error).
-        var isNewFailure = tracked.LastRegistrySyncError != message;
-        tracked.LastRegistrySyncError = message;
-        status.DeferRegistrySyncRetry();
-        await db.SaveChangesAsync(ct);
-        if (isNewFailure) {
-            await audit.RecordAsync("ci", "registry.sync", tracked.FullName,
-                $"syncing registry '{tracked.SyncRegistryUrl}' to GitHub Actions failed",
-                success: false, error: message, ct: ct);
-        }
     }
 
     // ── Toolcache warming (docs/ci-runners/design.md) ────────────────────────
@@ -497,14 +414,22 @@ public sealed class CiRepoRunnerStatus {
     public bool WarmerRunning { get; private set; }
 
     /// <summary>
-    /// Earliest next registry-sync attempt after a failure (in-memory: a restart simply retries
+    /// Earliest next Actions-config sync attempt after a failure (in-memory: a restart simply retries
     /// once). Keeps a persistently failing sync at one GitHub round-trip per interval, not per pass.
     /// </summary>
-    public DateTimeOffset? RegistrySyncRetryAt { get; private set; }
+    /// <remarks>
+    /// <b>One timer for both contributors</b>, deliberately. They authenticate with the same PAT and
+    /// write through the same two GitHub permissions, so the failure that actually happens — the PAT
+    /// was never granted Secrets/Variables write — fails both at once; two timers would double the
+    /// round-trips that costs and give the UI two different answers to "when does this retry". The
+    /// accepted consequence is that one failing contributor also parks the other for the window, which
+    /// only ever delays a re-push the hash guard would otherwise have made immediately.
+    /// </remarks>
+    public DateTimeOffset? ActionsSyncRetryAt { get; private set; }
 
-    internal void DeferRegistrySyncRetry() => RegistrySyncRetryAt = DateTimeOffset.UtcNow.AddMinutes(5);
+    internal void DeferActionsSyncRetry() => ActionsSyncRetryAt = DateTimeOffset.UtcNow.AddMinutes(5);
 
-    internal void ClearRegistrySyncRetry() => RegistrySyncRetryAt = null;
+    internal void ClearActionsSyncRetry() => ActionsSyncRetryAt = null;
 
     internal void Update(int desired, int running) {
         DesiredRunners = desired;

@@ -30,12 +30,22 @@ public sealed class GetProductCi(
             return AppError.NotFound($"Product {query.ProductId} not found.");
 
         var link = await resolver.ResolveAsync(product, ct);
-        if (!link.IsGitHub)
-            return new Response(new CiLinkDto(IsGitHub: false, Owner: null, Name: null, Repo: null));
+        // The release-sync half of the answer exists in both branches: a non-GitHub product still has to
+        // be told, in words, why the toggle is not offered — so the Releases tab can keep the manual
+        // instructions exactly as prominent as they were (docs/products/design.md §"Secret sync").
+        var releaseSync = CiMapping.ToReleaseSecretsSyncDto(product);
+        var blocked = CiMapping.ReleaseSecretsSyncBlocked(product, link.Repo);
+        if (!link.IsGitHub) {
+            return new Response(new CiLinkDto(
+                IsGitHub: false, Owner: null, Name: null, Repo: null,
+                product.SyncReleaseSecrets, releaseSync, blocked));
+        }
 
         var dto = link.Repo is null
             ? null
             : CiMapping.ToDto(link.Repo, orchestrator.Status.TryGetValue(link.Repo.Id, out var s) ? s : null);
-        return new Response(new CiLinkDto(IsGitHub: true, link.Owner, link.Name, dto));
+        return new Response(new CiLinkDto(
+            IsGitHub: true, link.Owner, link.Name, dto,
+            product.SyncReleaseSecrets, releaseSync, blocked));
     }
 }

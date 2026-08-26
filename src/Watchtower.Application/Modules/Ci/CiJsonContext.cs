@@ -11,6 +11,7 @@ namespace Watchtower.Application.Modules.Ci;
 [JsonSerializable(typeof(CiRepoDto))]
 [JsonSerializable(typeof(CiRunnerStatusDto))]
 [JsonSerializable(typeof(CiRegistrySyncDto))]
+[JsonSerializable(typeof(CiReleaseSecretsSyncDto))]
 [JsonSerializable(typeof(CiToolchainDto))]
 [JsonSerializable(typeof(CiToolchainProfileDto))]
 [JsonSerializable(typeof(CiLinkDto))]
@@ -35,4 +36,6 @@ namespace Watchtower.Application.Modules.Ci;
 [JsonSerializable(typeof(GetStackCi.Response), TypeInfoPropertyName = "GetStackCiResponse")]
 [JsonSerializable(typeof(EnableForStack.Command), TypeInfoPropertyName = "EnableForStackCommand")]
 [JsonSerializable(typeof(EnableForStack.Response), TypeInfoPropertyName = "EnableForStackResponse")]
+[JsonSerializable(typeof(SetReleaseSecretsSync.Command), TypeInfoPropertyName = "SetReleaseSecretsSyncCommand")]
+[JsonSerializable(typeof(SetReleaseSecretsSync.Response), TypeInfoPropertyName = "SetReleaseSecretsSyncResponse")]
 public sealed partial class CiJsonContext : JsonSerializerContext;

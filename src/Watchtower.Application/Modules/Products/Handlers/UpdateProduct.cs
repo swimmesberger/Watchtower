@@ -19,7 +19,8 @@ namespace Watchtower.Application.Modules.Products.Handlers;
 /// </remarks>
 [Handler("products.update")]
 public sealed class UpdateProduct(
-    WatchtowerDbContext db, ProductCatalog catalog, AuditLog audit, ICurrentUser currentUser)
+    WatchtowerDbContext db, ProductCatalog catalog, CiRunnerOrchestrator orchestrator,
+    AuditLog audit, ICurrentUser currentUser)
     : IHandler<UpdateProduct.Command, Result<UpdateProduct.Response>> {
     /// <param name="ReleaseMode">
     /// <c>"git"</c> or <c>"releases"</c>, or null to leave it as it is — the operator's manual override
@@ -126,7 +127,36 @@ public sealed class UpdateProduct(
             product.CiRepoId = null;
             changes.Add("CI repository link cleared (re-resolved from the new URL on the next CI read)");
         }
+        // A repository move takes the release-secret sync with it. The sync writes into *a* repository's
+        // Actions config, and this product no longer names the one its token is sitting in — leaving the
+        // switch on would keep a "synced" badge over a repo nothing pushes to any more, and would also
+        // leave the flag standing while the FK the filtered unique index constrains is null. Re-enabling
+        // it on the CI tab re-probes the new repository's PAT, which is the check that has to be redone.
+        var syncTurnedOff = repositoryMoved && product.SyncReleaseSecrets;
+        if (syncTurnedOff) {
+            product.SyncReleaseSecrets = false;
+            product.ActionsSyncedHash = null;
+            product.ActionsSyncedAt = null;
+            product.LastActionsSyncError = null;
+            changes.Add("release secret sync turned off (the repository moved; re-enable it on the CI tab)");
+        }
+        // Save-to-retry for everything else: the durable failures this sync records are about the
+        // instance and the product (an unset Watchtower:PublicBaseUrl, a missing token), so a product
+        // save is the operator saying "I fixed it" — the same reading ci.updateRepo gives a save.
+        // The hash goes with the error, not just the error: a standing failure whose hash still matches
+        // the current values means the push itself failed, and clearing the message alone would satisfy
+        // the "unchanged, nothing to do" guard and quietly stop retrying.
+        var retrySync = !syncTurnedOff && product.SyncReleaseSecrets && product.LastActionsSyncError is not null;
+        if (retrySync) {
+            product.ActionsSyncedHash = null;
+            product.ActionsSyncedAt = null;
+            product.LastActionsSyncError = null;
+        }
         await db.SaveChangesAsync(ct);
+        if (retrySync && product.CiRepoId is { } syncRepoId) {
+            orchestrator.ClearActionsSyncBackoff(syncRepoId);
+            orchestrator.RequestReconcile();
+        }
 
         var actor = await audit.ActorAsync(currentUser, ct);
         if (changes.Count > 0) {

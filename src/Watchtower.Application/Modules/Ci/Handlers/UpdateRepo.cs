@@ -64,7 +64,9 @@ public sealed class UpdateRepo(
         // credential changes while a sync registry is in play. The sync itself stays optional — no
         // registry selected, no extra permissions asked of the PAT.
         if (syncRegistryUrl is not null && (selectionChanged || repo.CredentialId != command.CredentialId)
-            && await gitHub.ValidateSecretsAccessAsync(repo.Owner, repo.Name, credential.Token, ct) is { } accessError) {
+            && await gitHub.ValidateSecretsAccessAsync(
+                repo.Owner, repo.Name, credential.Token, CiActionsConfigSync.RegistryFeature, ct)
+                is { } accessError) {
             return AppError.Validation(
                 $"Credential '{credential.Name}' cannot sync registry credentials for {repo.FullName}: {accessError}");
         }
@@ -110,7 +112,7 @@ public sealed class UpdateRepo(
 
         // Every save also drops a standing sync-failure defer: a config change is the operator
         // saying "try again now" — typically right after granting the PAT the missing permissions.
-        orchestrator.ClearRegistrySyncBackoff(repo.Id);
+        orchestrator.ClearActionsSyncBackoff(repo.Id);
         orchestrator.RequestReconcile();
         var status = orchestrator.Status.TryGetValue(repo.Id, out var s) ? s : null;
         return new Response(CiMapping.ToDto(repo, status));

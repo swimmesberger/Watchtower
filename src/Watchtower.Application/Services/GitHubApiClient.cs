@@ -86,30 +86,52 @@ public class GitHubApiClient : IDisposable {
     }
 
     /// <summary>
-    /// Probes whether the PAT can reach the repo's Actions secrets and variables — called when a
-    /// sync registry is selected, so a wrong-scoped PAT fails in the UI with the missing permission
-    /// named instead of as a background sync error. Read access is provable cheaply (the public key
-    /// and the variables list); write access is not provable without writing, but fine-grained PATs
-    /// only offer read-only vs read-and-write per permission, so proving read catches the real case
-    /// (permission not granted at all). Null when both probes pass.
+    /// The message a caller sees when the PAT cannot reach one of the two Actions permissions writing
+    /// needs. Public because it is the string tests must assert on: a suite that paraphrases it in a
+    /// stub proves only that the stub was wired, which is how a stale "registry sync" wording survived
+    /// into the release-sync path unnoticed.
     /// </summary>
+    /// <param name="feature">
+    /// What needs the permission, as a noun phrase that reads after "the": <c>"registry sync"</c>,
+    /// <c>"release secret sync"</c>.
+    /// </param>
+    /// <param name="permission">The GitHub permission's own name: <c>"Secrets"</c> or <c>"Variables"</c>.</param>
+    public static string MissingActionsPermissionMessage(string feature, string permission) =>
+        $"The PAT cannot access the repository's Actions {permission.ToLowerInvariant()} — the "
+        + $"{feature} needs the fine-grained PAT to also carry the repository {permission} "
+        + "(read and write) permission.";
+
+    /// <summary>
+    /// Probes whether the PAT can reach the repo's Actions secrets and variables — called when a
+    /// sync registry is selected, and when release-secret sync is switched on, so a wrong-scoped PAT
+    /// fails in the UI with the missing permission named instead of as a background sync error. Read
+    /// access is provable cheaply (the public key and the variables list); write access is not provable
+    /// without writing, but fine-grained PATs only offer read-only vs read-and-write per permission, so
+    /// proving read catches the real case (permission not granted at all). Null when both probes pass.
+    /// </summary>
+    /// <param name="feature">
+    /// Named in the failure message so the caller's own feature is what the operator is told to grant
+    /// the permission for. Both callers write the same two permissions, but only one of them is ever
+    /// the reason the operator is standing in front of this error.
+    /// </param>
     public virtual async Task<string?> ValidateSecretsAccessAsync(
-        string owner, string repo, string token, CancellationToken ct = default) {
-        var secrets = await ProbeAsync($"repos/{owner}/{repo}/actions/secrets/public-key", "Secrets", token, ct);
+        string owner, string repo, string token, string feature, CancellationToken ct = default) {
+        var secrets = await ProbeAsync(
+            $"repos/{owner}/{repo}/actions/secrets/public-key", "Secrets", feature, token, ct);
         if (secrets is not null) return secrets;
-        return await ProbeAsync($"repos/{owner}/{repo}/actions/variables?per_page=1", "Variables", token, ct);
+        return await ProbeAsync(
+            $"repos/{owner}/{repo}/actions/variables?per_page=1", "Variables", feature, token, ct);
     }
 
-    private async Task<string?> ProbeAsync(string url, string permission, string token, CancellationToken ct) {
+    private async Task<string?> ProbeAsync(
+        string url, string permission, string feature, string token, CancellationToken ct) {
         using var request = NewRequest(HttpMethod.Get, url, token);
         var response = await _client.SendAsync(request, ct);
         return response.StatusCode switch {
             HttpStatusCode.OK => null,
             HttpStatusCode.Unauthorized => "The PAT is invalid or expired.",
             HttpStatusCode.Forbidden or HttpStatusCode.NotFound =>
-                $"The PAT cannot access the repository's Actions {permission.ToLowerInvariant()} — the "
-                + $"registry sync needs the fine-grained PAT to also carry the repository {permission} "
-                + "(read and write) permission.",
+                MissingActionsPermissionMessage(feature, permission),
             var code => $"Unexpected GitHub API response {(int)code} while probing Actions {permission.ToLowerInvariant()} access.",
         };
     }

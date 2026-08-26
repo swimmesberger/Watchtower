@@ -97,6 +97,44 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
     }
 
     /// <summary>
+    /// The reverse lookup the Actions-secret sync needs: every product whose release configuration this
+    /// repo would carry — <see cref="Product.SyncReleaseSecrets"/> is on, and either the
+    /// <see cref="Product.RepositoryUrl"/> parses to the repo's <c>owner/name</c> or
+    /// <see cref="Product.CiRepoId"/> names it. Ordered by id, and tracked because callers stamp the
+    /// sync state onto what comes back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The candidate set is filtered in SQL on the sync flag — at most a handful of rows instance-wide,
+    /// and normally one per repository — and the match is then done in memory, because
+    /// <see cref="GitHubRepoUrl.TryParse"/> is not translatable. Matching on the parsed URL rather than
+    /// only on the FK is deliberate: the FK is a lazily recorded cache (see the remarks on this class)
+    /// and is set to null when the <see cref="CiRepo"/> is deleted, so a sync that fired only when it
+    /// happened to be filled in would be a silent no-op wearing a "synced" badge. The FK is matched
+    /// <em>as well</em> so a row is still found if its URL ever stops parsing.
+    /// </para>
+    /// <para>
+    /// <b>A list, not a single product, and that is the point.</b> The filtered unique index on
+    /// <c>(ci_repo_id) WHERE sync_release_secrets</c> constrains only rows whose FK is set —
+    /// PostgreSQL treats NULLs as distinct — so a product left over from a deleted CI repo can sit
+    /// beside a legitimately syncing one. Returning the first by id would then push one product's
+    /// token into the repository the other was wired for. The caller sees both and refuses.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<Product>> FindSyncingProductsAsync(CiRepo repo, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(repo);
+        var candidates = await db.Products
+            .Where(p => p.SyncReleaseSecrets)
+            .OrderBy(p => p.Id)
+            .ToListAsync(ct);
+        return [.. candidates.Where(p =>
+            p.CiRepoId == repo.Id
+            || (GitHubRepoUrl.TryParse(p.RepositoryUrl) is { } parsed
+                && string.Equals(parsed.Owner, repo.Owner, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(parsed.Name, repo.Name, StringComparison.OrdinalIgnoreCase)))];
+    }
+
+    /// <summary>
     /// GitHub compares <c>owner/name</c> case-insensitively, so the lookup does too — matching the
     /// <c>ix_ci_repos_owner_name_lower</c> expression index.
     /// </summary>
@@ -127,8 +165,13 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception ex) {
-            // A cache write, not the answer — the caller already has its link.
-            logger.LogDebug(ex, "Could not record the CI repo link for product {ProductId}", product.Id);
+            // A cache write, not the answer — the caller already has its link, so this is swallowed.
+            // Warning rather than Debug: since the products table grew the filtered unique index on
+            // (ci_repo_id) WHERE sync_release_secrets, a *constraint* violation can land here, and that
+            // one is not a lost race — it means two syncing products are converging on one repository.
+            // The sync pass refuses that state loudly on its own, but a swallowed exception at Debug
+            // would be the last place anyone looked, so it is logged where it will actually be seen.
+            logger.LogWarning(ex, "Could not record the CI repo link for product {ProductId}", product.Id);
         }
     }
 }

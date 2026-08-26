@@ -146,6 +146,24 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
         // in Git mode — the back-compat contract of ADR-0026 decision 5 expressed as a column default
         // rather than as something the code has to remember.
         b.Property(x => x.ReleaseMode).HasConversion<string>().HasDefaultValue(ProductReleaseMode.Git);
+        // The monorepo rule of docs/products/design.md §"Secret sync", as a schema fact: the Actions
+        // secret names (WATCHTOWER_URL / WATCHTOWER_PRODUCT_ID / WATCHTOWER_RELEASE_TOKEN) are fixed, so
+        // two products of one repository both syncing would overwrite each other's token on every pass.
+        // Filtered, because sharing a CI repo is otherwise entirely normal (the plain FK index above
+        // stays), and because "not syncing" must remain unconstrained. The handler reports the conflict
+        // in words; this is what makes the state unrepresentable.
+        //
+        // Two declarations over one column, both spelled out. Declaring the filtered index alone would
+        // suppress the convention index EF creates for the FK — the convention only fires when nothing
+        // already indexes those properties — and the plain lookup the relationship needs would silently
+        // disappear. The second one needs a model name *and* a database name, because the snake-case
+        // convention derives the database name from the columns and both would otherwise collide on
+        // ix_products_ci_repo_id.
+        b.HasIndex(x => x.CiRepoId);
+        b.HasIndex(x => x.CiRepoId, "ix_products_ci_repo_id_sync_release_secrets")
+            .IsUnique()
+            .HasFilter("\"sync_release_secrets\"")
+            .HasDatabaseName("ix_products_ci_repo_id_sync_release_secrets");
     }
 }
 

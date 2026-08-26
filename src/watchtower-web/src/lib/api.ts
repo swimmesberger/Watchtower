@@ -317,6 +317,12 @@ export const api = {
           syncRegistryUrl: repo.syncRegistryUrl ?? null,
         })
       ).repo as CiRepo,
+    /**
+     * Turns the release-secret sync on or off for one product. Answers the whole CI link, so the tab
+     * re-renders from one shape rather than patching a toggle and re-fetching the rest.
+     */
+    setReleaseSecretsSync: async (productId: number, enabled: boolean) =>
+      (await rpc('ci.setReleaseSecretsSync', { productId, enabled })).ci as CiLink,
   },
 
   volumes: {

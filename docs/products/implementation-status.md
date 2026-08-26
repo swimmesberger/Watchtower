@@ -5,8 +5,8 @@ Living companion to [design.md](design.md) and
 build; this file says how far it got, what is owed, and what a fresh session needs to know before
 touching stage 3. **Update it at the end of every stage.**
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 4b
-(release-aware deploys, frontend).
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 5
+(release-secret sync to GitHub Actions).
 
 ## Where things stand
 
@@ -21,9 +21,10 @@ Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-0
 | `0140c61` | **3 — releases, read-only** | `Release`/`ReleaseImage` + one additive migration (`AddReleases`) and the product's `ReleaseWebhookToken`/`ReleaseWebhookEnabled`; `ReleaseIntakeService` as the one intake pipeline (branch gate, registry gate, tag→digest resolution behind `IReleaseDigestResolver`, `ReleaseFingerprint`, idempotency) shared by `POST /api/webhooks/products/{id}/release` and `products.createRelease`; the six new `products.*` release methods; `BearerTokens` extracted from `AppApiTokens` for the `wtrel_` token; the Releases tab with the pre-filled CI snippet card, the Overview "Recent releases" section and the catalogue's Latest release column. **No deploy behaviour changes: `stacksEnqueued` is hard-coded 0.** One behaviour change outside releases, from the promised stack-webhook retrofit: `POST /api/webhooks/stacks/{id}/deploy` now verifies its bearer with `BearerTokens.Verify`, so an **enabled webhook with an empty token refuses every call** instead of accepting unauthenticated deploys. Needs a release-note line; the stack Settings copy that advertised the old behaviour was updated with it. |
 | `6bf8997` | **4a — release-aware deploys, backend** | `Product.ReleaseMode` (default `Git`), `Stack.PinnedReleaseId` (Restrict) / `LastDeployedReleaseId` (SetNull), `DeployEvent.ReleaseId` (SetNull) and the update check's `AvailableReleaseId`/`AvailableReleaseVersion`/`DriftedContainers`, in one additive migration (`AddReleaseAwareDeploys`). `ReleaseResolver` (`PinnedReleaseId ?? newest`, resolved at execution time), `ImagePinPlan` + `ComposeOverrideFile.Render(envPlan, imagePlan)`, `ReleaseRolloutService`, `ReleaseImageValidator` (the pin pre-flight), `DeployTriggers`. `ReleaseIntakeService.PublishAsync` flips `Git → Releases` in the same `SaveChanges` as the insert and takes an optional post-commit roll-out hook; the webhook's `stacksEnqueued` is real. `stacks.setRelease`, `products.deployRelease`, the owed `products.deleteRelease` pinned guard, `releaseMode` on `products.update`. `AutoDeployBackgroundService` and `StackUpdateService` gained a mode branch, and `Enqueue`'s coalesce branch gained the trigger-promotion rule that keeps an operator's deploy from merging into a skippable one. **Git mode is byte-for-byte unchanged and that is a golden test.** |
 | `15eb618` | **4b — release-aware deploys, frontend** | The version UX, in three new files plus eight edits and **zero backend changes**. `lib/release.ts` is where both UI invariants are expressed once, as pure functions of the DTOs: `usesReleases` (invariant 4's predicate, mirroring `ReleaseResolver.UsesReleases`), `newestRelease` (one source, live list preferred over the cached check), `deployTargetVersion` (invariant 6's single answer), `availableRelease`, `pinnedBehind`, `behindCount`. It lives in `lib/` because three modules read it and **modules never import each other** — stacks, dashboard and products. `modules/stacks/StackVersion.tsx` turns those answers into the three stack-page surfaces (header fragment, Version dialog, Version panel — the only renderer of the latter); `modules/products/DeployLatestButton.tsx` is the product-scoped roll-out (`products.deployRelease`) shared by the product header and the Releases tab header. Edits: the stack header meta line + mobile FAB (`StackDetailPage`), the Updates-vs-Version ternary and the containers empty state (stack `OverviewTab`), "Automatic rollout" + the pinned-and-disabled select (stack `SettingsTab`), the version chip and mobile card (`StacksPage`), the dashboard card's Deploy label and its mode-aware update badge (`dashboard/sections.tsx`), the `OnChange` creation default (`StackNewPage`), the product primary button (`ProductDetailPage`), the Releases tab header (`ReleasesTab`), and `lib/{types,api}.ts` for the new `StackDto` fields, `stacks.setRelease` and `products.deployRelease`. |
+| `_pending_` | **5 — secret sync** | `CiActionsConfigSync`, the per-repo Actions-config pass lifted out of `CiRunnerOrchestrator` and generalized into two independent contributors with independent hash guards. Registry (unchanged, state on `CiRepo`) plus release (new, state on `Product`): the `WATCHTOWER_URL` and `WATCHTOWER_PRODUCT_ID` variables and the sealed-box `WATCHTOWER_RELEASE_TOKEN` secret. `Product` gained `SyncReleaseSecrets`, `ActionsSyncedHash`, `ActionsSyncedAt`, `LastActionsSyncError` in one additive migration (`AddReleaseSecretSync`) with the filtered unique index `ix_products_ci_repo_id_sync_release_secrets`. `CiRepoResolver.FindSyncingProductsAsync` is the reverse lookup. `ci.setReleaseSecretsSync` is the toggle (PAT probe, monorepo refusal in words, token minted when missing); `products.rotateReleaseToken` and `products.update` clear the hash and wake the loop, and a repository move turns the sync off. `ci.getProductCi` carries the state. Frontend: a release-secrets card on the CI tab built to `RegistrySyncCard`'s pattern, and the Releases tab's token card collapses its manual instructions and switches the snippet to `${{ vars.WATCHTOWER_* }}` once — and only once — a push has actually landed. |
 
-**Next: stage 5 (secret sync)**, then 6 (tenant release policy) and 7 (tenant-aware backups). The
-roadmap table in [design.md](design.md#staged-roadmap) is the authority for scope per stage.
+**Next: stage 6 (tenant release policy)**, then 7 (tenant-aware backups). The roadmap table in
+[design.md](design.md#staged-roadmap) is the authority for scope per stage.
 
 Three things from the design were **deliberately left out of stage 4b's scope**:
 
@@ -121,6 +122,47 @@ to its Git-mode 52px circle — renders version-less exactly as it did before st
     `Stack.LastDeployStatus` describe the last deploy that actually ran; if a no-op touched them,
     every tenant of a product would show a fresh "deployed just now" after every release. It is
     decided before `MarkRunning`, so the event never passes through `running` either.
+12. **The two Actions-config contributors are independent, and each guard is separate.** `CiRepo`
+    holds the registry hash, `Product` holds the release hash, and neither contributor may read the
+    other's state — a registry credential rotation must not re-push a release token, and vice versa
+    (design.md §"Secret sync"). Three mutations prove it: dropping either hash guard, and mixing
+    `CiRepo.RegistrySyncedHash` into the release hash. Independence is also failure isolation: each
+    contributor runs in its own `try`/`catch` and its own scope inside
+    `CiActionsConfigSync.SyncActionsConfigAsync`, so one blowing up leaves the other's work done and
+    the runner reconcile around them untouched — collapsing that to two bare awaits fails both
+    `FailureIsolation_*` tests. The **retry defer is deliberately shared, and armed only by
+    GitHub-call failures** (one `CiRepoRunnerStatus.ActionsSyncRetryAt`): both authenticate with the
+    same PAT through the same two permissions, so the failure that actually happens fails both at once,
+    and two timers would double what it costs in round-trips and give the UI two answers to "when does
+    this retry". Because it is shared, a *local* failure — an unset `Watchtower:PublicBaseUrl`, a
+    product with no token, an unresolvable sync registry, an ambiguous repo — must record its durable
+    error **without** calling `DeferActionsSyncRetry`: no round-trip was spent, no amount of retrying
+    fixes it, and parking the other contributor for five minutes over it would slow a credential
+    rotation that has nothing to do with the problem. Re-writing the same message is a no-op in the
+    change tracker, so the per-pass re-evaluation issues no SQL.
+    `LocalFailures_DoNotArmTheSharedDefer_SoTheRegistryContributorKeepsItsLatency` and
+    `AGitHubFailure_DoesArmTheSharedDefer` pin both halves.
+13. **The manual token path never becomes a second-class citizen.** A hobby install with no admin PAT,
+    a non-GitHub remote, or a repository with no CI must reach exactly the instructions it reached
+    before stage 5 — the design is explicit that it must never hit a wall. Three rules hold it: the
+    Releases tab collapses its manual instructions only when a push has *actually landed*
+    (`syncReleaseSecrets && status === 'synced'`, not merely "the switch is on"), so pending and
+    failed both fall back; every refusal from `ci.setReleaseSecretsSync` names the by-hand path in the
+    same sentence; and the `${{ vars.WATCHTOWER_* }}` snippet is only ever rendered when those
+    variables exist, because a snippet naming variables nobody set fails with an empty URL and nothing
+    to point at.
+14. **`SyncReleaseSecrets = true` may never outlive the CI repo it syncs into.** The FK is `SET NULL`
+    on delete and PostgreSQL treats NULLs as distinct, so a stranded row is invisible to the filtered
+    unique index *and* to any conflict query written as `CiRepoId == repo.Id` — enabling sync for a
+    second product of the same repository would then be accepted, and the two would overwrite one
+    fixed set of secret names while the UI read the surviving hash and called both of them synced.
+    Two layers hold it. `ci.removeRepo` clears the flag and the state for every product syncing into
+    the repo, with its own audit row (`release-token.sync.cleared`) — that is the fix at the source.
+    And defensively, `CiRepoResolver.FindSyncingProductsAsync` matches on the **parsed URL as well as**
+    the FK and returns a *list*: the sync pass refuses a repo with more than one candidate, syncing
+    neither and recording the conflict on both, and `ci.setReleaseSecretsSync` asks the same question
+    so its refusal names a stranded product the FK query could not see. Any new writer that clears a
+    CI link must clear the sync flag with it.
 
 ## Owed work and accepted debt
 
@@ -152,6 +194,34 @@ not owed work:
 - **`AutoDeployBackgroundService` has no timing tests.** It had none before stage 4a either; what
   stage 4a added is `IsEligible` (the two release-mode rules), which is `internal` and directly
   tested. The interval and window machinery around it is still only exercised in production.
+- **Turning the release sync off leaves the values at GitHub.** Watchtower stops maintaining
+  `WATCHTOWER_URL`, `WATCHTOWER_PRODUCT_ID` and `WATCHTOWER_RELEASE_TOKEN`; it does not delete them —
+  the same rule `ci.updateRepo` already follows for the registry secrets. Deleting them is a
+  repository decision, and silently revoking a running workflow's credentials on a toggle would be
+  the surprise. Rotating the token is how an operator actually invalidates what is out there.
+- **The release contributor's `SaveChanges` carries `Product`'s `xmin`.** A product edit landing in
+  the microseconds between the read and the stamp makes that pass throw
+  `DbUpdateConcurrencyException`, which the contributor's own isolation catches and logs; the values
+  did reach GitHub, only the hash did not, so the next pass re-pushes them. Accepted for the same
+  reasons as the mode flip: retryable, self-correcting, and the alternative is an unconditional
+  second statement.
+- **Any repository-URL edit turns the release sync off rather than following the URL** (an ordinal compare: a move, but also a `.git` suffix or case fix — audited and one click to re-enable). `products.update`
+  clears the flag and the state, and the audit line says so. Following the move would mean re-probing
+  a PAT that may not exist for the new repository, from inside a handler whose job is a product edit;
+  re-enabling on the CI tab does that probe where its failure has somewhere to be shown.
+- **Only one product per repository can sync**, enforced by the filtered unique index, reported in
+  words by the handler, and refused outright by the sync pass when it sees two candidates (invariant
+  14). design.md's v2 answer is name-suffixed secrets; until then the second product of a monorepo
+  uses the manual path, which the refusal message names.
+- **The registry contributor's unresolvable-registry failure no longer arms the retry defer.** That is
+  a deliberate change to shipped behaviour, forced by the timer now being shared: leaving it would let
+  a missing registry credential park the release contributor for five minutes. It is a local check
+  with no GitHub call, and the repeated `SaveChanges` writes nothing because the message is unchanged,
+  so the only difference is that the message is re-evaluated once per pass instead of once per five
+  minutes.
+- **`ci.removeRepo` turns the sync off but does not delete anything from GitHub**, same as the manual
+  off-switch. The audit row says so; rotating the token is how an operator invalidates what is out
+  there.
 - **`ProductCatalog`'s savepoint retry branch is untested** — forcing the interleave needs an
   injection seam inside `FindOrCreateAsync`, which is more test scaffolding than the branch is
   worth. Accepted: the savepoint create/release path is covered by every implicit-create test, and
@@ -311,3 +381,64 @@ that answers "is there something to deploy" must go through that function rather
 thing in both modes; `outdatedImages` is empty by construction in Releases mode and `newCommitSha` is
 informational there (unreleased commits, which no redeploy picks up), so summing them badged an
 up-to-date release-mode stack "1 update".
+
+## Stage 5 handoff — secret sync
+
+**Where the pass lives now.** `CiRunnerOrchestrator` no longer contains a sync method; it calls
+`CiActionsConfigSync.SyncActionsConfigAsync(repo, status, ct)` once per repo, beside
+`ReconcileWarmerAsync` and `ReconcileRepoAsync`. Anything that wants a third contributor adds it
+there, as its own explicit try-block with its own hash, scope and literal log template — the two existing contributors in `SyncActionsConfigAsync` are the whole
+extension point. The extraction is also what made the pass testable: it takes a `CiRepo` and a
+`CiRepoRunnerStatus` and nothing else, so `CiActionsConfigSyncTests` drives it directly with a
+`GitHubApiClient` stub holding a real libsodium keypair and asserts on what came out of the sealed box.
+
+**Why the toggle is `ci.setReleaseSecretsSync` and not a field on `products.update`.** The module
+boundary follows `ci.enableForProduct`, which is likewise product-scoped, likewise writes product
+columns and likewise audits under `ci` — what is being configured is the *repository's* Actions
+configuration, whose other contributor (`ci.updateRepo`'s registry selection) and whose read model
+(`ci.getProductCi`) already live in the Ci module. It is a separate method rather than a field because
+enabling is four fallible steps (resolve the CI repo, refuse the monorepo conflict, probe the PAT,
+mint a token when there is none), and folding those into the product edit form would make an unrelated
+rename fail on a PAT problem.
+
+**The state is on `CiLinkDto`, not on `ProductDto` and not on `CiRepoDto`.** Not `ProductDto` because
+of the stage-2 precedent — the CI tab already has a query and the catalogue lists every product. Not
+`CiRepoDto` because the state is *per product*: the runner pool is shared between products of one
+repository, the release token never is, and `ci.listRepos` has no product to answer for. The three new
+fields are `syncReleaseSecrets` (bool), `releaseSecretsSync` (`{status, syncedAt, error}` or null — the
+same shape and the same null rule as `registrySync`) and `releaseSecretsSyncBlocked` (a sentence, or
+null when the sync is possible). `ci.getStackCi` forwards to `ci.getProductCi`, so it carries them too.
+
+**One string, one owner.** `GitHubApiClient.MissingActionsPermissionMessage(feature, permission)` is
+public precisely so tests assert the production wording instead of a stub's paraphrase — the stale
+"the registry sync needs…" survived into the release path exactly because a stub had invented its own
+copy. `ValidateSecretsAccessAsync` now takes the feature name (`CiActionsConfigSync.RegistryFeature` /
+`ReleaseFeature`, the same constants `Explain` uses for its 403 hint), so each caller's error names
+itself.
+
+**What wakes the loop.** `ci.setReleaseSecretsSync` (both directions), `products.rotateReleaseToken`
+when the product syncs, and `products.update` when it clears a standing failure — each clears the hash
+*and* the stamps *and* the error, then `ClearActionsSyncBackoff(repoId)` + `RequestReconcile()`. The
+hash has to go with the error: a standing failure whose hash still matches the current values means the
+push itself failed, so clearing only the message would satisfy the "unchanged, nothing to do" guard and
+quietly stop retrying. `products.rotateReleaseToken` also gained `resyncing` on the wire, so the toast
+can say "on its way to GitHub" instead of "go and paste it somewhere".
+
+**Two schema notes for whoever touches `products` next.** The filtered unique index needed *both*
+declarations spelled out in `ProductConfiguration` — declaring only the filtered one suppresses the
+convention index EF creates for the FK (the convention fires only when nothing already indexes those
+properties) and the plain `ix_products_ci_repo_id` disappears from the model with no diagnostic. The
+second declaration also needs a model name *and* a `HasDatabaseName`, because the snake-case convention
+derives the database name from the columns alone and both would otherwise collide. Getting either wrong
+produces a migration that silently drops the FK's lookup index — check the generated `Up` for a
+`DropIndex` before accepting it.
+
+**Live verification** (podman + API + Vite, the stage-4b recipe, on port 55434/5080/5175) covered the
+four states the design cares about, all with real wire data: `synced` (badge, "Last synced 5m ago",
+Releases tab collapsed to the cross-link line, snippet on `${{ vars.WATCHTOWER_URL }}` /
+`${{ vars.WATCHTOWER_PRODUCT_ID }}`), `failed` (badge plus the server's message verbatim in the
+danger banner, and the Releases tab correctly back on the manual instructions with the literal URL),
+off-but-available (manual instructions plus the quiet "Watchtower can place it for you" line), and
+blocked (manual instructions, no cross-link, exactly the pre-stage-5 card). The PAT probe was also
+exercised against real github.com with a bogus token: `ci.setReleaseSecretsSync` refused with "The PAT
+is invalid or expired" and named the by-hand path in the same sentence. No console errors.
