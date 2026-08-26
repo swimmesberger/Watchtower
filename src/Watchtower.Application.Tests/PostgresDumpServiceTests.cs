@@ -313,9 +313,14 @@ public sealed class PostgresDumpServiceTests {
     /// <summary>Answers each exec start with the next body, so one test can script several execs.</summary>
     private static void AnswerStartsInOrder(DockerClientEstate estate, params byte[][] bodies) {
         var next = 0;
-        estate.LongRunning.Responder = _ => new HttpResponseMessage(HttpStatusCode.OK) {
-            Content = Body(bodies[Math.Min(next++, bodies.Length - 1)]),
-        };
+        // Only the exec starts are scripted — the SQL's archive PUT rides the untimed client too,
+        // and must not eat one of the bodies.
+        estate.LongRunning.Responder = request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/start", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) {
+                    Content = Body(bodies[Math.Min(next++, bodies.Length - 1)]),
+                }
+                : null;
     }
 
     private static byte[] Out(string text) => DockerFrameBuilder.Frame(Stdout, text);
@@ -355,16 +360,23 @@ public sealed class PostgresDumpServiceTests {
             terminate.RootElement.GetProperty("Cmd").EnumerateArray().Last().GetString() ?? "");
         Assert.Contains(log, l => l.StartsWith("WARNING: closed 2 open session(s) on 'db'", StringComparison.Ordinal));
 
-        // The SQL goes in as a tar at /tmp, streamed from the host file.
-        var put = estate.Default.Requests.FindIndex(r => r.Contains("/archive?path=", StringComparison.Ordinal));
-        Assert.Contains("/containers/db-id/archive?path=%2Ftmp", estate.Default.Requests[put]);
-        await using var reader = new TarReader(new MemoryStream(estate.Default.BodyBytes[put]!));
+        // The SQL goes in as a tar at /tmp, streamed from the host file — over the untimed client,
+        // because a dump is as large as the database it captures.
+        var put = estate.LongRunning.Requests.FindIndex(r => r.Contains("/archive?path=", StringComparison.Ordinal));
+        Assert.True(put >= 0, "no archive PUT was sent");
+        Assert.Contains("/containers/db-id/archive?path=%2Ftmp", estate.LongRunning.Requests[put]);
+        await using var reader = new TarReader(new MemoryStream(estate.LongRunning.BodyBytes[put]!));
         var entry = await reader.GetNextEntryAsync(cancellationToken: Ct);
         Assert.Equal("db.sql", entry!.Name);
         // 0600: the dump carries every role's password hash.
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, entry.Mode);
 
-        using var replay = JsonDocument.Parse(estate.Default.Bodies[put + 1]!);
+        // The psql exec is the second exec created (after the session terminate).
+        var psqlCreate = estate.Default.Requests
+            .Select((request, index) => (request, index))
+            .Where(x => x.request.EndsWith("/containers/db-id/exec", StringComparison.Ordinal))
+            .ElementAt(1).index;
+        using var replay = JsonDocument.Parse(estate.Default.Bodies[psqlCreate]!);
         Assert.Equal(
             new string?[] { "psql", "-U", "app", "-d", "postgres", "-w", "-v", "ON_ERROR_STOP=0", "-f", "/tmp/db.sql" },
             replay.RootElement.GetProperty("Cmd").EnumerateArray().Select(e => e.GetString()).ToArray());

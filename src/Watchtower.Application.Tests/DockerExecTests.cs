@@ -283,7 +283,7 @@ public sealed class DockerExecTests {
     public async Task ThePushStreamPutSendsWhatTheCallbackWrote_AsTar() {
         using var estate = Estate();
         string? contentType = null;
-        estate.Default.Responder = request => {
+        estate.LongRunning.Responder = request => {
             contentType = request.Content?.Headers.ContentType?.MediaType;
             return null;
         };
@@ -293,11 +293,11 @@ public sealed class DockerExecTests {
             await stream.WriteAsync(Encoding.UTF8.GetBytes("into the request"), token);
         }, Ct);
 
-        var request = Assert.Single(estate.Default.Requests);
+        var request = Assert.Single(estate.LongRunning.Requests);
         Assert.Contains("/containers/helper/archive?path=%2F", request);
         Assert.Equal("application/x-tar", contentType);
         // Nothing was staged in between: the callback's bytes are the request body.
-        Assert.Equal("tar bytes written straight into the request", estate.Default.Bodies[0]);
+        Assert.Equal("tar bytes written straight into the request", estate.LongRunning.Bodies[0]);
     }
 
     [Fact]
@@ -307,7 +307,7 @@ public sealed class DockerExecTests {
 
         await estate.Client.PutContainerArchiveAsync("helper", "/backup", tar, Ct);
 
-        Assert.Contains("path=%2Fbackup", Assert.Single(estate.Default.Requests));
-        Assert.Equal("a manifest, tarred", estate.Default.Bodies[0]);
+        Assert.Contains("path=%2Fbackup", Assert.Single(estate.LongRunning.Requests));
+        Assert.Equal("a manifest, tarred", estate.LongRunning.Bodies[0]);
     }
 }
