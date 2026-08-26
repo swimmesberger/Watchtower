@@ -410,6 +410,10 @@ not owed work:
   message. Registry-backed paths (release intake's tag→digest resolution and the pin pre-flight) work
   against real `docker.io` images without a Docker daemon, so a release seeded with `nginx:1.27-alpine`
   exercises them for real; only the deploy itself fails, which is fine for UI work.
+- **Tests isolate themselves from the host docker config**: a module initializer in both test
+  projects points `WATCHTOWER_DOCKER_CONFIG` at a nonexistent directory, because any environment
+  logged into a registry (the GitHub Actions runner ships a `docker.io` credential) otherwise leaks
+  real usernames into registry-resolution assertions — a failure that only shows on CI.
 - **The language server in this worktree reports phantom errors** (missing `Microsoft.*`/`Xunit`
   namespaces, `WatchtowerDbContext` "has no member"). `dotnet build` is the authority; it has been
   clean at every commit.
