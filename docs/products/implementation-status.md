@@ -6,11 +6,13 @@ build; this file says how far it got and what is owed. **The roadmap is complete
 all landed, so this file is now the handover for whoever maintains the feature rather than the brief
 for the next stage.
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 8a
-(end-state hardening, backend). Stage 7 was the last *feature* stage; 8a adds no behaviour an operator
-can see, retires four accepted-debt entries and moves the `xmin` concurrency token onto the entities,
-on the rule PR #58 introduced — this architecture is the end state, so debt that is architectural
-rather than an irreducible trade-off is paid before it merges.
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 8b
+(end-state IA + the two owed frontend gaps) — **the last piece**. Stage 7 was the last *feature* stage;
+8a added no behaviour an operator can see, retired four accepted-debt entries and moved the `xmin`
+concurrency token onto the entities; 8b lands the information architecture design.md always specified
+(Templates leaves the sidebar and becomes the product's Instances tab) plus the two frontend deferrals
+that were still owed. All of it on the rule PR #58 introduced — this architecture is the end state, so
+debt that is architectural rather than an irreducible trade-off is paid before it merges.
 
 ## Where things stand
 
@@ -29,20 +31,28 @@ rather than an irreducible trade-off is paid before it merges.
 
 | `bd2adbd` | **6 — tenant release policy** | `StackTemplate.DefaultPinnedReleaseId` (SET NULL) and `Product.RetainReleases` (default 50) in one additive migration (`AddTenantReleasePolicy`). `TenantProvisioningService` copies the default onto each new tenant — the one field family ADR-0026 copies. `templates.setTenantsRelease` writes the pin onto every tenant *and* the template default in one call, behind the `stacks.setRelease` pre-flight and its Git-mode refusal. `products.getReleaseRollout` / `products.retryFailedRollout` are the partial-failure surface, and `DeployEventDto` gained `releaseId`/`releaseVersion` (the widening 4b owed). `ReleasePruner` is release retention, run post-create by `ReleaseIntakeService` and guarded by four protection rules (invariant 15). Frontend: the Instances roster's Version column, rollup and bulk action; `components/set-release-dialog.tsx` (the shared roll-out dialog, two apply paths); the Releases tab's contextual row action and per-row rollout summary + Retry failed; the product Settings mode-revert control and the Overview "latest ≠ branch head" warning; the deploy-history version chip. `useProductReleases` moved to `hooks/use-product-releases.ts` — three modules read it now. |
 | `3666733` | **7 — tenant-aware backups** | The last stage. `Stack.BackupDirectory` (nullable, stamped at creation, legacy rows computed as before and stamped on their next *successful* backup); `Stack.BackupEnabled/BackupStopContainers/BackupQuiesceMode` widened to tri-state; `StackTemplate.BackupEnabled?/BackupCron?/BackupStopContainers?/BackupQuiesceMode?` plus the `template_backup_service_overrides` table — one additive migration (`AddTenantAwareBackups`) that rewrites no values. `BackupPolicyResolver` is the one answer to "what policy does this stack run under" (invariant 18), read by the schedule tick, the run, the preparation and the plan preview. `BackupChainCoordinator` is backup-then-something (invariant 19): the `pre-deploy` trigger behind `stacks.setRelease(backupFirst)` / `templates.setTenantsRelease(backupFirst)`, and the `final` trigger behind `templates.removeTenant(finalBackup)`. `templates.backupAll`, `backups.getProductBackups`, `backups.setTemplatePolicy`, and a `productId` filter on `backups.events`. Manifest `formatVersion` 3 (`productId`/`productName`/`templateId`/`tenantSlug`/`releaseId`/`releaseVersion`, appended). The stage-6 owed item is paid: `RetainReleases` on `products.update` (clamped) with a field on product Settings. Frontend: the product Backups tab (`modules/backups/ProductBackupsTab.tsx`, contributed to `productDetailTabs` at order 35), provenance chips and a "use the fleet policy" reset on the stack Backups tab, the pre-rollout checkbox in the roll-out dialog, and the final-backup switch on the remove-tenant confirm. |
+| `77b0f72` | **8a — end-state hardening** | No behaviour an operator can see: the asynchronous registry-resolution path, two `xmin` concurrency retries, the `ProductCatalog` savepoint seam, and `xmin` as a real `IHasXmin` property with the empty `XminConcurrencyTokenAsProperty` migration. Written up in full in the two "From stage 8a" sections below. |
+| `_pending_` | **8b — end-state IA + the owed frontend gaps** | The fold design.md §Navigation always specified, and the last two deferrals. **Templates leaves the sidebar**: the Tenancy module now contributes an **Instances** tab to `productDetailTabs` (order 30, so CI moved 30 → 32 and the design's Overview/Releases/Instances/CI/Backups/Settings order holds), and `modules/templates/{TemplatesPage,TemplateNewPage,TemplateDetailPage}.tsx` are **deleted** — their content moved into `InstancesTab.tsx` (summary card + [Edit], add-tenant row, Management API, rollup, roster, every dialog) and `TenancyConfigForm.tsx` (the template form **minus the whole Source card**, with the `{tenant}` live preview). `/templates` and `/templates/new` redirect to `/products`; `/templates/$id` resolves through `TemplateRedirect.tsx` to `/products/$id?tab=instances`. The one-time "Templates moved here" banner on the catalogue (`localStorage`). **Template per-service backup overrides got their write side**: `backups.setTemplateServiceOverride` (contract-identical to `backups.setServiceOverride`, audited `backups`/`template.service-override.update`), `BackupTemplatePolicyDto.ServiceOverrides` on the read side, and an editor on the product Backups tab's policy card that borrows one instance's service list; `BackupOverrideMenu.tsx` is now the one override control both rungs render. **The pin pickers page**: `useProductReleases` became a keyset infinite query and both pickers grew "Show older", so a pin older than the first page is selectable again. From the review round: design.md's **Next-steps card** on the product Overview (the last unbuilt §UX element), the two-module gate that makes the Tenancy-without-Products combination behave, the override menu's consequence line, and design.md's tab cap amended 5 → 6. |
 
-**The roadmap is complete.** Every stage in
-[design.md](design.md#staged-roadmap) has landed. What follows is the accepted debt and the
-invariants a maintainer has to keep.
+**The roadmap is complete, and so is the design.** Every stage in
+[design.md](design.md#staged-roadmap) has landed, and with 8b so has every UX commitment in
+design.md §UX that a later stage had deferred. What follows is the accepted debt and the invariants a
+maintainer has to keep.
 
-**Every 4b deferral landed in stage 6.** The mode-revert control, the "latest ≠ branch head" warning,
-the per-row contextual labels and the instance-checklist roll-out dialog are all shipped; the list that
-stood here is gone. One 4b note survives unchanged:
+**Every 4b deferral landed in stage 6**, and the one that survived it landed in 8b. The mode-revert
+control, the "latest ≠ branch head" warning, the per-row contextual labels and the instance-checklist
+roll-out dialog shipped in 6; the pickers' fixed 20-release window is gone in 8b:
 
-- The pin pickers offer the **newest 20 releases and no "Show older"** (`RELEASE_OPTIONS` in
-  `hooks/use-product-releases.ts`, now shared by the stack Version dialog and the roll-out dialog). The
-  Releases tab pages properly; the pickers are a fixed window, so a pin to a release older than 20 can
-  be read (the chip names it) but not re-selected from a dropdown, and "N behind" degrades to a bare
-  `behind` chip rather than guessing a number.
+- ~~The pin pickers offer the **newest 20 releases and no "Show older"**.~~ **Resolved in 8b.**
+  `useProductReleases` is a keyset `useInfiniteQuery` (`RELEASE_OPTIONS` is a page size now, not a
+  ceiling) that still hands every caller the `{ releases, hasMore }` shape they already read, plus
+  `showOlder` / `hasOlder` / `loadingOlder` for the two pickers. Both the stack Version dialog and the
+  roll-out dialog render "Showing the newest N. Show older" **below** the select rather than inside it —
+  a control in a Radix listbox that is not an option fights the keyboard and typeahead — so a pin older
+  than the first page is now reachable by paging down to it. The Version dialog also gained the
+  out-of-window row the roll-out dialog already had (`release #N (not loaded yet)`), because a stack
+  pinned outside the window rendered the "Select a release" placeholder, which reads as "nothing is
+  pinned" over a stack that is. "N behind" is unchanged and still exact only within what is loaded.
 
 **Both things stage 6 deliberately did not ship landed in stage 7**: `RetainReleases` has its setter
 (`products.update`, clamped to 5…1000, with a field on product Settings and the clamped value echoed
@@ -370,6 +380,22 @@ replaced them; what is left below is accepted debt, not owed work:
   asserts the loser adopts the winner *and* that the transaction is still usable afterwards, which is
   what the savepoint rather than a bare catch buys. Disabling the catch fails it with the raw
   `DbUpdateException`. `ProductCatalog` is no longer `sealed`, which is what the seam costs.
+- **The Tenancy UI now requires the Products module, and with `Products` off a tenancy install has no
+  tenancy screens at all.** This is new in 8b and is the price of the fold: every surface the Tenancy
+  module has is *inside* a product page now — there is no `/templates` list, no `/templates/$id`, and the
+  Instances tab has no page to be a tab of. The combination is handled rather than left to fail: the
+  `productDetailTabs` contribution carries its own `when: { module: 'Products' }`, ANDed with the
+  manifest's `{ module: 'Tenancy' }` (a contribution's `when` is ANDed with its module's — that is how
+  the kernel expresses a two-module condition), so the tab is *absent* rather than
+  registered-and-unreachable; and all three `/templates*` routes run a `Products` guard after the
+  `Tenancy` one, so a deep link goes straight Home in one hop instead of bouncing off `/products`
+  on its way there. **Operator guidance: enable `Products` wherever `Tenancy` is enabled.** Tenants
+  themselves are unaffected — they are stacks, they keep running and they stay on `/stacks` — and the
+  whole `templates.*` RPC surface is untouched, so the public Management API and any script keep working.
+  Not closed properly because closing it means either keeping a second copy of the tenancy UI outside the
+  product page (the duplication the fold exists to remove) or making the backend refuse the
+  configuration, which is a module-dependency mechanism Elarion does not have and which this feature
+  should not invent.
 - **Two concurrent implicit creates over one source, interleaving *before* the name is derived, produce
   two products for that source.** Pre-existing (it predates 8a and is not something 8a introduced or
   scoped), and it is the price of there being **no unique index on the normalized source** — which is
@@ -394,15 +420,36 @@ replaced them; what is left below is accepted debt, not owed work:
   either); buying more means a durable job table, which this feature does not justify. The blast radius
   is one un-run deploy, or one tenant that was going to be removed and now is not — both re-triggerable
   by hand, and the second is the safe direction to fail in.
-- **Template-level per-service overrides have a table, an entity and a resolver rung, but no UI.**
-  `template_backup_service_overrides` is created, `BackupService.LoadOverridesAsync` reads it under the
-  stack's own rows and tags what it inherited (`BackupServiceOverride.FromTemplate`), and the stack's
-  plan preview renders those rows as "Template policy: …" instead of "UI override: …". What is missing
-  is a way to *write* them: the product Backups tab's policy card covers the four stack-level fields
-  only. Deferred deliberately — the per-service editor is the plan preview's table, which is per stack
-  and needs live containers to render, and a fleet has no containers of its own. The honest v2 is a
-  per-service editor on the template that borrows one instance's service list; until then a fleet-wide
-  exclusion is set per tenant or written as a compose label, which is the answer ADR-0020 prefers anyway.
+- ~~**Template-level per-service overrides have a table, an entity and a resolver rung, but no UI.**~~
+  **Resolved in 8b**, built as the "honest v2" this entry described: a per-service editor on the
+  template that **borrows one instance's service list**. `backups.setTemplateServiceOverride` is the
+  writer, and it mirrors `backups.setServiceOverride` field for field on purpose — the whole override is
+  replaced, an omitted knob is cleared, and clearing every knob deletes the row — because two setters
+  that agreed about the values but disagreed about what an omitted field means is exactly how the ladder
+  starts lying, and the two forms that post them are now literally the same control
+  (`modules/backups/BackupOverrideMenu.tsx`, extracted from the plan preview and shared; the only
+  difference is whether the "not set" row is called *Stack default* or *Fleet default*, and which knobs
+  a compose label has locked). Three things make the borrowed list honest, and each of them is a way
+  this could have shipped wrong:
+  - **A row's current value is the template's own** (`BackupTemplatePolicyDto.ServiceOverrides`, new and
+    additive, every entry `inherited: true`), **never the borrowed preview's `override`**. A preview
+    shows the *donor's effective ladder*, so a donor that overrides a service itself would hide the
+    fleet's setting behind its own.
+  - **A stored row whose service is absent from the borrowed list still gets a row**, marked "not in the
+    listed instance". Otherwise a setting for a service that was renamed away becomes unreachable.
+  - **The donor is named and pickable, and the footer only claims a borrow that happened.** With no
+    reachable daemon (or an instance that never deployed) the preview yields nothing, the stored rows are
+    still listed, and the line says so instead of crediting an instance it could not read.
+  The empty state is design.md's: "Add/Start a tenant to see its services — or set overrides as compose
+  labels, which win anyway." **One shipped behaviour changed with it**: the *stack* plan preview's
+  override menu used to open over an inherited row pre-filled with the template's values, so a single
+  click wrote a stack row that silently copied them. It now opens on "no stack override", because
+  precedence is per service and not per knob (invariant 18) — a stack row replaces the template's row
+  whole, and pre-filling invited the reader to think they were editing a merge. It is the same tri-state
+  trap the stage-7 review round caught on the four switches, one rung down. **The reader is told, where
+  they act**: the menu carries "Overriding here replaces the fleet's whole setting for this service."
+  above its controls, and only on a row that is actually inherited — on a row with nothing above it the
+  sentence would be true of nothing.
 - **`products.deployRelease` does not offer a pre-deploy backup.** The checkbox is the roll-out
   *dialog's*, and the dialog applies through `stacks.setRelease` / `templates.setTenantsRelease`, which
   both take `backupFirst`. `products.deployRelease` is the "Deploy latest" button — one click, no
@@ -581,7 +628,12 @@ answer — and `Xmin` reaches no DTO); `npm run build` green with no frontend fi
   `role="alert"`, not `role="status"`** — a poll for `[role=status]` silently misses every failure
   message. Registry-backed paths (release intake's tag→digest resolution and the pin pre-flight) work
   against real `docker.io` images without a Docker daemon, so a release seeded with `nginx:1.27-alpine`
-  exercises them for real; only the deploy itself fails, which is fine for UI work.
+  exercises them for real; only the deploy itself fails, which is fine for UI work. **The dev server's
+  API proxy target is hard-coded to `http://localhost:5080` in `vite.config.ts`** (stage 8b): run the API
+  on that port, or point a throwaway `--config` at another one. Setting `VITE_API_URL` instead makes the
+  client call the API cross-origin, which the backend does not allow, so every request dies on a CORS
+  preflight and the app boots with "everything off" — a login page over an install with auth disabled is
+  what that looks like.
 - **Tests isolate themselves from the host docker config**: a module initializer in both test
   projects points `WATCHTOWER_DOCKER_CONFIG` at a nonexistent directory, because any environment
   logged into a registry (the GitHub Actions runner ships a `docker.io` credential) otherwise leaks
@@ -1106,3 +1158,119 @@ looking for and never find.
 `stale`) — the only non-additive part of the round, and it is a field nothing outside this tab reads,
 shipped in the same stage that introduced it. Everything else (M1, the tab work, the snippet, the audit
 wording, the chain guards) leaves `rpc-schema.json` byte-identical.
+
+## Stage 8b handover — the IA fold, and the end state
+
+**The fold, in one sentence:** a template was always "a product plus tenancy rules"
+(design.md §Navigation), so it is now the product's tenancy setup on the product's **Instances** tab,
+and `/templates*` is three redirects.
+
+**Who owns the Instances tab, and why it is not the products module's.** It is contributed by the
+**Tenancy** module (`modules/templates/module.tsx`), exactly as CI and Backups contribute theirs. That is
+the only arrangement that keeps the module rule intact in both directions: moving the roster into
+`modules/products/` would have the products module owning tenancy's screen, and having products *import*
+it would break "modules never import each other" outright. So products owns Overview / Releases /
+Settings, tenancy contributes Instances, ci contributes CI, backups contributes Backups — and the
+Tenancy module keeps its whole `templates.*` RPC surface untouched. **This was an IA move, not an API
+change**: `templates.create` still accepts the inline source fields on the wire for back-compat, the UI
+simply never sends them again (it posts `productId` with the three source fields blank, which both
+`templates.create` and `templates.update` already treat as "no opinion").
+
+**Ordering.** Instances is `order: 30` — the slot the Backups tab's own comment reserved for it in stage
+7 — which forced **CI from 30 to 32**. They were tied at 30, and a tie is resolved by module *discovery*
+order, which is alphabetical and therefore an accident; the design numbers the tabs Overview, Releases,
+Instances, CI, Settings, so the tie had to be broken in that direction rather than left to `ci` sorting
+before `templates`.
+
+**Multi-template cardinality, decided honestly.** `Product.templates` is a collection and the backend
+has always allowed several (different domain patterns over one codebase), so the tab renders **one
+self-contained section per setup** rather than pretending there is one — each with its own summary card,
+add-tenant row, grants card, rollup, roster and dialogs, and its own queries keyed on its own template
+id, so two sections cannot share state. A product with one setup (every product anybody has) sees
+exactly one section and no hint that a second is possible, except a quiet **"Add another tenancy
+setup"** link at the bottom. That link exists because `/templates/new` could create one and *never
+delete a control someone has used* — it is demoted, not removed. Verified live with two setups on one
+product; the Backups tab renders one policy card per setup for the same reason.
+
+**`/templates/$id` is a component, not an async `beforeLoad`, and that is load-bearing.** The hop needs a
+lookup (the product id lives on the template). A guard that has to `await` leaves the router with no
+match while it waits and — when the lookup *rejects*, which is exactly the deleted-template bookmark —
+renders a blank page. `TemplateRedirect.tsx` resolves in a component instead, so every outcome is on
+screen: a spinner while it looks, `/products/$id?tab=instances` when it finds one, `/products` when it
+does not. It reads the `['template', id]` key the Instances tab reads, so the hop costs one request.
+`/templates` and `/templates/new` stay synchronous `beforeLoad` redirects, because neither has anything
+to look up — `/templates/new` goes to the catalogue rather than to a form, since creating a setup now
+starts from a product and no id in that URL says which one.
+
+**The migration banner.** One-time, on `/products`, dismissible, flagged in `localStorage`
+(design.md §"Migration morning-after"; the sanctioned lightweight use — the worst case of losing the flag
+is seeing one info banner twice, and a column for a sentence would mean a migration, a DTO field and a
+write endpoint). Both accessors are wrapped, because a browser that refuses storage *throws* rather than
+answering null, and the failure direction is "show the banner again". It is shown only to an install that
+actually has a tenancy product: telling a hobby install about a move it cannot have noticed is the noise
+the Übersichtlichkeit audit is about.
+
+**The Next-steps card — built in 8b, and it was the last unbuilt §UX element.** design.md §"SaaS flow"
+step 2 describes it (*Deploy it once* / *Run it for many tenants* / *Build it here*, "three rows, three
+sentences, three buttons"); no earlier stage built it, and stage 8b's first pass left it out before the
+review round called it in. It lives on the product Overview and renders **only while the product has no
+deployments, no tenancy setup, no releases and no CI link** — the first three come free off the product
+query, and the CI probe (`ci.getProductCi`, the key the CI and Releases tabs already share) is
+`enabled` only once the other three hold, so a product with instances never pays for it. Three
+decisions in it are worth knowing:
+- **It replaces the Deployments empty state rather than sitting above it.** Both carry a "Create
+  deployment" button, and two of them on one screen — one inside a card explaining there is nothing to
+  list — is the noise the card exists to remove. The Deployments card returns the moment the card goes.
+- **Each row is gated on its own module.** A *Run it for many tenants* button with `Tenancy` off, or
+  *Build it here* with `Ci` off, would be a door into a wall, because the tab it opens is not
+  contributed.
+- **It waits for the CI probe instead of flashing.** Rendering three rows and then dropping one when the
+  probe lands reads as a glitch on the one screen whose whole job is to teach.
+
+The Instances tab's own empty state ("No tenancy yet" → **Set up tenancy**) stays: it is where a reader
+who skipped the card, or who comes back later, meets the same door.
+
+**Live verification** (podman on 55438 + API on 5085 + Vite on 5178; the stage-4b recipe, with one
+wrinkle worth recording: **the dev server's proxy target is hard-coded to `:5080` in `vite.config.ts`**,
+so with something else holding that port the walkthrough needs either that port freed or a throwaway
+config — `VITE_API_URL` sends the client cross-origin and dies on CORS). Confirmed against real wire
+data: Templates absent from the sidebar; the tab strip in the design's order; `/templates/1` →
+`/products/1?tab=instances`, `/templates/999` → `/products`, `/templates` and `/templates/new` →
+`/products`; the migration banner once, dismissed, and gone after a reload with the flag set; the summary
+card reading `{tenant}.acme.io → web:8080 · 1 base env var · Realm: Operator`; [Edit] expanding it into a
+form with **no source card**, the live preview tracking the input (`acme.acme.io · globex.acme.io`), and
+a save that changed the pattern and the port while leaving `repositoryUrl` and the branch override
+untouched; a tenant added from the row with its resolved-domain hint; the roll-out dialog over a
+24-release product showing "Showing the newest 20. Show older", growing to 24 options after one click,
+and applying a pin to `1.0.1` — a release outside the original window — across three tenants *and* the
+template default; the stack Version dialog showing `release #1 (not loaded yet)` for the same
+out-of-window pin and resolving it to `1.0.1 · …` after "Show older"; the per-service editor writing a
+template row from its own menu (`exclude` → `exclude, stop=pause`) with the audit row
+`backups`/`template.service-override.update`; two tenancy setups on one product rendering two sections
+and two policy cards; and a Git-mode product correctly showing **no** version controls on its Instances
+tab (invariant 4 on a surface that moved). Console clean.
+
+**Two legs this host could not verify live, and how they were verified instead.** There is no Docker
+daemon on this machine, so `backups.previewPlan` fails: the per-service editor's *populated* borrowed
+list, and a tenant plan preview rendering a template row as "Template policy: …", were covered by the
+new `GetProductBackups` / `SetTemplateBackupServiceOverride` tests and by stage 7's existing
+`ALabelAlsoWinsOverAnOverrideInheritedFromATemplate` rather than through the browser. What the browser
+did cover is the branch that only appears *without* a daemon — the stored rows still listed and editable,
+the footer refusing to claim a borrow that did not happen — which is a real state on any install whose
+daemon is down.
+
+**Mutation testing**, three mutations and three catches: dropping `FromTemplate: true` from the setter's
+response fails the write test's `Inherited` assertion, disabling the setter's delete branch fails
+`SetTemplateServiceOverride_WithNothingSet_DeletesTheRow`, and making `GetProductBackups` project an
+empty override list fails the read-model half of the write test.
+
+**Verification at hand-over** (from the worktree root): clean `--no-incremental` Release build with
+**0 warnings**; `dotnet test` **38 failures out of 2067** — the exact Windows baseline families this
+document records (17 `CertificateStoreTests`, 11 ACME across the same four classes, 4
+`CertificateManagerTests`, 2 `CertificateManagerProjectionTests`, and one each of
+`BackupPlanOverrideTests`, `ProxyIngressEndpointReloadTests`, `ProxyChangeSignalTests`,
+`FileStateImportTests`), no new failures and the three new tests passing; `has-pending-model-changes`
+clean (no entity changed — the new handler writes a table that already existed); the `rpc-schema.json`
+diff **additive** (one new method, `backups.setTemplateServiceOverride`, plus `serviceOverrides` on
+`BackupTemplatePolicyDto` — the only removed lines are the two `required`-array entries that gained a
+successor); `npm run typecheck` and `npm run build` green.

@@ -169,6 +169,13 @@ public sealed record BackupStackConfigDto(
 /// How many of them override at least one of the four fields, so the card can say that moving the policy
 /// will not reach all of them. Deliberately a count and not a list: the roster is the Instances tab's job.
 /// </param>
+/// <param name="ServiceOverrides">
+/// The template's own per-service rows, in service order — the fifth thing the policy card edits, and the
+/// only honest source for it. The tenants' plan previews render inherited rows too, but a tenant that has
+/// a row of its own for a service <em>replaces</em> the template's whole row for that service, so a
+/// preview is a view of one tenant's effective ladder rather than of the fleet's setting.
+/// Every entry carries <c>inherited: true</c>, because that is what these are from a tenant's point of view.
+/// </param>
 public sealed record BackupTemplatePolicyDto(
     int TemplateId,
     string TemplateName,
@@ -177,9 +184,13 @@ public sealed record BackupTemplatePolicyDto(
     string? Cron,
     string? QuiesceMode,
     int TenantCount,
-    int OverriddenTenantCount) {
+    int OverriddenTenantCount,
+    IReadOnlyList<BackupServiceOverrideDto> ServiceOverrides) {
     internal static BackupTemplatePolicyDto From(
-        Entities.StackTemplate template, int tenantCount, int overriddenTenantCount) => new(
+        Entities.StackTemplate template,
+        int tenantCount,
+        int overriddenTenantCount,
+        IEnumerable<Entities.TemplateBackupServiceOverride> serviceOverrides) => new(
         template.Id,
         template.Name,
         template.BackupEnabled,
@@ -187,7 +198,10 @@ public sealed record BackupTemplatePolicyDto(
         template.BackupCron,
         template.BackupQuiesceMode is { } mode ? BackupQuiesceModes.ToWire(mode) : null,
         tenantCount,
-        overriddenTenantCount);
+        overriddenTenantCount,
+        [.. serviceOverrides
+            .OrderBy(o => o.Service, StringComparer.Ordinal)
+            .Select(o => new BackupServiceOverrideDto(o.Service, o.Exclude, o.Stop, o.Dump, Inherited: true))]);
 }
 
 /// <summary>
@@ -427,6 +441,8 @@ public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 [JsonSerializable(typeof(GetProductBackups.Response), TypeInfoPropertyName = "GetProductBackupsResponse")]
 [JsonSerializable(typeof(SetTemplateBackupPolicy.Command), TypeInfoPropertyName = "SetTemplateBackupPolicyCommand")]
 [JsonSerializable(typeof(SetTemplateBackupPolicy.Response), TypeInfoPropertyName = "SetTemplateBackupPolicyResponse")]
+[JsonSerializable(typeof(SetTemplateBackupServiceOverride.Command), TypeInfoPropertyName = "SetTemplateBackupServiceOverrideCommand")]
+[JsonSerializable(typeof(SetTemplateBackupServiceOverride.Response), TypeInfoPropertyName = "SetTemplateBackupServiceOverrideResponse")]
 [JsonSerializable(typeof(BackupAllTenants.Command), TypeInfoPropertyName = "BackupAllTenantsCommand")]
 [JsonSerializable(typeof(BackupAllTenants.Response), TypeInfoPropertyName = "BackupAllTenantsResponse")]
 public sealed partial class BackupsJsonContext : JsonSerializerContext;

@@ -30,6 +30,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { toast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
+import {
+  BackupOverrideMenu,
+  describeOverride,
+  type BackupOverrideValue,
+} from './BackupOverrideMenu'
 
 // ── Product Backups tab (ADR-0026 stage 7) ──────────────────────────────────────
 //
@@ -449,8 +454,189 @@ function TemplatePolicyCard({
           </Button>
           {dirty && <span className="text-[13px] text-text-3">Unsaved changes</span>}
         </div>
+
+        <TemplateServiceOverrides productId={productId} policy={policy} />
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * The fleet's per-service overrides — "never back up the cache service" written once instead of once
+ * per tenant (design.md §"Backups across tenants", the honest v2 the table shipped without).
+ *
+ * **It borrows one instance's service list, and that is the whole design.** A fleet has no containers
+ * of its own, so there is nothing to enumerate services from; the plan preview of a *tenant* is the
+ * closest thing, and it is the same table the stack tab already renders. The instance is named and
+ * pickable rather than implicit, because "these are the services" is a claim borrowed from one running
+ * copy and the reader has to be able to see whose.
+ *
+ * Two rules keep it honest. The current value of a row is the **template's own** row from
+ * `policy.serviceOverrides`, never the borrowed preview's `override` — the preview shows the donor's
+ * *effective* ladder, so a donor that overrides a service itself would hide the fleet's setting behind
+ * its own. And a template row whose service is absent from the borrowed list still gets a row, so a
+ * setting for a service that has been renamed away can still be found and cleared.
+ *
+ * These rows do **not** go into the compose-label snippet on the stack tab: that snippet's contract is
+ * "paste this, delete your overrides, nothing changes", which an instance cannot honour for a row it
+ * merely inherits (stage 7's review round).
+ */
+function TemplateServiceOverrides({
+  productId,
+  policy,
+}: {
+  productId: number
+  policy: BackupTemplatePolicy
+}) {
+  const qc = useQueryClient()
+  // The same key the Instances tab uses, so the two share one cache entry.
+  const { data: tenants = [], isLoading: tenantsLoading } = useQuery({
+    queryKey: ['tenants', policy.templateId],
+    queryFn: () => api.templates.listTenants(policy.templateId),
+  })
+
+  // A tenant that has deployed at least once is the one whose preview can actually list services;
+  // failing that, any tenant, so the picker is never empty for a fleet that has instances.
+  const deployed = tenants.filter((t) => t.lastDeployedAt != null)
+  const candidates = deployed.length > 0 ? deployed : tenants
+  const [donorId, setDonorId] = useState<number | null>(null)
+  const donor = candidates.find((t) => t.stackId === donorId) ?? candidates[0] ?? null
+
+  // The same key the stack's own Backups tab uses — reading a service list here costs nothing extra
+  // for a reader who then opens that instance.
+  const {
+    data: preview,
+    isLoading: previewLoading,
+    isError: previewFailed,
+  } = useQuery({
+    queryKey: ['backups', 'plan-preview', donor?.stackId],
+    queryFn: () => api.backups.previewPlan(donor!.stackId),
+    enabled: donor != null,
+    staleTime: 15_000,
+    retry: false,
+  })
+
+  const setOverride = useMutation({
+    mutationFn: (next: { service: string } & BackupOverrideValue) =>
+      api.backups.setTemplateServiceOverride(policy.templateId, next.service, {
+        exclude: next.exclude,
+        stop: next.stop,
+        dump: next.dump,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['backups', 'product', productId] })
+      // Every instance reads this rung live, and their previews render it as "Template policy: …".
+      qc.invalidateQueries({ queryKey: ['backups', 'plan-preview'] })
+      toast.success(`Saved ${policy.templateName}’s service settings.`)
+    },
+    onError: (err: Error) => toast.error('Couldn’t save', err.message),
+  })
+
+  const stored = new Map(policy.serviceOverrides.map((o) => [o.service, o]))
+  const fromPreview = (preview?.services ?? []).map((s) => s.service)
+  // Union, preview order first: a stored row whose service is gone from the donor must stay reachable.
+  const services = [
+    ...fromPreview,
+    ...policy.serviceOverrides.map((o) => o.service).filter((s) => !fromPreview.includes(s)),
+  ]
+
+  const loading = tenantsLoading || (donor != null && previewLoading)
+
+  return (
+    <div className="space-y-3 border-t border-border pt-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-text">Per-service settings</p>
+          <p className="mt-0.5 text-[13px] text-text-2">
+            Applies to every tenant; a tenant’s own override or a{' '}
+            <code className="font-mono text-[12px]">watchtower.backup.*</code> compose label still
+            wins.
+          </p>
+        </div>
+        {/* Named, not implicit: the service list is borrowed from one running copy, and which one is
+            a fact the reader is entitled to. Only a picker when there is something to pick. */}
+        {candidates.length > 1 && donor && (
+          <Select value={String(donor.stackId)} onValueChange={(v) => setDonorId(Number(v))}>
+            <SelectTrigger className="w-auto min-w-[12rem]" aria-label="Instance to read the service list from">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {candidates.map((t) => (
+                <SelectItem key={t.stackId} value={String(t.stackId)}>
+                  Services of {t.tenantSlug}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+
+      {loading ? (
+        <Skeleton variant="rect" className="h-16 w-full" />
+      ) : services.length === 0 ? (
+        <p className="text-[13px] text-text-3">
+          {tenants.length === 0
+            ? 'Add a tenant to see its services — or set overrides as compose labels, which win anyway.'
+            : previewFailed
+              ? `Couldn’t read ${donor?.tenantSlug}’s services — the Docker daemon has to be reachable. Compose labels work regardless, and win anyway.`
+              : 'Start a tenant to see its services — or set overrides as compose labels, which win anyway.'}
+        </p>
+      ) : (
+        <>
+          <ul className="divide-y divide-border rounded-lg border border-border">
+            {services.map((service) => {
+              const row = stored.get(service) ?? null
+              const value: BackupOverrideValue | null = row
+                ? { exclude: row.exclude, stop: row.stop ?? null, dump: row.dump ?? null }
+                : null
+              const described = describeOverride(value)
+              return (
+                <li
+                  key={service}
+                  className="flex flex-wrap items-center justify-between gap-3 px-3 py-2"
+                >
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate font-medium text-[13px] text-text">{service}</span>
+                    <span className="truncate text-[12px] text-text-3">
+                      {described ?? 'no fleet setting'}
+                      {!fromPreview.includes(service) && ' · not in the listed instance'}
+                    </span>
+                  </span>
+                  <BackupOverrideMenu
+                    value={value}
+                    pending={setOverride.isPending}
+                    scopeDefaultLabel="Fleet default"
+                    onChange={(next) => setOverride.mutate({ service, ...next })}
+                  />
+                </li>
+              )
+            })}
+          </ul>
+          {/* Only claimed when the borrowed list actually produced something. A preview that failed
+              (no reachable daemon, an instance that has never deployed) leaves only the stored rows on
+              screen, and saying they were "read from" an instance would be the opposite of true. */}
+          {donor && fromPreview.length > 0 ? (
+            <p className="text-[12px] text-text-3">
+              Services read from{' '}
+              <Link
+                to="/stacks/$id"
+                params={{ id: String(donor.stackId) }}
+                className="underline underline-offset-2 hover:text-text"
+              >
+                {donor.tenantSlug}
+              </Link>
+              . A service only some instances run can still be set here once one of them lists it.
+            </p>
+          ) : (
+            <p className="text-[12px] text-text-3">
+              {donor
+                ? `Couldn’t read ${donor.tenantSlug}’s services, so only the settings already stored are listed.`
+                : 'No instance to read a service list from, so only the settings already stored are listed.'}
+            </p>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 

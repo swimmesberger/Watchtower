@@ -1436,6 +1436,15 @@ export interface BackupTemplatePolicy {
   tenantCount: number
   /** How many of those override at least one field, so a policy edit will not reach them. */
   overriddenTenantCount: number
+  /**
+   * The template's own per-service rows, in service order — the fifth thing the policy card edits.
+   *
+   * These are the *fleet's* settings, not one instance's effective ladder: an instance's plan preview
+   * also renders inherited rows, but an instance that overrides a service replaces the template's row
+   * for it whole, so a preview cannot be read as "what the fleet says". Every entry has
+   * `inherited: true`, which is what it is from an instance's point of view.
+   */
+  serviceOverrides: BackupServiceOverride[]
 }
 
 /**

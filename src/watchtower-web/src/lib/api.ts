@@ -534,6 +534,20 @@ export const api = {
     ) =>
       (await rpc('backups.setServiceOverride', { stackId, service, ...override }))
         .override as BackupServiceOverride | null,
+
+    /**
+     * The fleet-wide twin of `setServiceOverride`: one row on the template that every instance reads
+     * live. Same contract, field for field — the whole override is replaced and clearing every knob
+     * deletes it. An instance's own row for the same service replaces this one *whole* (precedence is
+     * per service, not per knob), and a compose label still beats both.
+     */
+    setTemplateServiceOverride: async (
+      templateId: number,
+      service: string,
+      override: { exclude: boolean; stop: string | null; dump: string | null },
+    ) =>
+      (await rpc('backups.setTemplateServiceOverride', { templateId, service, ...override }))
+        .override as BackupServiceOverride | null,
   },
 
   templates: {

@@ -13,7 +13,11 @@ export const ciManifest = defineModule({
         id: 'ci',
         label: 'CI',
         value: 'ci',
-        order: 30,
+        // 32, not 30: stage 8b's fold puts Instances at 30, which is the slot the Backups tab's
+        // comment already reserved for it and the position design.md §"Product detail page" numbers it
+        // in (Overview, Releases, Instances, CI, Settings). A tie would have been resolved by module
+        // discovery order, which is alphabetical and therefore an accident.
+        order: 32,
         component: ({ product }) => <ProductCiTab product={product} />,
       },
     ]),

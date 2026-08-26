@@ -609,7 +609,16 @@ Route `/products/$id?tab=`, structured like `StackDetailPage` via a new `product
 extension point (CI contributes its tab *there* instead of to `stackDetailTabs`; tenancy
 contributes into Instances). Header: name, mono source line, instance-count badge, and **one**
 state-dependent primary button (0 instances → Create deployment; 1 → Deploy; ≥2 with releases →
-Roll out release…). Hard caps: 5 tabs, ≤4 sections each.
+Roll out release…). Hard caps: **6 tabs**, ≤4 sections each.
+
+> **The cap was 5 and is now 6 — an explicit amendment, not a slip.** This section was written before
+> tenant-aware backups existed; stage 7 added a **Backups** tab, which took the count to six once stage
+> 8b folded tenancy in as **Instances**. It is raised rather than enforced by merging two tabs because
+> each of the six is a *distinct module's* contribution to `productDetailTabs` (products owns Overview,
+> Releases and Settings; tenancy contributes Instances; ci contributes CI; backups contributes Backups),
+> so any merge would put one module's screen inside another's — the thing the extension point exists to
+> prevent. The count is also the *maximum*: a deployment with Tenancy, CI or Backups switched off sees
+> five, four or three, because a tab is only contributed by a module that is enabled.
 
 1. **Overview** — three StatCards (Instances / Latest release / Builds), the deployments card (a
    single instance renders as one card, never a one-row table — opening a product must never be a
@@ -687,7 +696,7 @@ domain pattern → the live preview.
 | Risk | Fix |
 | --- | --- |
 | Stack Settings (5 heavy sections, repo fields duplicated 3×) | Repo fields → product; read-only Source row in place; "Authentication" renamed *Deploy webhook* |
-| Product detail ballooning | Hard caps (5 tabs / ≤4 sections); snippet card collapses after first release |
+| Product detail ballooning | Hard caps (**6 tabs** / ≤4 sections — raised from 5 when Backups joined Instances, CI and the products module's three; see §Product detail page for why it is not a merge); snippet card collapses after first release |
 | Products page becoming a second Stacks page | 4 columns only, no status column (status belongs to instances) |
 | Two competing update mechanisms | The `ReleaseMode` binary — only one panel ever renders |
 | Routes page drowning in tenant routes | Collapsible per-product group |

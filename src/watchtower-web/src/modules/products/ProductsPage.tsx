@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Boxes, Package, Plus } from 'lucide-react'
@@ -12,6 +13,56 @@ import { EmptyState } from '@/components/ui/empty-state'
 
 /** The catalogue reads better without the host everyone already knows. */
 const repoLabel = (url: string) => url.replace(/^https:\/\/github\.com\//, '')
+
+/**
+ * The one-time "Templates moved here" notice (design.md §"Migration morning-after").
+ *
+ * Templates leaving the sidebar is the single genuinely jarring change of ADR-0026, and it gets three
+ * mitigations: the redirects (`modules/templates/module.tsx`), the `tenants` badge in the Instances
+ * column, and this. It stands **until dismissed** — every visit until the × is clicked, then never
+ * again in that browser. Not "once per browser": a notice that vanished after one page view would be a
+ * notice most readers never saw.
+ *
+ * **`localStorage` and not a user column, deliberately.** It is a per-browser reading aid with no
+ * consequence — the worst case of losing the flag is seeing one info banner a second time — and giving
+ * it a column would mean a migration, a DTO field and a write endpoint for a sentence. This is the
+ * sanctioned lightweight use of it, and the read is wrapped because a locked-down browser throws on
+ * access rather than answering null.
+ */
+const MIGRATION_NOTE_KEY = 'watchtower.products.templatesMovedNoticeSeen'
+
+function readSeen(): boolean {
+  try {
+    return localStorage.getItem(MIGRATION_NOTE_KEY) === '1'
+  } catch {
+    // A browser that refuses storage gets the banner every time, which is the harmless direction.
+    return false
+  }
+}
+
+function TemplatesMovedNotice({ show }: { show: boolean }) {
+  // Read once at mount: flipping it mid-render would hide the banner under the reader's cursor.
+  const [seen] = useState(readSeen)
+  if (seen || !show) return null
+  return (
+    <Banner
+      tone="info"
+      title="Templates moved here"
+      dismissible
+      onDismiss={() => {
+        try {
+          localStorage.setItem(MIGRATION_NOTE_KEY, '1')
+        } catch {
+          // Nothing to do: the banner is a courtesy, not state anything depends on.
+        }
+      }}
+    >
+      A template is now a product’s tenancy setup. Yours are unchanged — each one is under its
+      product’s <span className="font-medium text-text">Instances</span> tab, and the products that
+      have one are marked <span className="font-medium text-text">tenants</span> below.
+    </Banner>
+  )
+}
 
 /**
  * The newest build of this product, or an em dash. Version plus age, never the commit: the catalogue
@@ -130,6 +181,10 @@ export function ProductsPage() {
           </Link>
         </Button>
       </div>
+
+      {/* Only for an install that actually had templates: a hobby install that never used them would
+          be told about a move it cannot have noticed, which is the noise the audit is about. */}
+      <TemplatesMovedNotice show={products.some((p) => p.templateCount > 0)} />
 
       {isError && (
         <Banner

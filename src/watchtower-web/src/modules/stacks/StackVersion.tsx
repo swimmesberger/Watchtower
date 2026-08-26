@@ -124,7 +124,10 @@ export function VersionDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const qc = useQueryClient()
-  const { data } = useProductReleases(stack.productId, usesReleases(stack))
+  const { data, showOlder, hasOlder, loadingOlder } = useProductReleases(
+    stack.productId,
+    usesReleases(stack),
+  )
   const releases = data?.releases ?? []
 
   const currentPin = stack.pinnedRelease?.id ?? null
@@ -163,6 +166,9 @@ export function VersionDialog({
 
   // What "Track latest" would resolve to, independently of the pin this stack may currently carry.
   const latestVersion = newestRelease(stack, releases)?.version
+  // Undefined means "not in what has been loaded", which is not the same as "not pinned" — the select
+  // row above turns that into a legible label rather than the placeholder.
+  const pinnedVersion = releases.find((r) => r.id === pin)?.version
 
   return (
     // One close path for all four ways out (Esc, scrim, the × and the footer Cancel), so the re-seed
@@ -216,6 +222,14 @@ export function VersionDialog({
                   <SelectValue placeholder="Select a release" />
                 </SelectTrigger>
                 <SelectContent>
+                  {/* A pin older than what is loaded gets a row of its own, so the trigger names it
+                      instead of falling back to the "Select a release" placeholder — which reads as
+                      "nothing is pinned" over a stack that is. "Show older" below reaches it. */}
+                  {pin != null && pinnedVersion === undefined && (
+                    <SelectItem value={String(pin)}>
+                      {data != null ? `release #${pin} (not loaded yet)` : `release #${pin}`}
+                    </SelectItem>
+                  )}
                   {releases.map((release) => (
                     <SelectItem key={release.id} value={String(release.id)}>
                       {release.version} · {timeAgo(release.createdAt)}
@@ -223,6 +237,16 @@ export function VersionDialog({
                   ))}
                 </SelectContent>
               </Select>
+              {/* Below the list, not inside it: a control in a Radix listbox that is not an option
+                  fights the keyboard and typeahead. It also states how far the list reaches. */}
+              {hasOlder && (
+                <p className="mt-1.5 text-[12.5px] text-text-3">
+                  Showing the newest {releases.length}.{' '}
+                  <Button variant="link" loading={loadingOlder} onClick={() => showOlder()}>
+                    Show older
+                  </Button>
+                </p>
+              )}
             </div>
           </div>
         </div>

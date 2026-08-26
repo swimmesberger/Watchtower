@@ -58,6 +58,12 @@ public sealed class SetTemplateBackupPolicy(WatchtowerDbContext db, AuditLog aud
         template.BackupQuiesceMode = quiesceMode;
         await db.SaveChangesAsync(ct);
 
+        // Untouched by this call — read so the response is the whole policy card's state, the way the
+        // form re-seeds itself from what the server stored rather than from what was typed.
+        var serviceOverrides = await db.TemplateBackupServiceOverrides.AsNoTracking()
+            .Where(o => o.TemplateId == template.Id)
+            .ToListAsync(ct);
+
         var tenants = await db.Stacks.CountAsync(s => s.TemplateId == template.Id, ct);
         var overridden = await db.Stacks.CountAsync(s =>
             s.TemplateId == template.Id
@@ -80,7 +86,7 @@ public sealed class SetTemplateBackupPolicy(WatchtowerDbContext db, AuditLog aud
         await audit.RecordAsync(BackupService.AuditCategory, "template.policy.update", template.Name, detail,
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
-        return new Response(BackupTemplatePolicyDto.From(template, tenants, overridden));
+        return new Response(BackupTemplatePolicyDto.From(template, tenants, overridden, serviceOverrides));
     }
 
     /// <summary>"label: value" for a field the template sets, "label: inherit" when it does not.</summary>

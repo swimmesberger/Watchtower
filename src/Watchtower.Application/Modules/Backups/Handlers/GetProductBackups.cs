@@ -69,11 +69,20 @@ public sealed class GetProductBackups(WatchtowerDbContext db, IOptionsMonitor<Wa
             })
             .ToDictionaryAsync(x => x.TemplateId, ct);
 
+        // One round trip for every template's per-service rows rather than one per card. They are the
+        // *template's own* rows, deliberately: a tenant's plan preview shows what that tenant inherited,
+        // which is a different question once the tenant overrides a service itself.
+        var templateIds = templates.Select(t => t.Id).ToList();
+        var serviceOverrides = (await db.TemplateBackupServiceOverrides.AsNoTracking()
+                .Where(o => templateIds.Contains(o.TemplateId))
+                .ToListAsync(ct))
+            .ToLookup(o => o.TemplateId);
+
         var policies = new List<BackupTemplatePolicyDto>(templates.Count);
         foreach (var template in templates) {
             overriddenByTemplate.TryGetValue(template.Id, out var counts);
             policies.Add(BackupTemplatePolicyDto.From(
-                template, counts?.Tenants ?? 0, counts?.Overridden ?? 0));
+                template, counts?.Tenants ?? 0, counts?.Overridden ?? 0, serviceOverrides[template.Id]));
         }
 
         var since = DateTimeOffset.UtcNow.AddHours(-RollupWindowHours);

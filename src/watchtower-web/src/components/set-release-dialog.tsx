@@ -97,7 +97,7 @@ export function SetReleaseDialog({
   // The pre-rollout backup checkbox is only honest where the Backups module exists to honour it.
   const { caps } = useRouteContext({ from: '__root__' })
   const backupsEnabled = caps.isModuleEnabled('Backups')
-  const { data } = useProductReleases(productId, open)
+  const { data, showOlder, hasOlder, loadingOlder } = useProductReleases(productId, open)
   const releases = useMemo(() => data?.releases ?? [], [data])
   const newestId = releases[0]?.id ?? null
 
@@ -312,6 +312,17 @@ export function SetReleaseDialog({
                     ))}
                   </SelectContent>
                 </Select>
+                {/* Below the list rather than inside it: a Radix `SelectContent` is a listbox, and a
+                    control in it that is not an option fights the keyboard and typeahead. Here it also
+                    says how far the list currently reaches, which the select alone cannot. */}
+                {hasOlder && (
+                  <p className="mt-1.5 text-[12.5px] text-text-3">
+                    Showing the newest {releases.length}.{' '}
+                    <Button variant="link" loading={loadingOlder} onClick={() => showOlder()}>
+                      Show older
+                    </Button>
+                  </p>
+                )}
               </div>
             </div>
           </div>

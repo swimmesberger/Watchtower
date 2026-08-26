@@ -129,9 +129,9 @@ export function SettingsTab({ product }: { product: Product }) {
       // Every stack and template of this product projects its source, so their names and branches
       // just changed too.
       qc.invalidateQueries({ queryKey: ['stacks'] })
-      qc.invalidateQueries({ queryKey: ['templates'] })
-      // An open template detail reads ['template', id], which the plural key above does not cover —
-      // and its "From product …" line is exactly what this save just changed.
+      // `['template', id]` (singular) — the Instances tab's per-setup query, whose summary line carries
+      // the branch this save may have changed. The plural `['templates']` key went with the Templates
+      // page in stage 8b's fold and nothing reads it any more.
       qc.invalidateQueries({ queryKey: ['template'] })
       // The one field the server may legitimately not store as typed: retention is *clamped* to
       // 5…1000 rather than refused, so a save of "2" stores 5. The form is seeded once at mount and

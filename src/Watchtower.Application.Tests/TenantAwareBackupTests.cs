@@ -344,6 +344,90 @@ public sealed class TenantAwareBackupTests {
         Assert.Null(await TemplatePolicyCronAsync(host, templateId));
     }
 
+    // ── backups.setTemplateServiceOverride (stage 8b) ────────────────────────
+
+    /// <summary>
+    /// The write side the table shipped without. One row on the <em>template</em>, no fan-out onto the
+    /// tenants, and it comes back on the policy the card re-seeds itself from — labelled
+    /// <c>Inherited</c>, because that is what it is from every tenant's point of view.
+    /// </summary>
+    [Fact]
+    public async Task SetTemplateServiceOverride_WritesTheFleetRowAlone_AndTheProductReadModelCarriesIt() {
+        using var host = AuthTestHost.Start();
+        var productId = await host.AddProductAsync("shop", ProductReleaseMode.Git);
+        var templateId = await host.AddProductTemplateAsync("shop-tenants", productId);
+        var tenant = await host.AddProductStackAsync("shop-acme", productId, templateId: templateId);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<SetTemplateBackupServiceOverride>(scope.ServiceProvider);
+        var result = await handler.HandleAsync(
+            new SetTemplateBackupServiceOverride.Command(templateId, "cache", Exclude: true, Stop: "PAUSE"), Ct);
+
+        Assert.True(result.IsSuccess, Describe(result));
+        var written = Assert.IsType<BackupServiceOverrideDto>(result.Value.Override);
+        Assert.Equal("cache", written.Service);
+        Assert.True(written.Exclude);
+        // Normalized the way the stack setter normalizes, so the two cannot store the same knob differently.
+        Assert.Equal("pause", written.Stop);
+        Assert.True(written.Inherited);
+
+        // Not a fan-out (invariant 18): the tenant gets this by reading it, not by holding a copy.
+        Assert.Empty(await StackServiceOverridesAsync(host, tenant));
+
+        var read = ActivatorUtilities.CreateInstance<GetProductBackups>(scope.ServiceProvider);
+        var product = await read.HandleAsync(new GetProductBackups.Query(productId), Ct);
+        Assert.True(product.IsSuccess, Describe(product));
+        var row = Assert.Single(Assert.Single(product.Value.Templates).ServiceOverrides);
+        Assert.Equal("cache", row.Service);
+        Assert.True(row.Exclude);
+        Assert.Equal("pause", row.Stop);
+        Assert.True(row.Inherited);
+
+        var audited = Assert.Single(await AuditAsync(host, "template.service-override.update"));
+        Assert.Equal("shop-tenants", audited.Target);
+        Assert.Contains("cache", audited.Detail);
+    }
+
+    /// <summary>
+    /// Every knob cleared deletes the row — the same "the whole override is replaced" contract
+    /// <c>backups.setServiceOverride</c> has, so the one control that posts both cannot mean two things.
+    /// </summary>
+    [Fact]
+    public async Task SetTemplateServiceOverride_WithNothingSet_DeletesTheRow() {
+        using var host = AuthTestHost.Start();
+        var productId = await host.AddProductAsync("shop", ProductReleaseMode.Git);
+        var templateId = await host.AddProductTemplateAsync("shop-tenants", productId);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<SetTemplateBackupServiceOverride>(scope.ServiceProvider);
+        await handler.HandleAsync(
+            new SetTemplateBackupServiceOverride.Command(templateId, "db", Dump: "postgres"), Ct);
+        Assert.Single(await TemplateServiceOverridesAsync(host, templateId));
+
+        var cleared = await handler.HandleAsync(
+            new SetTemplateBackupServiceOverride.Command(templateId, "db"), Ct);
+
+        Assert.True(cleared.IsSuccess, Describe(cleared));
+        Assert.Null(cleared.Value.Override);
+        Assert.Empty(await TemplateServiceOverridesAsync(host, templateId));
+    }
+
+    /// <summary>A value the labels do not admit is refused, and nothing is written.</summary>
+    [Fact]
+    public async Task SetTemplateServiceOverride_RefusesAValueTheLabelsDoNotAdmit() {
+        using var host = AuthTestHost.Start();
+        var productId = await host.AddProductAsync("shop", ProductReleaseMode.Git);
+        var templateId = await host.AddProductTemplateAsync("shop-tenants", productId);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var handler = ActivatorUtilities.CreateInstance<SetTemplateBackupServiceOverride>(scope.ServiceProvider);
+        var result = await handler.HandleAsync(
+            new SetTemplateBackupServiceOverride.Command(templateId, "db", Stop: "freeze"), Ct);
+
+        Assert.False(result.IsSuccess);
+        Assert.Empty(await TemplateServiceOverridesAsync(host, templateId));
+    }
+
     /// <summary>
     /// <b>The rollup is a partition of the enrolled stacks.</b> Every enrolled stack lands in exactly
     /// one bucket and the four sum to `Enrolled` — a reader adds the line up, so overlapping counts
@@ -648,6 +732,22 @@ public sealed class TenantAwareBackupTests {
         template.BackupCron = cron;
         template.BackupQuiesceMode = quiesceMode;
         await db.SaveChangesAsync(Ct);
+    }
+
+    private static async Task<List<TemplateBackupServiceOverride>> TemplateServiceOverridesAsync(
+        AuthTestHost host, int templateId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.TemplateBackupServiceOverrides.AsNoTracking()
+            .Where(o => o.TemplateId == templateId).ToListAsync(Ct);
+    }
+
+    private static async Task<List<StackBackupServiceOverride>> StackServiceOverridesAsync(
+        AuthTestHost host, int stackId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.StackBackupServiceOverrides.AsNoTracking()
+            .Where(o => o.StackId == stackId).ToListAsync(Ct);
     }
 
     private static async Task<string?> TemplatePolicyCronAsync(AuthTestHost host, int templateId) {

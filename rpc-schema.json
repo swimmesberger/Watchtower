@@ -408,6 +408,42 @@
                 },
                 "overriddenTenantCount": {
                   "type": "integer"
+                },
+                "serviceOverrides": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "service": {
+                        "type": "string"
+                      },
+                      "exclude": {
+                        "type": "boolean"
+                      },
+                      "stop": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "dump": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "inherited": {
+                        "type": "boolean",
+                        "default": false
+                      }
+                    },
+                    "required": [
+                      "service",
+                      "exclude",
+                      "stop",
+                      "dump"
+                    ]
+                  }
                 }
               },
               "required": [
@@ -418,7 +454,8 @@
                 "cron",
                 "quiesceMode",
                 "tenantCount",
-                "overriddenTenantCount"
+                "overriddenTenantCount",
+                "serviceOverrides"
               ]
             }
           },
@@ -1185,6 +1222,42 @@
               },
               "overriddenTenantCount": {
                 "type": "integer"
+              },
+              "serviceOverrides": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "service": {
+                      "type": "string"
+                    },
+                    "exclude": {
+                      "type": "boolean"
+                    },
+                    "stop": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "dump": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "inherited": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "required": [
+                    "service",
+                    "exclude",
+                    "stop",
+                    "dump"
+                  ]
+                }
               }
             },
             "required": [
@@ -1195,12 +1268,92 @@
               "cron",
               "quiesceMode",
               "tenantCount",
-              "overriddenTenantCount"
+              "overriddenTenantCount",
+              "serviceOverrides"
             ]
           }
         },
         "required": [
           "policy"
+        ]
+      }
+    },
+    "backups.setTemplateServiceOverride": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "exclude": {
+            "type": "boolean",
+            "default": false
+          },
+          "stop": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "dump": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "templateId",
+          "service"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "override": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "exclude": {
+                "type": "boolean"
+              },
+              "stop": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dump": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inherited": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "service",
+              "exclude",
+              "stop",
+              "dump"
+            ]
+          }
+        },
+        "required": [
+          "override"
         ]
       }
     },
