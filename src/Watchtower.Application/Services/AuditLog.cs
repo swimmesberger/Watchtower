@@ -42,10 +42,12 @@ public class AuditLog(
                 Category = category,
                 Action = action,
                 Target = target,
-                Detail = detail,
+                // PostgreSQL text cannot hold NUL (22021), and both fields can carry one via raw
+                // process output (an exec's stderr quoted into an exception message, say).
+                Detail = detail?.Replace("\0", ""),
                 Actor = actor,
                 Success = success,
-                Error = CapError(error),
+                Error = CapError(error?.Replace("\0", "")),
                 CreatedAt = time.GetUtcNow(),
             });
             await db.SaveChangesAsync(ct);
