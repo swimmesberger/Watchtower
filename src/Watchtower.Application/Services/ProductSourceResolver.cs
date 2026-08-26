@@ -58,7 +58,24 @@ public static class ProductSourceResolver {
     public static string InheritedBranch(Stack stack) {
         ArgumentNullException.ThrowIfNull(stack);
         var product = Require(stack.Product, $"Stack {stack.Id} was loaded without its product.");
-        return stack.Template?.BranchOverride ?? product.DefaultBranch;
+        return InheritedBranch(stack.Template, product);
+    }
+
+    /// <summary>
+    /// The same answer for a template and product the caller holds directly, rather than through a stack:
+    /// what a stack of <paramref name="product"/> under <paramref name="template"/> would deploy with no
+    /// override of its own. A null template means "standalone", so the product default.
+    /// </summary>
+    /// <remarks>
+    /// The overload exists for writers that are deciding what a row <em>would</em> inherit under a
+    /// template it is not linked to yet — <c>templates.adoptStack</c> is the case: it has to know what the
+    /// stack would inherit <em>after</em> adoption before it writes the link, and invariant 5 says any new
+    /// write path computing an override must use this function rather than re-implement the fallback
+    /// chain inline. <see cref="InheritedBranch(Stack)"/> delegates here, so there is one chain.
+    /// </remarks>
+    public static string InheritedBranch(StackTemplate? template, Product product) {
+        ArgumentNullException.ThrowIfNull(product);
+        return template?.BranchOverride ?? product.DefaultBranch;
     }
 
     /// <summary>

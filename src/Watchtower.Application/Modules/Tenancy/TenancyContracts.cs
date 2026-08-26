@@ -9,6 +9,18 @@ namespace Watchtower.Application.Modules.Tenancy;
 /// The population this category's tenants serve (docs/central-auth/design.md §13). Every route created
 /// from the template inherits it, which is what decides who may enter a tenant.
 /// </param>
+/// <param name="RealmName">
+/// <inheritdoc cref="RealmId" path="/summary"/> — the same realm, named, so a surface that has to *say*
+/// which population a setup serves does not have to fetch <c>realms.list</c> to find out. That call is
+/// <c>[RequireRole("Admin")]</c>, and the adoption dialog's realm consequence has to be legible to a
+/// non-administrator who can nevertheless adopt a stack.
+/// <para>
+/// Null only when the caller did not <c>Include</c> the navigation — a template always has a realm. Every
+/// producer of this DTO includes it, and <c>TemplateReads_AllProjectTheRealmName</c> is what keeps the
+/// next one from forgetting (the <see cref="DefaultPinnedRelease"/> trap, which two read paths fell into
+/// before it had a test).
+/// </para>
+/// </param>
 /// <param name="ReleaseMode">
 /// The product's update mechanism, <c>"git"</c> or <c>"releases"</c> — invariant 4's predicate, carried
 /// here for the same reason <c>StackDto</c> carries it: the Instances roster renders a Version column
@@ -33,6 +45,7 @@ public sealed record StackTemplateDto(
     string TargetServiceName,
     int TargetPort,
     int RealmId,
+    string? RealmName,
     DateTimeOffset CreatedAt,
     int InstanceCount,
     ReleaseRefDto? DefaultPinnedRelease,
@@ -124,15 +137,17 @@ public static partial class TenancyMapping {
 
     /// <summary>
     /// Projects a template. <paramref name="t"/> must have its product loaded — the source fields are
-    /// resolved from it (<see cref="ProductSourceResolver"/>) — and its
-    /// <see cref="StackTemplate.DefaultPinnedRelease"/> when one should be projected.
+    /// resolved from it (<see cref="ProductSourceResolver"/>) — plus its
+    /// <see cref="StackTemplate.Realm"/>, and its <see cref="StackTemplate.DefaultPinnedRelease"/> when
+    /// one should be projected.
     /// </summary>
     public static StackTemplateDto ToDto(StackTemplate t, int instanceCount) {
         var source = ProductSourceResolver.Resolve(t);
         return new StackTemplateDto(
             t.Id, t.Name, t.ProductId, t.Product!.Name,
             source.RepositoryUrl, source.ComposeFilePath, source.Branch, t.BranchOverride, source.CredentialId,
-            t.DomainPattern, t.TargetServiceName, t.TargetPort, t.RealmId, t.CreatedAt, instanceCount,
+            t.DomainPattern, t.TargetServiceName, t.TargetPort, t.RealmId, t.Realm?.Name, t.CreatedAt,
+            instanceCount,
             ReleaseRef(t.DefaultPinnedRelease), t.Product!.ReleaseMode.ToString().ToLowerInvariant());
     }
 

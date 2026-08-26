@@ -11873,6 +11873,133 @@
         ]
       }
     },
+    "templates.adoptStack": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "stackId": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateId",
+          "stackId",
+          "slug"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "tenantSlug": {
+                "type": "string"
+              },
+              "stackName": {
+                "type": "string"
+              },
+              "domain": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "trackingMode": {
+                "type": "string",
+                "default": "latest"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "stackId",
+              "tenantSlug",
+              "stackName",
+              "domain",
+              "lastDeployStatus",
+              "lastDeployedAt"
+            ]
+          },
+          "domain": {
+            "type": "string"
+          },
+          "envKeysAdded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "domainIsPrimary": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tenant",
+          "domain",
+          "envKeysAdded",
+          "domainIsPrimary"
+        ]
+      }
+    },
     "templates.backupAll": {
       "params": {
         "type": "object",
@@ -12034,6 +12161,12 @@
               "realmId": {
                 "type": "integer"
               },
+              "realmName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -12077,6 +12210,7 @@
               "targetServiceName",
               "targetPort",
               "realmId",
+              "realmName",
               "createdAt",
               "instanceCount",
               "defaultPinnedRelease",
@@ -12200,6 +12334,12 @@
               "realmId": {
                 "type": "integer"
               },
+              "realmName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -12243,6 +12383,7 @@
               "targetServiceName",
               "targetPort",
               "realmId",
+              "realmName",
               "createdAt",
               "instanceCount",
               "defaultPinnedRelease",
@@ -12388,6 +12529,12 @@
                 "realmId": {
                   "type": "integer"
                 },
+                "realmName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
@@ -12431,6 +12578,7 @@
                 "targetServiceName",
                 "targetPort",
                 "realmId",
+                "realmName",
                 "createdAt",
                 "instanceCount",
                 "defaultPinnedRelease",
@@ -12899,6 +13047,12 @@
               "realmId": {
                 "type": "integer"
               },
+              "realmName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
@@ -12942,6 +13096,7 @@
               "targetServiceName",
               "targetPort",
               "realmId",
+              "realmName",
               "createdAt",
               "instanceCount",
               "defaultPinnedRelease",

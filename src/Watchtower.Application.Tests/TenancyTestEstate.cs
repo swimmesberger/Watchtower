@@ -58,7 +58,14 @@ internal static class TenancyTestEstate {
     }
 
     /// <summary>Adds a route for a stack, which is what makes its domain taken.</summary>
-    public static async Task AddRouteAsync(this AuthTestHost host, int stackId, string domain) {
+    /// <param name="isPrimary">
+    /// Whether the route is the stack's canonical domain. Adoption's route rule turns on this, so it has
+    /// to be settable: a stack serving a customer-owned primary must keep it.
+    /// </param>
+    /// <param name="kind">Managed by default; <c>Custom</c> is what a customer-owned domain is stored as.</param>
+    public static async Task AddRouteAsync(
+        this AuthTestHost host, int stackId, string domain, bool isPrimary = true,
+        DomainKind kind = DomainKind.Managed) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         db.Routes.Add(new Entities.Route {
@@ -66,8 +73,8 @@ internal static class TenancyTestEstate {
             Domain = domain,
             ServiceName = "web",
             ContainerPort = 8080,
-            IsPrimary = true,
-            Kind = DomainKind.Managed,
+            IsPrimary = isPrimary,
+            Kind = kind,
             CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);

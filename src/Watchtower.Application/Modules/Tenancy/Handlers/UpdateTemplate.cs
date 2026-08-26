@@ -56,6 +56,9 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
             // The response projects the fleet default; without this the save would answer "no default"
             // and the caller would cache that over a template that has one.
             .Include(t => t.DefaultPinnedRelease)
+            // …and the realm, for the same reason: the DTO names the population this setup serves, and a
+            // missing include would report "no realm" over a template that has one.
+            .Include(t => t.Realm)
             .FirstOrDefaultAsync(t => t.Id == command.Id, ct);
         if (template is null)
             return AppError.NotFound($"Template {command.Id} not found");
@@ -88,22 +91,27 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
         if (RefuseSourceChange(command, product, effective) is { } sourceError)
             return AppError.Validation(sourceError);
 
-        int? newRealmId = null;
+        // The entity, not merely its existence: the response names the realm, so a move that only wrote
+        // the id would answer with the *previous* realm's name off the loaded navigation.
+        Realm? newRealm = null;
         if (command.RealmId is { } realmId && realmId != template.RealmId) {
-            if (!await db.Realms.AnyAsync(r => r.Id == realmId, ct))
+            newRealm = await db.Realms.FirstOrDefaultAsync(r => r.Id == realmId, ct);
+            if (newRealm is null)
                 return AppError.Validation($"No realm exists with id {realmId}.");
             if (tenantCount > 0) {
                 return AppError.Conflict(
                     $"Template '{template.Name}' has {tenantCount} tenant(s), so its realm cannot be " +
                     "changed. Remove them first.");
             }
-            newRealmId = realmId;
         }
 
         // Validation is done; from here it is all writes.
         template.ProductId = product.Id;
         template.Product = product;
-        if (newRealmId is { } accepted) template.RealmId = accepted;
+        if (newRealm is { } accepted) {
+            template.RealmId = accepted.Id;
+            template.Realm = accepted;
+        }
         template.Name = command.Name;
         // The template's own base really is the product default — unlike a stack's, which may inherit
         // this very override (see ProductSourceResolver.InheritedBranch).

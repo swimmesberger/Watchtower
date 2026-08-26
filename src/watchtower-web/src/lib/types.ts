@@ -1108,6 +1108,11 @@ export interface StackTemplate {
   targetPort: number
   /** The realm every tenant of this category signs in to. Defaults to the operator realm. */
   realmId: number
+  /**
+   * That realm, named — so a surface can *say* which population a setup serves without `realms.list`,
+   * which is Admin-only. Null only if a read path forgot to include the navigation.
+   */
+  realmName: string | null
   createdAt: string
   instanceCount: number
   /**
@@ -1137,6 +1142,21 @@ export interface Tenant extends VersionState {
   domain: string | null
   lastDeployStatus: string | null
   lastDeployedAt: string | null
+}
+
+/**
+ * `templates.adoptStack`: an existing standalone stack became a tenant, keeping its containers,
+ * volumes, data, name and compose project.
+ */
+export interface AdoptStackResult {
+  /** The adopted stack as a roster row. Its `domain` is the stack's *primary* one, which may not be `domain`. */
+  tenant: Tenant
+  /** The managed route this call created, rendered from the setup's domain pattern. */
+  domain: string
+  /** Base env keys copied in because the stack did not define them; its own values were never replaced. */
+  envKeysAdded: string[]
+  /** False when the stack already had a canonical domain and kept it — the new one is an extra way in. */
+  domainIsPrimary: boolean
 }
 
 /** `templates.setTenantsRelease`: the fleet-wide pin, and the deploys it enqueued. */

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouteContext } from '@tanstack/react-router'
 import {
   ExternalLink,
+  Import,
   Layers,
   Pencil,
   PlayCircle,
@@ -13,7 +14,14 @@ import {
   Users,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Product, ProductTemplate, Tenant, TemplateEnvVarInput, TemplateGrant } from '@/lib/types'
+import type {
+  Product,
+  ProductStack,
+  ProductTemplate,
+  Tenant,
+  TemplateEnvVarInput,
+  TemplateGrant,
+} from '@/lib/types'
 import { rosterVersion, versionRollup } from '@/lib/release'
 import { timeAgo } from '@/lib/format'
 import { useProductReleases } from '@/hooks/use-product-releases'
@@ -42,6 +50,7 @@ import { StatusBadge } from '@/components/ui/status-badge'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
+import { AdoptStackDialog } from './AdoptStackDialog'
 import { TenancyConfigForm } from './TenancyConfigForm'
 
 // ── The Instances tab (ADR-0026 stage 8b — the IA fold) ─────────────────────────
@@ -111,10 +120,14 @@ export function InstancesTab({ product }: { product: Product }) {
     )
   }
 
+  // The adoptable set: this product's deployments that are not already a tenant of anything. The API
+  // omits nulls, so `templateId` arrives `undefined` rather than null — `== null` covers both.
+  const standaloneStacks = data.stacks.filter((s) => s.templateId == null)
+
   return (
     <div className="space-y-8">
       {templates.map((t) => (
-        <TenancySection key={t.id} product={product} summary={t} />
+        <TenancySection key={t.id} product={product} summary={t} standaloneStacks={standaloneStacks} />
       ))}
 
       {creating ? (
@@ -146,7 +159,16 @@ export function InstancesTab({ product }: { product: Product }) {
  * Self-contained on purpose — with two setups on a product the two sections must not share state, and
  * each one's queries are keyed on its own template id anyway.
  */
-function TenancySection({ product, summary }: { product: Product; summary: ProductTemplate }) {
+function TenancySection({
+  product,
+  summary,
+  standaloneStacks,
+}: {
+  product: Product
+  summary: ProductTemplate
+  /** The product's deployments that are not a tenant of any setup — what "Adopt existing stack…" offers. */
+  standaloneStacks: ProductStack[]
+}) {
   const templateId = summary.id
   const qc = useQueryClient()
   const { caps } = useRouteContext({ from: '__root__' })
@@ -191,6 +213,7 @@ function TenancySection({ product, summary }: { product: Product; summary: Produ
     () => new Set(),
   )
   const [rollingOut, setRollingOut] = useState(false)
+  const [adopting, setAdopting] = useState(false)
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['template', templateId],
@@ -628,13 +651,24 @@ function TenancySection({ product, summary }: { product: Product; summary: Produ
                 <Plus /> Add tenant
               </Button>
             </div>
-            <button
-              type="button"
-              className="text-[13px] text-text-2 underline-offset-2 hover:text-text hover:underline"
-              onClick={() => setShowOverrides((v) => !v)}
-            >
-              {showOverrides ? 'Hide' : 'Add'} environment overrides
-            </button>
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                className="text-[13px] text-text-2 underline-offset-2 hover:text-text hover:underline"
+                onClick={() => setShowOverrides((v) => !v)}
+              >
+                {showOverrides ? 'Hide' : 'Add'} environment overrides
+              </button>
+              {/* Only when there is something to adopt. A control that opens a dialog whose only
+                  message is "nothing to adopt" is the noise the Übersichtlichkeit audit is about, and
+                  on a hobby install — where every stack is standalone but no setup exists — this tab
+                  is not rendered at all. */}
+              {standaloneStacks.length > 0 && (
+                <Button variant="secondary" size="sm" onClick={() => setAdopting(true)}>
+                  <Import /> Adopt existing stack…
+                </Button>
+              )}
+            </div>
             {showOverrides && <EnvVarEditor value={overrides} onChange={setOverrides} />}
           </div>
         </CardContent>
@@ -826,6 +860,17 @@ function TenancySection({ product, summary }: { product: Product; summary: Produ
           <EmptyState icon={Users} title="No tenants yet" description="Add your first tenant above." />
         }
         aria-label={`${template.name} tenants`}
+      />
+
+      {/* No realm prop: the dialog reads `template.realmName` off the DTO it already has, so its realm
+          consequence is legible to a non-administrator — who can adopt a stack but cannot call
+          `realms.list`, which is what the Admin-gated `realmName` above this card depends on. */}
+      <AdoptStackDialog
+        open={adopting}
+        onOpenChange={setAdopting}
+        productId={product.id}
+        template={template}
+        stacks={standaloneStacks}
       />
 
       <SetReleaseDialog

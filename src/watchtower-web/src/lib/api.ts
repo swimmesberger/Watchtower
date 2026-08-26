@@ -4,6 +4,7 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
+  AdoptStackResult,
   HostRegistry,
   CloudflareForeignRoute,
   ActiveDeployment,
@@ -591,6 +592,16 @@ export const api = {
         slug: data.slug,
         envOverrides: data.envOverrides ?? null,
       })).tenant as Tenant,
+    /**
+     * Adopts an existing standalone stack of this setup's product as the tenant `slug`. The stack keeps
+     * its containers, volumes, data, name, compose project, environment values and version — only the
+     * tenancy link, the missing base env keys and a managed route are added, and nothing is redeployed.
+     *
+     * Every refusal is a sentence naming what is in the way (already a tenant of X, runs product Y,
+     * slug held by stack Z, domain routed to W) — surface them verbatim.
+     */
+    adoptStack: async (templateId: number, stackId: number, slug: string) =>
+      (await rpc('templates.adoptStack', { templateId, stackId, slug })) as AdoptStackResult,
     listTenants: async (templateId: number) =>
       (await rpc('templates.listTenants', { templateId })).tenants as Tenant[],
     deployAll: async (templateId: number) =>

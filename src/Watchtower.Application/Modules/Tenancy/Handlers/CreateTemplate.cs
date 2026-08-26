@@ -50,9 +50,12 @@ public sealed class CreateTemplate(
 
         // The realm every tenant route created from this template will inherit (design.md §13), and
         // therefore which population may enter them.
-        var realmId = command.RealmId ?? Realm.SystemRealmId;
-        if (!await db.Realms.AnyAsync(r => r.Id == realmId, ct))
-            return AppError.Validation($"No realm exists with id {realmId}.");
+        // Loaded rather than merely checked for existence: the response names the realm, and a template
+        // built with only the id would project "no realm" until something re-read it.
+        var realm = await db.Realms.FirstOrDefaultAsync(
+            r => r.Id == (command.RealmId ?? Realm.SystemRealmId), ct);
+        if (realm is null)
+            return AppError.Validation($"No realm exists with id {command.RealmId ?? Realm.SystemRealmId}.");
 
         // Opened before the product is resolved so one created implicitly for this template rolls back
         // with it.
@@ -64,7 +67,8 @@ public sealed class CreateTemplate(
         if (productError is { } error) return error;
 
         var template = new StackTemplate {
-            RealmId = realmId,
+            RealmId = realm.Id,
+            Realm = realm,
             Name = command.Name,
             ProductId = product!.Id,
             Product = product,

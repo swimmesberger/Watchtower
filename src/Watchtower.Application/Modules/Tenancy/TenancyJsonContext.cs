@@ -27,6 +27,8 @@ namespace Watchtower.Application.Modules.Tenancy;
 [JsonSerializable(typeof(DeleteTemplate.Response), TypeInfoPropertyName = "DeleteTemplateResponse")]
 [JsonSerializable(typeof(AddTenant.Command), TypeInfoPropertyName = "AddTenantCommand")]
 [JsonSerializable(typeof(AddTenant.Response), TypeInfoPropertyName = "AddTenantResponse")]
+[JsonSerializable(typeof(AdoptStack.Command), TypeInfoPropertyName = "AdoptStackCommand")]
+[JsonSerializable(typeof(AdoptStack.Response), TypeInfoPropertyName = "AdoptStackResponse")]
 [JsonSerializable(typeof(ListTenants.Query), TypeInfoPropertyName = "ListTenantsQuery")]
 [JsonSerializable(typeof(ListTenants.Response), TypeInfoPropertyName = "ListTenantsResponse")]
 [JsonSerializable(typeof(RemoveTenant.Command), TypeInfoPropertyName = "RemoveTenantCommand")]

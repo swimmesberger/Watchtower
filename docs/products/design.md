@@ -504,6 +504,65 @@ Per-tenant subdomain routing is unchanged: one `Route` row per tenant from `Doma
 (exact-host matching; wildcard certs via DNS-01 remain the known future answer to the Let's
 Encrypt per-domain rate limit — see ADR-0022).
 
+### Adoption — an existing stack becomes a tenant
+
+`templates.adoptStack(templateId, stackId, slug)` is the other way into a fleet: a **standalone stack
+of the template's product** takes the tenancy setup's identity while it keeps running. It is what an
+operator reaches for when the first customer was deployed by hand months before tenancy existed, and
+its whole value is in what it does *not* do.
+
+**The keep-contract.** The stack keeps its containers, volumes, data, `Name`, `ComposeProjectName`,
+environment values, `PinnedReleaseId` and `BackupDirectory`, and **no deploy is enqueued** — nothing
+about what it runs changed, so redeploying would be a restart nobody asked for. What it gains is a
+`TemplateId`, a `TenantSlug`, the template's base env vars *for the keys it does not already define*
+(the running stack's values win — it is the override, the mirror image of provisioning's merge), and
+a managed route.
+
+**The naming asymmetry is deliberate.** A provisioned tenant is `{template}-{slug}` with a matching
+compose project; an adopted one keeps whatever it was called. Compose namespaces containers, networks
+and volumes by project name, so renaming the project *is* a recreate — the one outcome adoption
+exists to avoid — and renaming only the stack would leave the two disagreeing for nothing. The
+`{template}-{slug}` convention therefore describes **provisioned** tenants, not tenants in general;
+anything that derives a tenant's project name from its slug rather than reading the column is wrong.
+There is no migrate-with-recreate option in v1.
+
+**The route is created, never stolen.** The managed route is exactly provisioning's — rendered
+domain, template target service and port, TLS on — but `IsPrimary` only when the stack has no primary
+route yet. A stack serving a customer-owned domain keeps it as its canonical one and gains the
+subdomain beside it. A rendered domain that already exists is refused (domains are globally unique)
+naming the route's owner, rather than moved.
+
+**The branch is preserved with a write.** A tenant inherits its template's `BranchOverride`, so a
+stack with none of its own would start deploying the fleet's branch the moment it is adopted. The
+effective branch is read first and put back through `ProductSourceResolver.OverrideFor` against what
+the stack would inherit *after* adoption (`InheritedBranch(template, product)`, the overload invariant
+5's "must use it" now points at) — null when the two agree, an explicit override only where the
+template would otherwise have moved it.
+
+**Who is admitted is never moved as a side effect.** A service route takes its realm from its
+stack's category, so adopting into a setup of a **non-system realm** would silently re-point every
+*protected* route the stack already serves at another population — today's accounts stop being
+admitted, the new realm's are let in ungranted. `templates.update` refuses exactly this on a populated
+template, for reasons that apply here verbatim, so adoption **refuses too**, before any write, naming
+the protected domains and the way through (make them public or unprotect them, adopt, then re-protect
+them deliberately in the new realm). Two clauses keep the refusal narrow: a `Public` route is excluded
+because public admission never consults a realm, and a **system-realm** setup never asks the question
+at all, because a standalone stack's routes already belong to it — so the single-realm install is
+untouched. The allowed case still *states* the realm it is joining, read from `realmName` on the
+template DTO rather than from the Admin-only `realms.list`: a reader who may adopt a stack must be
+able to see what they are agreeing to.
+
+**Two things do change, and neither is "what it runs".** Backup *policy* starts following the fleet
+for every field the stack left null — that is the tri-state ladder working as designed, and it needs
+no rewrite. The archive *directory* does not move: `BackupDirectory` is stamped once and names where
+bytes already are, so an adopted tenant keeps writing beside its existing archives rather than
+relocating to `{instance}/{product}/{tenant}` (invariant 20 — a stamped directory is never
+recomputed).
+
+**Detach is not in v1.** Deleting a template already detaches its tenants wholesale (`TemplateId`
+SET NULL) and they keep running; a per-tenant "leave this setup" is future work, and it owes an
+answer about what happens to the managed route the adoption created.
+
 ## Backups across tenants
 
 Backups today are entirely stack-scoped and template-blind. The extension builds on existing seams:
@@ -758,7 +817,8 @@ New `Products` module (`[AppModule("Products")]`, the `Ci`/`Tenancy` layout):
 - `products.rotateReleaseToken` / `.setReleaseWebhook`
 
 Changed elsewhere: `stacks.setRelease(stackId, releaseId | null)`;
-`templates.setTenantsRelease(templateId, releaseId | null, deploy)`; `templates.backupAll`;
+`templates.setTenantsRelease(templateId, releaseId | null, deploy)`;
+`templates.adoptStack(templateId, stackId, slug)` (§Tenancy → Adoption); `templates.backupAll`;
 `ci.enableForProduct` / `ci.getProductCi` (with `ci.getStackCi` as a thin forward for one release).
 Non-RPC: the release webhook endpoint.
 
@@ -777,7 +837,7 @@ would break every save): a *changed* field is an error pointing at `products.upd
 | Category | Actions |
 | --- | --- |
 | `products` | `product.create/update/delete` (field diffs; repo-URL change called out), `product.credential.change`, `release.publish` (actor-less, one row per release — target `product/version`, detail: source, commit, image count, stacks enqueued), `release.delete`, `release.prune`, `release.token.rotate`, `release.webhook.toggle`, `release.mode.change` |
-| `stacks` | `release.pin` / `release.unpin` (before → after), `release.pin.bulk` (template, tenant count) |
+| `stacks` | `release.pin` / `release.unpin` (before → after), `release.pin.bulk` (template, tenant count), `tenant.adopt` (target = the adopted stack; detail: setup, slug, the route created and whether it became primary, env keys added) |
 | `ci` | `release-token.sync` (transitions-only on failure, like `registry.sync`) |
 | `backups` | `backup.all` (template fan-out, one row), the `pre-deploy` trigger on per-stack rows |
 

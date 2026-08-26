@@ -6,8 +6,9 @@ build; this file says how far it got and what is owed. **The roadmap is complete
 all landed, so this file is now the handover for whoever maintains the feature rather than the brief
 for the next stage.
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 8c
-(the dashboard fleet view — a user-requested addition to the end-state PR, frontend only). Stage 8b
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 9
+(adopting an existing stack as a tenant — a user-requested addition to the end-state PR, on branch
+`wt/adopt-stack-as-tenant`). Stage 8c before it was the dashboard fleet view, frontend only. Stage 8b
 was the last *structural* piece: the end-state IA plus the two owed frontend gaps. Stage 7 was the last *feature* stage;
 8a added no behaviour an operator can see, retired four accepted-debt entries and moved the `xmin`
 concurrency token onto the entities; 8b lands the information architecture design.md always specified
@@ -36,6 +37,8 @@ debt that is architectural rather than an irreducible trade-off is paid before i
 | `f57f9e7` | **8b — end-state IA + the owed frontend gaps** | The fold design.md §Navigation always specified, and the last two deferrals. **Templates leaves the sidebar**: the Tenancy module now contributes an **Instances** tab to `productDetailTabs` (order 30, so CI moved 30 → 32 and the design's Overview/Releases/Instances/CI/Backups/Settings order holds), and `modules/templates/{TemplatesPage,TemplateNewPage,TemplateDetailPage}.tsx` are **deleted** — their content moved into `InstancesTab.tsx` (summary card + [Edit], add-tenant row, Management API, rollup, roster, every dialog) and `TenancyConfigForm.tsx` (the template form **minus the whole Source card**, with the `{tenant}` live preview). `/templates` and `/templates/new` redirect to `/products`; `/templates/$id` resolves through `TemplateRedirect.tsx` to `/products/$id?tab=instances`. The one-time "Templates moved here" banner on the catalogue (`localStorage`). **Template per-service backup overrides got their write side**: `backups.setTemplateServiceOverride` (contract-identical to `backups.setServiceOverride`, audited `backups`/`template.service-override.update`), `BackupTemplatePolicyDto.ServiceOverrides` on the read side, and an editor on the product Backups tab's policy card that borrows one instance's service list; `BackupOverrideMenu.tsx` is now the one override control both rungs render. **The pin pickers page**: `useProductReleases` became a keyset infinite query and both pickers grew "Show older", so a pin older than the first page is selectable again. From the review round: design.md's **Next-steps card** on the product Overview (the last unbuilt §UX element), the two-module gate that makes the Tenancy-without-Products combination behave, the override menu's consequence line, and design.md's tab cap amended 5 → 6. |
 
 | `797569b` | **8c — the dashboard fleet view** | A user-requested addition to the end state, and **frontend only** (two files, zero backend, no new RPC). `modules/dashboard/sections.tsx` gains a **Fleets** section (order 45) rendering one card per fleet — product, tenant count, a danger `N failing` chip, the roster's rollup line and the latest release with its age — and `StacksGridSection` drops the stacks those cards represent. The join is `useFleets()`, a dashboard-owned hook both sections call: `products.list` gated on the `Products` module says which products have tenancy, one `products.get` per fleet (on the `['product', id]` key the product page already uses) says which of its stacks are tenants, and the live `stacks.list` rows supply every value rendered. Written up under "Stage 8c" below. |
+
+| `_pending_` | **9 — adopt an existing stack as a tenant** | `templates.adoptStack(templateId, stackId, slug)`: a **standalone stack of the template's product** becomes the tenant `{slug}` while it keeps running — same containers, volumes, data, `Name`, `ComposeProjectName`, environment values, `PinnedReleaseId` and `BackupDirectory`, and **no deploy**. One new handler (`Modules/Tenancy/Handlers/AdoptStack.cs`), **no schema change**, one additive RPC method. It adds the template link, the slug, the base env vars for keys the stack does not already define, and a managed route — `IsPrimary` only when the stack had none. Frontend: an **Adopt existing stack…** action beside the add-tenant row (rendered only while the product has a standalone deployment) and `modules/templates/AdoptStackDialog.tsx`. Written up under "Stage 9" below. |
 
 **The roadmap is complete, and so is the design.** Every stage in
 [design.md](design.md#staged-roadmap) has landed, and with 8b so has every UX commitment in
@@ -413,6 +416,19 @@ replaced them; what is left below is accepted debt, not owed work:
   rows over one repository, fixed by pointing the stacks at one of them and deleting the other. Closing
   it properly means an index on a stored normalized-source column, which is a schema change and a
   backfill, and belongs with whatever next needs that column rather than to a hardening pass.
+
+### From stage 9
+
+- **Detach — the reverse of adoption — is out of scope in v1.** `templates.adoptStack` makes a
+  standalone stack a tenant; nothing makes a tenant standalone again except deleting the whole tenancy
+  setup, which detaches every tenant at once (`TemplateId` SET NULL, and they keep running because
+  they hold their own `ProductId`). A per-tenant "leave this setup" is future work rather than an
+  oversight: the mechanics are one column write, but the *decision* it owes is what happens to the
+  managed route the adoption created — deleting it takes a live hostname down, keeping it leaves a
+  `Managed` route under a pattern nothing owns any more, and asking is a third dialog on a screen the
+  Übersichtlichkeit audit is already watching. `templates.removeTenant` is not the answer either: it
+  tears the containers down, which is the opposite of what "detach" means. Whoever needs it should
+  decide the route question first and build the column write second.
 
 ### From stage 7
 
@@ -1388,3 +1404,221 @@ real wire data and real `docker.io` digest resolution for the two releases:
 **Verification at hand-over**: `npm run typecheck` and `npm run build` green; `dotnet build` untouched
 and unnecessary — `git status` shows two `.tsx` files and these two documents and nothing else, so
 `rpc-schema.json`, the migrations and the test suite cannot have moved.
+
+## Stage 9 handover — adopting an existing stack as a tenant
+
+**Why it exists.** Every install that predates its own tenancy setup has the same shape: the first two
+or three customers were deployed by hand, and the setup was built afterwards. Before this there was no
+way to make those stacks tenants — `TemplateId` was written by `TenantProvisioningService` and nowhere
+else, so the only path was delete-and-reprovision, which destroys the data. `templates.adoptStack` is
+the deliberate second writer of that column.
+
+**The keep-contract is the feature, and it is the acceptance test.** Adoption is defined by what it
+does *not* touch: `Name`, `ComposeProjectName`, environment values, `PinnedReleaseId`,
+`BackupDirectory` — and it enqueues **no deploy**, because nothing about what the stack runs changed.
+`Adopt_MakesTheStackATenant_AndChangesNothingItWasRunning` asserts all of it in one test, and it is
+mutation-checked against the two mistakes that would look like features (see the table below).
+
+**Five decisions worth knowing before touching it:**
+
+- **The naming asymmetry is kept, not fixed.** A provisioned tenant is `{template}-{slug}` with a
+  matching compose project; an adopted one keeps whatever it was called. Compose namespaces
+  containers, networks and volumes by project name, so renaming the project *is* a recreate — the
+  outcome the feature exists to avoid — and renaming only the stack would leave the two disagreeing
+  for nothing. **The convention therefore describes provisioned tenants, not tenants in general**;
+  anything that derives a tenant's project name from its slug instead of reading the column is now
+  wrong. There is no migrate-with-recreate option in v1, and `templates.removeTenant` +
+  `templates.addTenant` is still the way to get one.
+- **The route is created, never stolen.** `IsPrimary` is set only when the stack has no primary route
+  yet. A stack that has been serving a customer-owned domain has it on every link, bookmark and
+  certificate; demoting it for a subdomain the operator has just invented would be a redirect nobody
+  asked for. The response says which way it went (`domainIsPrimary`) and the toast reads
+  `globex.saas.example.com was added; app.globex.test is still its primary domain.` A rendered domain
+  that already exists is **refused** naming the route's owner rather than moved — domains are globally
+  unique and re-pointing a live hostname is not something an adoption should do quietly.
+- **Env: the stack is the override.** Provisioning merges per-tenant overrides *over* the template's
+  base; adoption applies the same rule with the running stack's rows in the overriding position — a
+  base var is copied in only for a key the stack does not define. Replacing a value would change what
+  the next deploy applies. The added keys come back in `envKeysAdded` and are named in the toast,
+  because "your instance quietly gained four environment variables" is not something to discover
+  later.
+- **The branch needed a write, and it is the one thing the brief did not anticipate.** A tenant
+  inherits its template's `BranchOverride` (`ProductSourceResolver`), so a stack with none of its own
+  would have started deploying the fleet's branch the moment it was adopted — a change to what it
+  runs, which is exactly what the keep-contract forbids. The effective branch is read before the write
+  and put back through `ProductSourceResolver.OverrideFor` against what the stack would inherit
+  *after* adoption: null when the two agree (invariant 5 — never pin what is merely inherited), an
+  explicit override only where the template would otherwise have moved it. "What it would inherit"
+  comes from a new `ProductSourceResolver.InheritedBranch(StackTemplate?, Product)` overload — invariant
+  5 says a new write path computing an override **must use** that function, and the existing
+  `InheritedBranch(Stack)` now delegates to it, so there is exactly one fallback chain rather than one
+  plus an inline copy. Both directions are tested and both were verified live.
+- **Version policy is untouched, deliberately.** `StackTemplate.DefaultPinnedReleaseId` is documented
+  on the entity as the pin every ***future*** tenant takes and is copied at provisioning (invariant
+  17). An adopted stack is a running one, so its pin — set or unset — is left exactly as it is, even
+  when the fleet default disagrees. **Both directions are pinned**: an existing pin survives a
+  disagreeing fleet default (the happy path), and the *absence* of one is not filled in with it
+  (`Adopt_LeavesAnUnpinnedStackTrackingLatest_EvenUnderAFleetDefault`) — an unpinned stack is exactly
+  the row provisioning's copy would have landed on, so without the second test that mutation lives. `templates.setTenantsRelease` is how an operator brings it onto
+  the fleet's version, with the consequence stated in a dialog.
+
+**Who is admitted is never moved as a side effect — a pre-flight refusal.** A service route takes its
+realm from its stack's category (`RouteAccessPolicy`), so adopting into a setup of a **non-system
+realm** would silently re-point every *protected* route the stack already serves at another
+population: today's accounts stop being admitted on their next request, and the new realm's are let in
+without anybody having granted them anything. That is word for word why `templates.update` refuses to
+move a **populated** template's realm, and the reasoning applies here unchanged — so adoption refuses
+too, before any write, naming the routes and the way through:
+
+> `Stack 'legacy-acme' has 2 protected domain(s) — admin.acme.test, portal.acme.test — and
+> 'shop-tenants' serves the 'Customers' realm, so adopting it would change who is admitted to them.
+> Make them public or remove their protection first; re-protect them after adopting, deliberately, in
+> the 'Customers' realm — adoption must not move who is admitted as a side effect.`
+
+Two clauses keep it from being a wall. **`Public` routes are excluded**: public admission never
+consults a realm, so a stack whose domains are all public moves no population and adopts freely —
+which is the common case, an unprotected legacy stack joining a customer-facing setup. And **the
+system realm never asks the question**: a standalone stack's routes are already in it, so the
+single-realm install — every install that has not configured realms — is untouched however protected
+its domains are. All three branches are tested.
+
+**The allowed case still states the realm, and a non-administrator can read it.** `realms.list` is
+`[RequireRole("Admin")]` but `templates.adoptStack` is not, so a reader who may adopt a stack must
+still be able to see which population its domains are joining. `StackTemplateDto` therefore gained
+**`realmName`** (additive, beside the `realmId` it already carried), the dialog renders
+*"Its domains join the Customers realm — that is the population admitted to them"* off the template it
+already loads, and `TemplateReads_AllProjectTheRealmName` covers **all four** producers including
+`create` — the `DefaultPinnedRelease` trap, where two read paths shipped without the `Include` and
+answered "no realm" over a template that had one. `templates.create` and `templates.update` now load
+the `Realm` entity rather than merely checking that its id exists, because both answer with the
+template they just wrote.
+
+**Two things adoption *does* change, and both are named in the UI.** Backup **policy** starts
+following the fleet for every field the stack left null — no rewrite needed, which is the tri-state
+ladder (invariant 18) paying off, and the dialog says so. Backup **directory** does not move:
+`BackupDirectory` is stamped once and names where bytes already are (invariant 20), so an adopted
+tenant keeps writing beside its existing archives instead of relocating to
+`{instance}/{product}/{tenant}`. Separately, a service route takes its realm from its stack's
+category, so adopting into a setup of a **non-system realm** moves the population admitted through
+the stack's *existing* domains too; the dialog states that line only when the roster answered (it is
+Admin-gated) and the realm is not the system one.
+
+**One write, no transaction wrapper — a deliberate departure from the two writers beside it.** The
+template link, the env rows and the route are a single `SaveChangesAsync`, which EF executes in one
+transaction, so a route insert losing the unique-domain index rolls the whole adoption back. The
+explicit `BeginTransactionAsync` that `templates.setTenantsRelease` (invariant 16) and
+`TenantProvisioningService` carry exists because each of *those* spans two statements; adding a
+wrapper here would be code that cannot fail. **Adding a second statement means adding the wrapper with
+it**, and the property is pinned rather than assumed:
+`Adopt_ThatCannotWriteItsRoute_LeavesTheStackStandalone` stages a duplicate route on the handler's own
+change tracker and fails the moment the write is split in two. The recovery catch is filtered —
+`catch (DbUpdateException ex) when (IsUniqueViolation(ex))`, the `ProductCatalog` /
+`ReleaseIntakeService` idiom — so a `DbUpdateConcurrencyException` (this write mutates a loaded
+`Stack`, which carries `xmin`) escapes to the pipeline that answers "someone else changed this"
+instead of being reported as a slug collision that did not happen. "Nothing landed" is scoped to the
+database in the comment beside it: the change tracker still holds the mutated stack, which is harmless
+only because a handler scope is per dispatch. The proxy work (`ConnectStackAsync` +
+`ApplyAsync`) is post-commit and best-effort, sequenced exactly as `proxy.createRoute` does it —
+adoption creates a route, it does not deploy.
+
+**Refusals are `Conflict`, not `Validation`.** `templates.addTenant` projects its collisions as
+validation failures only because that is the shape it has always returned; a new method has no such
+history. The message shapes are its, though — each one names the thing in the way, which is the only
+actionable part. Verified verbatim against a live API:
+
+- `Stack 'legacy-acme' is already the tenant 'acme' of tenancy setup 'saas-tenants'. A stack belongs to one setup at a time.`
+- `Stack 'blog-prod' runs product 'blog' and 'saas-tenants' runs 'saas-app'. Adoption never re-points a stack at another codebase.` (the `templates.update` product-change refusal, one rung down)
+- `Tenant 'initech' already exists in 'saas-tenants' — it is stack 'saas-tenants-initech'.`
+- `Domain 'staging.saas.example.com' is already routed to stack 'saas-staging'.`
+- `Slug 'accessible' is reserved.` / the slug-format sentence — both `TenantProvisioningService`'s, on the normalized value.
+
+**Frontend.** `modules/templates/AdoptStackDialog.tsx`, opened from a secondary action beside the
+add-tenant row's "Add environment overrides" link. The action renders **only while the product has at
+least one standalone deployment** — a control that opens a dialog whose only message is "nothing to
+adopt" is the noise the Übersichtlichkeit audit is about. The roster it offers is `products.get`'s
+`stacks` filtered on `templateId == null` (`==`, not `===`: the API omits nulls, so the field arrives
+`undefined`), passed down from `InstancesTab` so two tenancy setups on one product share one answer.
+The slug input reuses the add-tenant row's live domain preview verbatim, and the consequence sentence
+is design.md's two halves — what will happen and what will not: *"acme.saas.example.com will point at
+web:3000. The stack keeps its name, project, environment and version."*
+
+**One accepted nit.** Whether the new domain became the stack's canonical one is stated in the
+*toast* and nowhere else — the dialog cannot know it in advance without a per-stack route query it
+would otherwise have no reason to make, and the roster's Domain column shows the primary immediately
+afterwards, which is the same fact one screen over. Worth revisiting only if a reader is ever seen
+looking for it.
+
+**Live verification** (podman on 55442 + API on 5091 through `--no-launch-profile` + Vite on 5182
+through a throwaway `vite.adopt.config.ts`, since this host already had something on `:5080`; the
+stage-4b recipe otherwise — and note that `ASPNETCORE_URLS` alone does **not** move the API, because
+`dotnet run --project` reads `launchSettings.json` first). Against real wire data:
+
+- **The happy path, checked in SQL rather than by eye**: `legacy-acme` (env `LOG_LEVEL=debug`,
+  `DB_URL=…`; setup base `LOG_LEVEL=info`, `TENANT_MODE=saas`) adopted as `acme` — afterwards `name`,
+  `compose_project_name` and `backup_directory` (`desktop-…/legacy-acme`, *not* the tenant path)
+  unchanged, `LOG_LEVEL` still `debug`, `TENANT_MODE` added, one Managed primary route, **zero
+  `deploy_events` for the stack**, and the audit row `stacks`/`tenant.adopt`/`legacy-acme` reading
+  `adopted into 'saas-tenants' as tenant 'acme'; route acme.saas.example.com created (primary); 1 env
+  var(s) added`.
+- **The primary-route rule**: `legacy-globex`, already serving the Custom primary `app.globex.test`,
+  adopted as `globex` — the new `globex.saas.example.com` landed `is_primary = f`, the custom domain
+  kept `t`, and the roster row still shows `app.globex.test` (it reads the primary, as it always did).
+- **The branch rule**: with the setup moved to `develop`, a fresh `legacy-umbrella` on `main` came out
+  with `branch_override = main` rather than silently following the fleet.
+- **The roster moves on both surfaces**: the adopted stacks left the dialog's list (`legacy-acme,
+  legacy-globex, saas-staging` → `legacy-globex, saas-staging` → … → the action disappearing entirely
+  once nothing standalone was left), the Instances roster grew, the setup's instance badge went
+  1 → 2 → 3, both new domains appeared on `/routes`, and the dashboard's fleet card went `1 tenant` →
+  `3 tenants` with the adopted stacks dropping out of **Other stacks**.
+- **A refusal in the dialog**: adopting `saas-staging` as `initech` rendered the server's sentence
+  verbatim in the danger banner with the dialog still open and nothing written; correcting the slug
+  and re-submitting succeeded.
+- **The realm rule, both branches** (a second pass on its own database, with a `Customers` realm and a
+  setup in it): `legacy-acme`, whose `portal.acme.test` and `admin.acme.test` were `Authenticated`, was
+  refused with the sentence above verbatim — over RPC *and* in the dialog's danger banner — and stayed
+  standalone; `legacy-globex`, whose only domain was `Public`, adopted successfully in the same setup.
+- **The realm line does not need `realms.list`, proven by removing it.** The API was restarted with
+  `Modules__Realms__Enabled=false`, so `realms.list` answers `Method not found`. The tenancy summary
+  card's `· Realm: Customers` — which reads `useRealms` — **disappeared**, and the dialog's *"Its
+  domains join the Customers realm — that is the population admitted to them."* **stayed**, because it
+  reads `template.realmName` off a DTO the page already has. That is the whole point of the field, and
+  it is the one claim a typecheck could not have made.
+- No console errors in any state.
+
+**What could not be verified live, and how it was covered instead.** There is no Docker daemon on this
+host, so "the containers are the same ones" could not be shown with `podman ps` before and after. It
+is covered structurally instead, which is stronger than a screenshot: `AdoptStack` injects
+`WatchtowerDbContext`, `IProxyProvider`, `AuditLog` and `ICurrentUser` and nothing else, so **there is
+no code path from it that recreates, restarts or redeploys a container** — it reaches
+neither `ComposeCliService` nor `DeployQueueService`, and the happy-path test asserts `deploy_events`
+is empty. `IProxyProvider` *does* reach Docker, and deliberately: `ConnectStackAsync` joins the routed
+container to the edge network, which is an attach and not a lifecycle operation — the same call
+`proxy.createRoute` makes on a running stack. The handler remark says the same thing; the claim is
+"the containers are the ones that were there", not "nothing spoke to Docker".
+
+**Mutation testing**, five mutations and five catches:
+
+| Mutation | Caught by |
+| --- | --- |
+| The template's base env wins by key (provisioning's `MergeEnv` reading) | `Adopt_MakesTheStackATenant_AndChangesNothingItWasRunning` (`SHARED` reads `fleet`) |
+| `IsPrimary = true` unconditionally, as provisioning hard-codes it | `Adopt_DoesNotStealPrimaryFromAnExistingCustomDomain` |
+| The `BranchOverride` write dropped | both branch tests — the preserve half *and* the don't-pin-what-you-inherit half |
+| The write split in two (link commits, then env + route) | `Adopt_ThatCannotWriteItsRoute_LeavesTheStackStandalone` |
+| The stack renamed to `{template}-{slug}` with a matching compose project | `Adopt_MakesTheStackATenant_AndChangesNothingItWasRunning` |
+| The realm pre-flight removed (the adoption succeeds and the protected routes change hands) | `Adopt_IntoANonSystemRealm_RefusesAStackWithProtectedDomains` |
+| `stack.PinnedReleaseId ??= template.DefaultPinnedReleaseId` — provisioning's copy, verbatim | `Adopt_LeavesAnUnpinnedStackTrackingLatest_EvenUnderAFleetDefault` |
+
+**Verification at hand-over** (from the worktree root): clean `--no-incremental` Release build with
+**0 warnings**; `dotnet test` **38 failures out of 2093** — *exactly* the Windows baseline families and
+count this document records at 8b (17 `CertificateStoreTests`, 11 ACME across the same four classes —
+`AcmeOrderFlowTests` 6, `AcmeFailurePathTests` 2, `AcmeIssuerLeaseTests` 2, `AcmeHttpClientTrustTests`
+1 — 4 `CertificateManagerTests`, 2 `CertificateManagerProjectionTests`, and one each of
+`BackupPlanOverrideTests`, `ProxyIngressEndpointReloadTests`, `ProxyChangeSignalTests` and
+`FileStateImportTests`; the flaky `AuthEndpointTests` case passed, which is the documented 38-vs-39);
+no new failures, and the tenancy + realm families the diff touches are 234/234 green.
+`has-pending-model-changes` **clean — no entity changed**, which is the point: adoption writes columns
+that have existed since tenancy did. The `rpc-schema.json` diff is **purely additive** — **155 added
+lines, zero removed**: one new method (`templates.adoptStack`) plus `realmName` on `StackTemplateDto`,
+which reaches the wire at the three places that DTO already appears (`templates.get`,
+`templates.list`, `templates.create`/`update`); no `required` entry was removed. `npm run typecheck`
+and `npm run build` green.
