@@ -44,6 +44,23 @@ public sealed class AuditLogTests {
     }
 
     [Fact]
+    public async Task NulBytes_AreStrippedBeforeTheRowIsSaved() {
+        // PostgreSQL rejects NUL in text (22021), and detail/error can carry one via raw process
+        // output. RecordAsync swallows save failures, so without the stripping the row is silently
+        // lost — the regression here is an absent row, not an exception.
+        using var host = AuthTestHost.Start();
+        var audit = Recorder(host);
+        await audit.RecordAsync("backups", "run", "shop", "tar said \0 mid-frame",
+            success: false, error: "FAILED: \0garbled", ct: Ct);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuditEvents.SingleAsync(Ct);
+        Assert.Equal("tar said  mid-frame", row.Detail);
+        Assert.Equal("FAILED: garbled", row.Error);
+    }
+
+    [Fact]
     public async Task CategoryFilter_IsAPrefixOnDottedSegments() {
         using var host = AuthTestHost.Start();
         var audit = Recorder(host);

@@ -1020,7 +1020,9 @@ public sealed class BackupService(
         var evt = await db.BackupEvents.FirstOrDefaultAsync(e => e.Id == backupEventId, CancellationToken.None);
         if (evt is null) return;
         evt.Status = success ? "success" : "failed";
-        evt.Output = output;
+        // PostgreSQL text cannot hold NUL (22021), and the log may carry one — exec stderr is raw
+        // process output. An unsaveable outcome would leave the event stuck as "running" forever.
+        evt.Output = output.Replace("\0", "");
         evt.RemotePath = remotePath;
         evt.SizeBytes = sizeBytes;
         evt.FinishedAt = DateTimeOffset.UtcNow;
