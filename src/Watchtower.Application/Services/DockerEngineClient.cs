@@ -17,10 +17,10 @@ namespace Watchtower.Application.Services;
 /// Two clients share the one handler (and therefore one connection pool). Almost every call is
 /// UI-facing and keeps HttpClient's 100-second default timeout, so a wedged daemon socket fails
 /// fast instead of hanging a page. The few calls whose duration is a property of the host rather
-/// than of Watchtower — the container wait, the image prune, the container-archive read and the
-/// exec start — go through a second, untimed client: the 100-second ceiling would abandon them
-/// mid-flight (a self-update watch, a prune of months of accumulated layers, a volume archive, or
-/// a database dump) even though nothing is wrong. Streamed calls
+/// than of Watchtower — the container wait, the image prune, the container-archive read and write,
+/// and the exec start — go through a second, untimed client: the 100-second ceiling would abandon
+/// them mid-flight (a self-update watch, a prune of months of accumulated layers, a volume archive
+/// in either direction, or a database dump) even though nothing is wrong. Streamed calls
 /// (<see cref="HttpCompletionOption.ResponseHeadersRead"/>) get their headers at once, but the
 /// ceiling keeps running while the body is read, so a body that is both long-lived and silently
 /// truncatable — an exec's output, where a cut-off dump looks exactly like a complete one — needs
@@ -266,6 +266,11 @@ public sealed class DockerEngineClient : IDisposable {
     /// <c>PUT /containers/{id}/archive</c>. Also works on created containers — used to inject the
     /// backup manifest next to the mounted volumes before the archive is read back.
     /// </summary>
+    /// <remarks>
+    /// Long-running client, for the same reason as <see cref="GetContainerArchiveAsync"/>: a restore
+    /// streams the whole volume archive through this request, so how long it takes is a property of
+    /// the archive size, and the caller bounds it through <paramref name="ct"/> alone.
+    /// </remarks>
     public Task PutContainerArchiveAsync(
         string containerId, string path, Stream tarStream, CancellationToken ct = default) =>
         PutContainerArchiveAsync(
@@ -283,7 +288,7 @@ public sealed class DockerEngineClient : IDisposable {
         var url = $"{_apiBase}/containers/{containerId}/archive?path={Uri.EscapeDataString(path)}";
         using var content = new PushStreamContent(writeTar, ct);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-tar");
-        var response = await _client.PutAsync(url, content, ct);
+        var response = await _longRunningClient.PutAsync(url, content, ct);
         response.EnsureSuccessStatusCode();
     }
 

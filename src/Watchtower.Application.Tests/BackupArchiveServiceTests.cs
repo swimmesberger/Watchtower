@@ -26,11 +26,15 @@ public sealed class BackupArchiveServiceTests {
         new(estate.Client, NullLogger<BackupArchiveService>.Instance);
 
     /// <summary>The one request that carries the injected tar, with its body.</summary>
+    /// <remarks>On the untimed client: what the PUT streams can be as large as a database dump.</remarks>
     private static (string Request, byte[] Body) InjectedPut(DockerClientEstate estate) {
-        var index = estate.Default.Requests.FindIndex(r => r.Contains("/archive?path=", StringComparison.Ordinal));
-        Assert.True(index >= 0, "no archive PUT was sent");
-        Assert.Single(estate.Default.Requests, r => r.Contains("/archive?path=", StringComparison.Ordinal));
-        return (estate.Default.Requests[index], estate.Default.BodyBytes[index]!);
+        var puts = estate.LongRunning.Requests
+            .Select((request, index) => (request, index))
+            .Where(x => x.request.Contains("/archive?path=", StringComparison.Ordinal)
+                && !x.request.Contains("path=%2Fbackup", StringComparison.Ordinal))
+            .ToList();
+        var (request, index) = Assert.Single(puts);
+        return (request, estate.LongRunning.BodyBytes[index]!);
     }
 
     /// <summary>Entry name → content (null for directories), in the order they were written.</summary>
@@ -157,6 +161,41 @@ public sealed class BackupArchiveServiceTests {
     }
 
     [Fact]
+    public async Task TheRestoreStreamsOnlyTheTargetVolumesEntries() {
+        using var estate = Estate();
+        // An archive carrying two volumes, a manifest and a dump — but only caddy-data is being
+        // restored (db-data is covered by the dump and left in place). Everything else must stay
+        // out of the PUT: the dump can be gigabytes standing in for a database, and pushing it
+        // into the helper's layer is what used to run a small restore into the HTTP ceiling.
+        using var archive = new MemoryStream();
+        await using (var writer = new TarWriter(archive, TarEntryFormat.Pax, leaveOpen: true)) {
+            foreach (var directory in new[] { "backup/", "backup/caddy-data/", "backup/db-data/", "backup/_dumps/" })
+                await writer.WriteEntryAsync(new PaxTarEntry(TarEntryType.Directory, directory), Ct);
+            foreach (var (name, content) in new[] {
+                ("backup/backup-manifest.json", "{}"),
+                ("backup/caddy-data/Caddyfile", "site {}"),
+                ("backup/db-data/base.dat", "the database files the dump stands in for"),
+                ("backup/_dumps/db.sql", "-- the dump covering db-data"),
+            }) {
+                await writer.WriteEntryAsync(new PaxTarEntry(TarEntryType.RegularFile, name) {
+                    DataStream = new MemoryStream(Encoding.UTF8.GetBytes(content)),
+                }, Ct);
+            }
+        }
+        archive.Position = 0;
+
+        await Service(estate).RestoreArchiveAsync(["caddy-data"], archive, HelperImage, Ct);
+
+        var (request, body) = InjectedPut(estate);
+        Assert.Contains("/archive?path=%2F", request);
+        var entries = await ReadTarAsync(body);
+        Assert.Equal(
+            ["backup/", "backup/caddy-data/", "backup/caddy-data/Caddyfile"],
+            entries.Select(e => e.Name));
+        Assert.Equal("site {}", entries.Single(e => e.Name.EndsWith("Caddyfile", StringComparison.Ordinal)).Content);
+    }
+
+    [Fact]
     public async Task AnArchiveWithNeitherVolumesNorDumpsIsRefused() {
         using var estate = Estate();
         using var destination = new MemoryStream();
@@ -174,7 +213,7 @@ public sealed class BackupArchiveServiceTests {
 
         await Service(estate).WriteArchiveAsync(["app_uploads"], null, destination, HelperImage, Ct);
 
-        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/archive?path=%2F&", StringComparison.Ordinal));
-        Assert.DoesNotContain(estate.Default.Requests, r => r.EndsWith("/archive?path=%2F", StringComparison.Ordinal));
+        Assert.DoesNotContain(estate.LongRunning.Requests, r => r.Contains("/archive?path=%2F&", StringComparison.Ordinal));
+        Assert.DoesNotContain(estate.LongRunning.Requests, r => r.EndsWith("/archive?path=%2F", StringComparison.Ordinal));
     }
 }

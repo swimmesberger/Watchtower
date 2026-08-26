@@ -6,9 +6,10 @@ namespace Watchtower.Application.Tests;
 /// <summary>
 /// Covers how <see cref="DockerEngineClient"/> splits its calls across two HttpClients: the default
 /// one keeps HttpClient's 100-second ceiling so UI-facing calls fail fast on a wedged socket, while
-/// the calls whose duration belongs to the host — the container wait and the image prune — go
-/// through an untimed one. Getting the routing wrong is invisible until a self-update watch or a
-/// prune of a long layer backlog is abandoned at the 100-second mark for no reason at all.
+/// the calls whose duration belongs to the host — the container wait, the image prune and the
+/// container-archive transfers — go through an untimed one. Getting the routing wrong is invisible
+/// until a self-update watch, a prune of a long layer backlog or a multi-gigabyte volume restore is
+/// abandoned at the 100-second mark for no reason at all.
 /// </summary>
 public sealed class DockerEngineClientTimeoutTests {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -96,6 +97,21 @@ public sealed class DockerEngineClientTimeoutTests {
         Assert.Empty(estate.Default.Requests);
         var request = Assert.Single(estate.LongRunning.Requests);
         Assert.Contains("/containers/abc123/wait", request);
+    }
+
+    [Fact]
+    public async Task TheContainerArchiveWriteGoesThroughTheUntimedClient() {
+        // The restore path streams the whole volume archive through this PUT — on the default
+        // client the 100-second ceiling cuts any restore larger than the socket can move in that
+        // window, which is exactly how big restores used to fail.
+        using var estate = DockerClientEstate.Create(pruneTimeout: TimeSpan.FromSeconds(30));
+        using var tar = new MemoryStream([1, 2, 3]);
+
+        await estate.Client.PutContainerArchiveAsync("abc123", "/", tar, Ct);
+
+        Assert.Empty(estate.Default.Requests);
+        var request = Assert.Single(estate.LongRunning.Requests);
+        Assert.Contains("/containers/abc123/archive", request);
     }
 
     [Fact]
