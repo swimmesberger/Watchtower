@@ -120,11 +120,14 @@ public sealed record ReleaseIntakeResult(
 /// and it never prunes a release something depends on.
 /// </para>
 /// <para>
-/// <b>Accepted:</b> the flip carries <c>Product</c>'s <c>xmin</c> concurrency token, so a product edit
-/// landing in the microseconds between the read and the save makes that one call fail with a
-/// concurrency exception and write nothing. It is retryable and self-correcting (the retry finds the
-/// mode already flipped and skips it), it can only happen on the single call in a product's life that
-/// flips the mode, and the alternative — an unconditional second statement — would trade it for a
+/// <b>The flip carries <c>Product</c>'s <c>xmin</c> concurrency token, and that race is retried here
+/// rather than handed to the caller.</b> A product edit landing in the microseconds between the read
+/// and the save fails the whole batch — the flip and the insert together, so nothing is half-written —
+/// and the write is then re-staged once against a freshly reloaded product (see
+/// <see cref="OnWriteStagedAsync"/> and <c>MaxFlipAttempts</c>). The retry keeps invariant 9 intact
+/// rather than working around it: the second attempt is again one <c>SaveChanges</c> carrying both, and
+/// when the reload shows somebody else already flipped the mode the insert alone is the write. The
+/// alternative that was rejected is an unconditional second statement, which would trade the race for a
 /// window in which a release exists while the product still deploys branch heads.
 /// </para>
 /// </remarks>
@@ -173,6 +176,15 @@ public class ReleaseIntakeService(
     /// otherwise leave that transaction poisoned while intake reported success.
     /// </summary>
     private const string PruneSavepoint = "wt_release_prune";
+
+    /// <summary>
+    /// How many times the flip-and-insert may be re-staged after losing the <c>xmin</c> race with a
+    /// concurrent product edit. Two, because the retry re-reads the product: the only way to lose twice
+    /// is a writer editing that one row continuously, which is a real problem worth surfacing rather
+    /// than looping on — and unlike <see cref="ProductCatalog.FindOrCreateAsync"/>'s name race there is
+    /// no suffix to keep trying, so a third attempt would only re-run the same read.
+    /// </summary>
+    private const int MaxFlipAttempts = 2;
 
     /// <summary>
     /// Records a release, or explains why it cannot. Never throws for a caller error: every refusal is
@@ -243,7 +255,7 @@ public class ReleaseIntakeService(
             return Invalid($"A version may be at most {MaxVersionLength} characters.");
 
         // ── images: parse, gate on the registry, resolve the tags ────────────
-        var known = KnownRegistryHosts();
+        var known = await KnownRegistryHostsAsync(ct);
         var parsed = new List<(string Raw, ImageRef Ref)>(request.Images.Count);
         foreach (var image in request.Images) {
             if (!ImageRef.TryParse(image, out var reference))
@@ -302,30 +314,64 @@ public class ReleaseIntakeService(
             flipped.ReleaseMode = ProductReleaseMode.Releases;
         }
 
-        var transaction = db.Database.CurrentTransaction;
-        if (transaction is not null) await transaction.CreateSavepointAsync(InsertSavepoint, ct);
-        try {
-            db.Releases.Add(release);
-            await db.SaveChangesAsync(ct);
-            if (transaction is not null) await transaction.ReleaseSavepointAsync(InsertSavepoint, ct);
-        } catch (DbUpdateException ex) when (IsUniqueViolation(ex)) {
-            // Two identical calls raced — the common case is a CI job whose curl was retried — or two
-            // different builds picked the same version. Both surface here; which one it was is answered
-            // by looking for the fingerprint, not by parsing the constraint name.
-            if (transaction is not null) await transaction.RollbackToSavepointAsync(InsertSavepoint, ct);
-            db.Entry(release).State = EntityState.Detached;
-            foreach (var image in release.Images) db.Entry(image).State = EntityState.Detached;
-            // The flip lost with the insert — at the database because the whole statement batch rolled
-            // back, and here because a change tracker still holding it Modified would smuggle it into
-            // whatever the caller saves next. Restored rather than reloaded: the value it had is known.
-            if (flipped is not null) {
-                flipped.ReleaseMode = ProductReleaseMode.Git;
-                db.Entry(flipped).State = EntityState.Unchanged;
-            }
+        // The write, with one bounded retry for the concurrency window the flip opens — see
+        // MaxFlipAttempts. Everything inside the loop is re-staged from scratch on a retry, so the
+        // second attempt is a fresh flip-and-insert rather than a resumed half of the first.
+        for (var attempt = 1; ; attempt++) {
+            var transaction = db.Database.CurrentTransaction;
+            // Re-declared per attempt, and that is fine: PostgreSQL's ROLLBACK TO does not destroy the
+            // savepoint, and a second SAVEPOINT of the same name shadows the first rather than failing.
+            // At most two attempts, so at most two live — not a loop that can stack them.
+            if (transaction is not null) await transaction.CreateSavepointAsync(InsertSavepoint, ct);
+            try {
+                db.Releases.Add(release);
+                await OnWriteStagedAsync(ct);
+                await db.SaveChangesAsync(ct);
+                if (transaction is not null) await transaction.ReleaseSavepointAsync(InsertSavepoint, ct);
+                break;
+            } catch (DbUpdateConcurrencyException) when (flipped is not null && attempt < MaxFlipAttempts) {
+                // A product edit landed between this method's read of the product and this save. The
+                // whole batch rolled back — the flip *and* the insert — so nothing is half-written and
+                // the honest answer is to look again and redo both. Only reachable when there is a
+                // flip: the release rows carry no concurrency token, so nothing else in this batch can
+                // produce this exception.
+                if (transaction is not null) await transaction.RollbackToSavepointAsync(InsertSavepoint, ct);
+                Detach(release);
 
-            return await FindByFingerprintAsync(product.Id, fingerprint, ct) is { } winner
-                ? new ReleaseIntakeResult(ReleaseIntakeStatus.Replayed, winner, null, product.Name)
-                : Refuse(ReleaseIntakeStatus.VersionConflict, VersionTaken(product.Name, version));
+                await db.Entry(flipped).ReloadAsync(ct);
+                if (db.Entry(flipped).State is EntityState.Detached) {
+                    // The concurrent write was a delete. There is nothing left to attach a release to.
+                    return Refuse(
+                        ReleaseIntakeStatus.ProductNotFound, $"Product {request.ProductId} not found.");
+                }
+                if (flipped.ReleaseMode == ProductReleaseMode.Git) {
+                    flipped.ReleaseMode = ProductReleaseMode.Releases;
+                } else {
+                    // Somebody else already flipped it — an operator on the product page, or a release
+                    // that raced this one. Invariant 9 is satisfied without a second write, and the
+                    // audit row must not claim a flip this call did not perform.
+                    flipped = null;
+                }
+            } catch (DbUpdateException ex) when (IsUniqueViolation(ex)) {
+                // Two identical calls raced — the common case is a CI job whose curl was retried — or two
+                // different builds picked the same version. Both surface here; which one it was is answered
+                // by looking for the fingerprint, not by parsing the constraint name.
+                if (transaction is not null) await transaction.RollbackToSavepointAsync(InsertSavepoint, ct);
+                Detach(release);
+                // The flip lost with the insert — at the database because the whole statement batch rolled
+                // back, and here because a change tracker still holding it Modified would smuggle it into
+                // whatever the caller saves next. Restored rather than reloaded: the value it had is known
+                // (a retry above reloads the row before re-applying the flip, so Git is still the value
+                // this call found).
+                if (flipped is not null) {
+                    flipped.ReleaseMode = ProductReleaseMode.Git;
+                    db.Entry(flipped).State = EntityState.Unchanged;
+                }
+
+                return await FindByFingerprintAsync(product.Id, fingerprint, ct) is { } winner
+                    ? new ReleaseIntakeResult(ReleaseIntakeStatus.Replayed, winner, null, product.Name)
+                    : Refuse(ReleaseIntakeStatus.VersionConflict, VersionTaken(product.Name, version));
+            }
         }
 
         // The roll-out, before the audit row so the trail can say what it reached. The release is
@@ -470,11 +516,16 @@ public class ReleaseIntakeService(
 
     /// <summary>
     /// The registries this instance knows, keyed by normalized host — see
-    /// <see cref="ReleaseImageValidator.KnownHosts"/>, which the pin pre-flight shares so intake's
+    /// <see cref="ReleaseImageValidator.KnownHostsAsync"/>, which the pin pre-flight shares so intake's
     /// registry gate and that pre-flight cannot disagree about which credential belongs to a host.
     /// </summary>
-    private Dictionary<string, ResolvedRegistry> KnownRegistryHosts() =>
-        ReleaseImageValidator.KnownHosts(registries);
+    /// <remarks>
+    /// Asynchronous throughout because this runs on the <em>anonymous</em> release-webhook path, before
+    /// anything has been written: a synchronous database query and host-config read here would block a
+    /// thread-pool thread for every unauthenticated caller that gets past the rate limiter.
+    /// </remarks>
+    private Task<Dictionary<string, ResolvedRegistry>> KnownRegistryHostsAsync(CancellationToken ct) =>
+        ReleaseImageValidator.KnownHostsAsync(registries, ct);
 
     /// <summary>
     /// Docker Hub is always allowed — it is where an unqualified image lives and needs no credential to
@@ -500,6 +551,29 @@ public class ReleaseIntakeService(
         var taken = await db.Releases.AsNoTracking()
             .AnyAsync(r => r.ProductId == productId && r.Version == version, ct);
         return (null, taken);
+    }
+
+    /// <summary>
+    /// Runs between the flip-and-insert being staged in the change tracker and the <c>SaveChanges</c>
+    /// that issues it — the microsecond window in which a concurrent product edit turns that save into
+    /// a <see cref="DbUpdateConcurrencyException"/>. A no-op in production.
+    /// </summary>
+    /// <remarks>
+    /// Virtual for the same reason <see cref="PrecheckAsync"/> is: the interleave it describes cannot be
+    /// produced reliably by timing, and the branch behind it — invariant 9's "the flip and the insert
+    /// are one write", preserved across a retry — is the one that turns a routine concurrent product
+    /// edit into a failed CI call when it is wrong. It runs on <em>every</em> attempt, so a test can
+    /// force the conflict once and watch the retry succeed.
+    /// </remarks>
+    protected virtual Task OnWriteStagedAsync(CancellationToken ct) => Task.CompletedTask;
+
+    /// <summary>
+    /// Takes the speculative release and its images back out of the change tracker, so a retry re-adds
+    /// them cleanly and a refusal does not smuggle them into whatever the caller saves next.
+    /// </summary>
+    private void Detach(Release release) {
+        db.Entry(release).State = EntityState.Detached;
+        foreach (var image in release.Images) db.Entry(image).State = EntityState.Detached;
     }
 
     /// <summary>The release with this fingerprint, images included, or null.</summary>

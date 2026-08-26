@@ -39,10 +39,12 @@ public sealed class CiToolchainRecorder(
                 .ResolveAsync(product, ct);
             // Attach the resolved (no-tracking) repo so the profile write below goes through EF as an
             // update rather than an insert.
-            // Depends on CiRepo carrying no xmin concurrency token (CiRepoConfiguration in
-            // WatchtowerEntityConfigurations.cs, and the reasoning spelled out at UserConfiguration): a
-            // detached read carries no shadow xmin, so adding UseXminAsConcurrencyToken to CiRepo would
-            // turn this attach-and-write into a phantom conflict on every deploy.
+            // CiRepo carries no concurrency token today. If it is ever given one, this flow survives:
+            // since the token became a real property on the entity (IHasXmin, npgsql/efcore.pg#3539) it
+            // travels with a detached instance, so attach-and-write compares the value that was read
+            // rather than a default that matches no row. What this flow would still have to respect is
+            // the *other* hazard — a sibling ExecuteUpdate bumping the same row's xmin behind the change
+            // tracker, which is CiRepoResolver's constraint, not this one's.
             if (link.Repo is not { } repo)
                 return null;
             db.CiRepos.Attach(repo);

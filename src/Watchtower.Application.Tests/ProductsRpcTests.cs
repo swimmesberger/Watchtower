@@ -102,6 +102,88 @@ public sealed class ProductsRpcTests {
         Assert.Contains("not both", both.Error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The savepoint branch inside <c>ProductCatalog.FindOrCreateAsync</c>: a second creator commits the
+    /// same source between this call's find and its insert, so the speculative insert hits
+    /// <c>ix_products_name</c>. The loser must roll back to its savepoint, look again and <em>adopt</em>
+    /// the winner — without that, the loser of a routine double-submit gets a 500 and, because the
+    /// caller is inside a transaction, a poisoned one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The interleave is described rather than raced, the <c>ReleaseIntakeService.PrecheckAsync</c> way:
+    /// <see cref="ContendedCatalog"/> commits the rival from a second context inside
+    /// <c>OnInsertStagedAsync</c>, which is exactly what the losing request sees.
+    /// </para>
+    /// <para>
+    /// Wrapped in a real transaction because that is the caller shape — <c>stacks.create</c> runs inside
+    /// the framework's — and because the savepoint create/rollback/release path only exists on that
+    /// branch. Without a transaction the test would exercise a bare catch and prove nothing about the
+    /// part that is hard to get right.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task FindOrCreate_ThatLosesTheNameRace_RollsBackToItsSavepointAndAdoptsTheWinner() {
+        using var host = AuthTestHost.Start();
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        await using var transaction = await db.Database.BeginTransactionAsync(Ct);
+
+        var winnerId = 0;
+        var catalog = new ContendedCatalog(
+            db, async () => winnerId = await InsertRivalProductAsync(host, "shop"));
+
+        var (product, created) = await catalog.FindOrCreateAsync(Repo, Compose, DefaultBranch, null, Ct);
+
+        // Adopted, not created a second time — and the transaction is still usable afterwards, which is
+        // what the savepoint (rather than a bare catch) buys.
+        Assert.False(created);
+        Assert.NotEqual(0, winnerId);
+        Assert.Equal(winnerId, product.Id);
+        db.Stacks.Add(new Stack {
+            Name = "shop-web", ComposeProjectName = "shop-web", ProductId = product.Id,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync(Ct);
+        await transaction.CommitAsync(Ct);
+
+        await using var check = host.Services.CreateAsyncScope();
+        var products = await check.ServiceProvider.GetRequiredService<WatchtowerDbContext>()
+            .Products.AsNoTracking().ToListAsync(Ct);
+        Assert.Equal([winnerId], products.Select(p => p.Id));
+    }
+
+    /// <summary>The winning creator: the same source, committed from its own context and connection.</summary>
+    private static async Task<int> InsertRivalProductAsync(AuthTestHost host, string name) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var product = new Product {
+            Name = name,
+            RepositoryUrl = Repo,
+            ComposeFilePath = Compose,
+            DefaultBranch = DefaultBranch,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+        await db.SaveChangesAsync(Ct);
+        return product.Id;
+    }
+
+    /// <summary>
+    /// A catalogue with one rival creator slipped into the window between the speculative product being
+    /// staged — name already derived — and the insert. Fires once, so the retry has a race to lose and
+    /// then win.
+    /// </summary>
+    private sealed class ContendedCatalog(WatchtowerDbContext db, Func<Task> interleave) : ProductCatalog(db) {
+        private bool _raced;
+
+        protected override async Task OnInsertStagedAsync(CancellationToken ct) {
+            if (_raced) return;
+            _raced = true;
+            await interleave();
+        }
+    }
+
     // ── stacks.update ────────────────────────────────────────────────────────
 
     /// <summary>

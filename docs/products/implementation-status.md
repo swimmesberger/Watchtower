@@ -6,8 +6,11 @@ build; this file says how far it got and what is owed. **The roadmap is complete
 all landed, so this file is now the handover for whoever maintains the feature rather than the brief
 for the next stage.
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 7
-(tenant-aware backups) — the final stage.
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 8a
+(end-state hardening, backend). Stage 7 was the last *feature* stage; 8a adds no behaviour an operator
+can see, retires four accepted-debt entries and moves the `xmin` concurrency token onto the entities,
+on the rule PR #58 introduced — this architecture is the end state, so debt that is architectural
+rather than an irreducible trade-off is paid before it merges.
 
 ## Where things stand
 
@@ -110,6 +113,11 @@ to its Git-mode 52px circle — renders version-less exactly as it did before st
    webhook is safe because it is a minimal-API endpoint that opens no transaction of its own; several
    handlers do open one, which is why `products.createRelease` records and stops and
    `products.deployRelease` is the separate, explicit way to roll a release out.
+   Since stage 8a the flip's `xmin` race is **retried** rather than surfaced (see the retired debt
+   entry), and the retry is written to keep this invariant rather than to route around it: the second
+   attempt is again one `SaveChanges` carrying both, and a reload showing the mode already flipped
+   drops the flip and inserts alone — which is the invariant satisfied, not waived. What must never
+   appear here is an unconditional second statement.
 10. **Only `"release"` may short-circuit, and coalescing may never demote a trigger into it.** Every
     other trigger runs the full pipeline even when the resolved release has not changed, because a
     deploy also converges the compose file, the environment, the generated override and the proxy
@@ -263,26 +271,49 @@ to its Git-mode 52px circle — renders version-less exactly as it did before st
 ## Owed work and accepted debt
 
 The four stage-2 review items that were queued behind the stage landed in the hardening commit
-above, and stage 4a paid off the pinned-release delete guard it owed. What is left is accepted debt,
-not owed work:
+above, and stage 4a paid off the pinned-release delete guard it owed. **Stage 8a retired four more**
+— the synchronous registry-resolution path, both `xmin` microwindows and the untested `ProductCatalog`
+savepoint branch — on the rule that debt which is *architectural* rather than an irreducible trade-off
+is paid before this design is declared the end state. Retired entries are struck through and say what
+replaced them; what is left below is accepted debt, not owed work:
 
 - **`docker.io` is always an admitted registry** for a release image, because an unqualified image
   lives there and a default install has no Hub credential to recognize it by. A leaked release token
   can therefore pin any public Hub digest; the compose-service match, the pin pre-validation and
   rollout visibility are the mitigations (design.md §Release intake spells the three accepted
   properties out, including the 401-vs-404 disclosure for *enabled* products).
-- **`ReleaseIntakeService.KnownRegistryHosts()` does synchronous database and file I/O** on the
-  anonymous webhook path — it goes through `RegistryAuthBuilder`, whose whole shape is synchronous
-  (`ListResolvedRegistries` reads `db.Registries` and the host `docker/config.json`). Accepted:
-  async-ifying that service reaches well beyond releases, the per-client rate limit bounds how often
-  an unauthenticated caller can reach it, and the call happens after the token check for everyone
-  else. Revisit if the endpoint ever sees real load.
-- **The mode flip carries `Product`'s `xmin`.** A product edit landing in the microseconds between
-  the read and the save makes that one call fail with a concurrency exception and write nothing.
-  Accepted: it is retryable and self-correcting (the retry finds the mode already flipped and skips
-  it), it can only happen on the single call in a product's life that flips the mode, and the
-  alternative — an unconditional second statement — trades it for a window in which a release exists
-  while the product still deploys branch heads (invariant 9).
+- ~~**`ReleaseIntakeService.KnownRegistryHosts()` does synchronous database and file I/O** on the
+  anonymous webhook path.~~ **Resolved in 8a.** `RegistryAuthBuilder`'s whole public surface is
+  asynchronous — `ListResolvedRegistriesAsync` and `CreateTempConfigDirAsync`, both taking a
+  `CancellationToken`, with `ToListAsync` for the registry query and `File.ReadAllTextAsync` for the
+  host `docker/config.json`; `ReleaseImageValidator.KnownHosts` became `KnownHostsAsync` with it, and
+  the six call sites (release intake, the pin pre-flight, `CiActionsConfigSync`'s registry
+  contributor, `DeployQueueService.CreateRegistryConfigDirAsync`, `registries.list` and
+  `ci.updateRepo`) all await. **No sync-over-async bridge exists anywhere on the registry-resolution
+  path, and none was introduced by the changed files.** (That claim is scoped on purpose — the codebase
+  still has two elsewhere, both pre-existing and both outside this feature: `AuthTokenSigner`'s
+  synchronous `ValidateToken`/initialization at lines 446 and 475, and `CertificateManager`'s
+  in-flight-issue join at line 475.) Two synchronous calls remain
+  and are metadata probes with no asynchronous BCL counterpart — `File.Exists` on the host config
+  (one `stat`, and on a containerised install the *only* filesystem call the merge makes) and
+  `Directory.CreateDirectory` for the scoped `DOCKER_CONFIG` — both documented on the class. The
+  host-config catch also stopped swallowing `OperationCanceledException`, which would otherwise have
+  answered a cancelled intake "no host registries" and turned its registry gate into a refusal.
+- ~~**The mode flip carries `Product`'s `xmin`.** A product edit landing in the microseconds between
+  the read and the save makes that one call fail with a concurrency exception and write nothing.~~
+  **Resolved in 8a**, by retrying rather than by weakening invariant 9. The flip-and-insert
+  `SaveChanges` now sits in a loop bounded at two attempts (`MaxFlipAttempts`): the batch is atomic, so
+  a lost race has written nothing, and the retry reloads the product, re-applies the flip and re-adds
+  the release — one write again, not two. A reload showing the mode *already* flipped drops the flip
+  and inserts alone, which satisfies invariant 9 without a second statement and keeps the
+  `release.mode.change` row honest about who flipped it; a reload showing the row gone answers
+  `ProductNotFound`. The retry composes with the unique-violation recovery rather than duplicating it —
+  the two live in the same `try` and the concurrency clause is guarded on `flipped is not null`,
+  because the release rows carry no concurrency token and nothing else in the batch can raise it.
+  `ReleaseIntakeService.OnWriteStagedAsync` is the injection seam (the `PrecheckAsync` precedent),
+  and `Publish_ThatLosesTheModeFlipRace_RetriesAndStillRecordsTheRelease` plus
+  `Publish_WhoseRaceWinnerAlreadyFlippedTheMode_RecordsTheReleaseWithoutASecondFlip` cover both
+  outcomes; both fail with `MaxFlipAttempts` set to 1.
 - **`StackUpdateCheck.AvailableReleaseId` is deliberately not a foreign key.** It is a cache row; a
   value that stops matching a live release is corrected by the next check rather than by a schema
   rule that would make deleting a release harder. `AvailableReleaseVersion` is denormalized beside it
@@ -295,12 +326,21 @@ not owed work:
   the same rule `ci.updateRepo` already follows for the registry secrets. Deleting them is a
   repository decision, and silently revoking a running workflow's credentials on a toggle would be
   the surprise. Rotating the token is how an operator actually invalidates what is out there.
-- **The release contributor's `SaveChanges` carries `Product`'s `xmin`.** A product edit landing in
+- ~~**The release contributor's `SaveChanges` carries `Product`'s `xmin`.** A product edit landing in
   the microseconds between the read and the stamp makes that pass throw
-  `DbUpdateConcurrencyException`, which the contributor's own isolation catches and logs; the values
-  did reach GitHub, only the hash did not, so the next pass re-pushes them. Accepted for the same
-  reasons as the mode flip: retryable, self-correcting, and the alternative is an unconditional
-  second statement.
+  `DbUpdateConcurrencyException`, which the contributor's own isolation catches and logs.~~
+  **Resolved in 8a.** `CiActionsConfigSync.StampReleaseSyncAsync` retries the stamp once against a
+  reloaded row (`MaxStampAttempts`), re-applying the three fields after the reload because a reload
+  overwrites them. It is worth a retry precisely because the values are *already at GitHub* by then:
+  leaving it to the next pass means re-sealing and re-pushing three values over the network to write a
+  row this pass can write from a second read — and doing it minutes later, because the push is what
+  the shared defer rate-limits. Stamping the hash this pass pushed stays correct even when the
+  concurrent edit rotated the token: the hash describes what went out, and the next pass computes it
+  from the *current* token, sees the difference and re-pushes.
+  `Release_WhoseStampLosesToAConcurrentProductEdit_RetriesAndStillStamps`
+  forces the conflict through the GitHub stub — no production seam
+  was needed, because the window is exactly the round trip the stub stands in for — and fails with
+  `MaxStampAttempts` set to 1.
 - **Any repository-URL edit turns the release sync off rather than following the URL** (an ordinal compare: a move, but also a `.git` suffix or case fix — audited and one click to re-enable). `products.update`
   clears the flag and the state, and the audit line says so. Following the move would mean re-probing
   a PAT that may not exist for the new repository, from inside a handler whose job is a product edit;
@@ -318,11 +358,32 @@ not owed work:
 - **`ci.removeRepo` turns the sync off but does not delete anything from GitHub**, same as the manual
   off-switch. The audit row says so; rotating the token is how an operator invalidates what is out
   there.
-- **`ProductCatalog`'s savepoint retry branch is untested** — forcing the interleave needs an
+- ~~**`ProductCatalog`'s savepoint retry branch is untested** — forcing the interleave needs an
   injection seam inside `FindOrCreateAsync`, which is more test scaffolding than the branch is
-  worth. Accepted: the savepoint create/release path is covered by every implicit-create test, and
-  the branch itself only rolls back to the savepoint, detaches the speculative entity and loops back
-  into the same re-read. Revisit if it ever grows a decision.
+  worth.~~ **Resolved in 8a.** The seam is `protected virtual OnInsertStagedAsync`, the same shape
+  `ReleaseIntakeService.PrecheckAsync` already had for the same reason, and the scaffolding turned out
+  to be a subclass and a helper. It sits *after* `UniqueNameAsync`, so it covers the race the unique
+  index catches — the narrower window before the name is derived is a **separate, still-unguarded**
+  race, now recorded as its own debt entry below.
+  `FindOrCreate_ThatLosesTheNameRace_RollsBackToItsSavepointAndAdoptsTheWinner` runs inside a
+  real transaction — the caller shape, and the only shape in which the savepoint exists at all — and
+  asserts the loser adopts the winner *and* that the transaction is still usable afterwards, which is
+  what the savepoint rather than a bare catch buys. Disabling the catch fails it with the raw
+  `DbUpdateException`. `ProductCatalog` is no longer `sealed`, which is what the seam costs.
+- **Two concurrent implicit creates over one source, interleaving *before* the name is derived, produce
+  two products for that source.** Pre-existing (it predates 8a and is not something 8a introduced or
+  scoped), and it is the price of there being **no unique index on the normalized source** — which is
+  deliberate: the catalogue allows several products over one repository (different compose files), and
+  the source key is a normalization computed in C# that no index can express. If the rival commits
+  before `UniqueNameAsync` runs, the loser derives `name-2`, hits no constraint, and both rows land.
+  The window is narrower than the one 8a closed (it ends at the name query rather than at the insert)
+  and the mitigation is that it is the *only* way to reach the state: `products.create` and
+  `products.update` both refuse a duplicate source through `FindConflictAsync`, so no single operator
+  action produces it — `FindConflictAsync` is itself check-then-act with no index behind it, so two
+  *concurrent* explicit creates share the same residual window. The result is also visible and repairable rather than silent — two catalogue
+  rows over one repository, fixed by pointing the stacks at one of them and deleting the other. Closing
+  it properly means an index on a stored normalized-source column, which is a schema change and a
+  backfill, and belongs with whatever next needs that column rather than to a hardening pass.
 
 ### From stage 7
 
@@ -356,7 +417,114 @@ not owed work:
   `ExecuteBackupAsync` end to end needs a Docker daemon and a storage provider, so the stamp's two
   guards are tested on their own and the *call site* (after success, never after a failure) is verified
   by reading rather than by a test. The live pass exercised the failure direction for real: nine failed
-  runs against an unreachable daemon left every `backup_directory` untouched.
+  runs against an unreachable daemon left every `backup_directory` untouched. **Re-examined in 8a and
+  kept**: `BackupTestDoubles` carries a recording *queue* and nothing that stands in for a run, and the
+  half that matters — stamped *after success* — needs the whole of `RunAsync` (volume listing, a
+  container-exec tar stream, an upload) to succeed, which is a fake daemon and a fake storage provider,
+  not a double. The failure half is reachable cheaply (a stubbed daemon answering "no volumes" makes
+  `RunAsync` throw), but pinning only the direction the live pass already exercised nine times would be
+  a test that cannot fail for the reason the entry is about.
+
+### From stage 8a — the synchronous-I/O sweep
+
+The async-ification above came with a sweep of the feature's new code (`Modules/Products`, the release
+parts of `Modules/Ci`, `Services/Release*`, `Services/CiActionsConfigSync`, the release webhook,
+`BackupChainCoordinator`, `BackupPolicyResolver`) for synchronous I/O on a request or reconcile path.
+Everything it found is listed here, so a later reader does not have to redo it:
+
+- **Fixed:** the whole `RegistryAuthBuilder` surface and its five call sites (the entry above).
+- **Not I/O at all:** every `.ToList()` / `.FirstOrDefault()` the grep flags in `products.list`,
+  `products.get`, `products.retryFailedRollout` and `ReleasePruner` runs *in memory* over a list a
+  preceding `ToListAsync` already materialized — the projection-then-shape pattern those handlers use
+  deliberately, so the enum-to-string and bucket rules are not asked of the database. The webhook's
+  `buffer.Write(chunk, 0, read)` writes to a `MemoryStream`; the read beside it is `ReadAsync`.
+- **Kept, with reasons:** `DeployQueueService`'s `RecordEventRelease` and `RecordDeployedRelease` (the
+  two stage-4a stamps) issue a synchronous `ExecuteUpdate`. They run on a **thread-pool thread taken by
+  `Task.Run` in `Enqueue`, bounded by the `Watchtower:MaxConcurrentDeploys` slot gate** — so the block
+  is on a thread that is already dedicated to one deploy and is capped instance-wide, not on a request
+  thread and not in the reconcile loop — and they are two of five identically shaped incremental
+  writers in that file (`RecordDeployedCommit`, `DeleteUpdateCheck`, `UpdateDeployStatus` are the
+  others, all older than this feature). Making two of the five asynchronous buys nothing measurable on
+  a thread that is about to shell out to `docker compose`, and costs the property that makes them
+  readable — that they all look the same. If that file is ever converted, it is converted as a whole.
+- **`BackupChainCoordinator`'s two `lock`s** hold only dictionary mutation and a copy-out; no `await`
+  is possible inside a `lock`, which is the language enforcing what the design already wanted.
+
+### From stage 8a — `xmin` became a real property
+
+Both retries above are `xmin` races, which put the token itself under review — and the review found the
+codebase on the wrong side of the provider maintainer's own reasoning. `xmin` was mapped as an EF
+**shadow** property, on the argument that the database's bookkeeping should not be readable from the
+domain model. That is the argument roji rejected when removing `UseXminAsConcurrencyToken`
+(npgsql/efcore.pg#3539): standard `IsRowVersion` already covers the case, and a shadow property makes
+the change tracker the *only* holder of the value — so it does not survive detaching, attaching or
+serializing, and every read-detached / mutate / attach flow fails as a phantom conflict against a
+`default(uint)` that matches no row.
+
+**Watchtower had hit that twice and worked around it twice, in comments rather than in code.** `User`
+carries Identity's `ConcurrencyStamp` instead of `xmin` because `WatchtowerUserStore` is attach-based,
+and `CiRepo` was left with *no* token at all so `CiToolchainRecorder` could attach a no-tracking read —
+the attach guard exists **because** `CiRepo` could not safely be given one.
+
+What changed:
+
+- A `uint Xmin { get; private set; }` on each of the six entities that carry the token — `Realm`,
+  `Product`, `Stack`, `Route`, `Group`, `ProxyCertificate` — declared through a new
+  `IHasXmin` marker interface. **Interface rather than six loose properties, deliberately:**
+  `XminConcurrency.UseXminAsConcurrencyToken` is constrained `where T : class, IHasXmin` and maps
+  `e => e.Xmin`, so an entity configured with the helper but missing the property is a *compile error*
+  — where the shadow version would silently have created a second, unread property. The private setter
+  keeps the half of the old argument that was worth keeping: application code still cannot write a
+  token. Reading one is harmless and now possible.
+- **The helper's remarks state the reversal and cite the issue**, so the next reader meets the reasoning
+  rather than re-deriving it. The two guard comments were softened truthfully: `CiToolchainRecorder`'s
+  now says the attach flow *would survive* a token on `CiRepo`, because the value travels with the
+  instance; `CiRepoResolver`'s says what is still true — that `IHasXmin` fixed detach-and-attach and
+  fixes nothing about an `ExecuteUpdate` bumping a row behind the change tracker, which remains its
+  constraint. `UserConfiguration`'s comment now rests on "Identity already models this as a column and
+  two tokens on one row is two ways to be refused" rather than on a hazard that no longer exists.
+- **One migration, `XminConcurrencyTokenAsProperty`, empty of operations** — verified: both `Up` and
+  `Down` contain no calls. `xmin` is a PostgreSQL *system* column, in no `CREATE TABLE`, so renaming the
+  property that maps to it changes nothing a migration can express, and `has-pending-model-changes` was
+  in fact already clean *without* it. It exists for the **model snapshot**, which records property
+  names: without it the snapshot keeps describing a shadow property that no longer exists and the next
+  real migration is diffed against a model that is subtly not this one. The file says all of that in its
+  own remarks, because an empty migration is exactly the kind of thing a later reader deletes as dead
+  weight. The snapshot diff is **exactly** six `Property<uint>("xmin")` → `("Xmin")` renames plus one
+  `Xmin = 0u` line in the seeded system realm's `HasData` — and that last line is inert, which is worth
+  saying because it looks alarming: the property is `ValueGeneratedOnAddOrUpdate`, so EF excludes it from
+  insert operations, the initial migration's `InsertData` for `realms` still lists six columns and no
+  `xmin`, and the differ emitted no seed operation. The proof is mechanical rather than by reading —
+  every test database is built by `db.Database.Migrate()` (`PostgresTestServer`), so the whole suite runs
+  against a database freshly scaffolded through this migration with that realm seeded.
+- **No wire impact.** None of the six entities is a `[JsonSerializable]` root and none is reachable from
+  one — every entity reaches the wire through an explicit projection — so nothing exposes a transaction
+  id. `rpc-schema.json` is byte-identical, which is the mechanical proof.
+
+The two existing concurrency tests are **unchanged and still green**, which is the equivalence evidence:
+the token behaves exactly as it did. The new one,
+`AnXminEntity_ReadDetachedAndAttachedElsewhere_SavesWithoutAPhantomConflict`, is the roji scenario end to
+end — read `AsNoTracking` in a scope that is then disposed, assert the token survived on the object,
+attach to a second context and save — plus a third assertion that a genuinely stale copy is *still*
+refused, so this bought detach-and-attach without quietly buying last-writer-wins.
+
+**Mutation testing**, four mutations and four catches: `MaxFlipAttempts` set to 1 fails both mode-flip
+tests, `MaxStampAttempts` set to 1 fails the stamp test, disabling `FindOrCreateAsync`'s
+unique-violation catch fails the savepoint test with the raw `DbUpdateException`, and putting `xmin`
+back on a shadow property (`Ignore(e => e.Xmin)` plus the old `Property<uint>("xmin")`) fails the new
+detach test on the surviving-token assertion while leaving the two older concurrency tests green.
+
+**Verification at hand-over** (from the worktree root): clean `--no-incremental` Release build with
+**0 warnings**; `dotnet test` 38 failures out of 2064 — the same families this document records, with
+one *fewer* than the 39-failure baseline because the flaky `AuthEndpointTests` audit-ordering case
+happened to pass (17 `CertificateStoreTests`, 11 ACME across the same four classes, 4
+`CertificateManagerTests`, 2 `CertificateManagerProjectionTests`, and one each of
+`BackupPlanOverrideTests`, `ProxyIngressEndpointReloadTests`, `ProxyChangeSignalTests`,
+`FileStateImportTests`) — no new failures; `has-pending-model-changes` clean (run it with
+`--configuration Release --no-build`, see the env notes) after the empty
+`XminConcurrencyTokenAsProperty` migration; **`rpc-schema.json` byte-identical** (the async-ification
+moved no wire shape — `ListRegistries` and `ci.updateRepo` only changed how they read, not what they
+answer — and `Xmin` reaches no DTO); `npm run build` green with no frontend file touched.
 
 ## Environment and process notes
 
@@ -374,6 +542,10 @@ not owed work:
   The schema export needs the absolute `$PWD` path — `dotnet run --project` sets the CWD to the
   project directory and would otherwise write the file there. `git diff rpc-schema.json` should show
   only intended additions; every stage so far has been additive-only.
+  `dotnet ef migrations has-pending-model-changes` defaults to a **Debug** build, which fails outright
+  while a `dotnet run` instance from a live-verification session still holds
+  `bin/Debug/net10.0/Watchtower.Application.dll`. Pass `--configuration Release --no-build` and it runs
+  against the build the other three gates already made.
 - **Windows hosts carry known, unrelated test failures** (confirmed at baseline `c4f0c59`, not
   introduced by this work): a CRLF-sensitive snippet assertion in `BackupPlanOverrideTests`, an
   audit-ordering case in `AuthEndpointTests`, `ProxyIngressEndpointReloadTests`, and flaky

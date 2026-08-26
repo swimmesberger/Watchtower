@@ -17,7 +17,7 @@ namespace Watchtower.Application.Services;
 /// product list is tens of rows, and keeping one implementation of the rule is worth more than an index
 /// scan here — a second copy in SQL is exactly the drift the migration comment warns about.
 /// </remarks>
-public sealed class ProductCatalog(WatchtowerDbContext db) {
+public class ProductCatalog(WatchtowerDbContext db) {
     /// <summary>Audit category every product write is recorded under.</summary>
     public const string AuditCategory = "products";
 
@@ -65,9 +65,13 @@ public sealed class ProductCatalog(WatchtowerDbContext db) {
             };
 
             var transaction = db.Database.CurrentTransaction;
+            // Re-declared per attempt, and that is fine: PostgreSQL's ROLLBACK TO does not destroy the
+            // savepoint, and a second SAVEPOINT of the same name shadows the first rather than failing.
+            // Bounded by MaxCreateAttempts, so at most three live — not a loop that can stack them.
             if (transaction is not null) await transaction.CreateSavepointAsync(InsertSavepoint, ct);
             try {
                 db.Products.Add(product);
+                await OnInsertStagedAsync(ct);
                 await db.SaveChangesAsync(ct);
                 if (transaction is not null) await transaction.ReleaseSavepointAsync(InsertSavepoint, ct);
                 return (product, true);
@@ -77,6 +81,27 @@ public sealed class ProductCatalog(WatchtowerDbContext db) {
             }
         }
     }
+
+    /// <summary>
+    /// Runs between the speculative product being staged in the change tracker — name already chosen —
+    /// and the <c>SaveChanges</c> that issues the insert. A no-op in production.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Virtual for the same reason <c>ReleaseIntakeService.PrecheckAsync</c> is: this is the exact
+    /// interleave the savepoint branch below exists for (a second creator commits the same source
+    /// between this call's find and its insert), and no amount of timing produces it reliably.
+    /// </para>
+    /// <para>
+    /// It sits <em>after</em> <see cref="UniqueNameAsync"/>, which means it describes the race the
+    /// unique index catches and <b>not</b> the narrower one where a rival commits before the name is
+    /// derived. That window is a different — and genuinely unguarded — race: there is no unique index
+    /// on the normalized source (deliberately; see the class remarks), so the loser picks <c>name-2</c>
+    /// and both products are created over one source. It is out of this seam's reach and recorded as
+    /// accepted debt rather than papered over here.
+    /// </para>
+    /// </remarks>
+    protected virtual Task OnInsertStagedAsync(CancellationToken ct) => Task.CompletedTask;
 
     /// <summary>
     /// The product a create request means: the one <paramref name="productId"/> names, or the one the

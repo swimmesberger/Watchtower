@@ -49,7 +49,10 @@ public sealed class CiRepoResolver(WatchtowerDbContext db, ILogger<CiRepoResolve
     /// the constraint is on the row in this context's identity map, not merely on the object handed in.
     /// The link write goes through <c>ExecuteUpdate</c>, which bumps the row's <c>xmin</c> without
     /// telling the change tracker, so any tracked instance of the same row would fail its next
-    /// <c>SaveChanges</c> on a phantom concurrency conflict. A product handed in tracked is therefore
+    /// <c>SaveChanges</c> on a phantom concurrency conflict. This is the one xmin hazard that
+    /// <see cref="Entities.IHasXmin"/> does <em>not</em> remove — making the token a real property fixed
+    /// detach-and-attach, but nothing can make an in-memory copy notice a write that bypassed the
+    /// tracker. A product handed in tracked is therefore
     /// resolved but not linked — writers (<c>ci.enableForProduct</c>) set the FK themselves, and the next
     /// read path links it. The guard in <see cref="TryLinkAsync"/> only sees the instance it is given, so
     /// a caller that loads the row twice (once tracked, once not) has to keep them apart itself.

@@ -133,6 +133,43 @@ public sealed class CiActionsConfigSyncTests {
         Assert.Single(gitHub.VariableWrites, w => w == "REGISTRY");
     }
 
+    /// <summary>
+    /// A product edit committed while the pass was talking to GitHub. The stamp carries
+    /// <c>Product</c>'s <c>xmin</c>, so it loses — and by then the values are <em>already at GitHub</em>,
+    /// which makes "leave it to the next pass" three more network calls to write a row this pass can
+    /// write by reading the product again.
+    /// </summary>
+    /// <remarks>
+    /// The interleave is injected through the GitHub stub, on the last call before the stamp: no
+    /// production seam is needed because the window this race lives in is exactly the round trip the
+    /// stub stands in for.
+    /// </remarks>
+    [Fact]
+    public async Task Release_WhoseStampLosesToAConcurrentProductEdit_RetriesAndStillStamps() {
+        var gitHub = new RecordingGitHubApiClient();
+        using var host = Start(gitHub);
+        var estate = await SeedAsync(host, syncReleaseSecrets: true);
+        var raced = false;
+        gitHub.BeforeProductIdVariable = async () => {
+            if (raced) return;
+            raced = true;
+            await EditDescriptionAsync(host, estate.ProductId, "renamed mid-sync");
+        };
+
+        await SyncAsync(host, estate);
+
+        Assert.True(raced);
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var product = await db.Products.AsNoTracking().SingleAsync(p => p.Id == estate.ProductId, Ct);
+        Assert.NotNull(product.ActionsSyncedHash);
+        Assert.NotNull(product.ActionsSyncedAt);
+        Assert.Null(product.LastActionsSyncError);
+        // The other writer's edit survived: the retry reloaded the row rather than saving the stale
+        // copy this pass had been holding since before the GitHub calls.
+        Assert.Equal("renamed mid-sync", product.Description);
+    }
+
     [Fact]
     public async Task Release_WithNoPublicBaseUrl_RecordsADurableErrorAndPushesNothing() {
         var gitHub = new RecordingGitHubApiClient();
@@ -462,6 +499,15 @@ public sealed class CiActionsConfigSyncTests {
         return new Estate(product.Id, repo.Id, token);
     }
 
+    /// <summary>One unrelated product edit, committed from its own context — the concurrent writer.</summary>
+    private static async Task EditDescriptionAsync(AuthTestHost host, int productId, string description) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var product = await db.Products.SingleAsync(p => p.Id == productId, Ct);
+        product.Description = description;
+        await db.SaveChangesAsync(Ct);
+    }
+
     /// <summary>
     /// Runs one pass the way the orchestrator runs it: the repo re-read with its credential, and a
     /// per-repo status object. A fresh status per call unless one is handed in, because the shared
@@ -521,12 +567,20 @@ public sealed class CiActionsConfigSyncTests {
             return Task.CompletedTask;
         }
 
-        public override Task SetActionsVariableAsync(
+        /// <summary>
+        /// Runs just before <see cref="CiActionsConfigSync.ProductIdVariable"/> is written — the last
+        /// GitHub call the release contributor makes before it stamps the product. A test uses it to
+        /// commit a concurrent product edit inside the window the <c>xmin</c> race actually lives in.
+        /// </summary>
+        public Func<Task>? BeforeProductIdVariable { get; set; }
+
+        public override async Task SetActionsVariableAsync(
             string owner, string repo, string name, string value, string token, CancellationToken ct = default) {
             CallCount++;
+            if (name == CiActionsConfigSync.ProductIdVariable && BeforeProductIdVariable is { } hook)
+                await hook();
             VariableWrites.Add(name);
             Variables[name] = value;
-            return Task.CompletedTask;
         }
     }
 }

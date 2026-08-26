@@ -26,7 +26,7 @@ public static class ProxyCertificateSources {
 /// does this expire" would make a list query an X.509 exercise.
 /// </para>
 /// </remarks>
-public sealed class ProxyCertificate {
+public sealed class ProxyCertificate : IHasXmin {
     public int Id { get; set; }
 
     /// <summary>The SNI name this certificate answers, lowercased. Unique.</summary>
@@ -57,4 +57,12 @@ public sealed class ProxyCertificate {
     public required string Source { get; set; }
 
     public DateTimeOffset InstalledAt { get; set; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Mapped by <c>XminConcurrency.UseXminAsConcurrencyToken</c>; see <see cref="IHasXmin"/> for why
+    /// this is a real property rather than an EF shadow property. Last, because it is the database's
+    /// bookkeeping rather than part of what this entity means.
+    /// </remarks>
+    public uint Xmin { get; private set; }
 }

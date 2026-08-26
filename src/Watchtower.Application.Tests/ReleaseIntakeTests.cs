@@ -457,6 +457,66 @@ public sealed class ReleaseIntakeTests {
         Assert.Contains("3 stack(s) enqueued", publish.Detail!, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A product edit committed in the microseconds between the flip's read and its save. The flip
+    /// carries <c>Product</c>'s <c>xmin</c>, so that save is refused — and the release report must
+    /// still succeed, because a CI job has no business failing over an operator renaming a product.
+    /// </summary>
+    /// <remarks>
+    /// The interleave is described rather than raced, the <see cref="BlindIntakeService"/> way:
+    /// <see cref="ContendedIntakeService"/> commits one unrelated edit from a second context on the
+    /// first attempt only, which is exactly what the losing side of that race sees. The whole batch —
+    /// flip <em>and</em> insert — rolls back, so what is asserted here is that the retry re-stages both:
+    /// one release, the mode flipped, and the other writer's edit still standing.
+    /// </remarks>
+    [Fact]
+    public async Task Publish_ThatLosesTheModeFlipRace_RetriesAndStillRecordsTheRelease() {
+        using var host = StartHost(new StubDigestResolver { Digest = ApiDigest });
+        var productId = await SeedProductAsync(host);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var contended = ActivatorUtilities.CreateInstance<ContendedIntakeService>(
+            scope.ServiceProvider,
+            new Func<Task>(() => EditDescriptionAsync(host, productId, "renamed mid-flight")));
+        var result = await contended.PublishAsync(
+            Request(productId, [$"docker.io/acme/api@{ApiDigest}"], version: "1.4.0"), Ct);
+
+        Assert.Equal(ReleaseIntakeStatus.Created, result.Status);
+        Assert.Single(await ReleasesAsync(host));
+        // The re-staged insert carries the image graph exactly once — the first attempt's rows were
+        // detached, not left in the change tracker to be inserted twice.
+        Assert.Single(await ImagesAsync(host, result.Release!.Id));
+        Assert.Equal(ProductReleaseMode.Releases, await ModeAsync(host, productId));
+        // The other writer's edit is still there: the retry reloaded the row rather than saving the
+        // stale copy it was holding over the top of it.
+        Assert.Equal("renamed mid-flight", await DescriptionAsync(host, productId));
+        // …and the flip is audited exactly once, as the product's first release.
+        var flip = Assert.Single(await AuditAsync(host, ReleaseIntakeService.ModeChangeAction));
+        Assert.Contains("first release", flip.Detail!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other outcome of the same race: the concurrent writer flipped the mode itself. The retry
+    /// must then insert the release alone — invariant 9 is already satisfied — and must not audit a
+    /// flip this call did not perform.
+    /// </summary>
+    [Fact]
+    public async Task Publish_WhoseRaceWinnerAlreadyFlippedTheMode_RecordsTheReleaseWithoutASecondFlip() {
+        using var host = StartHost(new StubDigestResolver { Digest = ApiDigest });
+        var productId = await SeedProductAsync(host);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var contended = ActivatorUtilities.CreateInstance<ContendedIntakeService>(
+            scope.ServiceProvider, new Func<Task>(() => FlipToReleasesAsync(host, productId)));
+        var result = await contended.PublishAsync(
+            Request(productId, [$"docker.io/acme/api@{ApiDigest}"], version: "1.4.0"), Ct);
+
+        Assert.Equal(ReleaseIntakeStatus.Created, result.Status);
+        Assert.Single(await ReleasesAsync(host));
+        Assert.Equal(ProductReleaseMode.Releases, await ModeAsync(host, productId));
+        Assert.Empty(await AuditAsync(host, ReleaseIntakeService.ModeChangeAction));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static AuthTestHost StartHost(IReleaseDigestResolver resolver) =>
@@ -481,6 +541,31 @@ public sealed class ReleaseIntakeTests {
         await using var scope = host.Services.CreateAsyncScope();
         var intake = scope.ServiceProvider.GetRequiredService<ReleaseIntakeService>();
         return await intake.PublishAsync(request, (_, _) => Task.FromResult(onCreated()), Ct);
+    }
+
+    /// <summary>One unrelated product edit, committed from its own context — the concurrent writer.</summary>
+    private static async Task EditDescriptionAsync(AuthTestHost host, int productId, string description) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var product = await db.Products.FirstAsync(p => p.Id == productId, Ct);
+        product.Description = description;
+        await db.SaveChangesAsync(Ct);
+    }
+
+    /// <summary>The concurrent writer that flips the mode itself — an operator, or a racing release.</summary>
+    private static async Task FlipToReleasesAsync(AuthTestHost host, int productId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var product = await db.Products.FirstAsync(p => p.Id == productId, Ct);
+        product.ReleaseMode = ProductReleaseMode.Releases;
+        await db.SaveChangesAsync(Ct);
+    }
+
+    private static async Task<string?> DescriptionAsync(AuthTestHost host, int productId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Products.AsNoTracking()
+            .Where(p => p.Id == productId).Select(p => p.Description).FirstAsync(Ct);
     }
 
     private static async Task<ProductReleaseMode> ModeAsync(AuthTestHost host, int productId) {
@@ -583,6 +668,30 @@ public sealed class ReleaseIntakeTests {
             // What the loser of the race sees: the winner has not committed yet, so neither the
             // fingerprint nor the version is there to be found.
             return Task.FromResult<(Release?, bool)>((null, false));
+        }
+    }
+
+    /// <summary>
+    /// Intake with one concurrent writer slipped into the window between the flip being staged and the
+    /// <c>SaveChanges</c> that issues it — the <c>xmin</c> race, described rather than raced.
+    /// </summary>
+    /// <remarks>
+    /// The interleave runs on the first attempt only, so the bounded retry has something to succeed at;
+    /// a hook that fired on every attempt would describe a writer nobody can win against, which is the
+    /// case the retry deliberately gives up on.
+    /// </remarks>
+    private sealed class ContendedIntakeService(
+        WatchtowerDbContext db, RegistryAuthBuilder registries, IReleaseDigestResolver digests,
+        AuditLog audit, ReleasePruner pruner,
+        Microsoft.Extensions.Logging.ILogger<ReleaseIntakeService> logger, TimeProvider time,
+        Func<Task> interleave)
+        : ReleaseIntakeService(db, registries, digests, audit, pruner, logger, time) {
+        private bool _raced;
+
+        protected override async Task OnWriteStagedAsync(CancellationToken ct) {
+            if (_raced) return;
+            _raced = true;
+            await interleave();
         }
     }
 }

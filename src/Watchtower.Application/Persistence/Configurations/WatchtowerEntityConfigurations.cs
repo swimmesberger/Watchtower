@@ -13,13 +13,16 @@ namespace Watchtower.Application.Persistence.Configurations;
 /// snake_cased by convention (<c>UseSnakeCaseNamingConvention</c>); table names are set explicitly.
 /// </summary>
 /// <remarks>
-/// Entities several writers can meet on — <c>Realm</c>, <c>Stack</c>, <c>Route</c>, <c>Group</c> —
-/// carry PostgreSQL's <c>xmin</c> system column as their EF concurrency token (ADR-0024 decision 3),
-/// so a read-modify-write whose row moved underneath it raises <c>DbUpdateConcurrencyException</c>
-/// instead of silently overwriting. <c>xmin</c> rather than a version column of our own because the
-/// database maintains it already: a token nobody has to remember to bump cannot be forgotten on the
-/// one write path where it mattered. <c>User</c> is the exception, and carries Identity's own
-/// <c>ConcurrencyStamp</c> instead — see <c>UserConfiguration</c>.
+/// Entities several writers can meet on — <c>Realm</c>, <c>Product</c>, <c>Stack</c>, <c>Route</c>,
+/// <c>Group</c>, <c>ProxyCertificate</c> — carry PostgreSQL's <c>xmin</c> system column as their EF
+/// concurrency token (ADR-0024 decision 3), so a read-modify-write whose row moved underneath it raises
+/// <c>DbUpdateConcurrencyException</c> instead of silently overwriting. <c>xmin</c> rather than a
+/// version column of our own because the database maintains it already: a token nobody has to remember
+/// to bump cannot be forgotten on the one write path where it mattered. Each of the six implements
+/// <see cref="IHasXmin"/> and carries the token as a <em>real</em> property, so it survives detaching
+/// and attaching (npgsql/efcore.pg#3539 — see <c>XminConcurrency</c> for the reversal). <c>User</c> is
+/// the exception, and carries Identity's own <c>ConcurrencyStamp</c> instead — see
+/// <c>UserConfiguration</c>.
 /// </remarks>
 [EntityConfiguration]
 public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
@@ -499,10 +502,12 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
         b.ToTable("users");
         b.HasKey(x => x.Id);
         // No xmin token here, unlike the other editable entities: users already have one in
-        // ConcurrencyStamp, and a second would break the pattern WatchtowerUserStore is built around —
-        // read detached, mutate, attach, write back. A detached read carries no shadow xmin, so every
-        // such write would fail as a phantom conflict. ConcurrencyStamp travels on the entity itself and
-        // survives the round trip, which is exactly why Identity models it as a column.
+        // ConcurrencyStamp, and two tokens on one row is two ways for the same write to be refused.
+        // (The original reason was stronger — a shadow xmin did not survive WatchtowerUserStore's
+        // read-detached / mutate / attach pattern and would have failed every such write as a phantom
+        // conflict. Since the token became a real property that hazard is gone; what remains is that
+        // Identity already models the concept as a column, and ConcurrencyStamp is the one the store,
+        // its callers and Identity's own error paths already speak.)
         b.Property(x => x.UserName).IsRequired();
         b.Property(x => x.NormalizedUserName).IsRequired();
         b.Property(x => x.PasswordHash).IsRequired();
@@ -846,19 +851,37 @@ public sealed class SigningKeyConfiguration : IEntityTypeConfiguration<SigningKe
 }
 
 /// <summary>
-/// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3).
+/// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3),
+/// mapped onto <see cref="IHasXmin.Xmin"/> — a real property on the entity.
 /// </summary>
 /// <remarks>
-/// A shadow property rather than one on the entity: <c>xmin</c> is the database's own bookkeeping —
-/// the id of the transaction that last wrote the row — so no application code should be able to read
-/// or set it. Npgsql's <c>UseXminAsConcurrencyToken</c> shorthand was removed in the 9.x provider;
-/// this is the mapping it used to emit, in one place so the four entities that want it cannot drift.
+/// <para>
+/// Npgsql's <c>UseXminAsConcurrencyToken</c> shorthand was removed in the 9.x provider; this is the
+/// mapping it used to emit, in one place so the six entities that want it cannot drift.
+/// </para>
+/// <para>
+/// <b>The shadow-versus-real reasoning reverses here, deliberately.</b> This used to declare a shadow
+/// property, on the argument that <c>xmin</c> is the database's own bookkeeping and no application code
+/// should be able to read it. The provider's own maintainer made the opposite call when removing the
+/// shorthand (npgsql/efcore.pg#3539): a shadow token lives in the change tracker rather than on the
+/// object, so it does not survive detaching, attaching or serializing — every read-detached /
+/// mutate / attach flow then fails as a phantom conflict against a <c>default(uint)</c> token that
+/// matches no row. Watchtower had already been bitten twice and had routed around it twice (see
+/// <c>UserConfiguration</c> and <c>CiToolchainRecorder</c>). A real property with a private setter keeps
+/// the property that actually mattered — application code cannot <em>write</em> a token — and drops the
+/// one that only ever cost us: that the value cannot leave its context.
+/// </para>
+/// <para>
+/// The generic constraint is <see cref="IHasXmin"/> on purpose: an entity configured with this helper
+/// but missing the property is a compile error, where the shadow version would have silently created a
+/// second, unread property.
+/// </para>
 /// </remarks>
 internal static class XminConcurrency {
     public static EntityTypeBuilder<T> UseXminAsConcurrencyToken<T>(this EntityTypeBuilder<T> builder)
-        where T : class {
+        where T : class, IHasXmin {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.Property<uint>("xmin")
+        builder.Property(e => e.Xmin)
             .HasColumnName("xmin")
             .HasColumnType("xid")
             .ValueGeneratedOnAddOrUpdate()

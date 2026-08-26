@@ -71,6 +71,14 @@ public sealed class CiActionsConfigSync(
     public const string TokenSecret = "WATCHTOWER_RELEASE_TOKEN";
 
     /// <summary>
+    /// How many times the release stamp may be re-staged after losing the <c>xmin</c> race with a
+    /// concurrent product edit. Two: the retry re-reads the row, so losing twice means a writer editing
+    /// that one product continuously — at which point the standing behaviour (log it, re-push on the
+    /// next pass) is the honest answer. See <see cref="StampReleaseSyncAsync"/>.
+    /// </summary>
+    private const int MaxStampAttempts = 2;
+
+    /// <summary>
     /// What the registry contributor calls itself in operator-facing text — the PAT-permission probe's
     /// message and its 403 explanation. A constant so the handler, the sync and the tests cannot drift
     /// into three different names for one thing.
@@ -139,8 +147,8 @@ public sealed class CiActionsConfigSync(
 
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var resolved = scope.ServiceProvider.GetRequiredService<RegistryAuthBuilder>()
-            .ListResolvedRegistries()
+        var resolved = (await scope.ServiceProvider.GetRequiredService<RegistryAuthBuilder>()
+                .ListResolvedRegistriesAsync(ct))
             .FirstOrDefault(r => string.Equals(r.Url, repo.SyncRegistryUrl, StringComparison.OrdinalIgnoreCase));
 
         var tracked = await db.CiRepos.FirstOrDefaultAsync(r => r.Id == repo.Id, ct);
@@ -290,11 +298,8 @@ public sealed class CiActionsConfigSync(
             await gitHub.SetActionsVariableAsync(repo.Owner, repo.Name, ProductIdVariable,
                 product.Id.ToString(CultureInfo.InvariantCulture), pat, ct);
 
-            product.ActionsSyncedHash = hash;
-            product.ActionsSyncedAt = DateTimeOffset.UtcNow;
-            product.LastActionsSyncError = null;
             status.ClearActionsSyncRetry();
-            await db.SaveChangesAsync(ct);
+            await StampReleaseSyncAsync(db, product, hash, ct);
             logger.LogInformation(
                 "Synced the release configuration of product {Product} to GitHub Actions config of {Repo}",
                 product.Name, repo.FullName);
@@ -304,6 +309,49 @@ public sealed class CiActionsConfigSync(
         } catch (HttpRequestException ex) {
             await RecordReleaseFailureAsync(
                 db, repo, product, status, Explain(ex, ReleaseFeature), deferRetry: true, ct);
+        }
+    }
+
+    /// <summary>
+    /// Writes the "these values are at GitHub" stamp onto the product, retrying once against a freshly
+    /// reloaded row when a concurrent product edit invalidated the <c>xmin</c> this pass read with.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The retry is not cosmetic. By the time this runs the variables and the sealed secret are
+    /// <em>already at GitHub</em>; only the record of that failed. Leaving it to the next pass means
+    /// re-sealing and re-pushing three values over the network to write a row this pass could have
+    /// written, and — because the push is what the shared defer rate-limits — doing it minutes later.
+    /// </para>
+    /// <para>
+    /// Re-applied after the reload rather than merged: the reload overwrites every property with what
+    /// the database holds, so the three stamp fields have to be set again. Stamping the hash this pass
+    /// pushed is right even when the concurrent edit rotated the token — the hash describes what went
+    /// out, and the next pass computes it from the *current* token, sees the difference and re-pushes.
+    /// </para>
+    /// <para>
+    /// The same holds for the edit that <em>disabled</em> the sync: the stamp lands on a product with
+    /// <see cref="Product.SyncReleaseSecrets"/> now false, which is invisible — <c>ci.getProductCi</c>
+    /// gates the whole <c>releaseSecretsSync</c> block on that flag — and re-enabling clears the hash
+    /// and the stamps anyway. Writing it is honest in any case: the values really did reach GitHub, and
+    /// the debt entry above is explicit that turning the sync off does not unsend them.
+    /// </para>
+    /// </remarks>
+    private static async Task StampReleaseSyncAsync(
+        WatchtowerDbContext db, Product product, string hash, CancellationToken ct) {
+        for (var attempt = 1; ; attempt++) {
+            product.ActionsSyncedHash = hash;
+            product.ActionsSyncedAt = DateTimeOffset.UtcNow;
+            product.LastActionsSyncError = null;
+            try {
+                await db.SaveChangesAsync(ct);
+                return;
+            } catch (DbUpdateConcurrencyException) when (attempt < MaxStampAttempts) {
+                await db.Entry(product).ReloadAsync(ct);
+                // The concurrent write was a delete: there is no row to stamp, and the next pass will
+                // not find the product either.
+                if (db.Entry(product).State is EntityState.Detached) return;
+            }
         }
     }
 

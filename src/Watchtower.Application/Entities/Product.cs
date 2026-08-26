@@ -47,7 +47,7 @@ public enum ProductReleaseMode {
 /// is the normalized <c>(url, compose path)</c> pair — see <see cref="Services.ProductSourceKey"/>.
 /// </para>
 /// </remarks>
-public sealed class Product {
+public sealed class Product : IHasXmin {
     public int Id { get; set; }
 
     /// <summary>Operator-facing name, unique across the instance.</summary>
@@ -192,4 +192,12 @@ public sealed class Product {
     public ICollection<StackTemplate> Templates { get; set; } = [];
     /// <summary>The builds of this product, newest last by id. Deleted with the product.</summary>
     public ICollection<Release> Releases { get; set; } = [];
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Mapped by <c>XminConcurrency.UseXminAsConcurrencyToken</c>; see <see cref="IHasXmin"/> for why
+    /// this is a real property rather than an EF shadow property. Last, because it is the database's
+    /// bookkeeping rather than part of what this entity means.
+    /// </remarks>
+    public uint Xmin { get; private set; }
 }

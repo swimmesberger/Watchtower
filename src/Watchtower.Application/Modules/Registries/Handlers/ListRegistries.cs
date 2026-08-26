@@ -22,7 +22,7 @@ public sealed class ListRegistries(WatchtowerDbContext db, RegistryAuthBuilder r
                 r.Credential != null ? r.Credential.Name : null, r.CreatedAt))
             .ToListAsync(ct);
         // Host entries only — passwords stay server-side (ResolvedRegistry never crosses the wire).
-        var host = registryAuth.ListResolvedRegistries()
+        var host = (await registryAuth.ListResolvedRegistriesAsync(ct))
             .Where(r => r.FromHostConfig)
             .Select(r => new HostRegistryDto(r.Url, r.Username))
             .ToList();

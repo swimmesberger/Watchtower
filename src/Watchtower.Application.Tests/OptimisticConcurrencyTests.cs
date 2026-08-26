@@ -60,6 +60,68 @@ public sealed class OptimisticConcurrencyTests {
     }
 
     /// <summary>
+    /// The reason the token is a real property and not an EF shadow property
+    /// (npgsql/efcore.pg#3539): read in one context, carried across as a plain object, attached to
+    /// another and saved. A shadow token lives in the change tracker it was read into, so the second
+    /// context would compare <c>default(uint)</c> — matching no row — and throw a phantom
+    /// <see cref="DbUpdateConcurrencyException"/> over a row nobody else had touched.
+    /// </summary>
+    /// <remarks>
+    /// Two assertions, because the property surviving the detach is the mechanism and the save
+    /// succeeding is the consequence, and only asserting the second would pass just as well against a
+    /// row that happened to carry token 0. The third assertion is the other half of the contract, on
+    /// the same detached path: a second copy detached at the same read is attached <em>after</em> the
+    /// first one's save moved the row, and is refused on its carried token — so this bought
+    /// detach-and-attach without buying last-writer-wins.
+    /// </remarks>
+    [Fact]
+    public async Task AnXminEntity_ReadDetachedAndAttachedElsewhere_SavesWithoutAPhantomConflict() {
+        using var host = AuthTestHost.Start();
+        int stackId;
+        await using (var seed = host.Services.CreateAsyncScope()) {
+            var db = seed.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var stack = NewStack("detached");
+            db.Stacks.Add(stack);
+            await db.SaveChangesAsync(Ct);
+            stackId = stack.Id;
+        }
+
+        // Read with no tracking, in a scope that then goes away entirely — the shape
+        // WatchtowerUserStore and CiToolchainRecorder are built around. Two copies from the same
+        // moment: one will win the row, the other will come back stale.
+        Stack carried;
+        Stack staleCopy;
+        await using (var reader = host.Services.CreateAsyncScope()) {
+            var db = reader.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            carried = await db.Stacks.AsNoTracking().SingleAsync(s => s.Id == stackId, Ct);
+            staleCopy = await db.Stacks.AsNoTracking().SingleAsync(s => s.Id == stackId, Ct);
+        }
+
+        // The token travelled on the object. This is the line that fails with a shadow property.
+        Assert.NotEqual(0u, carried.Xmin);
+
+        await using var writer = host.Services.CreateAsyncScope();
+        var writerDb = writer.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        writerDb.Stacks.Attach(carried);
+        carried.ComposeProjectName = "renamed";
+        await writerDb.SaveChangesAsync(Ct);
+
+        await using var check = host.Services.CreateAsyncScope();
+        var stored = await check.ServiceProvider.GetRequiredService<WatchtowerDbContext>()
+            .Stacks.AsNoTracking().SingleAsync(s => s.Id == stackId, Ct);
+        Assert.Equal("renamed", stored.ComposeProjectName);
+
+        // …and the carried token is still a token on the SAME detached path: the second copy from
+        // that read is now genuinely behind (the successful save above moved the row), and attaching
+        // it is refused on the token it carried rather than silently overwriting the rename.
+        await using var stale = host.Services.CreateAsyncScope();
+        var staleDb = stale.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        staleDb.Stacks.Attach(staleCopy);
+        staleCopy.ComposeProjectName = "overwritten";
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => staleDb.SaveChangesAsync(Ct));
+    }
+
+    /// <summary>
     /// The decorator is what makes the token usable: a caller gets "someone else changed this", not a
     /// stack trace. Exercised through the decorator directly rather than through a handler that happens
     /// to lose a race, because provoking a real race inside one handler would be a timing test.

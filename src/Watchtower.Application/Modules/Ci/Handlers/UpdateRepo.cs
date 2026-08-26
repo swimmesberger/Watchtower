@@ -50,7 +50,7 @@ public sealed class UpdateRepo(
         if (syncRegistryUrl is not null && selectionChanged) {
             // Selection-time guard: the URL must resolve to usable credentials right now, so a typo
             // or credential-less registry fails here instead of as a background sync error.
-            var resolved = registryAuth.ListResolvedRegistries()
+            var resolved = (await registryAuth.ListResolvedRegistriesAsync(ct))
                 .FirstOrDefault(r => string.Equals(r.Url, syncRegistryUrl, StringComparison.OrdinalIgnoreCase));
             if (resolved is null)
                 return AppError.Validation($"No registry '{syncRegistryUrl}' is known — it is neither a "

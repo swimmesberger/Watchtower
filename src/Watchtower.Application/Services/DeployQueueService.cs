@@ -454,7 +454,7 @@ public class DeployQueueService : IHostedService, IDisposable {
             }
 
             // 3. Build a scoped DOCKER_CONFIG with all configured registry credentials.
-            dockerConfigDir = CreateRegistryConfigDir();
+            dockerConfigDir = await CreateRegistryConfigDirAsync(ct);
 
             // 4. Materialize the temp .env consumed by `docker compose --env-file`. Since Watchtower
             //    always injects reserved variables, --env-file is always passed — and passing it makes
@@ -983,10 +983,10 @@ public class DeployQueueService : IHostedService, IDisposable {
         db.StackUpdateChecks.Where(c => c.StackId == stackId).ExecuteDelete();
     }
 
-    private string CreateRegistryConfigDir() {
-        using var scope = _scopeFactory.CreateScope();
+    private async Task<string> CreateRegistryConfigDirAsync(CancellationToken ct) {
+        await using var scope = _scopeFactory.CreateAsyncScope();
         var builder = scope.ServiceProvider.GetRequiredService<RegistryAuthBuilder>();
-        return builder.CreateTempConfigDir();
+        return await builder.CreateTempConfigDirAsync(ct);
     }
 
     private static void SafeDelete(string path) {

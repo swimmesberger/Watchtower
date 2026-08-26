@@ -202,7 +202,7 @@ capped at ~16 KB, max 20 images.
   (`DockerEngineClient.GetRemoteDigestAsync`), in parallel, ~10 s budget; digest refs pass through.
   Making the workflow wire `steps.build.outputs.digest` per image is the step people get wrong;
   resolving a tag the workflow just pushed is one HEAD request and the result is pinned forever.
-  Credentials come from `RegistryAuthBuilder.ListResolvedRegistries()` matched on registry host —
+  Credentials come from `RegistryAuthBuilder.ListResolvedRegistriesAsync()` matched on registry host —
   **not** the stack's git credential (`StackUpdateService` currently conflates the two; the release
   path must not inherit that, and the old path is worth fixing in the same neighbourhood).
 - **Commit ancestry is not verified** (it would need a fetch or an API credential the product may

@@ -218,7 +218,7 @@ Mechanisms:
    .../actions/secrets/{name}`; libsodium) and non-secret config via the variables API.
    *Implemented for the registry case:* `CiRepo.SyncRegistryUrl` selects one registry from
    the merged view (host docker config + Watchtower registries; `RegistryAuthBuilder.
-   ListResolvedRegistries`), and the orchestrator pushes the `REGISTRY` variable plus the
+   ListResolvedRegistriesAsync`), and the orchestrator pushes the `REGISTRY` variable plus the
    `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` secrets each reconcile pass the value hash
    differs (rotation re-pushes automatically; failures backoff 5 min and surface in the CI
    tab, and every `ci.updateRepo` save clears the backoff so fixing the PAT + saving retries

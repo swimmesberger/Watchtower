@@ -44,7 +44,7 @@ public sealed record ReleaseImageValidation(
 /// </para>
 /// <para>
 /// Credentials come from the same resolved registry view a deploy pulls with and release intake
-/// resolves against, through <see cref="KnownHosts"/> — one construction of "which registries does this
+/// resolves against, through <see cref="KnownHostsAsync"/> — one construction of "which registries does this
 /// instance know", so a pin cannot be refused for an image intake happily accepted.
 /// </para>
 /// </remarks>
@@ -63,7 +63,7 @@ public class ReleaseImageValidator(RegistryAuthBuilder registries, IReleaseDiges
         ArgumentNullException.ThrowIfNull(release);
         if (release.Images.Count == 0) return ReleaseImageValidation.Present;
 
-        var known = KnownHosts(registries);
+        var known = await KnownHostsAsync(registries, ct);
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         budget.CancelAfter(Budget);
 
@@ -111,13 +111,16 @@ public class ReleaseImageValidator(RegistryAuthBuilder registries, IReleaseDiges
     /// Static and shared with <see cref="ReleaseIntakeService"/> so intake's registry gate and this
     /// pre-flight cannot disagree about which credential belongs to a host. Watchtower-configured
     /// entries win over host docker-config ones, matching the precedence
-    /// <see cref="RegistryAuthBuilder.ListResolvedRegistries"/> itself applies when two spellings
+    /// <see cref="RegistryAuthBuilder.ListResolvedRegistriesAsync"/> itself applies when two spellings
     /// collapse onto one host.
     /// </remarks>
-    public static Dictionary<string, ResolvedRegistry> KnownHosts(RegistryAuthBuilder registries) {
+    /// <param name="registries">The merged registry view to read.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task<Dictionary<string, ResolvedRegistry>> KnownHostsAsync(
+        RegistryAuthBuilder registries, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(registries);
         var known = new Dictionary<string, ResolvedRegistry>(StringComparer.Ordinal);
-        foreach (var registry in registries.ListResolvedRegistries()) {
+        foreach (var registry in await registries.ListResolvedRegistriesAsync(ct)) {
             var host = ImageRef.NormalizeRegistryHost(registry.Url);
             if (host.Length == 0) continue;
             if (known.TryGetValue(host, out var existing) && !existing.FromHostConfig) continue;
