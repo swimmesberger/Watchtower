@@ -10,7 +10,17 @@ var builder = DistributedApplication.CreateBuilder(args);
 // fresh install — the API migrates on startup, but the estate you set up yesterday should still be
 // there. WithReference publishes it as ConnectionStrings:watchtower, which is the fallback key
 // WatchtowerConnectionString reads, so the API needs no Aspire-specific configuration.
-var database = builder.AddPostgres("postgres")
+//
+// The password is PINNED (appsettings, dev-only orchestrator, never shipped) rather than left to
+// Aspire's per-project generated secret. POSTGRES_PASSWORD only applies when the volume is first
+// initialized, so a generated password plus a persistent volume drift apart the moment the secret
+// store and the volume disagree about history (a cleared user-secrets store, a second worktree) —
+// after which every start loops on "password authentication failed" until someone deletes the
+// volume. A fixed dev password makes the volume reusable from any checkout. If a volume from the
+// generated-password era refuses this one, reset it once:
+//   docker volume rm $(docker volume ls -q | grep -i postgres)   (dev data only)
+var pgPassword = builder.AddParameter("postgres-password", "watchtower-dev", secret: true);
+var database = builder.AddPostgres("postgres", password: pgPassword)
     .WithDataVolume()
     .AddDatabase("watchtower");
 
