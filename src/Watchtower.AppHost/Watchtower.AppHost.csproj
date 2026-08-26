@@ -5,6 +5,12 @@
     <IsAspireHost>true</IsAspireHost>
     <!-- Aspire.Hosting.AppHost deserializes its configuration with reflection-based System.Text.Json. -->
     <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+    <!-- Aspire persists generated parameter values (resource passwords, tokens) to user secrets.
+         Without this id it has nowhere to put them and generates fresh ones on every run — which is
+         how a persistent Postgres data volume ends up looping on "password authentication failed"
+         (the AppHost.cs pinned-password remark tells the story). The template ships this line;
+         this project was created without it. -->
+    <UserSecretsId>watchtower-apphost-4f2b9c1e-8d3a-4e5f-9c6b-1a7d2e8f3b40</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
