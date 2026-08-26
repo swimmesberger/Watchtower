@@ -49,7 +49,11 @@ public static class WatchtowerServiceCollectionExtensions {
         // (role leases, LISTEN/NOTIFY settings propagation), which is why it is a registered singleton
         // rather than something UseNpgsql(connectionString) builds privately per context.
         var connectionString = WatchtowerConnectionString.Resolve(config);
-        services.TryAddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).Build());
+        // EnableRecordsAsTuples: EF turns ValueTuple projections (e.g. StackUpdateService.GetCredential)
+        // into ROW(...) selects, and only enables reading those back automatically on data sources it
+        // builds itself — a pre-built data source has to opt in or every such query throws at runtime.
+        services.TryAddSingleton(_ =>
+            new NpgsqlDataSourceBuilder(connectionString).EnableRecordsAsTuples().Build());
 
         services.AddDbContext<WatchtowerDbContext>((sp, o) =>
             o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>())

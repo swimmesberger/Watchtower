@@ -130,7 +130,8 @@ public sealed class RouteAccessModeTests {
     /// <summary>
     /// The reason <c>access_mode</c> and <c>identity_header_mode</c> declare their defaults on the model
     /// rather than only in the migration that first added them: a writer that does not mention the column
-    /// — the SQLite importer, or a hand-written INSERT — must land a value the enum converter can read,
+    /// — a hand-written INSERT, or historically the SQLite importer — must land a value the enum converter
+    /// can read,
     /// not the empty string a scaffolded <c>defaultValue: ""</c> would have given it. This inserts such a
     /// row and then loads it through EF.
     /// </summary>

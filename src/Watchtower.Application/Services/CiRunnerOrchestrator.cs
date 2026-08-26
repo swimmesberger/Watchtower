@@ -29,6 +29,7 @@ public sealed class CiRunnerOrchestrator(
     internal const string ManagedLabel = "watchtower.managed";
     internal const string ManagedLabelValue = "ci-runner";
     internal const string WarmerLabelValue = "ci-warmer";
+    internal const string VolumeInitLabelValue = "ci-volume-init";
     internal const string RepoIdLabel = "watchtower.ci.repo-id";
     internal const string RepoLabel = "watchtower.ci.repo";
     internal const string RunnerIdLabel = "watchtower.ci.runner-id";
@@ -90,6 +91,11 @@ public sealed class CiRunnerOrchestrator(
         var byRepoId = containers
             .Where(c => c.Labels.ContainsKey(RepoIdLabel))
             .ToLookup(c => c.Labels[RepoIdLabel]);
+        // Volume-init containers are awaited within a pass, so any one found here is a leftover
+        // from a crashed pass — just remove it (the next spawn re-runs the init).
+        foreach (var stale in await docker.ListContainersByLabelsAsync([$"{ManagedLabel}={VolumeInitLabelValue}"], ct))
+            await RemoveRunnerContainerAsync(stale.Id, "stale volume init", ct);
+
         var warmers = await docker.ListContainersByLabelsAsync([$"{ManagedLabel}={WarmerLabelValue}"], ct);
         var warmersByRepoId = warmers
             .Where(c => c.Labels.ContainsKey(RepoIdLabel))
@@ -174,6 +180,7 @@ public sealed class CiRunnerOrchestrator(
         var ci = options.CurrentValue.Ci;
         var image = string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
         await EnsureImageAsync(image, ct);
+        await EnsureVolumesReadyAsync(repo, image, status, ct);
 
         for (var i = running.Count; i < desired; i++) {
             await SpawnRunnerAsync(repo, image, ci, ct);
@@ -192,8 +199,22 @@ public sealed class CiRunnerOrchestrator(
 
         var jit = await gitHub.GenerateJitConfigAsync(repo.Owner, repo.Name, runnerName, labels, repo.Credential!.Token, ct);
 
+        var body = BuildRunnerContainerBody(repo, image, jit.EncodedJitConfig, jit.RunnerId);
+        var containerId = await docker.CreateContainerAsync(body, runnerName, ct);
+        await docker.StartContainerAsync(containerId, ct);
+        logger.LogInformation("Spawned CI runner {Runner} for {Repo}", runnerName, repo.FullName);
+    }
+
+    /// <summary>
+    /// The runner container spec. No mount may live under <c>/home/runner/_work</c>: dockerd
+    /// creates missing mountpoint parents as root, and a root-owned <c>_work</c> stops the runner
+    /// user from creating <c>_work/_temp</c> when a job arrives (the workspace stays ephemeral by
+    /// leaving <c>_work</c> to the runner itself).
+    /// </summary>
+    internal static DockerCreateContainerBody BuildRunnerContainerBody(
+        CiRepo repo, string image, string encodedJitConfig, long runnerId) {
         var binds = new List<string> {
-            // Warm toolcache shared by all runners of this repo; the workspace itself stays ephemeral.
+            // Warm toolcache shared by all runners of this repo.
             $"{ToolVolumeName(repo)}:{CiWarmerScript.ToolCacheDir}",
             // Package caches (NuGet/npm/Go modules) survive across jobs via the env vars below.
             $"{PkgVolumeName(repo)}:{PkgCacheDir}",
@@ -201,14 +222,16 @@ public sealed class CiRunnerOrchestrator(
         if (repo.AllowDockerSocket)
             binds.Add("/var/run/docker.sock:/var/run/docker.sock");
 
-        var body = new DockerCreateContainerBody {
+        return new DockerCreateContainerBody {
             Image = image,
             // The JIT config is single-use — its visibility in `docker inspect` is acceptable.
-            Cmd = ["/home/runner/run.sh", "--jitconfig", jit.EncodedJitConfig],
-            // Runner-process env is inherited by job steps. DOTNET_INSTALL_DIR points setup-dotnet
-            // (which does not use RUNNER_TOOL_CACHE) at the warmed SDK dir so it skips the download;
-            // the package-manager caches land on the pkg volume instead of the ephemeral workspace.
+            Cmd = ["/home/runner/run.sh", "--jitconfig", encodedJitConfig],
+            // Runner-process env is inherited by job steps. RUNNER_TOOL_CACHE points setup-* actions
+            // at the warmed toolcache volume; DOTNET_INSTALL_DIR points setup-dotnet (which does not
+            // use RUNNER_TOOL_CACHE) at the warmed SDK dir so it skips the download; the
+            // package-manager caches land on the pkg volume instead of the ephemeral workspace.
             Env = [
+                $"RUNNER_TOOL_CACHE={CiWarmerScript.ToolCacheDir}",
                 $"DOTNET_INSTALL_DIR={CiWarmerScript.ToolCacheDir}/dotnet",
                 $"NUGET_PACKAGES={PkgCacheDir}/nuget",
                 $"npm_config_cache={PkgCacheDir}/npm",
@@ -218,15 +241,64 @@ public sealed class CiRunnerOrchestrator(
                 [ManagedLabel] = ManagedLabelValue,
                 [RepoIdLabel] = repo.Id.ToString(),
                 [RepoLabel] = repo.FullName.ToLowerInvariant(),
-                [RunnerIdLabel] = jit.RunnerId.ToString(),
+                [RunnerIdLabel] = runnerId.ToString(),
             },
             HostConfig = new DockerCreateHostConfig { Binds = binds.ToArray() },
         };
-
-        var containerId = await docker.CreateContainerAsync(body, runnerName, ct);
-        await docker.StartContainerAsync(containerId, ct);
-        logger.LogInformation("Spawned CI runner {Runner} for {Repo}", runnerName, repo.FullName);
     }
+
+    // ── Cache volume initialization ──────────────────────────────────────────
+
+    /// <summary>Where the volume-init container mounts the two cache volumes.</summary>
+    internal const string VolumeInitMountRoot = "/watchtower-volume-init";
+
+    /// <summary>
+    /// Makes the repo's cache volumes writable for the runner user before anything mounts them:
+    /// a fresh named volume is root-owned, and both the runner and the warmer run as the image's
+    /// non-root <c>runner</c> user. A one-shot root container chowns the two volume roots (contents
+    /// are created by the runner user afterwards, so non-recursive is enough). Runs once per repo
+    /// per orchestrator lifetime — the chown is idempotent, so re-running after a restart is fine.
+    /// </summary>
+    private async Task EnsureVolumesReadyAsync(CiRepo repo, string image, CiRepoRunnerStatus status, CancellationToken ct) {
+        if (status.VolumesReady)
+            return;
+
+        var name = $"watchtower-ci-volinit-{Slug(repo.Name)}-{Guid.NewGuid().ToString("N")[..8]}";
+        var containerId = await docker.CreateContainerAsync(BuildVolumeInitContainerBody(repo, image), name, ct);
+        try {
+            await docker.StartContainerAsync(containerId, ct);
+            // The chown is instant; the timeout only guards the loop against a wedged daemon.
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromMinutes(2));
+            var exitCode = await docker.WaitContainerAsync(containerId, timeout.Token);
+            if (exitCode != 0)
+                throw new InvalidOperationException(
+                    $"Cache volume init for {repo.FullName} exited with code {exitCode} — "
+                    + "the runner image may lack the 'runner' user.");
+        } finally {
+            await RemoveRunnerContainerAsync(containerId, "volume init finished", ct);
+        }
+        status.MarkVolumesReady();
+    }
+
+    /// <summary>The one-shot root container that chowns the cache volume roots to the runner user.</summary>
+    internal static DockerCreateContainerBody BuildVolumeInitContainerBody(CiRepo repo, string image) => new() {
+        Image = image,
+        User = "root",
+        Cmd = ["chown", "runner:runner", $"{VolumeInitMountRoot}/tool", $"{VolumeInitMountRoot}/pkg"],
+        Labels = new Dictionary<string, string> {
+            [ManagedLabel] = VolumeInitLabelValue,
+            [RepoIdLabel] = repo.Id.ToString(),
+            [RepoLabel] = repo.FullName.ToLowerInvariant(),
+        },
+        HostConfig = new DockerCreateHostConfig {
+            Binds = [
+                $"{ToolVolumeName(repo)}:{VolumeInitMountRoot}/tool",
+                $"{PkgVolumeName(repo)}:{VolumeInitMountRoot}/pkg",
+            ],
+            NetworkMode = "none",
+        },
+    };
 
     // ── Toolcache warming (docs/ci-runners/design.md) ────────────────────────
 
@@ -285,6 +357,8 @@ public sealed class CiRunnerOrchestrator(
         var ci = options.CurrentValue.Ci;
         var image = string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
         await EnsureImageAsync(image, ct);
+        // The warmer runs as the image's non-root runner user too, so it needs the chown as well.
+        await EnsureVolumesReadyAsync(repo, image, status, ct);
 
         var name = $"watchtower-ci-warm-{Slug(repo.Name)}-{Guid.NewGuid().ToString("N")[..8]}";
         var body = new DockerCreateContainerBody {
@@ -412,6 +486,14 @@ public sealed class CiRepoRunnerStatus {
     public DateTimeOffset? BackoffUntil { get; private set; }
     /// <summary>True while a toolcache warmer container for this repo is running.</summary>
     public bool WarmerRunning { get; private set; }
+
+    /// <summary>
+    /// True once the cache volumes were chowned to the runner user this orchestrator lifetime
+    /// (in-memory: a restart re-runs the idempotent chown once).
+    /// </summary>
+    internal bool VolumesReady { get; private set; }
+
+    internal void MarkVolumesReady() => VolumesReady = true;
 
     /// <summary>
     /// Earliest next Actions-config sync attempt after a failure (in-memory: a restart simply retries

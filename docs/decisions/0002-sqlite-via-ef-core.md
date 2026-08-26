@@ -10,7 +10,8 @@
 > how Watchtower works. The *provider* does not: ADR-0024 replaces SQLite with PostgreSQL outright.
 > The reason is not that SQLite proved wrong at the shape this ADR chose it for, but that the shape
 > changed — "zero external dependencies" was the whole point here, and it is incompatible with a second
-> instance ever existing. Existing installations are carried across by `--import-sqlite`
+> instance ever existing. Existing installations were carried across by a one-shot `--import-sqlite`
+> importer, itself removed on 2026-08-25 once every installation had migrated
 > ([docs/upgrading.md](../upgrading.md)).
 
 ## Context

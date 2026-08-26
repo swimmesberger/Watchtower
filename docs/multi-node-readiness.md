@@ -57,9 +57,10 @@ What landed:
   and the Aspire AppHost a Postgres resource; both integration suites run against a real PostgreSQL
   — Testcontainers by default, or the server `WATCHTOWER_TEST_PG` names (CI's service container, or
   a locally started one) — with a database per test host cloned from a migrated template.
-- Existing SQLite installations are carried across by a one-shot `--import-sqlite <path>` that
-  copies every table into the configured PostgreSQL and refuses a non-empty target
-  ([upgrading.md](upgrading.md)); it is the only SQLite code that stays.
+- Existing SQLite installations were carried across by a one-shot `--import-sqlite <path>` that
+  copied every table into the configured PostgreSQL and refused a non-empty target
+  ([upgrading.md](upgrading.md)); the importer was removed on 2026-08-25 once every installation
+  had migrated, and with it the last SQLite code.
 - The SQLite-era workarounds went with it: the raw-SQL expiry sweeps, the client-side sorts that
   existed because SQLite cannot `ORDER BY` a `DateTimeOffset`, the in-process lockout computation,
   and `PRAGMA journal_mode=WAL`. ADR-0013's `sqlite` metrics backend is now `database` (same

@@ -237,7 +237,7 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         // BackupPolicyResolver, where the other two rungs of the ladder are.
         b.Property(x => x.BackupQuiesceMode).HasConversion<string>();
         // Stored as the enum name ("Running"/"Stopped"); the API maps it to lowercase. The default is
-        // on the model so rows written without one — by the SQLite importer, say — count as running,
+        // on the model so rows written without one — by a raw INSERT, say — count as running,
         // which is what every stack was before desired state existed (ADR-0025).
         b.Property(x => x.DesiredState).HasConversion<string>().HasDefaultValue(StackDesiredState.Running);
         b.HasIndex(x => x.Name).IsUnique();

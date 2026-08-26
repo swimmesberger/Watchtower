@@ -46,14 +46,6 @@
          advisories (GHSA-23rf-6693-g89p and four siblings). That floor is also why the EF Core versions
          above are 10.0.11 — this package requires the matching one. -->
     <PackageVersion Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" Version="10.0.11" />
-    <!-- SQLite, kept for exactly one thing: the one-shot `import-sqlite` command that carries a
-         pre-ADR-0024 installation into PostgreSQL (Services/SqliteImport). No EF SQLite provider —
-         the importer reads the old file with the raw ADO.NET client and writes through COPY. -->
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
-    <!-- Transitive pin: fix GHSA-2m69-gcr7-jv3q (SQLite vuln in the e_sqlite3 native bundled with
-         Microsoft.Data.Sqlite). The native lib package is versioned independently of the managed
-         SQLitePCLRaw layer and is designed to be bumped on its own. -->
-    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
   </ItemGroup>
 
   <!-- ASP.NET Identity *core* (UserManager, password hasher, lockout/security-stamp) is NOT pinned

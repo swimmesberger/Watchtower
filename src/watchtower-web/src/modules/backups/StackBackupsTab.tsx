@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Archive, ChevronDown, ChevronRight, History, Lock, Play } from 'lucide-react'
@@ -97,14 +97,34 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
     onError: (err: Error) => toast.error('Failed to save', err.message),
   })
 
+  // A run started here is watched to its end, so the outcome arrives as a toast — the failure
+  // toast carries the reason — rather than only as a row the user would have to notice.
+  const [watchedEventId, setWatchedEventId] = useState<number | null>(null)
+
   const runNow = useMutation({
     mutationFn: () => api.backups.run(stack.id),
-    onSuccess: () => {
+    onSuccess: (accepted) => {
+      setWatchedEventId(accepted.backupEventId)
       qc.invalidateQueries({ queryKey: ['backups', 'events', stack.id] })
       toast.info(`Backing up ${stack.name}…`)
     },
     onError: (err: Error) => toast.error('Backup failed to start', err.message),
   })
+
+  useEffect(() => {
+    if (watchedEventId === null) return
+    const event = events.find((e) => e.id === watchedEventId)
+    if (!event || event.status === 'running' || event.status === 'queued') return
+    setWatchedEventId(null)
+    if (event.status === 'success') {
+      toast.success(
+        `Backed up ${stack.name}`,
+        event.sizeBytes != null ? formatBytes(event.sizeBytes) : undefined,
+      )
+    } else {
+      toast.error(`Backup of ${stack.name} failed`, failureReason(event.output))
+    }
+  }, [events, watchedEventId, stack.name])
 
   // Restore flow: pick an archive from the storage (step 1), typed-name confirm (step 2).
   const [restoreOpen, setRestoreOpen] = useState(false)
@@ -443,6 +463,15 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
 
 /** The sentinel a tri-state control uses for "no opinion" — the empty string is not a select value. */
 const INHERIT = 'inherit'
+
+/** The run log's FAILED line — the exception message the server appends on the failure path. */
+function failureReason(output: string | null): string {
+  const line = output
+    ?.split('\n')
+    .reverse()
+    .find((l) => l.startsWith('FAILED: '))
+  return line ? line.slice('FAILED: '.length) : 'See the run log in the history below.'
+}
 
 /**
  * The Inherit row's text.
