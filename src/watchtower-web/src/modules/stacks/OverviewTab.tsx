@@ -42,7 +42,8 @@ import { StatusBadge } from '@/components/ui/status-badge'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { deployTargetVersion, usesReleases } from '@/lib/release'
-import { useProductReleases, VersionPanel } from './StackVersion'
+import { useProductReleases } from '@/hooks/use-product-releases'
+import { VersionPanel } from './StackVersion'
 
 function webhookUrl(stackId: number): string {
   const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '')
@@ -472,10 +473,11 @@ function WebhookCard({ stackId, token }: { stackId: number; token: string | null
 
 // ── Deploy history row ──────────────────────────────────────────────────────────
 //
-// No release chip: `DeployEvent.ReleaseId` is stamped at execution time server-side but is not on
-// `DeployEventDto`, and a per-row lookup would be one request per history row for a label. The deploy
-// output the row expands to names the release on its first line
-// (`[Watchtower] Deploying release v… (commit …)`), which is where it is already honest.
+// The release chip is on the row since stage 6: `DeployEventDto` carries `releaseVersion` beside the
+// id (one left join in `stacks.events`, not the per-row lookup that kept it out of stage 4b), so a
+// history list answers "which version was this?" without expanding anything. It is absent for a
+// Git-mode deploy, for one that failed before the release was resolved, and for everything that ran
+// before releases existed — the expanded output still names the release on its first line either way.
 
 function DeployEventRow({
   event,
@@ -530,6 +532,11 @@ function DeployEventRow({
         ) : (
           <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
             {event.triggeredBy}
+          </span>
+        )}
+        {event.releaseVersion && (
+          <span className="font-mono text-xs text-text-2" title="Release this deploy applied">
+            {event.releaseVersion}
           </span>
         )}
         <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>

@@ -11,7 +11,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/use-toast'
 import { deployTargetVersion, usesReleases } from '@/lib/release'
-import { StackVersionFragment, useProductReleases } from './StackVersion'
+import { useProductReleases } from '@/hooks/use-product-releases'
+import { StackVersionFragment } from './StackVersion'
 
 const routeApi = getRouteApi('/stacks/$id')
 

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
@@ -113,6 +114,12 @@ public sealed record ReleaseIntakeResult(
 /// call must not re-deploy anything) and because it must happen after the insert commits, not inside it.
 /// </para>
 /// <para>
+/// <b>Retention rides here</b> (<see cref="ReleasePruner"/>, design.md §"Release retention"): a product
+/// can only grow past its floor by gaining a release, so the pruning pass is post-create rather than a
+/// background loop. It is the last thing the created path does, its failures are logged and swallowed,
+/// and it never prunes a release something depends on.
+/// </para>
+/// <para>
 /// <b>Accepted:</b> the flip carries <c>Product</c>'s <c>xmin</c> concurrency token, so a product edit
 /// landing in the microseconds between the read and the save makes that one call fail with a
 /// concurrency exception and write nothing. It is retryable and self-correcting (the retry finds the
@@ -126,6 +133,8 @@ public class ReleaseIntakeService(
     RegistryAuthBuilder registries,
     IReleaseDigestResolver digests,
     AuditLog audit,
+    ReleasePruner pruner,
+    ILogger<ReleaseIntakeService> logger,
     TimeProvider time) {
     /// <summary>Most images one release may pin. The webhook rejects a larger payload before parsing it.</summary>
     public const int MaxImages = 20;
@@ -156,6 +165,14 @@ public class ReleaseIntakeService(
     /// (the <see cref="ProductCatalog"/> precedent).
     /// </summary>
     private const string InsertSavepoint = "wt_release_intake";
+
+    /// <summary>
+    /// Savepoint the post-create retention pass rolls back to when it fails. Same reasoning as
+    /// <see cref="InsertSavepoint"/>, applied to the other statement in this method that is allowed to
+    /// fail without failing the call: a swallowed exception inside a caller's transaction would
+    /// otherwise leave that transaction poisoned while intake reported success.
+    /// </summary>
+    private const string PruneSavepoint = "wt_release_prune";
 
     /// <summary>
     /// Records a release, or explains why it cannot. Never throws for a caller error: every refusal is
@@ -338,6 +355,43 @@ public class ReleaseIntakeService(
                 ProductCatalog.AuditCategory, ModeChangeAction, product.Name,
                 $"{(isFirst ? "first release" : "release")} '{version}' flipped Git → Releases",
                 actor: request.Actor, ct: ct);
+        }
+
+        // Retention, event-driven: the only way a product grows past its floor is by gaining a release,
+        // so the pass rides here rather than on a background loop nobody would otherwise need
+        // (design.md §"Release retention"). It runs last, after the trail is written, and it can never
+        // take the intake down with it — on the webhook path the release is already committed, so a
+        // throw here would 500 a call that succeeded, and the retry would only be answered as a replay.
+        // Housekeeping that failed is a log line; the next release runs it again.
+        //
+        // Behind a savepoint for the same reason the insert is (see InsertSavepoint): a failed statement
+        // poisons the surrounding PostgreSQL transaction when the caller owns one, so swallowing the
+        // exception without rolling back would hand `products.createRelease` a dead transaction while
+        // this method cheerfully reported Created — and every write the handler made afterwards would
+        // fail with a message about the wrong thing.
+        var pruneTransaction = db.Database.CurrentTransaction;
+        try {
+            if (pruneTransaction is not null)
+                await pruneTransaction.CreateSavepointAsync(PruneSavepoint, ct);
+            await pruner.PruneAsync(product.Id, request.Actor, ct);
+            if (pruneTransaction is not null)
+                await pruneTransaction.ReleaseSavepointAsync(PruneSavepoint, ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            if (pruneTransaction is not null) {
+                // Best effort: if even the rollback fails the transaction is unusable whatever we do,
+                // and the caller's next write is where that has to surface.
+                try {
+                    await pruneTransaction.RollbackToSavepointAsync(PruneSavepoint, ct);
+                } catch (Exception rollbackFailure) {
+                    logger.LogWarning(
+                        rollbackFailure,
+                        "Could not roll back to the retention savepoint for product {ProductId}.",
+                        product.Id);
+                }
+            }
+            logger.LogWarning(
+                ex, "Release retention failed for product {ProductId}; the release itself was recorded.",
+                product.Id);
         }
 
         return new ReleaseIntakeResult(

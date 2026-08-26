@@ -32,7 +32,22 @@ public sealed record ProductDto(
     string ReleaseMode);
 
 /// <summary>The newest release of a product, as much of it as a header line or a catalogue row needs.</summary>
-public sealed record ProductReleaseSummaryDto(int Id, string Version, DateTimeOffset CreatedAt);
+/// <param name="CommitSha">
+/// The commit it was built from, when it records one. Here so the product page can say which commit the
+/// latest release actually pins — the other half of the "latest ≠ branch head" comparison.
+/// </param>
+public sealed record ProductReleaseSummaryDto(
+    int Id, string Version, DateTimeOffset CreatedAt, string? CommitSha);
+
+/// <summary>
+/// A release named on a stack: enough to render a chip, not enough to need a second call.
+/// </summary>
+/// <remarks>
+/// A Products type rather than a reference to the Stacks module's identical <c>StackReleaseRefDto</c>:
+/// modules do not reach into each other's contracts (ELMOD002). Same wire shape on purpose, so one
+/// frontend type reads all three.
+/// </remarks>
+public sealed record ProductReleaseRefDto(int Id, string Version);
 
 /// <summary>
 /// One release in the product's list: everything the row renders, with the images left behind the row
@@ -69,9 +84,14 @@ public sealed record ReleaseDetailDto(
     string? Notes,
     IReadOnlyList<ReleaseImageDto> Images);
 
-/// <summary>One stack running a product, with the branch it actually deploys.</summary>
+/// <summary>One stack running a product, with the branch it actually deploys and the version it runs.</summary>
 /// <param name="Branch">The effective branch — the override when there is one, else the product default.</param>
 /// <param name="TenantSlug">Set when the stack is a tenant of <paramref name="TemplateId"/>; null for standalone stacks.</param>
+/// <param name="TrackingMode">
+/// <c>"latest"</c> or <c>"pinned"</c>, derived from the pin exactly as <c>StackDto</c> derives it.
+/// </param>
+/// <param name="PinnedRelease">The release this stack is pinned to, or null when it tracks latest.</param>
+/// <param name="LastDeployedRelease">The release its last successful deploy applied, when there was one.</param>
 public sealed record ProductStackDto(
     int Id,
     string Name,
@@ -80,7 +100,77 @@ public sealed record ProductStackDto(
     int? TemplateId,
     string? TenantSlug,
     string? LastDeployStatus,
-    DateTimeOffset? LastDeployedAt);
+    DateTimeOffset? LastDeployedAt,
+    string TrackingMode,
+    ProductReleaseRefDto? PinnedRelease,
+    ProductReleaseRefDto? LastDeployedRelease);
+
+/// <summary>
+/// One stack's line in a release's roll-out view (<c>products.getReleaseRollout</c>).
+/// </summary>
+/// <param name="Status">
+/// The deploy event's status — <c>queued</c>, <c>running</c>, <c>success</c> or <c>failed</c> — or
+/// <see cref="ReleaseRolloutDto.SkippedStatus"/> for a stack the roll-out never reached.
+/// </param>
+/// <param name="SkipReason">
+/// Why a skipped stack was not targeted; null for a stack that has a deploy event. Exactly one of the
+/// three constants the handler owns — <c>GetReleaseRollout.SkippedStopped</c> (<c>"stopped"</c>),
+/// <c>SkippedPinned</c> (<c>"pinned"</c>) or <c>SkippedNotDeployed</c> (<c>"not deployed"</c>). See the
+/// honesty note on <see cref="ReleaseRolloutDto"/> for why these describe the stack *now*.
+/// </param>
+public sealed record ReleaseRolloutStackDto(
+    int StackId,
+    string StackName,
+    string? TenantSlug,
+    string Status,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? FinishedAt,
+    int? DeployEventId,
+    string? SkipReason);
+
+/// <summary>
+/// What one release actually reached: the per-stack rows and the counts above them
+/// (docs/products/design.md §"Convergent fan-out", partial failure).
+/// </summary>
+/// <remarks>
+/// <b>The deploy rows are history; the skipped rows are <em>now</em>.</b> A stack with a
+/// <c>DeployEvent</c> for this release is a fact about what happened. A stack without one is reported as
+/// skipped with the reason its <em>current</em> state gives — stopped, pinned elsewhere, or automation
+/// off — which is not necessarily why it was skipped when the fan-out ran: a stack pinned this morning
+/// reads as "pinned" even if it was running latest at the time. There is no enqueue-time record to read
+/// instead (the fan-out deliberately stores nothing per skipped stack — that is what keeps a 200-tenant
+/// release from writing 200 rows of noise), so the view says what is true today and this remark is the
+/// contract.
+/// </remarks>
+/// <param name="Succeeded">Stacks whose newest deploy for this release succeeded.</param>
+/// <param name="Failed">…failed. What "Retry failed" re-enqueues.</param>
+/// <param name="Queued">…is still waiting behind the deploy gate.</param>
+/// <param name="Running">…is deploying right now.</param>
+/// <param name="Skipped">Stacks of the product with no deploy event for this release at all.</param>
+public sealed record ReleaseRolloutDto(
+    int ReleaseId,
+    string Version,
+    int Succeeded,
+    int Failed,
+    int Queued,
+    int Running,
+    int Skipped,
+    IReadOnlyList<ReleaseRolloutStackDto> Stacks) {
+    /// <summary>The synthetic <c>Status</c> of a stack the roll-out never reached.</summary>
+    public const string SkippedStatus = "skipped";
+}
+
+/// <summary>
+/// The four values <c>DeployEvent.Status</c> takes. Free text in the column since long before ADR-0026
+/// and written as literals by the deploy queue; named here so the rollout view's counts and
+/// <c>products.retryFailedRollout</c>'s targeting cannot disagree about how <c>failed</c> is spelled.
+/// </summary>
+public static class DeployEventStatus {
+    public const string Queued = "queued";
+    public const string Running = "running";
+    public const string Succeeded = "success";
+    public const string Failed = "failed";
+}
 
 /// <summary>One template instantiating a product, with the branch its tenants deploy.</summary>
 public sealed record ProductTemplateDto(
@@ -117,6 +207,21 @@ public static class ProductMapping {
         "releases" => ProductReleaseMode.Releases,
         _ => null,
     };
+
+    /// <summary>A stack with no pin follows the product's newest release.</summary>
+    /// <remarks>
+    /// The same two words <c>StackMapping.TrackingLatest</c>/<c>TrackingPinned</c> put on the wire,
+    /// spelled again here rather than referenced across the module boundary — see the remarks on
+    /// <see cref="ProductReleaseRefDto"/>.
+    /// </remarks>
+    public const string TrackingLatest = "latest";
+
+    /// <inheritdoc cref="TrackingLatest"/>
+    public const string TrackingPinned = "pinned";
+
+    /// <summary>The chip for a release, or null when there is none.</summary>
+    public static ProductReleaseRefDto? ReleaseRef(int? id, string? version) =>
+        id is { } releaseId && version is not null ? new ProductReleaseRefDto(releaseId, version) : null;
 
     /// <summary>The list row for a release; <paramref name="imageCount"/> is counted by the query.</summary>
     public static ReleaseDto ToDto(Release r, int imageCount) => new(

@@ -14,6 +14,9 @@ public sealed class GetTemplate(WatchtowerDbContext db)
         var template = await db.StackTemplates.AsNoTracking()
             .Include(t => t.BaseEnvVars)
             .Include(t => t.Product)
+            // The fleet default the roll-out dialog opens on, and the "New tenants are pinned to …"
+            // line above the roster.
+            .Include(t => t.DefaultPinnedRelease)
             .FirstOrDefaultAsync(t => t.Id == query.Id, ct);
         if (template is null)
             return AppError.NotFound($"Template {query.Id} not found");

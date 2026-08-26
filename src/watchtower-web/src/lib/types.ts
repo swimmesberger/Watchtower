@@ -68,6 +68,8 @@ export interface ProductReleaseSummary {
   id: number
   version: string
   createdAt: string
+  /** The commit it pins, when it records one — the other half of the "latest ≠ branch head" line. */
+  commitSha: string | null
 }
 
 /** How a release arrived. */
@@ -142,7 +144,7 @@ export interface ReleaseWebhookState {
 }
 
 /** One stack deploying a product, as `products.get` rosters it. */
-export interface ProductStack {
+export interface ProductStack extends VersionState {
   id: number
   name: string
   /** The effective branch: the stack's override when it has one, else the product default. */
@@ -153,6 +155,21 @@ export interface ProductStack {
   tenantSlug: string | null
   lastDeployStatus: 'success' | 'failed' | 'running' | 'queued' | null
   lastDeployedAt: string | null
+}
+
+/**
+ * A stack's version policy and where it actually is — the three fields every roster row, chip and
+ * rollup reads, and the shape `lib/release.ts`'s roster helpers take.
+ *
+ * `Stack`, `ProductStack` and `Tenant` all carry it (the backend spells the same wire shape in three
+ * modules, deliberately: modules do not reach into each other's contracts), so one set of derivations
+ * serves the stack page, the product roster and the Instances roster.
+ */
+export interface VersionState {
+  /** Derived from the pin, not stored: `pinned` when `pinnedRelease` is set, else `latest`. */
+  trackingMode: TrackingMode
+  pinnedRelease: StackReleaseRef | null
+  lastDeployedRelease: StackReleaseRef | null
 }
 
 /** One template instantiating a product, as `products.get` rosters it. */
@@ -174,6 +191,13 @@ export interface ProductDetail {
    * the catalogue lists every product and must not carry every product's secret.
    */
   releaseWebhookToken: string | null
+  /**
+   * The product's branch head when it is a commit no release was built from — the "latest ≠ branch
+   * head" warning. Derived server-side from what the periodic check already polled; null when nothing
+   * can say so (no releases, no stack on the product's own branch, or never checked). Never a count:
+   * how *many* commits there are cannot be known without a clone.
+   */
+  unreleasedCommitSha: string | null
 }
 
 export interface CreateProductRequest {
@@ -185,7 +209,51 @@ export interface CreateProductRequest {
   credentialId?: number | null
 }
 
-export type UpdateProductRequest = CreateProductRequest
+export interface UpdateProductRequest extends CreateProductRequest {
+  /**
+   * `git` or `releases`, or omitted to leave it alone — the operator's manual override of the switch
+   * the first release flips automatically. `releases` is refused for a product with no releases.
+   */
+  releaseMode?: ReleaseMode | null
+}
+
+/** `products.getReleaseRollout`: what one release actually reached. */
+export interface ReleaseRollout {
+  releaseId: number
+  version: string
+  succeeded: number
+  failed: number
+  queued: number
+  running: number
+  /** Stacks of the product with no deploy event for this release at all. */
+  skipped: number
+  stacks: ReleaseRolloutStack[]
+}
+
+/**
+ * One stack's line in a rollout. A row with a `skipReason` describes the stack as it is **now** — the
+ * fan-out records nothing per stack it skipped, so "pinned" can mean "pinned since", not "pinned then".
+ */
+export interface ReleaseRolloutStack {
+  stackId: number
+  stackName: string
+  tenantSlug: string | null
+  /** The deploy event's status, or `skipped` for a stack the rollout never reached. */
+  status: 'queued' | 'running' | 'success' | 'failed' | 'skipped'
+  startedAt: string | null
+  finishedAt: string | null
+  deployEventId: number | null
+  /** `stopped`, `pinned` or `not deployed`; null for a row that has a deploy event. */
+  skipReason: string | null
+}
+
+/** `products.retryFailedRollout`: what the retry re-enqueued, and what it deliberately did not. */
+export interface RetryFailedRolloutResult {
+  retried: number
+  /** Failed stacks left alone because they are stopped or now pinned to a different release. */
+  skipped: number
+  deployEventIds: number[]
+}
 
 export interface Stack {
   id: number
@@ -282,6 +350,13 @@ export interface DeployEvent {
   output: string | null
   startedAt: string
   finishedAt: string | null
+  /**
+   * The release this deploy applied, stamped at execution. Null in Git mode, for a deploy that failed
+   * before the release was resolved, and for every deploy that ran before releases existed.
+   */
+  releaseId: number | null
+  /** Its label, denormalized beside the id so a history row renders a chip without a lookup per row. */
+  releaseVersion: string | null
 }
 
 export interface Container {
@@ -1018,6 +1093,13 @@ export interface StackTemplate {
   realmId: number
   createdAt: string
   instanceCount: number
+  /**
+   * The release every *future* tenant is pinned to, or null when new tenants track latest. Copied onto
+   * each tenant at provisioning — a tenant can be repinned afterwards without leaving the fleet default.
+   */
+  defaultPinnedRelease: StackReleaseRef | null
+  /** The product's update mechanism — the switch the Instances Version column and rollup key on. */
+  releaseMode: ReleaseMode
 }
 
 export interface TemplateEnvVar {
@@ -1031,13 +1113,24 @@ export interface TemplateEnvVarInput {
   value: string
 }
 
-export interface Tenant {
+export interface Tenant extends VersionState {
   stackId: number
   tenantSlug: string
   stackName: string
   domain: string | null
   lastDeployStatus: string | null
   lastDeployedAt: string | null
+}
+
+/** `templates.setTenantsRelease`: the fleet-wide pin, and the deploys it enqueued. */
+export interface SetTenantsReleaseResult {
+  /** How many tenants had their pin written — plus the template default, always. */
+  tenantCount: number
+  /** How many were enqueued: fewer when `deploy` was false, and when a tenant is stopped. */
+  deployed: number
+  deployEventIds: number[]
+  /** What the fleet now pins, or null when the pin was cleared. */
+  release: StackReleaseRef | null
 }
 
 /**

@@ -20,7 +20,11 @@ public sealed class ListDeployEvents(WatchtowerDbContext db)
             .Where(e => e.StackId == query.StackId)
             .OrderByDescending(e => e.StartedAt)
             .ThenByDescending(e => e.Id)
-            .Select(e => new DeployEventDto(e.Id, e.StackId, e.TriggeredBy, e.Status, e.Output, e.StartedAt, e.FinishedAt))
+            // The release is projected, not Included: one left join for the label, rather than the per-row
+            // lookup that kept the version chip out of stage 4b.
+            .Select(e => new DeployEventDto(
+                e.Id, e.StackId, e.TriggeredBy, e.Status, e.Output, e.StartedAt, e.FinishedAt,
+                e.ReleaseId, e.Release != null ? e.Release.Version : null))
             .ToListAsync(ct);
         return new Response(events);
     }

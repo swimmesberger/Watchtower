@@ -53,6 +53,9 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
 
         var template = await db.StackTemplates
             .Include(t => t.Product)
+            // The response projects the fleet default; without this the save would answer "no default"
+            // and the caller would cache that over a template that has one.
+            .Include(t => t.DefaultPinnedRelease)
             .FirstOrDefaultAsync(t => t.Id == command.Id, ct);
         if (template is null)
             return AppError.NotFound($"Template {command.Id} not found");

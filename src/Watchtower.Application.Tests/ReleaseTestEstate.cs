@@ -37,12 +37,14 @@ internal static class ReleaseTestEstate {
         return product.Id;
     }
 
-    /// <summary>Adds a stack of an existing product and returns its id.</summary>
+    /// <summary>Adds a stack of an existing product — a tenant when given a template — and returns its id.</summary>
     public static async Task<int> AddProductStackAsync(
         this AuthTestHost host, string name, int productId,
         AutoDeployMode autoDeploy = AutoDeployMode.Off,
         StackDesiredState desiredState = StackDesiredState.Running,
-        int? pinnedReleaseId = null) {
+        int? pinnedReleaseId = null,
+        int? templateId = null,
+        string? tenantSlug = null) {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
@@ -53,11 +55,81 @@ internal static class ReleaseTestEstate {
             AutoDeployTime = autoDeploy == AutoDeployMode.Scheduled ? "02:00" : null,
             DesiredState = desiredState,
             PinnedReleaseId = pinnedReleaseId,
+            TemplateId = templateId,
+            TenantSlug = tenantSlug ?? (templateId is null ? null : name),
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         return stack.Id;
+    }
+
+    /// <summary>Adds a template over an existing product and returns its id.</summary>
+    public static async Task<int> AddProductTemplateAsync(
+        this AuthTestHost host, string name, int productId, int? defaultPinnedReleaseId = null) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var template = new StackTemplate {
+            Name = name,
+            ProductId = productId,
+            DefaultPinnedReleaseId = defaultPinnedReleaseId,
+            DomainPattern = "{tenant}.example.com",
+            TargetServiceName = "web",
+            TargetPort = 8080,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.StackTemplates.Add(template);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return template.Id;
+    }
+
+    /// <summary>The template's fleet default, as the database has it.</summary>
+    public static async Task<int?> TemplateDefaultAsync(this AuthTestHost host, int templateId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.StackTemplates.AsNoTracking()
+            .Where(t => t.Id == templateId)
+            .Select(t => t.DefaultPinnedReleaseId)
+            .FirstAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>Adds a deploy event of a release — the rows the rollout view groups.</summary>
+    public static async Task<int> AddReleaseDeployEventAsync(
+        this AuthTestHost host, int stackId, int? releaseId, string status,
+        string trigger = "release") {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var deployEvent = new DeployEvent {
+            StackId = stackId,
+            ReleaseId = releaseId,
+            TriggeredBy = trigger,
+            Status = status,
+            StartedAt = DateTimeOffset.UtcNow,
+            FinishedAt = status is "success" or "failed" ? DateTimeOffset.UtcNow : null,
+        };
+        db.DeployEvents.Add(deployEvent);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return deployEvent.Id;
+    }
+
+    /// <summary>Sets a product's release-retention floor — what the pruning pass reads.</summary>
+    public static async Task SetRetainReleasesAsync(this AuthTestHost host, int productId, int retain) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        await db.Products.Where(p => p.Id == productId)
+            .ExecuteUpdateAsync(
+                p => p.SetProperty(x => x.RetainReleases, retain), TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>The product's surviving release ids, oldest first.</summary>
+    public static async Task<List<int>> ReleaseIdsAsync(this AuthTestHost host, int productId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Releases.AsNoTracking()
+            .Where(r => r.ProductId == productId)
+            .OrderBy(r => r.Id)
+            .Select(r => r.Id)
+            .ToListAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>Adds a release with its images and returns its id. Newest is the highest id.</summary>

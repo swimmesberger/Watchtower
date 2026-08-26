@@ -45,6 +45,34 @@ public sealed class StackTemplate {
     /// </summary>
     public string? BranchOverride { get; set; }
 
+    /// <summary>
+    /// The release every <em>future</em> tenant of this template is pinned to, or null when new tenants
+    /// track latest. Written by <c>templates.setTenantsRelease</c> alongside the pin it writes onto the
+    /// tenants that already exist.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Copied at provisioning, deliberately</b> — the one field family ADR-0026 copies rather than
+    /// references. <see cref="ProductId"/> is a reference because a source edit must reach every tenant;
+    /// a pin is the opposite kind of thing. It is per-tenant policy (the canary and per-tenant-hotfix
+    /// workflows in design.md §"Rollback and canary" are built on individual tenants disagreeing with
+    /// the fleet), so a tenant that inherited it must be able to move without dragging its siblings, and
+    /// the template's value must be able to move without silently repinning a tenant somebody pinned by
+    /// hand. Neither is expressible by a reference.
+    /// </para>
+    /// <para>
+    /// <c>SET NULL</c>, unlike <see cref="Stack.PinnedReleaseId"/>'s <c>Restrict</c>: this pins nothing
+    /// that is running, so a delete that clears it changes no deploy — it only means the next tenant
+    /// tracks latest. Release pruning nevertheless refuses to prune a release named here, because
+    /// silently clearing a fleet default is not something housekeeping should do
+    /// (<see cref="Services.ReleasePruner"/>).
+    /// </para>
+    /// </remarks>
+    public int? DefaultPinnedReleaseId { get; set; }
+
+    /// <inheritdoc cref="DefaultPinnedReleaseId"/>
+    public Release? DefaultPinnedRelease { get; set; }
+
     /// <summary>Domain template for tenants, with a <c>{tenant}</c> placeholder, e.g. <c>{tenant}.example.com</c>.</summary>
     public required string DomainPattern { get; set; }
     /// <summary>Compose service each tenant's route forwards to.</summary>

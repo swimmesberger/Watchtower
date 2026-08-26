@@ -14,6 +14,9 @@ public sealed class ListTemplates(WatchtowerDbContext db)
         var rows = await db.StackTemplates.AsNoTracking()
             // The source fields are resolved from the product since ADR-0026.
             .Include(t => t.Product)
+            // …and the fleet default is a navigation too: without it every row reports "no default"
+            // however many tenants the template pins, because ToDto reads the loaded release, not the id.
+            .Include(t => t.DefaultPinnedRelease)
             .OrderBy(t => t.Name)
             .Select(t => new { Template = t, Count = t.Instances.Count })
             .ToListAsync(ct);

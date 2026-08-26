@@ -7,13 +7,17 @@ import {
   PlayCircle,
   Plus,
   ShieldCheck,
+  Tags,
   Trash2,
   Users,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Tenant, TemplateEnvVarInput, TemplateGrant } from '@/lib/types'
+import { rosterVersion, versionRollup } from '@/lib/release'
 import { timeAgo } from '@/lib/format'
+import { useProductReleases } from '@/hooks/use-product-releases'
 import { useRealms } from '@/hooks/use-realms'
+import { SetReleaseDialog, type ReleaseTarget } from '@/components/set-release-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -75,6 +79,7 @@ export function TemplateDetailPage() {
   const [allowDeletePendingIds, setAllowDeletePendingIds] = useState<ReadonlySet<number>>(
     () => new Set(),
   )
+  const [rollingOut, setRollingOut] = useState(false)
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['template', templateId],
@@ -100,6 +105,19 @@ export function TemplateDetailPage() {
     enabled: canManageGrants,
   })
   const stacks = stacksQuery.data ?? []
+
+  // The product's newest releases — the shared key, so this is the same fetch the stack pages and the
+  // Releases tab make. Only asked for once the template has answered, because the product id comes
+  // from it, and only in Releases mode: a Git-mode product has no version policy to show.
+  const productId = data?.template.productId
+  const releaseMode = data?.template.releaseMode
+  const { data: releaseWindow } = useProductReleases(
+    productId ?? 0,
+    productId != null && releaseMode === 'releases',
+  )
+  const releases = releaseWindow?.releases ?? []
+  const newestId = releases[0]?.id ?? null
+  const usesReleases = releaseMode === 'releases'
 
   // The backend rejects granting a template's own tenants. Already-granted stacks are filtered out
   // too — their grant is edited in place on its row rather than re-added here.
@@ -280,6 +298,30 @@ export function TemplateDetailPage() {
     )
   }
 
+  // The Version cell, shared by the table and the mobile card so the two cannot disagree about what an
+  // instance runs. Reads `rosterVersion`, which is the same derivation the roll-out dialog's checklist
+  // uses — one answer to "where is this instance", in lib/release.ts.
+  const versionCell = (t: Tenant) => {
+    const { version, pinned, behind } = rosterVersion(t, newestId)
+    if (!version) return <span className="text-text-3">never deployed</span>
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="font-mono text-[13px] text-text">{version}</span>
+        {pinned && (
+          <Badge tone="neutral" size="sm">
+            pinned
+          </Badge>
+        )}
+        {/* Quiet, never a banner — the stack pages' rule, and doubly so for a roster of 200. */}
+        {behind && (
+          <Badge tone="neutral" size="sm">
+            behind
+          </Badge>
+        )}
+      </span>
+    )
+  }
+
   const columns: DataListColumn<Tenant>[] = [
     {
       key: 'slug',
@@ -294,6 +336,11 @@ export function TemplateDetailPage() {
         </Link>
       ),
     },
+    // Only in Releases mode (invariant 4): a Git-mode fleet has no version policy, and a column of
+    // dashes would be the "two competing update mechanisms" risk in table form.
+    ...(usesReleases
+      ? [{ key: 'version', header: 'Version', cell: versionCell } as DataListColumn<Tenant>]
+      : []),
     {
       key: 'domain',
       header: 'Domain',
@@ -353,6 +400,14 @@ export function TemplateDetailPage() {
           </Badge>
         </h1>
         <div className="flex items-center gap-2">
+          {/* The fleet's version policy, next to the fleet's deploy — one opens the roll-out dialog,
+              the other redeploys whatever each instance already resolves to. Only in Releases mode,
+              where a version policy exists at all. */}
+          {usesReleases && (
+            <Button variant="secondary" onClick={() => setRollingOut(true)}>
+              <Tags /> Set instances’ release…
+            </Button>
+          )}
           <Button
             variant="secondary"
             loading={deployAll.isPending}
@@ -576,6 +631,32 @@ export function TemplateDetailPage() {
         </Card>
       )}
 
+      {/* The rollup: "18 on latest · 2 pinned · 1 behind" — the "which tenant runs which version"
+          answer in one line, above the table that spells it out per row. Plain text rather than a
+          filter row: the three counts are already the whole answer for a fleet this page can show, and
+          a filter that only ever hides rows of a 20-row table earns less than the noise it adds. The
+          buckets are disjoint (a pinned-and-outdated instance counts as pinned, never as behind), so
+          they sum to the roster. */}
+      {usesReleases && tenants.length > 0 && (
+        <p className="text-[13px] text-text-2">
+          {(() => {
+            const rollup = versionRollup(tenants, newestId)
+            const parts = [
+              rollup.onLatest > 0 && `${rollup.onLatest} on latest`,
+              rollup.pinned > 0 && `${rollup.pinned} pinned`,
+              rollup.behind > 0 && `${rollup.behind} behind`,
+            ].filter(Boolean)
+            return parts.join(' · ')
+          })()}
+          {template.defaultPinnedRelease && (
+            <>
+              {' · '}New instances start on{' '}
+              <span className="font-mono text-text">{template.defaultPinnedRelease.version}</span>
+            </>
+          )}
+        </p>
+      )}
+
       <DataList
         items={tenants}
         getKey={(t) => t.stackId}
@@ -591,6 +672,8 @@ export function TemplateDetailPage() {
                 {removeTenantButton(t)}
               </div>
             </div>
+            {/* Card fallback leads with slug + version + status (design.md §Übersichtlichkeit audit). */}
+            {usesReleases && <div>{versionCell(t)}</div>}
             {t.domain && <p className="font-mono text-[13px] text-text-2">{t.domain}</p>}
           </div>
         )}
@@ -599,6 +682,22 @@ export function TemplateDetailPage() {
         }
         aria-label="Tenants"
       />
+
+      {productId != null && (
+        <SetReleaseDialog
+          open={rollingOut}
+          onOpenChange={setRollingOut}
+          productId={productId}
+          // Seeded from where the fleet already is, so the dialog opens describing the status quo
+          // rather than proposing a change nobody asked for: opening it on "Track latest" over a fleet
+          // pinned to 1.3.0 makes Apply an unpin by accident.
+          seedReleaseId={template.defaultPinnedRelease?.id ?? null}
+          fleet={{ templateId, templateName: template.name }}
+          targets={tenants.map(
+            (t): ReleaseTarget => ({ stackId: t.stackId, label: t.tenantSlug, state: t }),
+          )}
+        />
+      )}
 
       <ConfirmDialog
         open={pendingRemoveTenant != null}

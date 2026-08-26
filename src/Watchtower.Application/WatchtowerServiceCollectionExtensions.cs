@@ -75,6 +75,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // substitutes it, which is what keeps intake testable without a registry.
         services.AddScoped<ReleaseIntakeService>();
         services.AddSingleton<IReleaseDigestResolver, RegistryDigestResolver>();
+        // Release retention (design.md §"Release retention"): the post-create pruning pass intake runs.
+        // Scoped, and its own service rather than a private method on intake, so its four protection
+        // rules can be driven — and mutation-tested — one at a time.
+        services.AddScoped<ReleasePruner>();
         // Release fan-out (design.md §Convergent fan-out): reads the target predicate through the scoped
         // context and enqueues onto the singleton deploy queue. Shared by the release webhook and
         // products.deployRelease so "which stacks does a release reach" has one answer.

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Persistence.Configurations;
 
@@ -146,6 +147,10 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
         // in Git mode — the back-compat contract of ADR-0026 decision 5 expressed as a column default
         // rather than as something the code has to remember.
         b.Property(x => x.ReleaseMode).HasConversion<string>().HasDefaultValue(ProductReleaseMode.Git);
+        // The retention floor, defaulted on the model as well as in the migration so a product written
+        // by any path keeps 50 releases rather than 0 — which is what an unset int would ask the pruner
+        // to keep. ReleasePruner.Clamp is the second line of defence against a hand-edited row.
+        b.Property(x => x.RetainReleases).HasDefaultValue(ReleasePruner.DefaultRetainReleases);
         // The monorepo rule of docs/products/design.md §"Secret sync", as a schema fact: the Actions
         // secret names (WATCHTOWER_URL / WATCHTOWER_PRODUCT_ID / WATCHTOWER_RELEASE_TOKEN) are fixed, so
         // two products of one repository both syncing would overwrite each other's token on every pass.
@@ -299,6 +304,16 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
             .WithMany(p => p.Templates)
             .HasForeignKey(x => x.ProductId)
             .OnDelete(DeleteBehavior.Restrict);
+        // SetNull, not Restrict like Stack.PinnedReleaseId: this pins nothing that is running, so a
+        // delete that clears it changes no deploy — the next tenant simply tracks latest. What must not
+        // clear it silently is *pruning*, which is a rule in ReleasePruner rather than a schema one,
+        // because retention is the only deleter that would ever reach an old default by accident.
+        b.HasOne(x => x.DefaultPinnedRelease)
+            .WithMany()
+            .HasForeignKey(x => x.DefaultPinnedReleaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // The pruner's template-default protection query looks templates up by the release they name.
+        b.HasIndex(x => x.DefaultPinnedReleaseId);
     }
 }
 

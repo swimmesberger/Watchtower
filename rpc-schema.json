@@ -4986,12 +4986,19 @@
                   "createdAt": {
                     "type": "string",
                     "format": "date-time"
+                  },
+                  "commitSha": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id",
                   "version",
-                  "createdAt"
+                  "createdAt",
+                  "commitSha"
                 ]
               },
               "releaseMode": {
@@ -5331,12 +5338,19 @@
                   "createdAt": {
                     "type": "string",
                     "format": "date-time"
+                  },
+                  "commitSha": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id",
                   "version",
-                  "createdAt"
+                  "createdAt",
+                  "commitSha"
                 ]
               },
               "releaseMode": {
@@ -5404,6 +5418,45 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "trackingMode": {
+                  "type": "string"
+                },
+                "pinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "lastDeployedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
                 }
               },
               "required": [
@@ -5414,7 +5467,10 @@
                 "templateId",
                 "tenantSlug",
                 "lastDeployStatus",
-                "lastDeployedAt"
+                "lastDeployedAt",
+                "trackingMode",
+                "pinnedRelease",
+                "lastDeployedRelease"
               ]
             }
           },
@@ -5456,13 +5512,20 @@
               "string",
               "null"
             ]
+          },
+          "unreleasedCommitSha": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "product",
           "stacks",
           "templates",
-          "releaseWebhookToken"
+          "releaseWebhookToken",
+          "unreleasedCommitSha"
         ]
       }
     },
@@ -5578,6 +5641,122 @@
         ]
       }
     },
+    "products.getReleaseRollout": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rollout": {
+            "type": "object",
+            "properties": {
+              "releaseId": {
+                "type": "integer"
+              },
+              "version": {
+                "type": "string"
+              },
+              "succeeded": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "queued": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "integer"
+              },
+              "skipped": {
+                "type": "integer"
+              },
+              "stacks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stackId": {
+                      "type": "integer"
+                    },
+                    "stackName": {
+                      "type": "string"
+                    },
+                    "tenantSlug": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "finishedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "deployEventId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "skipReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "stackId",
+                    "stackName",
+                    "tenantSlug",
+                    "status",
+                    "startedAt",
+                    "finishedAt",
+                    "deployEventId",
+                    "skipReason"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "releaseId",
+              "version",
+              "succeeded",
+              "failed",
+              "queued",
+              "running",
+              "skipped",
+              "stacks"
+            ]
+          }
+        },
+        "required": [
+          "rollout"
+        ]
+      }
+    },
     "products.list": {
       "params": {
         "type": "object"
@@ -5651,12 +5830,19 @@
                     "createdAt": {
                       "type": "string",
                       "format": "date-time"
+                    },
+                    "commitSha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
                     "id",
                     "version",
-                    "createdAt"
+                    "createdAt",
+                    "commitSha"
                   ]
                 },
                 "releaseMode": {
@@ -5777,6 +5963,41 @@
         "required": [
           "releases",
           "hasMore"
+        ]
+      }
+    },
+    "products.retryFailedRollout": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "retried": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "deployEventIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "retried",
+          "skipped",
+          "deployEventIds"
         ]
       }
     },
@@ -5956,12 +6177,19 @@
                   "createdAt": {
                     "type": "string",
                     "format": "date-time"
+                  },
+                  "commitSha": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id",
                   "version",
-                  "createdAt"
+                  "createdAt",
+                  "commitSha"
                 ]
               },
               "releaseMode": {
@@ -8720,6 +8948,20 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "releaseId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "releaseVersion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
                 }
               },
               "required": [
@@ -11007,6 +11249,48 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "trackingMode": {
+                "type": "string",
+                "default": "latest"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
               }
             },
             "required": [
@@ -11160,6 +11444,27 @@
               },
               "instanceCount": {
                 "type": "integer"
+              },
+              "defaultPinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -11177,7 +11482,9 @@
               "targetPort",
               "realmId",
               "createdAt",
-              "instanceCount"
+              "instanceCount",
+              "defaultPinnedRelease",
+              "releaseMode"
             ]
           }
         },
@@ -11303,6 +11610,27 @@
               },
               "instanceCount": {
                 "type": "integer"
+              },
+              "defaultPinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -11320,7 +11648,9 @@
               "targetPort",
               "realmId",
               "createdAt",
-              "instanceCount"
+              "instanceCount",
+              "defaultPinnedRelease",
+              "releaseMode"
             ]
           },
           "baseEnvVars": {
@@ -11468,6 +11798,27 @@
                 },
                 "instanceCount": {
                   "type": "integer"
+                },
+                "defaultPinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "releaseMode": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -11485,7 +11836,9 @@
                 "targetPort",
                 "realmId",
                 "createdAt",
-                "instanceCount"
+                "instanceCount",
+                "defaultPinnedRelease",
+                "releaseMode"
               ]
             }
           }
@@ -11590,6 +11943,48 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "trackingMode": {
+                  "type": "string",
+                  "default": "latest"
+                },
+                "pinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ],
+                  "default": null
+                },
+                "lastDeployedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ],
+                  "default": null
                 }
               },
               "required": [
@@ -11665,6 +12060,79 @@
         },
         "required": [
           "removed"
+        ]
+      }
+    },
+    "templates.setTenantsRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "releaseId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deploy": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "templateId",
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "object",
+            "properties": {
+              "tenantCount": {
+                "type": "integer"
+              },
+              "deployed": {
+                "type": "integer"
+              },
+              "deployEventIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "release": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              }
+            },
+            "required": [
+              "tenantCount",
+              "deployed",
+              "deployEventIds",
+              "release"
+            ]
+          }
+        },
+        "required": [
+          "result"
         ]
       }
     },
@@ -11808,6 +12276,27 @@
               },
               "instanceCount": {
                 "type": "integer"
+              },
+              "defaultPinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -11825,7 +12314,9 @@
               "targetPort",
               "realmId",
               "createdAt",
-              "instanceCount"
+              "instanceCount",
+              "defaultPinnedRelease",
+              "releaseMode"
             ]
           }
         },

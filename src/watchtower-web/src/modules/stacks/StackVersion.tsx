@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Stack } from '@/lib/types'
@@ -12,6 +12,7 @@ import {
   usesReleases,
 } from '@/lib/release'
 import { timeAgo } from '@/lib/format'
+import { useProductReleases } from '@/hooks/use-product-releases'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -38,24 +39,6 @@ import { toast } from '@/components/ui/use-toast'
 // The three surfaces of invariant 6 — the header fragment, the Version dialog and the Version panel
 // — in one file, because they must agree about what Deploy would apply. They agree by all reading
 // `deployTargetVersion` and the other derivations in lib/release.ts; nothing here re-derives one.
-
-/** How many releases the pin picker offers, and the window "N behind" is exact within. */
-const RELEASE_OPTIONS = 20
-
-/**
- * The product's newest releases, newest first.
- *
- * Its own cache key rather than the Releases tab's infinite query: that one pages, this one is a
- * fixed window, and react-query dedupes the callers on the stack page (header fragment, dialog,
- * Version panel, containers empty state) into one request.
- */
-export function useProductReleases(productId: number, enabled: boolean) {
-  return useQuery({
-    queryKey: ['product', productId, 'releases', 'options'],
-    queryFn: () => api.products.listReleases(productId, undefined, RELEASE_OPTIONS),
-    enabled,
-  })
-}
 
 // ── Header fragment ──────────────────────────────────────────────────────────────
 

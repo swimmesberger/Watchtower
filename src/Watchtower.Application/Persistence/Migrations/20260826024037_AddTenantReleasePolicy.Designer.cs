@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Watchtower.Application.Persistence;
@@ -11,9 +12,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260826024037_AddTenantReleasePolicy")]
+    partial class AddTenantReleasePolicy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

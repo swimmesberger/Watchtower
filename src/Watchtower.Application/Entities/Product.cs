@@ -161,6 +161,29 @@ public sealed class Product {
     /// </summary>
     public string? LastActionsSyncError { get; set; }
 
+    /// <summary>
+    /// How many releases of this product are kept. Every accepted release runs a pruning pass that
+    /// deletes the oldest ones beyond this floor — <see cref="Services.ReleasePruner"/> — so a product
+    /// whose CI publishes on every push does not accumulate rows forever.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The floor is a floor, never a ceiling on what is protected.</b> Four kinds of release are
+    /// never pruned however old they are: one a stack pins, one a template names as its
+    /// <see cref="StackTemplate.DefaultPinnedReleaseId"/>, one a stack records as its
+    /// <see cref="Stack.LastDeployedReleaseId"/>, and one any stored <see cref="DeployEvent"/> still
+    /// references. The first would change what a stack deploys, the second would silently clear a fleet
+    /// default, and the last two would blank out history — none of them are things housekeeping may do.
+    /// So a fleet on old pins keeps more than <see cref="RetainReleases"/> releases, by design.
+    /// </para>
+    /// <para>
+    /// Clamped on read rather than trusted (<see cref="Services.ReleasePruner.Clamp"/>): the column has
+    /// no RPC setter yet, so the only way to a value outside the sane range is a hand-edited row — and
+    /// a zero or negative one would ask the pruner to delete everything.
+    /// </para>
+    /// </remarks>
+    public int RetainReleases { get; set; } = Services.ReleasePruner.DefaultRetainReleases;
+
     public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>The running copies of this product.</summary>

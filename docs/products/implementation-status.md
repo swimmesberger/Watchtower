@@ -3,10 +3,10 @@
 Living companion to [design.md](design.md) and
 [ADR-0026](../decisions/0026-products-are-the-deployable-unit.md). The design doc says what to
 build; this file says how far it got, what is owed, and what a fresh session needs to know before
-touching stage 3. **Update it at the end of every stage.**
+touching stage 7. **Update it at the end of every stage.**
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 5
-(release-secret sync to GitHub Actions).
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 6
+(tenant release policy).
 
 ## Where things stand
 
@@ -23,26 +23,31 @@ Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-0
 | `15eb618` | **4b — release-aware deploys, frontend** | The version UX, in three new files plus eight edits and **zero backend changes**. `lib/release.ts` is where both UI invariants are expressed once, as pure functions of the DTOs: `usesReleases` (invariant 4's predicate, mirroring `ReleaseResolver.UsesReleases`), `newestRelease` (one source, live list preferred over the cached check), `deployTargetVersion` (invariant 6's single answer), `availableRelease`, `pinnedBehind`, `behindCount`. It lives in `lib/` because three modules read it and **modules never import each other** — stacks, dashboard and products. `modules/stacks/StackVersion.tsx` turns those answers into the three stack-page surfaces (header fragment, Version dialog, Version panel — the only renderer of the latter); `modules/products/DeployLatestButton.tsx` is the product-scoped roll-out (`products.deployRelease`) shared by the product header and the Releases tab header. Edits: the stack header meta line + mobile FAB (`StackDetailPage`), the Updates-vs-Version ternary and the containers empty state (stack `OverviewTab`), "Automatic rollout" + the pinned-and-disabled select (stack `SettingsTab`), the version chip and mobile card (`StacksPage`), the dashboard card's Deploy label and its mode-aware update badge (`dashboard/sections.tsx`), the `OnChange` creation default (`StackNewPage`), the product primary button (`ProductDetailPage`), the Releases tab header (`ReleasesTab`), and `lib/{types,api}.ts` for the new `StackDto` fields, `stacks.setRelease` and `products.deployRelease`. |
 | `0c51bc9` | **5 — secret sync** | `CiActionsConfigSync`, the per-repo Actions-config pass lifted out of `CiRunnerOrchestrator` and generalized into two independent contributors with independent hash guards. Registry (unchanged, state on `CiRepo`) plus release (new, state on `Product`): the `WATCHTOWER_URL` and `WATCHTOWER_PRODUCT_ID` variables and the sealed-box `WATCHTOWER_RELEASE_TOKEN` secret. `Product` gained `SyncReleaseSecrets`, `ActionsSyncedHash`, `ActionsSyncedAt`, `LastActionsSyncError` in one additive migration (`AddReleaseSecretSync`) with the filtered unique index `ix_products_ci_repo_id_sync_release_secrets`. `CiRepoResolver.FindSyncingProductsAsync` is the reverse lookup. `ci.setReleaseSecretsSync` is the toggle (PAT probe, monorepo refusal in words, token minted when missing); `products.rotateReleaseToken` and `products.update` clear the hash and wake the loop, and a repository move turns the sync off. `ci.getProductCi` carries the state. Frontend: a release-secrets card on the CI tab built to `RegistrySyncCard`'s pattern, and the Releases tab's token card collapses its manual instructions and switches the snippet to `${{ vars.WATCHTOWER_* }}` once — and only once — a push has actually landed. |
 
-**Next: stage 6 (tenant release policy)**, then 7 (tenant-aware backups). The roadmap table in
+| `_pending_` | **6 — tenant release policy** | `StackTemplate.DefaultPinnedReleaseId` (SET NULL) and `Product.RetainReleases` (default 50) in one additive migration (`AddTenantReleasePolicy`). `TenantProvisioningService` copies the default onto each new tenant — the one field family ADR-0026 copies. `templates.setTenantsRelease` writes the pin onto every tenant *and* the template default in one call, behind the `stacks.setRelease` pre-flight and its Git-mode refusal. `products.getReleaseRollout` / `products.retryFailedRollout` are the partial-failure surface, and `DeployEventDto` gained `releaseId`/`releaseVersion` (the widening 4b owed). `ReleasePruner` is release retention, run post-create by `ReleaseIntakeService` and guarded by four protection rules (invariant 15). Frontend: the Instances roster's Version column, rollup and bulk action; `components/set-release-dialog.tsx` (the shared roll-out dialog, two apply paths); the Releases tab's contextual row action and per-row rollout summary + Retry failed; the product Settings mode-revert control and the Overview "latest ≠ branch head" warning; the deploy-history version chip. `useProductReleases` moved to `hooks/use-product-releases.ts` — three modules read it now. |
+
+**Next: stage 7 (tenant-aware backups)** — the last stage. The roadmap table in
 [design.md](design.md#staged-roadmap) is the authority for scope per stage.
 
-Three things from the design were **deliberately left out of stage 4b's scope**:
+**Every 4b deferral landed in stage 6.** The mode-revert control, the "latest ≠ branch head" warning,
+the per-row contextual labels and the instance-checklist roll-out dialog are all shipped; the list that
+stood here is gone. One 4b note survives unchanged:
 
-- The operator's **mode-revert control** (`products.update` already takes `releaseMode`, so it is a
-  Settings-tab control and nothing more) and the **"latest ≠ branch head" warning** on the product
-  Overview ("2 commits on main since v1") — both belong to whoever next touches the product page, and
-  neither needs new wire data.
-- The Releases tab's **per-row contextual labels** ("Deploy this release" / "Roll back to this
-  release") and the **instance-checklist roll-out dialog** (segmented pin/track, per-instance current
-  versions, pre-rollout-backup checkbox, live consequence sentence). Both are fleet operations over a
-  *chosen* release, which is per-instance pinning — the same thing the Instances Version column and
-  bulk pin are, so all of it lands together in **stage 6**. What 4b ships instead is the one
-  product-level action that is not per-instance: "Deploy latest to all".
-- The pin picker offers the **newest 20 releases and no "Show older"**. The Releases tab pages
-  properly; the dialog is a fixed window, so a pin to a release older than 20 can be read (the header
-  chip names it) but not re-selected from the dropdown, and "N behind" degrades to a bare `behind`
-  chip there rather than guessing a number. Widen `RELEASE_OPTIONS` or give the select its own paging
-  if a fleet ever needs it.
+- The pin pickers offer the **newest 20 releases and no "Show older"** (`RELEASE_OPTIONS` in
+  `hooks/use-product-releases.ts`, now shared by the stack Version dialog and the roll-out dialog). The
+  Releases tab pages properly; the pickers are a fixed window, so a pin to a release older than 20 can
+  be read (the chip names it) but not re-selected from a dropdown, and "N behind" degrades to a bare
+  `behind` chip rather than guessing a number.
+
+Two things stage 6 deliberately did **not** ship:
+
+- **`RetainReleases` has no RPC setter and no UI.** The column exists, defaults to 50, is clamped to
+  5…1000 on read, and is what the pruner reads — but nothing exposes it, so changing it means editing
+  the row. Accepted for now because the four protection rules make the default safe for every shape of
+  fleet, and a retention field on the Settings tab is a control nobody asked for yet. Owed if an
+  operator ever wants a different floor; it is one field on `products.update` plus one input.
+- **The pre-rollout-backup checkbox** the roll-out dialog is supposed to offer (design.md §Backups,
+  "Back up each instance before deploying"). It needs `templates.backupAll` and the `pre-deploy` deploy
+  trigger, which are stage 7's, so the dialog ships without it and gains it there.
 
 Two zero-release edges in `Releases` mode, both reachable only through a mode revert (a product is
 flipped *into* `Releases` by its first release, so the state cannot occur naturally): the stack
@@ -163,6 +168,37 @@ to its Git-mode 52px circle — renders version-less exactly as it did before st
     neither and recording the conflict on both, and `ci.setReleaseSecretsSync` asks the same question
     so its refusal names a stranded product the FK query could not see. Any new writer that clears a
     CI link must clear the sync flag with it.
+15. **Release pruning has four protection rules, and only one of them the schema would catch.**
+    `ReleasePruner` keeps the newest `Product.RetainReleases` and deletes the rest — except a release
+    that a stack **pins**, that a template names as its **`DefaultPinnedReleaseId`**, that a stack
+    records as its **`LastDeployedReleaseId`**, or that **any stored `DeployEvent`** references. Only
+    the first is backed by a `Restrict` foreign key (and even there the guard matters: without it one
+    hand-pinned tenant would make every future pruning pass of its product throw). The other three FKs
+    are `SET NULL`, so a pruner that forgot one would *succeed* and silently clear a fleet default,
+    blank out "what is this stack running", or empty the rollout view. All four rules, plus the clamp
+    on a hand-edited `RetainReleases`, were mutation-checked one at a time in `ReleasePruningTests` —
+    each mutation failed exactly one test. **"Referenced by any deploy event"** is deliberately not
+    "recent": `deploy_events` has no retention of its own, so any narrower rule would be an invented
+    number. The pass runs post-create inside `ReleaseIntakeService`, last, inside a `try`/`catch` that
+    logs and swallows — on the webhook path the release is already committed, so a throw would 500 a
+    call that succeeded.
+16. **`templates.setTenantsRelease`'s two writes are one transaction.** The tenants' `ExecuteUpdate`
+    and the template default's `SaveChanges` are two statements, and without a `BeginTransactionAsync`
+    around them they are two *implicit* transactions — a failure between them leaves the fleet pinned
+    to a release the default never got, so the next tenant provisioned joins a fleet it disagrees with.
+    That is the exact state the handler exists to prevent, and it is the state a half-written pair
+    produces silently. `CreateTemplate` is the in-repo pattern; the enqueues stay outside the
+    transaction for invariant 9's reason (a deploy resolves its release on another connection).
+    `SetTenantsRelease_RollsTheTenantWriteBackWhenTheDefaultWriteFails` forces the second write to throw
+    and asserts neither half survived; removing the wrapper fails it.
+17. **`StackTemplate.DefaultPinnedReleaseId` is copied at provisioning, and that asymmetry is the
+    point.** It is the one field family ADR-0026 copies rather than references (invariant 5 is about
+    everything else). A reference cannot express either half of what tenancy needs: a tenant given a
+    hotfix pin must not drag the fleet with it, and moving the template's default must not silently
+    repin a tenant somebody pinned by hand. `templates.setTenantsRelease` is what brings the fleet back
+    together — it writes both halves in one call, so "the fleet is on 1.4.0" survives the next tenant.
+    `Provision_TakesTheDefaultOnce_SoALaterFleetMoveDoesNotFollowIt` is the test that would fail if the
+    copy ever became a read-through.
 
 ## Owed work and accepted debt
 
@@ -332,10 +368,9 @@ is regenerated; `npm run generate:rpc` produces the types.
 - **Built in 4b** (everything below except the mode-revert control, which is still owed — see the
   note under the table): the Version panel, the pin dialog, the tracking chip and behind-badge, the
   `OnChange` creation default and the relabelled `AutoDeployMode` options.
-- **`DeployEventDto` carries no release**, and stage 4b did not add one. `DeployEvent.ReleaseId` is
-  stamped at execution server-side, but the history row would need a per-row lookup to render it, so
-  the rows show no version chip; the expanded deploy output names the release on its first line.
-  A future stage that wants the chip should widen the DTO rather than fetch per row.
+- **`DeployEventDto` carried no release** through 4b; **stage 6 widened it** with `releaseId` and
+  `releaseVersion`, projected through one left join in `stacks.events` rather than a lookup per row.
+  The chip is on the history rows now.
 
 ### Stage 4b — the three judgement calls, and why
 
@@ -442,3 +477,164 @@ off-but-available (manual instructions plus the quiet "Watchtower can place it f
 blocked (manual instructions, no cross-link, exactly the pre-stage-5 card). The PAT probe was also
 exercised against real github.com with a bogus token: `ci.setReleaseSecretsSync` refused with "The PAT
 is invalid or expired" and named the by-hand path in the same sentence. No console errors.
+
+## Stage 6 handoff — tenant release policy
+
+**Where "which instance runs which version" is answered, exactly once.** `lib/release.ts` gained the
+roster half of the derivations it already held for the stack page: `versionBucket` / `versionRollup`
+(the "18 on latest · 2 pinned · 1 behind" line) and `rosterVersion` (a row's version, `pinned` and
+`behind`). They take a narrow `VersionState` — `{trackingMode, pinnedRelease, lastDeployedRelease}` —
+rather than a `Stack`, and the backend now puts that same wire shape on **three** DTOs: `StackDto`,
+`ProductStackDto` and `TenantDto`. Spelled three times in C# on purpose: modules do not reach into
+each other's contracts (ELMOD002), and a two-field projection is not worth a shared module to own it.
+One TypeScript interface reads all three. Anything new that renders a version cell or a rollup goes
+through those functions rather than re-deriving `pin ?? deployed`.
+
+**The roll-out dialog has two apply paths, and the checklist decides which.**
+`components/set-release-dialog.tsx` is opened from two modules (Instances roster, Releases tab row
+action), which is why it is in `components/` and not in either. Selecting **every** row when a `fleet`
+is given runs one `templates.setTenantsRelease` — pins written *and* the template default moved, one
+round trip for any fleet size. Selecting a **subset**, or having no fleet at all, runs
+`stacks.setRelease` per row and leaves the default alone: that is the canary and per-tenant-hotfix
+case. The consequence sentence names which one is about to happen, because the difference — whether
+the *next* tenant joins where the fleet is — is invisible otherwise. The Releases tab only passes a
+`fleet` when every deployment of the product is a tenant of the one template; a product that also has
+standalone stacks would otherwise have them silently missed by a "select all" that looked like it
+covered them.
+
+**The two design decisions this stage had to make:**
+
+- **"latest ≠ branch head" reads what is already polled.** `products.get` gained
+  `unreleasedCommitSha`, derived server-side from `StackUpdateCheck.NewCommitSha` — which release mode
+  keeps deliberately informational for exactly this — and compared against the latest release's
+  `commitSha` (also newly on `ProductReleaseSummaryDto`). **No network call on a read path**: a
+  `git ls-remote` per product page load was the alternative and was refused. Only stacks that track the
+  product's *own* branch are consulted, because a staging stack on `develop` polls a different head.
+  It is therefore a lower bound and honestly so — a product whose stacks are all on overrides, or which
+  has never been polled, reports null rather than guessing. And it is a **sha, never a count**: "2
+  commits on main since v1" needs a clone, so the UI names both shas and does not invent the number.
+- **The row action's label compares against the fleet, not the release list.** `rowAction` in
+  `ReleasesTab.tsx` takes each deployment's own position (`pin ?? lastDeployed`, the same rule every
+  version surface reads) and labels the row against the newest of those: newer → "Deploy this release",
+  older → "Roll back to this release", equal or a fleet that is nowhere yet → the neutral "Set this
+  release". Comparing against the newest release that *exists* would describe the version list instead
+  of the consequence of the click — a product with three unrolled-out releases is still on the first.
+
+**`products.retryFailedRollout` targets less than "the failures".** It folds to the newest event per
+stack (a stack that failed and was then fixed is not a failure), and then excludes two kinds it would
+otherwise lie about: a stopped stack refuses deploys, and a stack now pinned to a *different* release
+would deploy its pin rather than this release, because deploys are convergent. Both come back as
+`skipped` with the count, and the toast says why — verified live: retrying a rollout whose one failed
+tenant had since been repinned reported "Retrying 0 deploys… 1 skipped".
+
+**The rollout view is honest about its two halves.** Rows with a `DeployEvent` are history. Rows
+without one are reported as skipped with the reason the stack's state gives *today* — the fan-out
+deliberately records nothing per stack it did not target (that is what keeps a 200-tenant release from
+writing 200 rows of noise), so "pinned" can mean "pinned since". The remark on `ReleaseRolloutDto` is
+the contract; do not let a later change quietly present it as enqueue-time truth.
+
+**One schema note for whoever touches `stack_templates` next.** The migration is clean and additive
+(no stray `DropIndex` — the stage-5 trap does not apply, because nothing else indexed
+`default_pinned_release_id`), but the FK is `SET NULL` where `Stack.PinnedReleaseId` is `Restrict`, and
+that asymmetry is deliberate: clearing a default for *future* tenants changes no running deploy. What
+must not clear it is pruning, which is a rule in `ReleasePruner`, not a schema one.
+
+**Live verification** (podman + API + Vite on 55435/5080/5176, the stage-4b recipe) exercised every
+surface with real wire data and real `docker.io` digest resolution: two releases recorded against
+`nginx:1.27-alpine`/`1.26-alpine`; `setTenantsRelease` pinning four tenants and the template default;
+a fifth tenant provisioned **and coming out pinned to the fleet default with no operator action**; the
+Instances roster's Version column (`1.3.0` `pinned` `behind`), its rollup line and its bulk button; the
+roll-out dialog's checklist, both consequence sentences (full selection vs subset) and a live apply
+that moved four pins and the default to 1.4.0; the Releases tab's contextual labels flipping to "Roll
+back to this release" once the fleet moved past a release; the expanded row's "1 failed · 3 not
+deployed" summary and its Retry failed; the product Overview warning; the Settings mode-revert control
+including a full `releases → git → releases` round trip; and the deploy-history version chips. Flipping
+the product to Git mode removed the Version column, the rollup and the bulk button from the roster —
+invariant 4 on a surface that did not exist before. No console errors.
+
+Two defects were found by the live pass and nothing else, both in the dialog: the consequence sentence
+read *"4 instances will go back to tracking latest and deployed"* (the clause only parses after the
+passive half), and the fleet dialog opened on **Track latest** over an already-pinned fleet, which made
+Apply an accidental unpin. Both fixed; the second is why the roster passes
+`seedReleaseId={template.defaultPinnedRelease?.id}`.
+
+**Mutation testing** (the habit the doc asks for, and it earned its keep again). Twelve mutations, all
+caught: the four pruning protection rules dropped one at a time, the retention clamp removed, retry
+targeting widened to every stack, retry's two exclusions dropped, retry folding to the *oldest* event
+instead of the newest, `setTenantsRelease` not writing the template default, not writing the tenants,
+and deploying stopped tenants, and `TenantProvisioningService` not copying the default. Two real bugs
+were caught by the new tests before that: `GetReleaseRollout` used `ToDictionary` where a stack can
+legitimately have several events for one release (threw on a redeploy), and the intake pruning test
+first used a `ghcr.io` image the test host's registry gate refuses.
+
+### Stage 6 review round — what changed after the first pass
+
+Two of these were real bugs a reader would have hit; the rest are the kind of thing that only shows up
+when someone asks "and what happens when that lookup misses?".
+
+- **The roll-out dialog announced the opposite of what Apply did.** Its consequence sentence and its
+  toast both branched on whether a *version string* could be found in the newest-20 window — so on two
+  entirely normal paths (the window still loading, and a pin older than 20) they read "will go back to
+  tracking latest" over a dialog whose Apply pins. Everything now branches on `pin`, and an unknown
+  version renders as `release #N (outside the loaded list)` — or bare `release #N` while the list is in
+  flight, because "outside the list" is not yet true. The select trigger gets a row for the
+  out-of-window pin too, so it names the pin instead of showing its "Select a release" placeholder.
+  Both cases were verified live (a 22-release product for the window case, a delayed `listReleases`
+  fetch for the load case).
+- **`templates.setTenantsRelease` wrote its two halves in two implicit transactions** — now invariant
+  16, with a test that forces the second write to throw.
+- The pruner's delete inside `PublishAsync` now sits behind its own savepoint (`PruneSavepoint`),
+  mirroring `InsertSavepoint`: swallowing its exception inside a caller's transaction would otherwise
+  poison that transaction while intake reported `Created`.
+- `templates.list` and `templates.update` were missing `Include(t => t.DefaultPinnedRelease)`, so both
+  reported "no default" over a template that had one. `TemplateReads_AllProjectTheFleetDefault` covers
+  all three read paths at once.
+- **A zero-instance template can now set its fleet default from the dialog.** The backend always
+  supported it (`SetTenantsRelease_WithNoTenants_StillWritesTheDefault`), and the "No instances yet…"
+  sentence was already written — but Apply was disabled, so the sentence was dead code.
+- **The Settings tab sent `releaseMode` on every save**, including saves that never touched it. Since
+  the mode is also flipped from outside the form (the first release published), an unrelated save
+  minutes later silently reverted a flip that had already landed.
+
+  The first attempt at this gated on a *snapshot diff* (`form.releaseMode !== product.releaseMode`) and
+  was still wrong, in the same direction: `form` is seeded once at mount and this component never
+  remounts on a refetch, so the diff turns true by itself the moment the mode moves behind the page —
+  and the next unrelated save posts the stale mount value. The first live check passed only because it
+  happened not to refetch. **The gate is operator intent** (`modeTouched`, set from the select's
+  `onValueChange`), and the displayed value is *derived* — `modeTouched ? form.releaseMode :
+  product.releaseMode` — rather than re-seeded through an effect, which could race a selection in
+  progress. Deriving it also fixes the display half: without it the control kept showing the mount-time
+  value, so picking "Git" on an already-showing-Git control was a no-op that reverted nothing.
+
+  Both paths verified live end to end. Untouched: load Settings on a Git-mode product → flip to
+  `releases` by RPC → force a refetch (the select follows to "Releases", no banner) → save a
+  description edit → mode **stays `releases`**, no `release.mode.change` row. Touched: operator picks
+  Git → banner appears → save → mode becomes `git` with the `Releases → Git` audit row. There is no
+  frontend test runner in this repo (no vitest/jest/testing-library, no test files), so the payload
+  assertion is the live check plus the comment on `modeTouched` naming the hazard.
+- `products.retryFailedRollout` gained the Git-mode refusal the other release writers have (without it
+  a "retry" is a fleet-wide branch-head deploy), and its copy stopped implying it re-deploys *this*
+  release. It does not, and cannot: the enqueue carries no release id (invariant 3), so a
+  latest-tracking instance deploys whatever is newest now. Button, summary line and toast all say so —
+  "Retry failed instances", "A retry deploys each instance's pin, or the newest release if it tracks
+  latest."
+- The row actions are **"Roll out this release…" / "Roll back to this release…" / "Set this release…"**.
+  "Deploy this release" promised the one thing the dialog does not necessarily do — its Deploy-now
+  checkbox can be turned off — and the ellipsis matches every other dialog-opening control.
+- `versionBucket` now uses `>=` against `newestId`, the same comparison family `rosterVersion`'s `>`
+  uses. They have to agree or a row lands in the *behind* count with no `behind` chip to explain it.
+- The dialog's re-seed **preserves a subset across a roster change**. A tenant provisioned while the
+  dialog is open used to re-select everything, which silently promoted a deliberate three-of-twenty
+  per-stack apply into a fleet write that also moves the template default. The selection is now
+  intersected with the new ids, and only a selection that *was* everything grows. Both branches
+  verified live by invalidating the roster query with the dialog open.
+- The apply toast reports the **server's** counts, not the checklist's — a tenant provisioned since the
+  dialog opened is written by the fleet call and absent from the list it was rendered from.
+- Smaller: the `SkipReason` doc now names the three constants it can actually hold; `UnreleasedCommit`
+  documents its tie-break (first by stack name, the order the roster query already imposes) and the
+  null-commit caveat; and `Prune_ClampsARetentionValueAboveTheCeiling` covers the ceiling side of the
+  clamp the first pass only tested from below.
+
+**Mutation-checked again** for the five backend fixes: dropping the transaction wrapper, dropping the
+Git-mode guard, dropping either `DefaultPinnedRelease` include, and removing the clamp's ceiling — each
+failed exactly the test written for it.

@@ -571,8 +571,9 @@ public sealed class ReleaseIntakeTests {
     /// </summary>
     private sealed class BlindIntakeService(
         WatchtowerDbContext db, RegistryAuthBuilder registries, IReleaseDigestResolver digests,
-        AuditLog audit, TimeProvider time)
-        : ReleaseIntakeService(db, registries, digests, audit, time) {
+        AuditLog audit, ReleasePruner pruner,
+        Microsoft.Extensions.Logging.ILogger<ReleaseIntakeService> logger, TimeProvider time)
+        : ReleaseIntakeService(db, registries, digests, audit, pruner, logger, time) {
         private bool _blinded;
 
         protected override Task<(Release? Replay, bool VersionTaken)> PrecheckAsync(

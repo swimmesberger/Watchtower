@@ -38,6 +38,9 @@ import type {
   Credential,
   DeployAccepted,
   DeployEvent,
+  ReleaseRollout,
+  RetryFailedRolloutResult,
+  SetTenantsReleaseResult,
   DeployReleaseResult,
   DnsCheckResult,
   DockerConfigStatus,
@@ -163,6 +166,8 @@ export const api = {
         defaultBranch: data.defaultBranch,
         description: data.description ?? null,
         credentialId: data.credentialId ?? null,
+        // Null means "leave it alone", which is what every caller but the mode control sends.
+        releaseMode: data.releaseMode ?? null,
       })).product as Product,
     delete: async (id: number) => {
       await rpc('products.delete', { id })
@@ -208,6 +213,23 @@ export const api = {
         productId,
         releaseId: releaseId ?? null,
       })) as DeployReleaseResult,
+
+    /**
+     * What one release actually reached: a row per stack of the product, and the counts above them.
+     *
+     * The rows with a deploy event are history; the skipped ones describe the stack as it is **now**,
+     * because the fan-out deliberately records nothing per stack it did not target.
+     */
+    getReleaseRollout: async (releaseId: number) =>
+      (await rpc('products.getReleaseRollout', { releaseId })).rollout as ReleaseRollout,
+
+    /**
+     * Re-enqueues the stacks whose newest deploy of this release failed, and only those. Stopped
+     * stacks and ones now pinned elsewhere are reported as `skipped` rather than deployed — the
+     * second would deploy its pin instead of this release, which is not what the button says.
+     */
+    retryFailedRollout: async (releaseId: number) =>
+      (await rpc('products.retryFailedRollout', { releaseId })) as RetryFailedRolloutResult,
   },
 
   stacks: {
@@ -532,6 +554,19 @@ export const api = {
         .grant as TemplateGrant,
     revokeManagement: async (templateId: number, stackId: number) =>
       (await rpc('templates.revokeManagement', { templateId, stackId })).removed as boolean,
+
+    /**
+     * One version policy for the whole fleet: pins every current tenant to `releaseId` — or clears
+     * every pin with null — **and** stores it as the template's default for tenants created later.
+     *
+     * `deploy` defaults to false, unlike `stacks.setRelease`: a fleet redeploying is an event to opt
+     * into. Refusals are the pin pre-flight's (`409` for a missing digest, a business-rule error for a
+     * registry that did not answer) plus `409` for a Git-mode product and a validation error for a
+     * release of another product — surface them verbatim.
+     */
+    setTenantsRelease: async (templateId: number, releaseId: number | null, deploy: boolean) =>
+      (await rpc('templates.setTenantsRelease', { templateId, releaseId, deploy }))
+        .result as SetTenantsReleaseResult,
   },
 
   metrics: {

@@ -1,10 +1,21 @@
 import { useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, ExternalLink, Package, Plus, RotateCw, Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Package,
+  Plus,
+  RotateCcw,
+  RotateCw,
+  Tags,
+  Trash2,
+} from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CiLink, Product, Release } from '@/lib/types'
+import type { CiLink, Product, ProductStack, ProductTemplate, Release } from '@/lib/types'
 import { absoluteTitle, timeAgo, truncateMiddle } from '@/lib/format'
 import { commitUrl } from '@/lib/source'
+import { SetReleaseDialog, type ReleaseTarget } from '@/components/set-release-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -68,6 +79,12 @@ export function ReleasesTab({ product }: { product: Product }) {
   const rows = releases.data?.pages.flatMap((p) => p.releases) ?? []
   const newestId = rows[0]?.id
 
+  // The rosters, for the per-row action: which stacks it would move, and whether this product has a
+  // template whose fleet default the dialog can write. Same query key as the detail page, so the tab
+  // reads the cache the page already primed.
+  const stacks = detail?.stacks ?? []
+  const templates = detail?.templates ?? []
+
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -113,6 +130,8 @@ export function ReleasesTab({ product }: { product: Product }) {
                 product={product}
                 release={release}
                 isLatest={release.id === newestId}
+                stacks={stacks}
+                templates={templates}
               />
             ))}
           </ul>
@@ -146,19 +165,62 @@ export function ReleasesTab({ product }: { product: Product }) {
   )
 }
 
+/**
+ * What the row's action is called, which is a fact about where the fleet already is
+ * (design.md §"Product detail page": "Row menu labels are contextual … so the consequence is stated
+ * before the click").
+ *
+ * **The reference is the fleet, not the release list.** A product whose CI published three releases
+ * nobody rolled out yet is still *on* the first one, so calling the second "roll back" because a third
+ * exists would describe the version list rather than the consequence of the click. Each deployment's
+ * own version is its pin when it has one and its last deployed release otherwise — the same
+ * `pin ?? deployed` rule every version surface reads — and the fleet's position is the newest of those.
+ * Ids are the ordering (invariant 7).
+ *
+ * A fleet that is nowhere yet (nothing pinned, nothing deployed) has nothing to be newer or older than,
+ * and so does the release the fleet is already on: both get the neutral label.
+ */
+function rowAction(release: Release, stacks: ProductStack[]): 'deploy' | 'rollback' | 'set' {
+  const positions = stacks
+    .map((s) => (s.pinnedRelease ?? s.lastDeployedRelease)?.id)
+    .filter((id): id is number => id != null)
+  if (positions.length === 0) return 'set'
+  const fleetAt = Math.max(...positions)
+  if (release.id > fleetAt) return 'deploy'
+  if (release.id < fleetAt) return 'rollback'
+  return 'set'
+}
+
+// "Roll out", not "Deploy": the click opens the roll-out dialog, which pins a chosen set of instances
+// — it does not deploy anything by itself, and the dialog's own Deploy-now checkbox can be turned off.
+// A button labelled "Deploy this release" promises the one thing the dialog does not necessarily do.
+// The ellipsis is the same signal every other dialog-opening control on these pages uses.
+const ROW_ACTION_LABEL = {
+  deploy: 'Roll out this release…',
+  rollback: 'Roll back to this release…',
+  set: 'Set this release…',
+} as const
+
 /** One release: the row everything is read off, expanding to the images it pins. */
 function ReleaseRow({
   product,
   release,
   isLatest,
+  stacks,
+  templates,
 }: {
   product: Product
   release: Release
   isLatest: boolean
+  /** The product's deployments — what the row action would move, and where they are now. */
+  stacks: ProductStack[]
+  /** Its templates; the first one's fleet default is what a full selection would write. */
+  templates: ProductTemplate[]
 }) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [settingRelease, setSettingRelease] = useState(false)
 
   const remove = useMutation({
     mutationFn: () => api.products.deleteRelease(release.id),
@@ -172,6 +234,22 @@ function ReleaseRow({
 
   const href = release.commitSha ? commitUrl(product.repositoryUrl, release.commitSha) : null
   const shortSha = release.commitSha?.slice(0, 7)
+  const action = rowAction(release, stacks)
+  // A tenant is labelled by its slug; a standalone deployment by its stack name. Both are stacks of
+  // this product, and both are things the row action can move.
+  const targets = stacks.map(
+    (s): ReleaseTarget => ({ stackId: s.id, label: s.tenantSlug ?? s.name, state: s }),
+  )
+  // The fleet path is offered only when *every* deployment of this product is a tenant of the one
+  // template. `templates.setTenantsRelease` writes that template's tenants and its default and nothing
+  // else, so a product that also has standalone stacks would have them silently missed by a
+  // "select all" that looked like it covered them. Then the per-stack path covers everything instead,
+  // and the fleet default is set from the template's own Instances roster.
+  const onlyTemplate = templates.length === 1 ? templates[0] : undefined
+  const fleet =
+    onlyTemplate && stacks.length > 0 && stacks.every((s) => s.templateId === onlyTemplate.id)
+      ? { templateId: onlyTemplate.id, templateName: onlyTemplate.name }
+      : null
 
   return (
     <li>
@@ -222,6 +300,13 @@ function ReleaseRow({
           <span className="tnum">
             {release.imageCount} image{release.imageCount === 1 ? '' : 's'}
           </span>
+          {/* The contextual action. Only in Releases mode and only with something to move: a Git-mode
+              product's stacks deploy branch heads, and the backend refuses a pin outright. */}
+          {product.releaseMode === 'releases' && stacks.length > 0 && (
+            <Button variant="ghost" size="sm" onClick={() => setSettingRelease(true)}>
+              <Tags /> {ROW_ACTION_LABEL[action]}
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -233,7 +318,12 @@ function ReleaseRow({
         </div>
       </div>
 
-      {expanded && <ReleaseImages releaseId={release.id} />}
+      {expanded && (
+        <div className="border-t border-border bg-surface-2">
+          <ReleaseRolloutSummary release={release} />
+          <ReleaseImages releaseId={release.id} />
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirming}
@@ -245,7 +335,97 @@ function ReleaseRow({
         loading={remove.isPending}
         onConfirm={() => remove.mutate()}
       />
+
+      {/* Pre-seeded to pin *this* release, which is what makes the row action one click rather than a
+          dialog the reader has to re-find their release in. The same component the Instances roster's
+          bulk action opens; with a template it can write the fleet default, without one it pins the
+          product's stacks individually. */}
+      <SetReleaseDialog
+        open={settingRelease}
+        onOpenChange={setSettingRelease}
+        productId={product.id}
+        seedReleaseId={release.id}
+        fleet={fleet}
+        targets={targets}
+      />
     </li>
+  )
+}
+
+/**
+ * The rollout summary on the expanded row: how far this release actually got, and the one action that
+ * follows from a failure.
+ *
+ * Fetched only when the row is expanded — a 20-row page must not make 20 requests to render counts most
+ * readers will not look at.
+ */
+function ReleaseRolloutSummary({ release }: { release: Release }) {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['release', release.id, 'rollout'],
+    queryFn: () => api.products.getReleaseRollout(release.id),
+  })
+
+  const retry = useMutation({
+    mutationFn: () => api.products.retryFailedRollout(release.id),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ['release', release.id, 'rollout'] })
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      toast.info(
+        `Retrying ${result.retried} instance${result.retried === 1 ? '' : 's'}…`,
+        // Two things the reader needs and would otherwise have to infer. First, what the retry
+        // actually deploys: the enqueue carries no release id (invariant 3), so a latest-tracking
+        // instance resolves the *current* newest release, which may not be this row's. Second, why the
+        // count can be lower than the failure count.
+        [
+          'Each one deploys its pin, or the newest release if it tracks latest.',
+          result.skipped > 0
+            ? `${result.skipped} skipped — stopped, or pinned to another release.`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      )
+    },
+    onError: (err: Error) => toast.error('Couldn’t retry', err.message),
+  })
+
+  if (isLoading || !data) return null
+
+  const counts = [
+    data.succeeded > 0 && `${data.succeeded} succeeded`,
+    data.failed > 0 && `${data.failed} failed`,
+    data.running > 0 && `${data.running} running`,
+    data.queued > 0 && `${data.queued} queued`,
+    data.skipped > 0 && `${data.skipped} not deployed`,
+  ].filter(Boolean)
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 text-[13px]">
+      <span className="min-w-0 text-text-2">
+        {counts.length > 0 ? counts.join(' · ') : 'Nothing has deployed this release.'}
+        {/* Said before the click, not only in the toast after it: the retry is convergent, so a
+            latest-tracking instance deploys whatever is newest now rather than this row's release
+            (invariant 3). A reader who expects "retry this release" would otherwise be surprised by a
+            fleet that came back on something newer. */}
+        {data.failed > 0 && (
+          <span className="block text-[12px] text-text-3">
+            A retry deploys each instance’s pin, or the newest release if it tracks latest.
+          </span>
+        )}
+      </span>
+      {data.failed > 0 && (
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={retry.isPending}
+          onClick={() => retry.mutate()}
+        >
+          {!retry.isPending && <RotateCcw />}
+          Retry failed instances
+        </Button>
+      )}
+    </div>
   )
 }
 

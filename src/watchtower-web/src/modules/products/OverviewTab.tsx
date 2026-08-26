@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import type { Product, ProductStack } from '@/lib/types'
 import { absoluteTitle, timeAgo } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
+import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -99,6 +100,27 @@ export function OverviewTab({ product }: { product: Product }) {
 
   return (
     <div className="space-y-6">
+      {/* "latest ≠ branch head" (design.md §"Update checks and drift"). The first-release transition
+          makes this routine — CI starts before the last push, so release #1 is often for commit N−1 —
+          and a re-run of an old workflow can produce it at any time. Announced rather than
+          special-cased, and it clears itself on the next release.
+
+          Deliberately no count of commits: knowing "2 commits on main since v1" needs a clone, and this
+          page must not make one. The two shas are what is actually known. */}
+      {data.unreleasedCommitSha && product.latestRelease && (
+        <Banner tone="info" title={`${product.defaultBranch} has moved past ${product.latestRelease.version}`}>
+          The branch head is{' '}
+          <span className="font-mono">{data.unreleasedCommitSha.slice(0, 7)}</span>
+          {product.latestRelease.commitSha && (
+            <>
+              , and the latest release was built from{' '}
+              <span className="font-mono">{product.latestRelease.commitSha.slice(0, 7)}</span>
+            </>
+          )}
+          . Deployments run the release, not the branch — the next release picks the new commits up.
+        </Banner>
+      )}
+
       <Card>
         <CardContent>
           <SectionHeader

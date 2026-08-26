@@ -11,7 +11,7 @@
 //   6. Deploy shows what it will apply — `deployTargetVersion` is the single answer to "what would
 //      this Deploy button do", so every surface that offers one reads the same value and there is
 //      one place it can be wrong.
-import type { Release, Stack } from './types'
+import type { Release, Stack, VersionState } from './types'
 
 /**
  * Whether this stack's product deploys releases rather than branch heads.
@@ -104,4 +104,82 @@ export function behindCount(stack: Stack, releases?: Release[]): number | null {
   if (!releases || !pin) return null
   const index = releases.findIndex((r) => r.id === pin.id)
   return index < 0 ? null : index
+}
+
+// ── Roster derivations (stage 6) ─────────────────────────────────────────────────
+//
+// The three above take a `Stack`, because they answer questions about a stack page. A roster row is a
+// narrower thing — `VersionState`, which `Stack`, `ProductStack` and `Tenant` all satisfy — so the
+// Instances table, the product roster and the roll-out dialog's checklist share one set of answers
+// instead of three copies that would drift.
+
+/** Which of the three buckets a roster row falls into. Disjoint, and they sum to the roster. */
+export type VersionBucket = 'pinned' | 'onLatest' | 'behind'
+
+/**
+ * Where one row sits relative to the newest release.
+ *
+ * **Pinned wins over behind**, deliberately: a pinned-and-outdated instance is reported as pinned,
+ * because a pin is a deliberate choice and counting it as "behind" would turn the rollup into a
+ * standing complaint about it (design.md's rule that pinned stacks are never nagged, risk 10). The row
+ * itself still carries a quiet `behind` chip; the rollup counts it once, as pinned.
+ *
+ * **`>=`, matching `rosterVersion`'s `>`.** The two must agree about what "behind" is or a row lands in
+ * the behind bucket with no `behind` chip beside it to explain the count. A row *ahead* of the window's
+ * idea of newest — deployed between the release list being fetched and the roster being rendered — is
+ * on latest as far as anything here can tell, not behind it.
+ *
+ * A row that has never deployed counts as `behind`: it is not on latest, and it is not pinned.
+ */
+export function versionBucket(state: VersionState, newestId: number | null): VersionBucket {
+  if (state.pinnedRelease) return 'pinned'
+  const deployed = state.lastDeployedRelease?.id
+  if (deployed == null) return 'behind'
+  return newestId == null || deployed >= newestId ? 'onLatest' : 'behind'
+}
+
+/** The three counts the rollup line above a roster renders. */
+export interface VersionRollup {
+  onLatest: number
+  pinned: number
+  behind: number
+  total: number
+}
+
+/** Buckets a whole roster in one pass. */
+export function versionRollup(
+  states: readonly VersionState[],
+  newestId: number | null,
+): VersionRollup {
+  const rollup: VersionRollup = { onLatest: 0, pinned: 0, behind: 0, total: states.length }
+  for (const state of states) rollup[versionBucket(state, newestId)] += 1
+  return rollup
+}
+
+/**
+ * What a roster row's Version cell says, as a value rather than as markup: the version, whether it is
+ * a pin, and whether it is behind the newest release.
+ *
+ * **The pin wins over what is deployed**, matching the stack header invariant: a pinned row states the
+ * version it is on or converging onto, which is the version its Deploy would apply. A latest-tracking
+ * row has no such commitment, so it states what it last deployed.
+ *
+ * `version` is null for a row that has never deployed anything and carries no pin — "—" rather than an
+ * invented answer. It deliberately does *not* fall back to "latest" there: a stack that has not
+ * deployed the newest release is not on it.
+ */
+export function rosterVersion(state: VersionState, newestId: number | null): {
+  version: string | null
+  pinned: boolean
+  behind: boolean
+} {
+  const pin = state.pinnedRelease
+  const running = state.lastDeployedRelease
+  const current = pin ?? running
+  return {
+    version: current?.version ?? null,
+    pinned: pin != null,
+    // `>` rather than `!==` (invariant 7): a row ahead of the window's idea of newest is not behind.
+    behind: newestId != null && current != null && newestId > current.id,
+  }
 }

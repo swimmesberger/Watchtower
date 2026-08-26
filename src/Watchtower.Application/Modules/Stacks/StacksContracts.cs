@@ -74,9 +74,19 @@ public sealed record StackDto(
 public sealed record StackReleaseRefDto(int Id, string Version);
 
 /// <summary>A single deploy event for history display.</summary>
+/// <param name="ReleaseId">
+/// The release this deploy applied, stamped at execution time. Null for a <c>Git</c>-mode deploy, for
+/// one that failed before the release was resolved, and for every deploy that ran before ADR-0026
+/// stage 4.
+/// </param>
+/// <param name="ReleaseVersion">
+/// Its label, denormalized beside the id so a history list renders a version chip per row without a
+/// lookup per row — which is what kept the chip out of stage 4b.
+/// </param>
 public sealed record DeployEventDto(
     int Id, int StackId, string TriggeredBy, string Status, string? Output,
-    DateTimeOffset StartedAt, DateTimeOffset? FinishedAt);
+    DateTimeOffset StartedAt, DateTimeOffset? FinishedAt,
+    int? ReleaseId = null, string? ReleaseVersion = null);
 
 /// <summary>A single environment variable key/value pair returned by the API.</summary>
 public sealed record StackEnvVarDto(int Id, string Key, string Value);
@@ -160,8 +170,13 @@ public static class StackMapping {
             : "Scheduled auto-deploy requires a time in HH:mm format (e.g. \"02:00\").";
     }
 
+    /// <summary>
+    /// Projects a deploy event. <paramref name="e"/> must have its <see cref="DeployEvent.Release"/>
+    /// included for the version chip; without it the row renders chip-less rather than failing.
+    /// </summary>
     public static DeployEventDto ToDto(DeployEvent e) =>
-        new(e.Id, e.StackId, e.TriggeredBy, e.Status, e.Output, e.StartedAt, e.FinishedAt);
+        new(e.Id, e.StackId, e.TriggeredBy, e.Status, e.Output, e.StartedAt, e.FinishedAt,
+            e.ReleaseId, e.Release?.Version);
 
     /// <summary>Compose project name defaults to the stack name with spaces hyphenated.</summary>
     public static string ResolveProjectName(string name, string? explicitName) =>

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { api } from '@/lib/api'
-import type { Product } from '@/lib/types'
+import type { Product, ReleaseMode } from '@/lib/types'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -37,10 +37,26 @@ export function SettingsTab({ product }: { product: Product }) {
     defaultBranch: product.defaultBranch,
     composeFilePath: product.composeFilePath,
     credentialId: product.credentialId,
+    releaseMode: product.releaseMode as ReleaseMode,
   })
   const [error, setError] = useState<string | null>(null)
   const [confirmSource, setConfirmSource] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /**
+   * Whether the operator has actually moved the update-mechanism select in this session.
+   *
+   * **The gate is intent, not a diff.** `form` is seeded once at mount and this component never
+   * remounts on a refetch, so a snapshot-vs-live comparison silently becomes true the moment the mode
+   * changes *behind* the page — which it does on its own, every time a release is published and flips
+   * `Git → Releases`. A save of some unrelated field would then post the stale mount value and revert
+   * the flip, with nothing but an unprompted warning banner to show for it. Nothing the reader did
+   * asked for that, so nothing the reader did should send it.
+   *
+   * Deliberately not fixed by re-seeding `form` from the refetched product in an effect: that would
+   * clobber a selection the operator is in the middle of making. `selectedMode` below derives the
+   * displayed value from this flag instead, which cannot race anything.
+   */
+  const [modeTouched, setModeTouched] = useState(false)
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -52,6 +68,19 @@ export function SettingsTab({ product }: { product: Product }) {
     form.defaultBranch.trim() !== product.defaultBranch ||
     form.composeFilePath.trim() !== product.composeFilePath ||
     form.credentialId !== product.credentialId
+
+  // What the select shows: the operator's choice once they have made one, otherwise whatever the
+  // product currently says. Derived rather than re-seeded through an effect — an effect could race a
+  // selection in progress, and this cannot, because the branch *is* "the operator has not chosen".
+  // Without it the control would keep showing the mount-time value over a product whose mode moved
+  // behind the page, so a reader could not tell the two apart and picking Git on an
+  // already-showing-Git control would be a no-op that reverts nothing.
+  const selectedMode = modeTouched ? form.releaseMode : (product.releaseMode as ReleaseMode)
+  // The gate on sending the field at all (see the mutation) and on warning about the revert: the
+  // operator moved the select *and* it now says something other than the product does.
+  const modeChanged = modeTouched && selectedMode !== product.releaseMode
+  // Not merely "the select says git": a product already in Git mode is not reverting anything.
+  const revertingToGit = modeChanged && selectedMode === 'git'
 
   // Both kinds block a delete and both take the new source at their next deploy, so both are
   // counted and both are named — a count that only mentioned stacks would understate the blast
@@ -73,6 +102,12 @@ export function SettingsTab({ product }: { product: Product }) {
         composeFilePath: form.composeFilePath,
         defaultBranch: form.defaultBranch,
         credentialId: form.credentialId,
+        // **Only when the operator actually moved the select.** The field means "leave it alone" when
+        // null, and sending the value this page loaded with would make every unrelated save — a
+        // rename, a description edit — a mode write. The mode is also flipped from outside this form
+        // (the first release published flips Git → Releases), so a stale value posted back by a save
+        // minutes later would silently revert a flip that had already landed.
+        releaseMode: modeChanged ? selectedMode : null,
       }),
     onSuccess: (updated) => {
       qc.invalidateQueries({ queryKey: ['product', product.id] })
@@ -232,6 +267,55 @@ export function SettingsTab({ product }: { product: Product }) {
           </CardContent>
         </Card>
       </section>
+
+      {/* The mode-revert control, owed since stage 4b. Rendered only once the product has releases:
+          `releases` is refused for a product with none, so a select offering it before then would be a
+          control whose only other option fails. The switch is normally flipped by the first release —
+          this is the way back, and the warning is why it is not a quiet dropdown. */}
+      {product.latestRelease && (
+        <section>
+          <SectionHeader
+            title="Updates"
+            description="How this product's deployments learn there is something new."
+          />
+          <Card>
+            <CardContent className="space-y-3">
+              <Field
+                label="Update mechanism"
+                hint="Switched automatically by the first release; change it back here."
+              >
+                {({ id, describedBy }) => (
+                  <Select
+                    value={selectedMode}
+                    onValueChange={(v) => {
+                      setModeTouched(true)
+                      set('releaseMode', v as ReleaseMode)
+                    }}
+                  >
+                    <SelectTrigger id={id} aria-describedby={describedBy} className="md:w-80">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="releases">Releases — deploy a build your CI reported</SelectItem>
+                      <SelectItem value="git">Git — deploy the branch head</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </Field>
+              {/* Stated before the save, not after: what makes a revert surprising is that the pins
+                  survive it and stop meaning anything, which nothing on screen would otherwise say. */}
+              {revertingToGit && (
+                <Banner tone="warn" title="Deployments go back to branch-head deploys">
+                  Every deployment of {product.name} will clone{' '}
+                  <span className="font-mono">{product.defaultBranch}</span> again instead of a
+                  release. Pinned deployments keep their pin, but it becomes inert — nothing reads it
+                  in Git mode. The next release published switches this back automatically.
+                </Banner>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       {error && (
         <Banner tone="danger" title="Could not save this product">

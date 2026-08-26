@@ -23,7 +23,7 @@ public sealed class ListProducts(WatchtowerDbContext db)
                 TemplateCount = p.Templates.Count,
                 Latest = p.Releases
                     .OrderByDescending(r => r.Id)
-                    .Select(r => new ProductReleaseSummaryDto(r.Id, r.Version, r.CreatedAt))
+                    .Select(r => new ProductReleaseSummaryDto(r.Id, r.Version, r.CreatedAt, r.CommitSha))
                     .FirstOrDefault(),
             })
             .ToListAsync(ct);

@@ -101,6 +101,9 @@ public sealed class TenantProvisioningService(
         var template = await db.StackTemplates
             .Include(t => t.BaseEnvVars)
             .Include(t => t.Product)
+            // Only so the result can name the pin the new tenant inherited — the copy itself needs the
+            // id alone. A tenant created silently pinned would otherwise be reported as tracking latest.
+            .Include(t => t.DefaultPinnedRelease)
             .FirstOrDefaultAsync(t => t.Id == templateId, ct);
         if (template is null)
             return Failed(TenantProvisionStatus.TemplateNotFound, $"Template {templateId} not found");
@@ -130,6 +133,12 @@ public sealed class TenantProvisioningService(
             // edits never reaching the tenants it had already stamped — disappears by construction.
             // BranchOverride stays null so the tenant inherits the template's own override, if any.
             ProductId = template.ProductId,
+            // …and this one *is* copied, deliberately — the one field family ADR-0026 copies. A pin is
+            // per-tenant policy, not shared definition: a tenant given a hotfix pin must not drag the
+            // fleet with it, and moving the template's default must not silently repin a tenant somebody
+            // pinned by hand. Both follow from the value being taken once, here, at provisioning
+            // (design.md §Tenancy).
+            PinnedReleaseId = template.DefaultPinnedReleaseId,
             ComposeProjectName = projectName,
             TemplateId = template.Id,
             TenantSlug = normalized,
@@ -172,7 +181,10 @@ public sealed class TenantProvisioningService(
         var enqueued = deployQueue.Enqueue(stack.Id, CreateTrigger);
         return new TenantProvisionResult(
             TenantProvisionStatus.Created,
-            new TenantDto(stack.Id, normalized, stack.Name, domain, enqueued.Status, null),
+            new TenantDto(
+                stack.Id, normalized, stack.Name, domain, enqueued.Status, null,
+                stack.PinnedReleaseId is null ? TenancyMapping.TrackingLatest : TenancyMapping.TrackingPinned,
+                TenancyMapping.ReleaseRef(template.DefaultPinnedRelease)),
             enqueued.DeployEventId,
             enqueued.Status);
     }
