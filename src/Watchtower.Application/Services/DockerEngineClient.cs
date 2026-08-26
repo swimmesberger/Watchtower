@@ -875,14 +875,27 @@ public sealed class DockerEngineClient : IDisposable {
         using var probeResp = await client.SendAsync(probe, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (probeResp.StatusCode == System.Net.HttpStatusCode.Unauthorized) {
+            var challenges = probeResp.Headers.WwwAuthenticate;
+
+            // An htpasswd registry (`registry:2` with REGISTRY_AUTH=htpasswd) challenges with
+            // `Basic realm="…"`, where the realm is a display string, not a token endpoint. The
+            // stored credential answers it directly — there is no token to fetch.
+            if (!challenges.Any(c => string.Equals(c.Scheme, "Bearer", StringComparison.OrdinalIgnoreCase))) {
+                return challenges.Any(c => string.Equals(c.Scheme, "Basic", StringComparison.OrdinalIgnoreCase))
+                    && username is not null && token is not null
+                    ? await TryHeadAsync(bearerToken: null)
+                    : null;
+            }
+
             // Parse Bearer realm/service/scope from WWW-Authenticate header and fetch a token.
-            var wwwAuth = probeResp.Headers.WwwAuthenticate.FirstOrDefault()?.ToString() ?? string.Empty;
+            var wwwAuth = challenges.First(
+                c => string.Equals(c.Scheme, "Bearer", StringComparison.OrdinalIgnoreCase)).ToString();
             var realm   = ExtractParam(wwwAuth, "realm");
             var service = ExtractParam(wwwAuth, "service");
             var scope   = ExtractParam(wwwAuth, "scope");
 
-            if (realm is not null) {
-                var tokenUrl = $"{realm}?service={Uri.EscapeDataString(service ?? string.Empty)}&scope={Uri.EscapeDataString(scope ?? $"repository:{repoPath}:pull")}";
+            var tokenUrl = ResolveBearerTokenUrl(realm, service, scope, repoPath);
+            if (tokenUrl is not null) {
                 using var tokenReq = new HttpRequestMessage(HttpMethod.Get, tokenUrl);
                 if (username is not null && token is not null)
                     tokenReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
@@ -906,6 +919,20 @@ public sealed class DockerEngineClient : IDisposable {
                 : null;
 
         return null;
+    }
+
+    /// <summary>
+    /// The token-endpoint URL for a Bearer challenge, or null when the challenge is unusable. A
+    /// realm that is not an absolute http(s) URL cannot be dialled — handing it to HttpClient
+    /// throws "An invalid request URI was provided" — so it is rejected here instead.
+    /// </summary>
+    internal static string? ResolveBearerTokenUrl(string? realm, string? service, string? scope, string repoPath) {
+        if (realm is null
+            || !Uri.TryCreate(realm, UriKind.Absolute, out var realmUri)
+            || (realmUri.Scheme != Uri.UriSchemeHttp && realmUri.Scheme != Uri.UriSchemeHttps))
+            return null;
+        return $"{realm}?service={Uri.EscapeDataString(service ?? string.Empty)}"
+            + $"&scope={Uri.EscapeDataString(scope ?? $"repository:{repoPath}:pull")}";
     }
 
     private static string? ExtractParam(string header, string key) {
