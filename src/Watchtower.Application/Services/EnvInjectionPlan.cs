@@ -3,15 +3,33 @@ using System.Globalization;
 namespace Watchtower.Application.Services;
 
 /// <summary>
-/// One deployable service the injection policy can target, together with the value of its
-/// <see cref="EnvInjectionPlan.InjectTokenLabel"/> label as the runtime engine read it.
+/// One deployable service the injection policy can target, as the runtime engine read it out of the
+/// resolved project: its name, the image it runs, and the raw values of the two Watchtower labels.
 /// </summary>
+/// <remarks>
+/// The image and <see cref="EnvInjectionPlan.ReleaseImageLabel"/> are what image pinning decides from
+/// (docs/products/design.md, "Image pinning"). They travel with this record rather than in a second
+/// parse of the same document, so the engine reads the project once and no two readers can disagree
+/// about what it said.
+/// </remarks>
 /// <param name="Name">The service's name within the stack.</param>
 /// <param name="InjectTokenLabel">
 /// Raw label value, or null when the service carries no such label. Parsing (and the warning for an
 /// unusable value) belongs to the policy, so the engine passes the text through untouched.
 /// </param>
-public sealed record EnvInjectionService(string Name, string? InjectTokenLabel = null);
+/// <param name="Image">
+/// The image reference the resolved project gives this service, after interpolation — or null for a
+/// build-only service, which declares none.
+/// </param>
+/// <param name="ReleaseImageLabel">
+/// Raw <see cref="EnvInjectionPlan.ReleaseImageLabel"/> value, or null when the service carries no such
+/// label. Unparsed, for the same reason as <paramref name="InjectTokenLabel"/>.
+/// </param>
+public sealed record EnvInjectionService(
+    string Name,
+    string? InjectTokenLabel = null,
+    string? Image = null,
+    string? ReleaseImageLabel = null);
 
 /// <summary>A single environment variable a service is to receive.</summary>
 /// <param name="Key">Variable name.</param>
@@ -94,6 +112,15 @@ public sealed record EnvInjectionPlan(
     /// <c>"true"</c> opts in, <c>"false"</c> opts out, anything else is ignored with a warning.
     /// </summary>
     public const string InjectTokenLabel = "watchtower.inject-token";
+
+    /// <summary>
+    /// Per-service label choosing whether a release pins the service's image: <c>"true"</c> forces the
+    /// rewrite, <c>"false"</c> exempts the service even when its repository matches a release image,
+    /// and anything else is ignored with a warning. Not read by this plan — image pinning is a separate
+    /// policy over the same parsed services (docs/products/design.md, "Image pinning") — but named here
+    /// so both Watchtower labels are declared in one place.
+    /// </summary>
+    public const string ReleaseImageLabel = "watchtower.release-image";
 
     /// <summary>A plan that injects nothing — no services, no warnings.</summary>
     public static readonly EnvInjectionPlan Empty = new([], []);

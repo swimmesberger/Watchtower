@@ -18,27 +18,37 @@ namespace Watchtower.Application.Services;
 /// as a base layer so images already accessible via <c>docker login</c> on the host continue
 /// to work. Watchtower-configured credentials take precedence on collision.
 /// </summary>
+/// <remarks>
+/// <b>Every member that touches the database or the disk is asynchronous</b>, because this class sits
+/// on the anonymous release-webhook path: <c>ReleaseIntakeService</c> asks it which registries this
+/// instance knows before it has written anything, so a synchronous query here would block a thread-pool
+/// thread per unauthenticated request. The two remaining synchronous calls are metadata probes with no
+/// asynchronous BCL counterpart (<see cref="File.Exists(string)"/> and
+/// <see cref="Directory.CreateDirectory(string)"/>); both are single <c>stat</c>/<c>mkdir</c> syscalls,
+/// and neither reads or writes file content.
+/// </remarks>
 public sealed class RegistryAuthBuilder(WatchtowerDbContext db) {
     /// <summary>
     /// Creates a temporary directory under <c>/tmp</c> containing a valid
     /// docker config.json populated with all configured registry credentials.
     /// The caller is responsible for deleting this directory after use.
     /// </summary>
+    /// <param name="ct">Cancellation token.</param>
     /// <returns>Path to the temp directory (the DOCKER_CONFIG value).</returns>
-    public string CreateTempConfigDir() {
+    public async Task<string> CreateTempConfigDirAsync(CancellationToken ct) {
         var dir = Path.Combine(Path.GetTempPath(), $"watchtower-docker-config-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
 
         // Start with credentials from the host docker config (e.g. set by docker login).
         // This lets compose pull from any registry the host user is already authenticated with.
-        var auths = LoadHostAuths();
+        var auths = await LoadHostAuthsAsync(ct);
 
         // Apply Watchtower-configured credentials on top (override host credentials on collision).
-        var configured = db.Registries
+        var configured = await db.Registries
             .AsNoTracking()
             .Where(r => r.CredentialId != null && r.Credential != null)
             .Select(r => new { r.Url, r.Credential!.Username, r.Credential.Token })
-            .ToList();
+            .ToListAsync(ct);
         foreach (var reg in configured) {
             var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{reg.Username}:{reg.Token}"));
             auths[reg.Url] = new RegistryAuth { Auth = authValue };
@@ -46,28 +56,29 @@ public sealed class RegistryAuthBuilder(WatchtowerDbContext db) {
 
         var config = new DockerConfig { Auths = auths };
         var json = JsonSerializer.Serialize(config, DockerConfigJsonContext.Default.DockerConfig);
-        File.WriteAllText(Path.Combine(dir, "config.json"), json);
+        await File.WriteAllTextAsync(Path.Combine(dir, "config.json"), json, ct);
         return dir;
     }
 
     /// <summary>
     /// The merged registry view used by CI secret sync and the read-only registry listing: host
     /// docker-config auths as the base layer, Watchtower-configured registries on top (same
-    /// precedence as <see cref="CreateTempConfigDir"/>). Entries carry decoded credentials —
+    /// precedence as <see cref="CreateTempConfigDirAsync"/>). Entries carry decoded credentials —
     /// keep them server-side; DTOs must strip <see cref="ResolvedRegistry.Password"/>.
     /// </summary>
-    public IReadOnlyList<ResolvedRegistry> ListResolvedRegistries() {
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<IReadOnlyList<ResolvedRegistry>> ListResolvedRegistriesAsync(CancellationToken ct) {
         var result = new Dictionary<string, ResolvedRegistry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (url, auth) in LoadHostAuths()) {
+        foreach (var (url, auth) in await LoadHostAuthsAsync(ct)) {
             var (username, password) = DecodeAuth(auth.Auth);
             result[url] = new ResolvedRegistry(url, username, password, FromHostConfig: true, Name: null, RegistryId: null);
         }
 
-        var configured = db.Registries
+        var configured = await db.Registries
             .AsNoTracking()
             .Where(r => r.CredentialId != null && r.Credential != null)
             .Select(r => new { r.Id, r.Name, r.Url, r.Credential!.Username, r.Credential.Token })
-            .ToList();
+            .ToListAsync(ct);
         foreach (var reg in configured)
             result[reg.Url] = new ResolvedRegistry(reg.Url, reg.Username, reg.Token, FromHostConfig: false, reg.Name, reg.Id);
 
@@ -89,12 +100,18 @@ public sealed class RegistryAuthBuilder(WatchtowerDbContext db) {
     /// Reads the <c>auths</c> section from the host's docker config.json.
     /// Returns an empty dictionary when the file is absent, unreadable, or has no auths.
     /// </summary>
-    private static Dictionary<string, RegistryAuth> LoadHostAuths() {
+    /// <remarks>
+    /// The existence check stays synchronous — there is no asynchronous <see cref="File.Exists(string)"/>,
+    /// it is one <c>stat</c>, and on a containerised install (where no host config is mounted) it is the
+    /// only filesystem call this method makes. The <em>content</em> read, which is the one that can
+    /// actually wait on a disk, is asynchronous.
+    /// </remarks>
+    private static async Task<Dictionary<string, RegistryAuth>> LoadHostAuthsAsync(CancellationToken ct) {
         try {
             var hostConfigPath = GetHostDockerConfigPath();
             if (!File.Exists(hostConfigPath)) return [];
 
-            var json = File.ReadAllText(hostConfigPath);
+            var json = await File.ReadAllTextAsync(hostConfigPath, ct);
             var node = JsonNode.Parse(json);
             var authsNode = node?["auths"];
             if (authsNode is null) return [];
@@ -106,8 +123,10 @@ public sealed class RegistryAuthBuilder(WatchtowerDbContext db) {
                     result[registry] = new RegistryAuth { Auth = auth };
             }
             return result;
-        } catch {
-            // Host config is optional — silently ignore any parse or IO errors.
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            // Host config is optional — silently ignore any parse or IO errors. Cancellation is not one
+            // of those: a caller that hung up (or a shutdown) must not be answered "no host registries",
+            // which would silently turn a release intake's registry gate into a refusal.
             return [];
         }
     }

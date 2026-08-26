@@ -325,6 +325,13 @@ public sealed class DockerEngineClient : IDisposable {
     internal const int StderrTailBytes = 8 * 1024;
 
     /// <summary>
+    /// The host serving Docker Hub's v2 registry API. <see cref="ImageRef.DockerHubRegistry"/> is the
+    /// canonical <em>name</em> of that registry, which is what references are compared on; it is not a
+    /// host that answers <c>/v2/…</c>.
+    /// </summary>
+    private const string DockerHubRegistryHost = "registry-1.docker.io";
+
+    /// <summary>
     /// Runs <paramref name="command"/> inside a running container (create + start + inspect, the
     /// API equivalent of <c>docker exec</c>) and returns once the process has exited. Stdout is
     /// written to <paramref name="stdout"/> as it arrives; a null <paramref name="stdout"/> drains
@@ -821,31 +828,22 @@ public sealed class DockerEngineClient : IDisposable {
     /// Returns the <c>Docker-Content-Digest</c> header value (sha256:…), or null when
     /// the registry does not support the OCI Distribution Spec manifest endpoint.
     /// </summary>
+    /// <remarks>
+    /// The reference is split by <see cref="ImageRef"/> rather than here, so this lookup and image
+    /// pinning normalize a name identically — see docs/products/design.md, "Image pinning".
+    /// </remarks>
+    /// <param name="imageName">The image reference to look up; an unparseable one returns null.</param>
+    /// <param name="username">Registry user name, when the repository needs authentication.</param>
+    /// <param name="token">Registry password or token, paired with <paramref name="username"/>.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<string?> GetRemoteDigestAsync(string imageName, string? username = null, string? token = null, CancellationToken ct = default) {
-        // Parse registry host, repository path, and tag/digest reference.
-        var lastColon = imageName.LastIndexOf(':');
-        var lastSlash = imageName.LastIndexOf('/');
-        string repository, reference;
-        if (lastColon > lastSlash) {
-            repository = imageName[..lastColon];
-            reference = imageName[(lastColon + 1)..];
-        } else {
-            repository = imageName;
-            reference = "latest";
-        }
+        if (!ImageRef.TryParse(imageName, out var image)) return null;
+        var repoPath = image.Repository;
+        var reference = image.Reference;
 
-        // Split registry host from repository path. Docker Hub images without explicit
-        // host (e.g. "myorg/watchtower") use index.docker.io as the registry host.
-        string registryHost, repoPath;
-        var firstSlash = repository.IndexOf('/');
-        if (firstSlash > 0 && repository[..firstSlash].Contains('.')) {
-            registryHost = repository[..firstSlash];
-            repoPath = repository[(firstSlash + 1)..];
-        } else {
-            registryHost = "registry-1.docker.io";
-            repoPath = repository.Contains('/') ? repository : $"library/{repository}";
-        }
-
+        // Docker Hub's canonical name is not the host that serves its v2 API: an image normalized to
+        // docker.io is fetched from registry-1.docker.io.
+        var registryHost = image.IsDockerHub ? DockerHubRegistryHost : image.Registry;
         var registryBase = $"https://{registryHost}";
 
         // Request both OCI and Docker manifest media types so the registry returns a digest.

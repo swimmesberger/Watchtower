@@ -4,6 +4,7 @@
 // every key to be present.
 import { rpc } from './rpc-client'
 import type {
+  AdoptStackResult,
   HostRegistry,
   CloudflareForeignRoute,
   ActiveDeployment,
@@ -20,23 +21,30 @@ import type {
   BackupQuiesceMode,
   BackupServiceOverride,
   BackupStackConfig,
+  BackupTemplatePolicy,
+  ProductBackups,
   UpdateBackupConfigRequest,
   Container,
   ContainerEnvVar,
   ContainerMetrics,
   AddTenantRequest,
+  CiLink,
   CiRepo,
-  StackCi,
   CertificateInfo,
   CreateCredentialRequest,
   CreateRealmRequest,
   CreateRegistryRequest,
   CreateRouteRequest,
+  CreateProductRequest,
   CreateStackRequest,
   CreateTemplateRequest,
   Credential,
   DeployAccepted,
   DeployEvent,
+  ReleaseRollout,
+  RetryFailedRolloutResult,
+  SetTenantsReleaseResult,
+  DeployReleaseResult,
   DnsCheckResult,
   DockerConfigStatus,
   Group,
@@ -45,6 +53,13 @@ import type {
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
+  Product,
+  ProductDetail,
+  CreateReleaseRequest,
+  ReleaseDetail,
+  ReleasePage,
+  ReleaseTokenRotation,
+  ReleaseWebhookState,
   PruneOrphansResult,
   ProxyConfig,
   ProxyStatus,
@@ -54,6 +69,7 @@ import type {
   RouteAccess,
   RouteAccessView,
   SelfUpdateStatus,
+  SetStackReleaseResult,
   Stack,
   StackTemplate,
   Tenant,
@@ -67,6 +83,7 @@ import type {
   UpdateAutomationRequest,
   UpdateCredentialRequest,
   UpdateMetricsConfigRequest,
+  UpdateProductRequest,
   UpdateProxyConfigRequest,
   UpdateRealmRequest,
   UpdateRegistryRequest,
@@ -129,12 +146,103 @@ export const api = {
     },
   },
 
+  products: {
+    list: async () => (await rpc('products.list', {})).products as Product[],
+    // The whole envelope: the rosters are what the detail page is for, so splitting them into a
+    // second call would only make the page fetch twice for one screen.
+    get: async (id: number) => (await rpc('products.get', { id })) as ProductDetail,
+    create: async (data: CreateProductRequest) =>
+      (await rpc('products.create', {
+        name: data.name,
+        repositoryUrl: data.repositoryUrl,
+        composeFilePath: data.composeFilePath,
+        defaultBranch: data.defaultBranch,
+        description: data.description ?? null,
+        credentialId: data.credentialId ?? null,
+      })).product as Product,
+    update: async (id: number, data: UpdateProductRequest) =>
+      (await rpc('products.update', {
+        id,
+        name: data.name,
+        repositoryUrl: data.repositoryUrl,
+        composeFilePath: data.composeFilePath,
+        defaultBranch: data.defaultBranch,
+        description: data.description ?? null,
+        credentialId: data.credentialId ?? null,
+        // Null means "leave it alone", which is what every caller but the mode control sends.
+        releaseMode: data.releaseMode ?? null,
+        retainReleases: data.retainReleases ?? null,
+      })).product as Product,
+    delete: async (id: number) => {
+      await rpc('products.delete', { id })
+    },
+
+    // ── releases (ADR-0026 stage 3) ──────────────────────────────────────
+    // Keyset paging on the id: `before` is the last id of the page you have, not an offset, so a
+    // release published while somebody pages cannot shift the window.
+    listReleases: async (productId: number, before?: number, limit = 20) =>
+      (await rpc('products.listReleases', {
+        productId,
+        before: before ?? null,
+        limit,
+      })) as ReleasePage,
+    getRelease: async (releaseId: number) =>
+      (await rpc('products.getRelease', { releaseId })).release as ReleaseDetail,
+    createRelease: async (productId: number, data: CreateReleaseRequest) =>
+      (await rpc('products.createRelease', {
+        productId,
+        version: data.version,
+        images: data.images,
+        commitSha: data.commitSha ?? null,
+        notes: data.notes ?? null,
+      })).release as ReleaseDetail,
+    deleteRelease: async (releaseId: number) => {
+      await rpc('products.deleteRelease', { releaseId })
+    },
+    rotateReleaseToken: async (productId: number) =>
+      (await rpc('products.rotateReleaseToken', { productId })) as ReleaseTokenRotation,
+    setReleaseWebhook: async (productId: number, enabled: boolean) =>
+      (await rpc('products.setReleaseWebhook', { productId, enabled })) as ReleaseWebhookState,
+
+    /**
+     * Rolls the newest release out to every latest-tracking, running stack of the product.
+     *
+     * `releaseId` is the staleness guard, not the target: pass the id the dialog displayed and the call
+     * is refused with `409` when a newer release landed while the dialog was open. The deploys
+     * themselves resolve `pin ?? newest` at execution time (invariant 3), so what they run is always the
+     * true newest.
+     */
+    deployRelease: async (productId: number, releaseId?: number | null) =>
+      (await rpc('products.deployRelease', {
+        productId,
+        releaseId: releaseId ?? null,
+      })) as DeployReleaseResult,
+
+    /**
+     * What one release actually reached: a row per stack of the product, and the counts above them.
+     *
+     * The rows with a deploy event are history; the skipped ones describe the stack as it is **now**,
+     * because the fan-out deliberately records nothing per stack it did not target.
+     */
+    getReleaseRollout: async (releaseId: number) =>
+      (await rpc('products.getReleaseRollout', { releaseId })).rollout as ReleaseRollout,
+
+    /**
+     * Re-enqueues the stacks whose newest deploy of this release failed, and only those. Stopped
+     * stacks and ones now pinned elsewhere are reported as `skipped` rather than deployed — the
+     * second would deploy its pin instead of this release, which is not what the button says.
+     */
+    retryFailedRollout: async (releaseId: number) =>
+      (await rpc('products.retryFailedRollout', { releaseId })) as RetryFailedRolloutResult,
+  },
+
   stacks: {
     list: async () => (await rpc('stacks.list', {})).stacks as Stack[],
     get: async (id: number) => (await rpc('stacks.get', { id })).stack as Stack,
     create: async (data: CreateStackRequest) =>
       (await rpc('stacks.create', {
         name: data.name,
+        productId: data.productId ?? null,
         repositoryUrl: data.repositoryUrl,
         composeFilePath: data.composeFilePath,
         branch: data.branch,
@@ -173,6 +281,24 @@ export const api = {
     setEnv: async (id: number, vars: StackEnvVarInput[]) =>
       (await rpc('stacks.setEnv', { stackId: id, vars })).envVars as StackEnvVar[],
     checkUpdates: async (id: number) => (await rpc('stacks.checkUpdates', { id })).stack as Stack,
+
+    /**
+     * Pins this stack to one release, or clears the pin so it tracks latest again.
+     *
+     * `deploy: false` is the Version dialog's **Save**, `true` its **Save & deploy**. The images are
+     * pre-flighted server-side, so a release whose digests are gone comes back as a `409` naming the
+     * reference and nothing is written — surface that message verbatim.
+     */
+    setRelease: async (
+      id: number, releaseId: number | null, deploy = true, backupFirst = false) =>
+      (await rpc('stacks.setRelease', {
+        stackId: id,
+        releaseId,
+        deploy,
+        // Back up first and deploy only on success: the response then carries a backupEventId and
+        // `deployed: false`, because the deploy is the chain's to enqueue.
+        backupFirst,
+      })) as SetStackReleaseResult,
   },
 
   containers: {
@@ -194,9 +320,11 @@ export const api = {
   },
 
   ci: {
-    getStackCi: async (stackId: number) => (await rpc('ci.getStackCi', { stackId })).ci as StackCi,
-    enableForStack: async (stackId: number, credentialId?: number | null) =>
-      (await rpc('ci.enableForStack', { stackId, credentialId: credentialId ?? null })).repo as CiRepo,
+    getProductCi: async (productId: number) =>
+      (await rpc('ci.getProductCi', { productId })).ci as CiLink,
+    enableForProduct: async (productId: number, credentialId?: number | null) =>
+      (await rpc('ci.enableForProduct', { productId, credentialId: credentialId ?? null }))
+        .repo as CiRepo,
     updateRepo: async (repo: {
       id: number
       enabled: boolean
@@ -219,6 +347,12 @@ export const api = {
           syncRegistryUrl: repo.syncRegistryUrl ?? null,
         })
       ).repo as CiRepo,
+    /**
+     * Turns the release-secret sync on or off for one product. Answers the whole CI link, so the tab
+     * re-renders from one shape rather than patching a toggle and re-fetching the rest.
+     */
+    setReleaseSecretsSync: async (productId: number, enabled: boolean) =>
+      (await rpc('ci.setReleaseSecretsSync', { productId, enabled })).ci as CiLink,
   },
 
   volumes: {
@@ -344,9 +478,13 @@ export const api = {
         localBasePath: data.localBasePath ?? null,
       })).config as BackupConfig,
     testStorage: async () => (await rpc('backups.testStorage', {})).description as string,
-    events: async (stackId?: number, limit?: number) =>
-      (await rpc('backups.events', { stackId: stackId ?? null, limit: limit ?? 50 }))
-        .events as BackupEvent[],
+    events: async (stackId?: number, limit?: number, productId?: number) =>
+      (await rpc('backups.events', {
+        stackId: stackId ?? null,
+        limit: limit ?? 50,
+        // The fleet history: every deployment of one product. Additive — omitting it is the old call.
+        productId: productId ?? null,
+      })).events as BackupEvent[],
     run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
     listRemote: async (stackId: number) =>
       (await rpc('backups.listRemote', { stackId })).files as BackupRemoteFile[],
@@ -354,15 +492,40 @@ export const api = {
       (await rpc('backups.restore', { stackId, fileName })).restore as BackupRunAccepted,
     getStackConfig: async (stackId: number) =>
       (await rpc('backups.getStackConfig', { stackId })).config as BackupStackConfig,
+    /**
+     * Writes the stack's own backup policy. Every field is tri-state: null clears it and the stack goes
+     * back to inheriting (its template's policy when it is a tenant, otherwise the instance default).
+     * The whole policy is posted on every call, so an omitted field means "clear it", not "leave it".
+     */
     setStackConfig: async (
       stackId: number,
-      enabled: boolean,
-      stopContainers: boolean,
+      enabled: boolean | null,
+      stopContainers: boolean | null,
       cron: string | null,
-      quiesceMode: BackupQuiesceMode,
+      quiesceMode: BackupQuiesceMode | null,
     ) =>
-      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron, quiesceMode }))
-        .config as BackupStackConfig,
+      (await rpc('backups.setStackConfig', {
+        stackId, enabled, stopContainers, cron, quiesceMode,
+      })).config as BackupStackConfig,
+
+    /** The product Backups tab's read model: the template policies and the fleet rollup. */
+    getProductBackups: async (productId: number) =>
+      (await rpc('backups.getProductBackups', { productId })) as ProductBackups,
+
+    /**
+     * Writes the backup policy a template's instances inherit. Not a fan-out: an instance that set a
+     * value of its own keeps it, which is what keeps the inheritance live.
+     */
+    setTemplatePolicy: async (
+      templateId: number,
+      enabled: boolean | null,
+      stopContainers: boolean | null,
+      cron: string | null,
+      quiesceMode: BackupQuiesceMode | null,
+    ) =>
+      (await rpc('backups.setTemplatePolicy', {
+        templateId, enabled, stopContainers, cron, quiesceMode,
+      })).policy as BackupTemplatePolicy,
     previewPlan: async (stackId: number) =>
       (await rpc('backups.previewPlan', { stackId })).preview as BackupPlanPreview,
     setServiceOverride: async (
@@ -371,6 +534,20 @@ export const api = {
       override: { exclude: boolean; stop: string | null; dump: string | null },
     ) =>
       (await rpc('backups.setServiceOverride', { stackId, service, ...override }))
+        .override as BackupServiceOverride | null,
+
+    /**
+     * The fleet-wide twin of `setServiceOverride`: one row on the template that every instance reads
+     * live. Same contract, field for field — the whole override is replaced and clearing every knob
+     * deletes it. An instance's own row for the same service replaces this one *whole* (precedence is
+     * per service, not per knob), and a compose label still beats both.
+     */
+    setTemplateServiceOverride: async (
+      templateId: number,
+      service: string,
+      override: { exclude: boolean; stop: string | null; dump: string | null },
+    ) =>
+      (await rpc('backups.setTemplateServiceOverride', { templateId, service, ...override }))
         .override as BackupServiceOverride | null,
   },
 
@@ -381,6 +558,7 @@ export const api = {
     create: async (data: CreateTemplateRequest) =>
       (await rpc('templates.create', {
         name: data.name,
+        productId: data.productId ?? null,
         repositoryUrl: data.repositoryUrl,
         composeFilePath: data.composeFilePath,
         branch: data.branch,
@@ -414,12 +592,32 @@ export const api = {
         slug: data.slug,
         envOverrides: data.envOverrides ?? null,
       })).tenant as Tenant,
+    /**
+     * Adopts an existing standalone stack of this setup's product as the tenant `slug`. The stack keeps
+     * its containers, volumes, data, name, compose project, environment values and version — only the
+     * tenancy link, the missing base env keys and a managed route are added, and nothing is redeployed.
+     *
+     * Every refusal is a sentence naming what is in the way (already a tenant of X, runs product Y,
+     * slug held by stack Z, domain routed to W) — surface them verbatim.
+     */
+    adoptStack: async (templateId: number, stackId: number, slug: string) =>
+      (await rpc('templates.adoptStack', { templateId, stackId, slug })) as AdoptStackResult,
     listTenants: async (templateId: number) =>
       (await rpc('templates.listTenants', { templateId })).tenants as Tenant[],
     deployAll: async (templateId: number) =>
       (await rpc('templates.deployAll', { templateId })).count as number,
-    removeTenant: async (templateId: number, slug: string, removeVolumes: boolean) =>
-      (await rpc('templates.removeTenant', { templateId, slug, removeVolumes })).slug as string,
+    /**
+     * Removes a tenant. With `finalBackup` the removal becomes asynchronous: the response says
+     * `removed: false` with a `backupEventId`, and the tenant disappears when that backup succeeds. A
+     * failed backup aborts the removal and the tenant stays.
+     */
+    removeTenant: async (
+      templateId: number, slug: string, removeVolumes: boolean, finalBackup = false) =>
+      (await rpc('templates.removeTenant', { templateId, slug, removeVolumes, finalBackup })) as {
+        slug: string
+        removed: boolean
+        backupEventId?: number | null
+      },
     listGrants: async (templateId: number) =>
       (await rpc('templates.listGrants', { templateId })).grants as TemplateGrant[],
     grantManagement: async (templateId: number, stackId: number, allowDelete: boolean) =>
@@ -427,6 +625,28 @@ export const api = {
         .grant as TemplateGrant,
     revokeManagement: async (templateId: number, stackId: number) =>
       (await rpc('templates.revokeManagement', { templateId, stackId })).removed as boolean,
+
+    /**
+     * One version policy for the whole fleet: pins every current tenant to `releaseId` — or clears
+     * every pin with null — **and** stores it as the template's default for tenants created later.
+     *
+     * `deploy` defaults to false, unlike `stacks.setRelease`: a fleet redeploying is an event to opt
+     * into. Refusals are the pin pre-flight's (`409` for a missing digest, a business-rule error for a
+     * registry that did not answer) plus `409` for a Git-mode product and a validation error for a
+     * release of another product — surface them verbatim.
+     */
+    setTenantsRelease: async (
+      templateId: number, releaseId: number | null, deploy: boolean, backupFirst = false) =>
+      (await rpc('templates.setTenantsRelease', { templateId, releaseId, deploy, backupFirst }))
+        .result as SetTenantsReleaseResult,
+
+    /**
+     * Backs up every instance of a template — the backup twin of `deployAll`, and what an operator
+     * presses before a risky fleet change. Serial: the backup queue is single-flight process-wide, so
+     * the returned count is what was *queued*, not what has run.
+     */
+    backupAll: async (templateId: number) =>
+      (await rpc('templates.backupAll', { templateId })).count as number,
   },
 
   metrics: {

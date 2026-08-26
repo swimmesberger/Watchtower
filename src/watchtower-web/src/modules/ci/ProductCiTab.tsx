@@ -1,8 +1,16 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Boxes, Flame, Github, Hammer, Play } from 'lucide-react'
+import { Boxes, Flame, Github, Hammer, KeyRound, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { CiRegistrySync, CiRepo, CiToolchainProfile, Stack } from '@/lib/types'
+import { absoluteTitle, timeAgo } from '@/lib/format'
+import type {
+  CiLink,
+  CiRegistrySync,
+  CiReleaseSecretsSync,
+  CiRepo,
+  CiToolchainProfile,
+  Product,
+} from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -22,7 +30,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 
-// ── CI tab — per-stack GitHub Actions runners (docs/ci-runners/design.md) ────────
+// ── CI tab — per-product GitHub Actions runners (docs/ci-runners/design.md) ──────
+//
+// CI belongs to the repository, so it lives on the product (ADR-0026): one runner pool and one
+// toolcache shared by every stack deploying it, configured in one place instead of on whichever
+// instance the operator happened to open.
 
 const toolchainLabels: Record<string, string> = {
   dotnet: '.NET',
@@ -65,17 +77,22 @@ function WarmBadge({ profile }: { profile: CiToolchainProfile }) {
   }
 }
 
-export function StackCiTab({ stack }: { stack: Stack }) {
+export function ProductCiTab({ product }: { product: Product }) {
   const {
     data: ci,
     isLoading,
     isError,
     refetch,
   } = useQuery({
-    queryKey: ['stacks', stack.id, 'ci'],
-    queryFn: () => api.ci.getStackCi(stack.id),
-    // Runner slots and warm state are live orchestrator data — poll while CI is enabled.
-    refetchInterval: (q) => (q.state.data?.repo?.enabled ? 10_000 : false),
+    queryKey: ['product', product.id, 'ci'],
+    queryFn: () => api.ci.getProductCi(product.id),
+    // Runner slots and warm state are live orchestrator data — poll while CI is enabled. Also poll
+    // while a release-secret push is pending, regardless of `enabled`: that contributor runs
+    // independently of it by design, so a disabled repo still converges and the badge still moves.
+    refetchInterval: (q) =>
+      q.state.data?.repo?.enabled || q.state.data?.releaseSecretsSync?.status === 'pending'
+        ? 10_000
+        : false,
   })
 
   if (isError) {
@@ -100,22 +117,22 @@ export function StackCiTab({ stack }: { stack: Stack }) {
       <EmptyState
         icon={Github}
         title="CI runners need a GitHub repository"
-        description={`This stack deploys from ${stack.repositoryUrl}, which is not a github.com repository. Watchtower-managed runners register with GitHub Actions, so only GitHub repositories can use them.`}
+        description={`This product deploys from ${product.repositoryUrl}, which is not a github.com repository. Watchtower-managed runners register with GitHub Actions, so only GitHub repositories can use them.`}
       />
     )
   }
 
   return ci.repo ? (
-    <CiRepoPanel stack={stack} repo={ci.repo} />
+    <CiRepoPanel product={product} ci={ci} repo={ci.repo} />
   ) : (
-    <EnableCiCard stack={stack} owner={ci.owner!} name={ci.name!} />
+    <EnableCiCard product={product} owner={ci.owner!} name={ci.name!} />
   )
 }
 
 /** The "not enabled yet" card: explains what enabling does and probes the PAT up front. */
-function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; name: string }) {
+function EnableCiCard({ product, owner, name }: { product: Product; owner: string; name: string }) {
   const qc = useQueryClient()
-  const [credentialId, setCredentialId] = useState<number | null>(stack.credentialId)
+  const [credentialId, setCredentialId] = useState<number | null>(product.credentialId)
   const [error, setError] = useState<string | null>(null)
 
   const { data: credentials = [] } = useQuery({
@@ -124,10 +141,10 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
   })
 
   const enable = useMutation({
-    mutationFn: () => api.ci.enableForStack(stack.id, credentialId),
+    mutationFn: () => api.ci.enableForProduct(product.id, credentialId),
     onSuccess: (repo) => {
       setError(null)
-      qc.invalidateQueries({ queryKey: ['stacks', stack.id, 'ci'] })
+      qc.invalidateQueries({ queryKey: ['product', product.id, 'ci'] })
       toast.success(`CI runners enabled for ${repo.fullName}.`)
     },
     // The server names the exact missing PAT permission — show its message verbatim.
@@ -146,7 +163,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
             Enabling CI registers ephemeral, just-in-time runners for{' '}
             <span className="font-mono text-text">{owner}/{name}</span> — no tokens are copied into
             containers, each runner takes one job and exits, and per-repo caches keep builds fast.
-            Stacks deploying the same repository share one runner pool.
+            Products deploying the same repository share one runner pool.
           </p>
 
           <Field
@@ -164,7 +181,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
                 {credentials.map((c) => (
                   <SelectItem key={c.id} value={String(c.id)}>
                     {c.name} ({c.username})
-                    {c.id === stack.credentialId ? ' — used for cloning' : ''}
+                    {c.id === product.credentialId ? ' — used for cloning' : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -192,7 +209,7 @@ function EnableCiCard({ stack, owner, name }: { stack: Stack; owner: string; nam
 }
 
 /** The enabled view: runner slots, detected toolchains + cache warmth, and runner settings. */
-function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
+function CiRepoPanel({ product, ci, repo }: { product: Product; ci: CiLink; repo: CiRepo }) {
   const qc = useQueryClient()
   const status = repo.runnerStatus
   const [maxRunners, setMaxRunners] = useState(repo.maxConcurrentRunners)
@@ -214,7 +231,7 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
         syncRegistryUrl:
           changes.syncRegistryUrl !== undefined ? changes.syncRegistryUrl : repo.syncRegistryUrl,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['stacks', stack.id, 'ci'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['product', product.id, 'ci'] }),
     onError: (err: Error) => toast.error('Update failed', err.message),
   })
 
@@ -306,6 +323,10 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
       {/* Registry sync (docs/ci-runners/design.md, Secrets §1) */}
       <RegistrySyncCard repo={repo} onSelect={(url) => update.mutate({ syncRegistryUrl: url })} />
 
+      {/* Release secret sync (docs/products/design.md §"Secret sync") — the second, independent
+          contributor to the same repository's Actions config. */}
+      <ReleaseSecretsSyncCard product={product} ci={ci} repo={repo} />
+
       {/* Toolchains + cache warming */}
       <Card>
         <CardContent className="space-y-3">
@@ -339,7 +360,7 @@ function CiRepoPanel({ stack, repo }: { stack: Stack; repo: CiRepo }) {
           ) : (
             <p className="text-[13px] text-text-2">
               Not detected yet — the toolchain profile is read from the repository during the next
-              deploy of this stack.
+              deploy of this product.
             </p>
           )}
         </CardContent>
@@ -460,6 +481,125 @@ function RegistrySyncCard({
               {LOGIN_SNIPPET}
             </pre>
           </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── Release secret sync (docs/products/design.md §"Secret sync") ─────────────────
+//
+// The second contributor to this repository's Actions config, and deliberately built to the same
+// shape as RegistrySyncCard above: one enable control, one badge, one standing-failure banner
+// quoting the server verbatim. What it pushes is this *product's* release configuration —
+// WATCHTOWER_URL and WATCHTOWER_PRODUCT_ID as variables, WATCHTOWER_RELEASE_TOKEN as a sealed
+// secret — so a workflow needs nothing pasted by hand.
+//
+// The token itself is not shown here. It lives on the Releases tab, which is where an operator goes
+// to read it, and duplicating it would give the page two places to keep in step.
+
+/** Badge for the release-secret sync state — the registry badge's vocabulary, verbatim. */
+function ReleaseSyncBadge({ sync }: { sync: CiReleaseSecretsSync }) {
+  switch (sync.status) {
+    case 'synced':
+      return <Badge tone="ok" size="sm">synced</Badge>
+    case 'failed':
+      return <Badge tone="danger" size="sm">sync failed</Badge>
+    default:
+      return <Badge tone="neutral" size="sm">sync pending</Badge>
+  }
+}
+
+function ReleaseSecretsSyncCard({
+  product,
+  ci,
+  repo,
+}: {
+  product: Product
+  ci: CiLink
+  repo: CiRepo
+}) {
+  const qc = useQueryClient()
+  // The server's message is the whole value here — the monorepo conflict names the other product, the
+  // PAT failure names the missing permission — so it is shown verbatim rather than summarised.
+  const [error, setError] = useState<string | null>(null)
+
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => api.ci.setReleaseSecretsSync(product.id, enabled),
+    onSuccess: (link) => {
+      setError(null)
+      qc.setQueryData(['product', product.id, 'ci'], link)
+      qc.invalidateQueries({ queryKey: ['product', product.id] })
+      toast.success(
+        link.syncReleaseSecrets
+          ? 'Release secrets will be synced to GitHub Actions.'
+          : 'Release secret sync turned off.',
+      )
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  const sync = ci.releaseSecretsSync
+
+  return (
+    <Card>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <KeyRound className="size-4 text-text-2" aria-hidden />
+            <span className="text-sm font-medium text-text">Release secrets for workflows</span>
+          </div>
+          {sync && <ReleaseSyncBadge sync={sync} />}
+        </div>
+
+        <p className="text-[13px] text-text-2">
+          Pushes what this product&rsquo;s release step needs into{' '}
+          <span className="font-mono">{repo.fullName}</span>&rsquo;s Actions configuration: the{' '}
+          <code className="font-mono text-[12px]">WATCHTOWER_URL</code> and{' '}
+          <code className="font-mono text-[12px]">WATCHTOWER_PRODUCT_ID</code> variables plus the{' '}
+          <code className="font-mono text-[12px]">WATCHTOWER_RELEASE_TOKEN</code> secret, re-pushed
+          whenever the token is rotated. The PAT needs the repository Secrets and Variables (read and
+          write) permissions — the same ones the registry sync above uses.
+        </p>
+
+        <Field
+          label="Sync release secrets"
+          hint="One product per repository can own these names. Turning it off leaves the values already at GitHub in place."
+        >
+          <label className="flex items-center gap-3 pt-1.5">
+            <Switch
+              checked={ci.syncReleaseSecrets}
+              disabled={toggle.isPending}
+              onCheckedChange={(v) => toggle.mutate(v)}
+            />
+            <span className="text-sm text-text">
+              {ci.syncReleaseSecrets ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </Field>
+
+        {error && (
+          <Banner tone="danger" title="Couldn’t change the release secret sync">
+            {error}
+          </Banner>
+        )}
+
+        {sync?.status === 'failed' && sync.error && (
+          <Banner tone="danger" title="Release secret sync is failing (retried automatically)">
+            {sync.error}
+          </Banner>
+        )}
+
+        {ci.syncReleaseSecrets && (
+          <p className="text-[12px] text-text-3">
+            {sync?.syncedAt ? (
+              <span title={absoluteTitle(sync.syncedAt)}>Last synced {timeAgo(sync.syncedAt)}.</span>
+            ) : (
+              'Not pushed yet — the next reconcile pass does it.'
+            )}{' '}
+            The token itself is on the product&rsquo;s Releases tab, with the workflow step that uses
+            it.
+          </p>
         )}
       </CardContent>
     </Card>

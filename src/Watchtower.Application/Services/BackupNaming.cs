@@ -26,6 +26,38 @@ public static partial class BackupNaming {
         $"{Sanitize(instanceName)}/{Sanitize(stackName)}";
 
     /// <summary>
+    /// A tenant's remote directory, relative to the provider base path:
+    /// <c>{instance}/{product}/{tenant}</c>. Grouping by product is what makes a 200-tenant fleet's
+    /// archives navigable on the storage — and it is why the value is <em>persisted</em>
+    /// (<see cref="Entities.Stack.BackupDirectory"/>) rather than recomputed: a product rename would
+    /// otherwise silently orphan every tenant's history at once.
+    /// </summary>
+    /// <param name="instanceName">The Watchtower instance name at the moment the stack was created.</param>
+    /// <param name="productName">The product the tenant runs.</param>
+    /// <param name="tenantSlug">The tenant's slug within its template.</param>
+    public static string TenantDirectory(string instanceName, string productName, string tenantSlug) =>
+        $"{Sanitize(instanceName)}/{Sanitize(productName)}/{Sanitize(tenantSlug)}";
+
+    /// <summary>
+    /// Where <paramref name="stack"/>'s archives live: the directory stamped on the row, or — for a
+    /// stack created before the column existed — the value that has always been computed from the live
+    /// instance name and the stack's current name.
+    /// </summary>
+    /// <remarks>
+    /// The single answer to that question. All four sites that need it (the run, the restore download,
+    /// the remote listing and retention) call this, so a stack cannot be written to one directory and
+    /// listed from another. The legacy fallback is the pre-stage-7 behaviour byte for byte, which is what
+    /// keeps an upgraded install's existing archives discoverable with no migration guessing at values
+    /// SQL cannot know (the instance name is configuration, not a column).
+    /// </remarks>
+    /// <param name="stack">The stack.</param>
+    /// <param name="instanceName">The live instance name, used only for the legacy fallback.</param>
+    public static string ResolveDirectory(Entities.Stack stack, string instanceName) =>
+        string.IsNullOrWhiteSpace(stack.BackupDirectory)
+            ? StackDirectory(instanceName, stack.Name)
+            : stack.BackupDirectory;
+
+    /// <summary>
     /// Extracts the UTC timestamp from a backup file name, or null when the name does not match the
     /// backup pattern (foreign files must never take part in retention).
     /// </summary>

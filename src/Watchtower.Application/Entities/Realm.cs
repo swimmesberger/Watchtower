@@ -17,7 +17,7 @@ namespace Watchtower.Application.Entities;
 /// <c>Auth:*</c> options.
 /// </para>
 /// </remarks>
-public sealed class Realm {
+public sealed class Realm : IHasXmin {
     /// <summary>
     /// Primary key of the built-in system realm. Seeded with this explicit id by the model
     /// (<c>RealmConfiguration.HasData</c>), which is what lets every realm column default to it and what
@@ -76,4 +76,12 @@ public sealed class Realm {
     public bool IsSystem { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Mapped by <c>XminConcurrency.UseXminAsConcurrencyToken</c>; see <see cref="IHasXmin"/> for why
+    /// this is a real property rather than an EF shadow property. Last, because it is the database's
+    /// bookkeeping rather than part of what this entity means.
+    /// </remarks>
+    public uint Xmin { get; private set; }
 }

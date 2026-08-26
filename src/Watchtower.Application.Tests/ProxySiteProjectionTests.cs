@@ -220,9 +220,6 @@ public sealed class ProxySiteProjectionTests {
         AccessMode = mode,
         Stack = new Stack {
             Name = "watchtower",
-            RepositoryUrl = "https://example.invalid/demo.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = "watchtower",
         },
     };

@@ -84,7 +84,7 @@ public enum RouteTarget {
 /// route is served by Watchtower itself (ADR-0023). The set of routes is the authoritative source
 /// for the generated proxy configuration and for which hostnames serve Watchtower.
 /// </summary>
-public sealed class Route {
+public sealed class Route : IHasXmin {
     public int Id { get; set; }
 
     /// <summary>
@@ -157,4 +157,12 @@ public sealed class Route {
     /// <summary>Certificate expiry as reported by the proxy, when known.</summary>
     public DateTimeOffset? CertNotAfter { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Mapped by <c>XminConcurrency.UseXminAsConcurrencyToken</c>; see <see cref="IHasXmin"/> for why
+    /// this is a real property rather than an EF shadow property. Last, because it is the database's
+    /// bookkeeping rather than part of what this entity means.
+    /// </remarks>
+    public uint Xmin { get; private set; }
 }

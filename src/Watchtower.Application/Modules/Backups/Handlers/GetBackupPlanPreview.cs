@@ -19,7 +19,11 @@ public sealed class GetBackupPlanPreview(WatchtowerDbContext db, BackupService b
     public sealed record Response(BackupPlanPreviewDto Preview);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
-        var stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == query.StackId, ct);
+        // Include the template: the preview resolves the same policy ladder the run walks, and its third
+        // rung is the template's.
+        var stack = await db.Stacks.AsNoTracking()
+            .Include(s => s.Template)
+            .FirstOrDefaultAsync(s => s.Id == query.StackId, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {query.StackId} not found");
         var preview = await backups.PreviewPlanAsync(stack, ct);

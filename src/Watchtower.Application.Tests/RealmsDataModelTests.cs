@@ -206,8 +206,7 @@ public sealed class RealmsDataModelTests {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
-            Name = "demo", RepositoryUrl = "https://example.invalid/demo.git",
-            ComposeFilePath = "docker-compose.yml", Branch = "main", ComposeProjectName = "demo",
+            Name = "demo", ComposeProjectName = "demo", Product = TestProducts.New("demo"),
         };
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(Ct);

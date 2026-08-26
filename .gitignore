@@ -77,3 +77,7 @@ src/Watchtower.Api/wwwroot/
 
 # Generated JSON-RPC client (regenerated from rpc-schema.json via `npm run generate:rpc`)
 src/watchtower-web/src/generated/
+
+# Aspire CLI scratch file — a machine-local pointer at the AppHost project, rewritten on every
+# `aspire run`. Nothing reads it but the CLI on the machine that wrote it.
+aspire.config.json

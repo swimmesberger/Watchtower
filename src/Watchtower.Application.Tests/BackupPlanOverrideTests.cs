@@ -34,6 +34,16 @@ public sealed class BackupPlanOverrideTests {
     private static BackupQuiesceStep Step(BackupPlan plan, string name) =>
         plan.Quiesce.Single(s => s.Container.DisplayName == name);
 
+    /// <summary>A standalone stack's resolved policy — the preview's stack-level inputs.</summary>
+    private static BackupPolicy StackPolicy(
+        bool stopContainers, BackupQuiesceMode mode = BackupQuiesceMode.Stop) =>
+        BackupPolicyResolver.Resolve(
+            new Watchtower.Application.Entities.Stack {
+                Name = "s", ComposeProjectName = "s",
+                BackupStopContainers = stopContainers, BackupQuiesceMode = mode,
+            },
+            template: null);
+
     private static KeptBackupContainer Kept(BackupPlan plan, string name) =>
         plan.Keep.Single(k => k.Container.DisplayName == name);
 
@@ -68,6 +78,57 @@ public sealed class BackupPlanOverrideTests {
         // The label's "true" stops db; the override's "false" is shadowed.
         Assert.Equal(BackupQuiesceMode.Stop, Step(plan, "db").Mode);
         Assert.Equal(BackupSettingSource.Label, Step(plan, "db").Source);
+    }
+
+    /// <summary>
+    /// The top rung is the top rung whichever database row filled the one below it. A tenant inherits
+    /// its fleet's per-service settings (ADR-0026 stage 7), and a compose label on the deployed service
+    /// still beats them — the label is the stack's own infrastructure-as-code and the whole point of
+    /// ADR-0020's ordering. What the inherited row changes is only what the preview *calls* the source.
+    /// </summary>
+    [Fact]
+    public void ALabelAlsoWinsOverAnOverrideInheritedFromATemplate() {
+        var inherited = new BackupServiceOverride(Stop: "pause", FromTemplate: true);
+        var plan = Plan(
+            [C("uploads", ["files"], stop: "false", over: inherited),
+             C("db", ["pgdata"], over: inherited)],
+            ["files", "pgdata"]);
+
+        // uploads carries a label: it wins, and the row is attributed to the label.
+        Assert.Equal(BackupKeepReason.StopLabel, Kept(plan, "uploads").Reason);
+        Assert.Equal(BackupSettingSource.Label, Kept(plan, "uploads").Source);
+        // db carries none, so the fleet's setting applies — reported as the template's, not as a stack
+        // override the reader would go looking for and never find.
+        Assert.Equal(BackupQuiesceMode.Pause, Step(plan, "db").Mode);
+        Assert.Equal(BackupSettingSource.Template, Step(plan, "db").Source);
+
+        var labelled = C("uploads", ["files"], stop: "false", over: inherited);
+        Assert.Equal(new BackupSetting("false", BackupSettingSource.Label), labelled.Stop);
+        Assert.Equal(
+            new BackupSetting("pause", BackupSettingSource.Template),
+            C("db", over: inherited).Stop);
+    }
+
+    /// <summary>
+    /// The snippet's contract is "paste this, delete your overrides, nothing changes" — which a tenant
+    /// cannot honour for a row it does not own. An inherited row is the fleet's setting, so it is left
+    /// out rather than copied into one instance's compose file.
+    /// </summary>
+    [Fact]
+    public void TheSnippetRendersTheStacksOwnOverridesOnly_NotTheOnesItInherits() {
+        var snippet = ComposeLabelSnippet.Render(new Dictionary<string, BackupServiceOverride> {
+            ["uploads"] = new(Stop: "pause"),
+            ["cache"] = new(Exclude: true, FromTemplate: true),
+        });
+
+        Assert.NotNull(snippet);
+        Assert.Contains("uploads", snippet, StringComparison.Ordinal);
+        Assert.DoesNotContain("cache", snippet, StringComparison.Ordinal);
+
+        // And a stack whose only rows are inherited has nothing of its own to promote.
+        Assert.Null(ComposeLabelSnippet.Render(new Dictionary<string, BackupServiceOverride> {
+            ["cache"] = new(Exclude: true, FromTemplate: true),
+        }));
     }
 
     [Fact]
@@ -174,7 +235,7 @@ public sealed class BackupPlanOverrideTests {
 
         var preview = BackupPlanPreview.Build(
             containers, plan, [dump], overrides, ["WARNING: something from the dump policy"],
-            stopContainers: true, BackupQuiesceMode.Stop);
+            StackPolicy(stopContainers: true));
 
         Assert.True(preview.Deployed);
         Assert.Equal(["files", "olddata"], preview.Volumes);
@@ -212,7 +273,8 @@ public sealed class BackupPlanOverrideTests {
     [Fact]
     public void AnUndeployedStackPreviewsAsNotDeployed() {
         var plan = Plan([], []);
-        var preview = BackupPlanPreview.Build([], plan, [], new Dictionary<string, BackupServiceOverride>(), [], true, BackupQuiesceMode.Stop);
+        var preview = BackupPlanPreview.Build(
+            [], plan, [], new Dictionary<string, BackupServiceOverride>(), [], StackPolicy(stopContainers: true));
 
         Assert.False(preview.Deployed);
         Assert.Empty(preview.Services);
@@ -224,7 +286,8 @@ public sealed class BackupPlanOverrideTests {
         var containers = new List<BackupContainer> { C("db", ["pgdata"]) };
         var plan = BackupPlan.Create(new BackupPlanRequest(containers, ["pgdata"], StopContainers: false));
 
-        var preview = BackupPlanPreview.Build(containers, plan, [], new Dictionary<string, BackupServiceOverride>(), [], false, BackupQuiesceMode.Stop);
+        var preview = BackupPlanPreview.Build(
+            containers, plan, [], new Dictionary<string, BackupServiceOverride>(), [], StackPolicy(stopContainers: false));
 
         var row = Assert.Single(preview.Services);
         Assert.Equal(BackupServiceAction.Keep, row.Action);

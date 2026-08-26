@@ -20,23 +20,10 @@ namespace Watchtower.Application.Tests;
 public sealed class BackupScheduleJobTests {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    /// <summary>Records enqueues instead of queueing them; the worker loop never starts in these tests.</summary>
-    private sealed class RecordingBackupQueue(BackupService backupService, IServiceScopeFactory scopeFactory, ILogger<BackupQueueService> logger)
-        : BackupQueueService(backupService, scopeFactory, logger) {
-        public List<(int StackId, string TriggeredBy)> Enqueued { get; } = [];
-
-        public override BackupEnqueueResult Enqueue(int stackId, string triggeredBy) {
-            Enqueued.Add((stackId, triggeredBy));
-            return new BackupEnqueueResult(Enqueued.Count, "queued");
-        }
-    }
-
     private static AuthTestHost Start(params (string, string?)[] settings) =>
-        AuthTestHost.Start(
-            services => services.Replace(ServiceDescriptor.Singleton<BackupQueueService, RecordingBackupQueue>()),
-            settings);
+        AuthTestHost.Start(RecordingBackupQueue.Register, settings);
 
-    private static List<(int StackId, string TriggeredBy)> Enqueued(AuthTestHost host) =>
+    private static IReadOnlyList<(int StackId, string TriggeredBy)> Enqueued(AuthTestHost host) =>
         ((RecordingBackupQueue)host.Services.GetRequiredService<BackupQueueService>()).Enqueued;
 
     private static int EnqueuedCount(AuthTestHost host, int stackId) =>
@@ -53,10 +40,8 @@ public sealed class BackupScheduleJobTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
             Name = name,
-            RepositoryUrl = $"https://example.com/{name}.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
             ComposeProjectName = name,
+            Product = TestProducts.New(name),
             BackupEnabled = true,
             BackupCron = cron,
             LastScheduledBackupAt = last,
@@ -162,8 +147,8 @@ public sealed class BackupScheduleJobTests {
         await using (var scope = host.Services.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var stack = new Stack {
-                Name = "quiet", RepositoryUrl = "https://example.com/quiet.git", ComposeFilePath = "docker-compose.yml",
-                Branch = "main", ComposeProjectName = "quiet", BackupEnabled = false,
+                Name = "quiet", ComposeProjectName = "quiet", BackupEnabled = false,
+                Product = TestProducts.New("quiet"),
             };
             db.Stacks.Add(stack);
             await db.SaveChangesAsync(Ct);

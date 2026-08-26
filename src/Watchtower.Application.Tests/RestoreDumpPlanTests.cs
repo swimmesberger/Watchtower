@@ -219,11 +219,33 @@ public sealed class RestoreDumpPlanTests {
     [Fact]
     public void ANewerArchiveFormatIsReplayedWithAForwardCompatibilityWarning() {
         var plan = RestoreDumpPlan.Match(
-            Archive(Manifest(Entry(), formatVersion: 3), "_dumps/db.sql"), [Container("db")]);
+            Archive(Manifest(Entry(), formatVersion: 4), "_dumps/db.sql"), [Container("db")]);
 
         Assert.Single(plan.Replays);
-        Assert.Contains(plan.Warnings, w => w.Contains("formatVersion 3") && w.Contains("newer than this Watchtower"));
+        Assert.Contains(plan.Warnings, w => w.Contains("formatVersion 4") && w.Contains("newer than this Watchtower"));
         Assert.Empty(plan.Errors);
+    }
+
+    /// <summary>
+    /// <b>The reader must never be behind its own writer.</b> Restoring an archive this build wrote is
+    /// the single most common restore there is, and it must be silent about the format — a
+    /// "newer than this Watchtower understands" line over Watchtower's own output is an operator
+    /// stopping a restore over nothing. The version is read from <see cref="BackupService"/> rather
+    /// than spelled, so the next manifest bump cannot reintroduce the drift without failing here.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    // When ManifestFormatVersion next bumps, add the previous version as a literal InlineData row —
+    // archives already in the wild must keep their no-warning coverage (reviewer note, stage 7).
+    [InlineData(BackupService.ManifestFormatVersion)]
+    public void AnArchiveThisBuildCouldHaveWritten_ProducesNoFormatWarning(int formatVersion) {
+        var plan = RestoreDumpPlan.Match(
+            Archive(Manifest(Entry(), formatVersion: formatVersion), "_dumps/db.sql"), [Container("db")]);
+
+        Assert.Single(plan.Replays);
+        Assert.Empty(plan.Errors);
+        Assert.DoesNotContain(plan.Warnings, w => w.Contains("formatVersion", StringComparison.Ordinal));
     }
 
     [Fact]

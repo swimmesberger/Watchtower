@@ -64,7 +64,7 @@ public sealed class BackupService(
             if (evt is null) return; // stack (and its events) deleted while queued
             stackId = evt.StackId;
             triggeredBy = evt.TriggeredBy;
-            stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == stackId, ct);
+            stack = await LoadStackAsync(db, stackId, ct);
             evt.Status = "running";
             evt.StartedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -76,13 +76,19 @@ public sealed class BackupService(
         }
 
         var backup = options.CurrentValue.Backup;
+        var policy = BackupPolicyResolver.Resolve(stack, stack.Template);
         try {
-            var result = await RunAsync(stack, backup, Log, ct);
+            var result = await RunAsync(stack, backup, policy, Log, ct);
             await FinishAsync(backupEventId, success: true, output.ToString(), result.RemotePath, result.SizeBytes, ct);
+            // The run wrote to `result.Directory` and it worked, so that is now provably where this
+            // stack's archives live — stamp it if the row did not carry one. Only after success: a run
+            // that never reached the upload has proved nothing, and the value it computed comes from the
+            // same two inputs next time anyway.
+            await StampDirectoryAsync(stack, result.Directory);
             // The audit row carries the settings the run operated under, so "was it encrypted back
             // then?" is answered by the trail, not by today's configuration.
             await audit.RecordAsync(AuditCategory, "run", stack.Name,
-                $"{RunSummary(triggeredBy, stack, backup, result.StoppedCount, result.ExcludedVolumeCount, result.PausedCount)}"
+                $"{RunSummary(triggeredBy, policy, backup, result.StoppedCount, result.ExcludedVolumeCount, result.PausedCount)}"
                 + $" · {result.VolumeCount} volume(s)"
                 + (result.DumpCount > 0 ? $" · {result.DumpCount} dump(s)" : "")
                 + $", {result.SizeBytes} bytes → {result.RemotePath}",
@@ -93,15 +99,55 @@ public sealed class BackupService(
         } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
             Log($"FAILED: {ex.Message}");
             await FinishAsync(backupEventId, success: false, output.ToString(), null, null, ct);
-            await audit.RecordAsync(AuditCategory, "run", stack.Name, RunSummary(triggeredBy, stack, backup),
+            await audit.RecordAsync(AuditCategory, "run", stack.Name, RunSummary(triggeredBy, policy, backup),
                 success: false, error: ex.Message, ct: CancellationToken.None);
             logger.LogWarning(ex, "Backup of stack {StackName} failed", stack.Name);
         }
     }
 
+    /// <summary>
+    /// The stack as a run needs it: its template (the backup policy ladder's third rung), its product and
+    /// the release it last deployed (both only for the manifest, which names what the archive captured).
+    /// </summary>
+    internal static Task<Stack?> LoadStackAsync(WatchtowerDbContext db, int stackId, CancellationToken ct) =>
+        db.Stacks.AsNoTracking()
+            .Include(s => s.Template)
+            .Include(s => s.Product)
+            .Include(s => s.LastDeployedRelease)
+            .FirstOrDefaultAsync(s => s.Id == stackId, ct);
+
+    /// <summary>
+    /// Writes the directory a successful run used onto a stack that had none — the stamp-on-first-use
+    /// half of <see cref="Stack.BackupDirectory"/>, which is how a stack created before the column
+    /// existed stops being exposed to the rename hazard.
+    /// </summary>
+    /// <remarks>
+    /// Conditional in SQL (<c>WHERE backup_directory IS NULL</c>) rather than in memory, so a value
+    /// written by anything else while this run was uploading is never overwritten by the stale copy this
+    /// run is holding. Best-effort: the archive is already on the storage, so a failure here must not
+    /// turn a successful backup into a failed one — the next successful run tries again.
+    /// </remarks>
+    internal async Task StampDirectoryAsync(Stack stack, string directory) {
+        // "Unstamped" is spelled the same way in all three places that ask — here, in the SQL below and
+        // in BackupNaming.ResolveDirectory — so a row holding an empty string is treated as unstamped by
+        // every one of them rather than as a stamp by two and a gap by the third. (The column is written
+        // only from BackupNaming, whose Sanitize never returns blank, so this is belt and braces.)
+        if (!string.IsNullOrWhiteSpace(stack.BackupDirectory)) return;
+        try {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            await db.Stacks
+                .Where(s => s.Id == stack.Id && (s.BackupDirectory == null || s.BackupDirectory == ""))
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.BackupDirectory, directory), CancellationToken.None);
+        } catch (Exception ex) {
+            logger.LogWarning(
+                ex, "Could not stamp the backup directory {Directory} onto stack {StackName}", directory, stack.Name);
+        }
+    }
+
     /// <summary>The effective settings a run operated under, for its audit row. Never includes secrets.</summary>
     /// <param name="trigger">Who or what started the run.</param>
-    /// <param name="stack">The stack, for its "stop containers" setting.</param>
+    /// <param name="policy">The stack's resolved backup policy, for its "stop containers" setting.</param>
     /// <param name="backup">The backup options the run operated under.</param>
     /// <param name="stoppedCount">
     /// How many containers the run actually stopped, once that is known. Null on the failure path, where
@@ -111,12 +157,12 @@ public sealed class BackupService(
     /// <param name="excludedVolumeCount">How many candidate volumes were left out of the archive.</param>
     /// <param name="pausedCount">How many containers the run paused rather than stopped (ADR-0019).</param>
     internal static string RunSummary(
-        string trigger, Stack stack, BackupOptions backup, int? stoppedCount = null, int excludedVolumeCount = 0,
-        int pausedCount = 0) {
+        string trigger, BackupPolicy policy, BackupOptions backup, int? stoppedCount = null,
+        int excludedVolumeCount = 0, int pausedCount = 0) {
         var provider = backup.ResolveProvider() == BackupProviderKind.Local ? "local" : "sftp";
         var quiesced = (stoppedCount, pausedCount) switch {
-            (null, _) when !stack.BackupStopContainers => "",
-            (null, _) => stack.BackupQuiesceMode == BackupQuiesceMode.Pause ? " · containers paused" : " · containers stopped",
+            (null, _) when !policy.StopContainers => "",
+            (null, _) => policy.QuiesceMode == BackupQuiesceMode.Pause ? " · containers paused" : " · containers stopped",
             ( > 0, > 0) => $" · {pausedCount} container(s) paused, {stoppedCount} stopped",
             (_, > 0) => $" · {pausedCount} container(s) paused",
             ( > 0, _) => $" · {stoppedCount} container(s) stopped",
@@ -155,7 +201,7 @@ public sealed class BackupService(
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var evt = await db.BackupEvents.FirstOrDefaultAsync(e => e.Id == backupEventId, ct);
             if (evt is null) return;
-            stack = await db.Stacks.AsNoTracking().FirstOrDefaultAsync(s => s.Id == evt.StackId, ct);
+            stack = await LoadStackAsync(db, evt.StackId, ct);
             evt.Status = "running";
             evt.StartedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -191,7 +237,7 @@ public sealed class BackupService(
             throw new InvalidOperationException(
                 "The archive is encrypted but no encryption passphrase is configured.");
 
-        var directory = BackupNaming.StackDirectory(backup.ResolveInstanceName(), stack.Name);
+        var directory = BackupNaming.ResolveDirectory(stack, backup.ResolveInstanceName());
         var relativePath = $"{directory}/{fileName}";
 
         var spoolPath = Path.Combine(Path.GetTempPath(), $"watchtower-restore-{Guid.NewGuid():N}.spool");
@@ -446,7 +492,7 @@ public sealed class BackupService(
 
     private sealed record RunResult(
         string RemotePath, long SizeBytes, int VolumeCount, int StoppedCount = 0, int ExcludedVolumeCount = 0,
-        int DumpCount = 0, int PausedCount = 0);
+        int DumpCount = 0, int PausedCount = 0, string Directory = "");
 
     /// <summary>One completed database dump, as the manifest records it (ADR-0017).</summary>
     /// <param name="Service">The compose service the dump was taken from — its identity on restore.</param>
@@ -470,14 +516,14 @@ public sealed class BackupService(
         long SizeBytes);
 
     private async Task<RunResult> RunAsync(
-        Stack stack, BackupOptions backup, Action<string> log, CancellationToken ct) {
+        Stack stack, BackupOptions backup, BackupPolicy policy, Action<string> log, CancellationToken ct) {
         var project = stack.ComposeProjectName;
         var takenAt = DateTimeOffset.UtcNow;
         var encrypted = !string.IsNullOrEmpty(backup.EncryptionPassphrase);
 
         // 1–3. Volumes, containers, dump targets and the plan — the same preparation the Backups tab
         // previews, so what the operator saw there is what runs here.
-        var (candidates, containers, dumpTargets, plan, _, _) = await PrepareAsync(stack, log, ct);
+        var (candidates, containers, dumpTargets, plan, _, _, _) = await PrepareAsync(stack, policy, log, ct);
         if (candidates.Count == 0 && dumpTargets.Count == 0)
             throw new InvalidOperationException(
                 $"No volumes found for compose project '{project}'. Has the stack been deployed?");
@@ -505,7 +551,7 @@ public sealed class BackupService(
             connections[target.ContainerId] = await postgres.PreflightAsync(target, log, ct);
 
         var instance = backup.ResolveInstanceName();
-        var directory = BackupNaming.StackDirectory(instance, stack.Name);
+        var directory = BackupNaming.ResolveDirectory(stack, instance);
         var fileName = BackupNaming.FileName(project, takenAt, encrypted);
         var relativePath = $"{directory}/{fileName}";
 
@@ -562,7 +608,7 @@ public sealed class BackupService(
             await ApplyRetentionAsync(storage, directory, backup, log, ct);
             return new RunResult(
                 relativePath, sizeBytes, volumes.Count, stopped.StoppedCount, plan.Excluded.Count, dumps.Count,
-                stopped.PausedCount);
+                stopped.PausedCount, directory);
         } finally {
             foreach (var path in dumpSpools.Append(spoolPath)) {
                 try {
@@ -625,15 +671,17 @@ public sealed class BackupService(
     /// <param name="Containers">The project's containers, every state.</param>
     /// <param name="DumpTargets">The databases captured as dumps.</param>
     /// <param name="Plan">The plan.</param>
-    /// <param name="Overrides">The stack's per-service UI overrides by service name.</param>
+    /// <param name="Overrides">The stack's effective per-service overrides by service name (its own, else its template's).</param>
     /// <param name="DumpLog">What the dump policy logged while selecting targets.</param>
+    /// <param name="Policy">The stack-level policy the run operates under, and where each field came from.</param>
     internal sealed record BackupPreparation(
         IReadOnlyList<string> Candidates,
         IReadOnlyList<DockerContainerInfo> Containers,
         IReadOnlyList<DumpTarget> DumpTargets,
         BackupPlan Plan,
         IReadOnlyDictionary<string, BackupServiceOverride> Overrides,
-        IReadOnlyList<string> DumpLog);
+        IReadOnlyList<string> DumpLog,
+        BackupPolicy Policy);
 
     /// <summary>
     /// Steps 1–3 of a run: the stack's candidate volumes (by compose project label) and containers, the
@@ -642,9 +690,14 @@ public sealed class BackupService(
     /// plan that narrows the volumes to what the labels and overrides allow and works out who goes down
     /// for them. Shared by the run and the preview on purpose: one code path, one answer.
     /// </summary>
-    internal async Task<BackupPreparation> PrepareAsync(Stack stack, Action<string> log, CancellationToken ct) {
+    /// <param name="stack">The stack, with its <see cref="Stack.Template"/> loaded (the ladder's third rung).</param>
+    /// <param name="policy">The resolved policy this run operates under.</param>
+    /// <param name="log">The run output.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal async Task<BackupPreparation> PrepareAsync(
+        Stack stack, BackupPolicy policy, Action<string> log, CancellationToken ct) {
         var project = stack.ComposeProjectName;
-        var overrides = await LoadOverridesAsync(stack.Id, ct);
+        var overrides = await LoadOverridesAsync(stack, ct);
         var candidates = (await docker.ListVolumesAsync(ct))
             .Where(v => v.Labels is { } labels && labels.TryGetValue(ComposeProjectLabel, out var p) && p == project)
             .Select(v => v.Name)
@@ -658,37 +711,57 @@ public sealed class BackupService(
         var dumpCovered = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var target in dumpTargets.Where(t => t.DataVolume is not null))
             dumpCovered[target.DataVolume!] = $"covered by the '{target.Service}' dump";
-        var plan = Plan(containers, candidates, stack.BackupStopContainers, log,
+        var plan = Plan(containers, candidates, policy.StopContainers, log,
             keepRunning: new HashSet<string>(dumpTargets.Select(t => t.ContainerId), StringComparer.Ordinal),
             excludeVolumes: dumpCovered,
-            quiesceMode: stack.BackupQuiesceMode,
+            quiesceMode: policy.QuiesceMode,
             overrides: overrides);
-        return new BackupPreparation(candidates, containers, dumpTargets, plan, overrides, dumpLog);
+        return new BackupPreparation(candidates, containers, dumpTargets, plan, overrides, dumpLog, policy);
     }
 
     /// <summary>
     /// The dry run the Backups tab shows (ADR-0020): what the next run would do with every container of
     /// the stack as deployed right now, and why. Read-only — it lists and inspects, never stops.
     /// </summary>
+    /// <param name="stack">The stack, with its <see cref="Stack.Template"/> loaded.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<BackupPlanPreview> PreviewPlanAsync(Stack stack, CancellationToken ct) {
-        var prep = await PrepareAsync(stack, _ => { }, ct);
+        var policy = BackupPolicyResolver.Resolve(stack, stack.Template);
+        var prep = await PrepareAsync(stack, policy, _ => { }, ct);
         return BackupPlanPreview.Build(
             [.. prep.Containers.Select(c => BackupContainer.FromDocker(c, prep.Overrides))],
-            prep.Plan, prep.DumpTargets, prep.Overrides, prep.DumpLog,
-            stack.BackupStopContainers, stack.BackupQuiesceMode);
+            prep.Plan, prep.DumpTargets, prep.Overrides, prep.DumpLog, prep.Policy);
     }
 
-    /// <summary>The stack's per-service UI overrides, keyed by service name.</summary>
-    private async Task<IReadOnlyDictionary<string, BackupServiceOverride>> LoadOverridesAsync(int stackId, CancellationToken ct) {
+    /// <summary>
+    /// The stack's effective per-service overrides, keyed by service name: its own rows, falling back to
+    /// its template's for any service it says nothing about (ADR-0020's ladder, extended by design.md
+    /// §"Backups across tenants").
+    /// </summary>
+    /// <remarks>
+    /// Precedence is per service, not per knob — see the remarks on
+    /// <see cref="TemplateBackupServiceOverride"/>. Inherited rows are tagged
+    /// <see cref="BackupServiceOverride.FromTemplate"/> so the preview can name where they came from;
+    /// nothing about the decision itself changes.
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<string, BackupServiceOverride>> LoadOverridesAsync(
+        Stack stack, CancellationToken ct) {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var rows = await db.StackBackupServiceOverrides.AsNoTracking()
-            .Where(o => o.StackId == stackId)
+        var effective = new Dictionary<string, BackupServiceOverride>(StringComparer.Ordinal);
+        if (stack.TemplateId is { } templateId) {
+            var inherited = await db.TemplateBackupServiceOverrides.AsNoTracking()
+                .Where(o => o.TemplateId == templateId)
+                .ToListAsync(ct);
+            foreach (var o in inherited)
+                effective[o.Service] = new BackupServiceOverride(o.Exclude, o.Stop, o.Dump, FromTemplate: true);
+        }
+        var own = await db.StackBackupServiceOverrides.AsNoTracking()
+            .Where(o => o.StackId == stack.Id)
             .ToListAsync(ct);
-        return rows.ToDictionary(
-            o => o.Service,
-            o => new BackupServiceOverride(o.Exclude, o.Stop, o.Dump),
-            StringComparer.Ordinal);
+        foreach (var o in own)
+            effective[o.Service] = new BackupServiceOverride(o.Exclude, o.Stop, o.Dump);
+        return effective;
     }
 
     /// <summary>
@@ -969,22 +1042,33 @@ public sealed class BackupService(
     /// The archive's self-description, written to <c>backup/backup-manifest.json</c>.
     /// </summary>
     /// <remarks>
-    /// <c>formatVersion</c> steps to 2 <em>only</em> when the archive carries dumps, and the
-    /// <c>dumps</c> key is then appended at the end: a stack without a database produces a manifest
-    /// byte-identical to the one Watchtower wrote before dumps existed, so nothing downstream has to
-    /// tell "new tool" from "new archive shape".
+    /// <para>
+    /// <c>formatVersion</c> is <b>3</b> since stage 7 of ADR-0026, when the manifest gained the product
+    /// keys (<c>productId</c>, <c>productName</c>, <c>templateId</c>, <c>tenantSlug</c>) and the release
+    /// the stack was running when the snapshot was taken. That last one is what makes a restore
+    /// instruction complete: "restore this archive <em>and</em> pin release 1.4.0", because Watchtower
+    /// can roll code back but never the database (design.md §"Rollback and canary").
+    /// </para>
+    /// <para>
+    /// The bump follows the precedent v2 set: keys are only ever <em>added</em> at the end, so every
+    /// reader that knew v1 or v2 still finds everything it knew where it was. <c>templateId</c>,
+    /// <c>tenantSlug</c> and <c>release</c> are written only when they exist — a standalone stack's
+    /// manifest carries no empty tenancy keys — while <c>productId</c>/<c>productName</c> are always
+    /// present, since every stack has a product (ADR-0026). <c>dumps</c> stays last and stays
+    /// conditional.
+    /// </para>
     /// </remarks>
     /// <param name="instance">The Watchtower instance name the run belongs to.</param>
-    /// <param name="stack">The stack that was backed up.</param>
+    /// <param name="stack">The stack that was backed up, with its product and last deployed release loaded.</param>
     /// <param name="volumes">The volumes actually in the archive.</param>
     /// <param name="takenAt">When the run started.</param>
     /// <param name="encrypted">Whether the archive is encrypted.</param>
-    /// <param name="dumps">The database dumps the archive carries; empty for a v1 manifest.</param>
+    /// <param name="dumps">The database dumps the archive carries; empty when there are none.</param>
     internal static string BuildManifest(
         string instance, Stack stack, IReadOnlyList<string> volumes, DateTimeOffset takenAt, bool encrypted,
         IReadOnlyList<BackupDumpEntry> dumps) {
         var manifest = new JsonObject {
-            ["formatVersion"] = dumps.Count > 0 ? 2 : 1,
+            ["formatVersion"] = ManifestFormatVersion,
             ["tool"] = "watchtower",
             ["instance"] = instance,
             ["stackId"] = stack.Id,
@@ -993,11 +1077,27 @@ public sealed class BackupService(
             ["volumes"] = new JsonArray([.. volumes.Select(v => JsonValue.Create(v))]),
             ["createdAtUtc"] = takenAt.UtcDateTime.ToString("O"),
             ["encrypted"] = encrypted,
+            ["productId"] = stack.ProductId,
+            ["productName"] = stack.Product?.Name,
         };
+        if (stack.TemplateId is { } templateId) manifest["templateId"] = templateId;
+        if (stack.TenantSlug is { } slug) manifest["tenantSlug"] = slug;
+        // The release the *stack* was running, not "the newest release of the product": the archive
+        // captures the data this code produced, and pinning the newest would be a different claim.
+        if (stack.LastDeployedRelease is { } release) {
+            manifest["releaseId"] = release.Id;
+            manifest["releaseVersion"] = release.Version;
+        }
         if (dumps.Count > 0)
             manifest["dumps"] = new JsonArray([.. dumps.Select(DumpNode)]);
         return manifest.ToJsonString();
     }
+
+    /// <summary>
+    /// The <c>formatVersion</c> written into every new archive's manifest. Additive: v1 had no
+    /// <c>dumps</c>, v2 added it, v3 adds the product/tenancy/release keys.
+    /// </summary>
+    internal const int ManifestFormatVersion = 3;
 
     /// <summary>One entry of the manifest's <c>dumps</c> array.</summary>
     private static JsonNode DumpNode(BackupDumpEntry dump) => new JsonObject {

@@ -18,9 +18,6 @@ public sealed class CloudflareIngressProjectionTests {
         Stack = new Stack {
             Name = project,
             ComposeProjectName = project,
-            RepositoryUrl = "https://example.com/repo.git",
-            ComposeFilePath = "docker-compose.yml",
-            Branch = "main",
         },
     };
 

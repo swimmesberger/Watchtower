@@ -110,51 +110,52 @@ public sealed class BackupNamingAndRetentionTests {
 
     // ── Audit summary ────────────────────────────────────────────────────────
 
-    private static Stack StackWithStops() => new() {
-        Name = "web-app",
-        RepositoryUrl = "https://example.com/web-app.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
-        ComposeProjectName = "web-app",
-        BackupStopContainers = true,
-    };
+    /// <summary>A stack that quiesces its containers, resolved through the ladder as a run would.</summary>
+    private static BackupPolicy PolicyWithStops(BackupQuiesceMode mode = BackupQuiesceMode.Stop) =>
+        BackupPolicyResolver.Resolve(
+            new Stack {
+                Name = "web-app",
+                ComposeProjectName = "web-app",
+                BackupStopContainers = true,
+                BackupQuiesceMode = mode,
+            },
+            template: null);
 
     [Fact]
     public void TheAuditSummaryReportsWhatTheRunActuallyStoppedAndExcluded() {
         var backup = new BackupOptions { Provider = "local", RetentionDays = 30, RetentionMaxCount = 0 };
 
         var summary = BackupService.RunSummary(
-            "manual", StackWithStops(), backup, stoppedCount: 2, excludedVolumeCount: 1);
+            "manual", PolicyWithStops(), backup, stoppedCount: 2, excludedVolumeCount: 1);
 
         Assert.Equal("manual · local · 2 container(s) stopped · 1 volume(s) excluded · retention 30d", summary);
     }
 
     [Fact]
     public void AFailedRunReportsTheSettingRatherThanACountItCannotVouchFor() {
-        var stack = StackWithStops();
+        var policy = PolicyWithStops();
         var backup = new BackupOptions { Provider = "local", RetentionDays = 0, RetentionMaxCount = 0 };
 
         // No count: the run may have failed before it reached its stop step.
         Assert.Equal("manual · local · containers stopped · keep forever",
-            BackupService.RunSummary("manual", stack, backup));
+            BackupService.RunSummary("manual", policy, backup));
         // Mount scoping can legitimately stop nothing at all — that is not "containers stopped".
         Assert.Equal("manual · local · keep forever",
-            BackupService.RunSummary("manual", stack, backup, stoppedCount: 0));
+            BackupService.RunSummary("manual", policy, backup, stoppedCount: 0));
     }
 
     [Fact]
     public void TheAuditSummaryTellsPausedFromStopped() {
         var backup = new BackupOptions { Provider = "local", RetentionDays = 0, RetentionMaxCount = 0 };
-        var stack = StackWithStops();
+        var policy = PolicyWithStops();
 
         Assert.Equal("manual · local · 2 container(s) paused · keep forever",
-            BackupService.RunSummary("manual", stack, backup, stoppedCount: 0, pausedCount: 2));
+            BackupService.RunSummary("manual", policy, backup, stoppedCount: 0, pausedCount: 2));
         Assert.Equal("manual · local · 2 container(s) paused, 1 stopped · keep forever",
-            BackupService.RunSummary("manual", stack, backup, stoppedCount: 1, pausedCount: 2));
+            BackupService.RunSummary("manual", policy, backup, stoppedCount: 1, pausedCount: 2));
 
         // The failure path reports the setting, and a stack set to pause says so.
-        stack.BackupQuiesceMode = Watchtower.Application.Entities.BackupQuiesceMode.Pause;
         Assert.Equal("manual · local · containers paused · keep forever",
-            BackupService.RunSummary("manual", stack, backup));
+            BackupService.RunSummary("manual", PolicyWithStops(BackupQuiesceMode.Pause), backup));
     }
 }

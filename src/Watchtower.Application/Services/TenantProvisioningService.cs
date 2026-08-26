@@ -1,5 +1,7 @@
 using System.Collections.Frozen;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Tenancy;
 using Watchtower.Application.Persistence;
@@ -58,8 +60,12 @@ public sealed record TenantProvisionResult(
 /// <param name="db">Scoped Watchtower database context.</param>
 /// <param name="deployQueue">Deploy queue the initial deploy is enqueued on.</param>
 /// <param name="selfProjects">Resolver for Watchtower's own (reserved) compose project name.</param>
+/// <param name="options">Live Watchtower options; the instance name is read once, to stamp the tenant's backup directory.</param>
 public sealed class TenantProvisioningService(
-    WatchtowerDbContext db, DeployQueueService deployQueue, SelfProjectNameProvider selfProjects) {
+    WatchtowerDbContext db,
+    DeployQueueService deployQueue,
+    SelfProjectNameProvider selfProjects,
+    IOptionsMonitor<WatchtowerOptions> options) {
     /// <summary>What the initial deploy of a freshly provisioned tenant is recorded as.</summary>
     public const string CreateTrigger = "tenant-create";
 
@@ -98,7 +104,12 @@ public sealed class TenantProvisioningService(
         if (envOverrides is { Count: > 0 } && TenancyMapping.FirstDuplicateKey(envOverrides) is { } dup)
             return Failed(TenantProvisionStatus.Validation, $"Duplicate env var key: '{dup}'");
 
-        var template = await db.StackTemplates.Include(t => t.BaseEnvVars)
+        var template = await db.StackTemplates
+            .Include(t => t.BaseEnvVars)
+            .Include(t => t.Product)
+            // Only so the result can name the pin the new tenant inherited — the copy itself needs the
+            // id alone. A tenant created silently pinned would otherwise be reported as tracking latest.
+            .Include(t => t.DefaultPinnedRelease)
             .FirstOrDefaultAsync(t => t.Id == templateId, ct);
         if (template is null)
             return Failed(TenantProvisionStatus.TemplateNotFound, $"Template {templateId} not found");
@@ -124,13 +135,29 @@ public sealed class TenantProvisioningService(
 
         var stack = new Stack {
             Name = stackName,
-            RepositoryUrl = template.RepositoryUrl,
-            ComposeFilePath = template.ComposeFilePath,
-            Branch = template.Branch,
+            // By reference, never copied (ADR-0026): the copy-at-provision bug — a template's source
+            // edits never reaching the tenants it had already stamped — disappears by construction.
+            // BranchOverride stays null so the tenant inherits the template's own override, if any.
+            ProductId = template.ProductId,
+            // …and this one *is* copied, deliberately — the one field family ADR-0026 copies. A pin is
+            // per-tenant policy, not shared definition: a tenant given a hotfix pin must not drag the
+            // fleet with it, and moving the template's default must not silently repin a tenant somebody
+            // pinned by hand. Both follow from the value being taken once, here, at provisioning
+            // (design.md §Tenancy).
+            PinnedReleaseId = template.DefaultPinnedReleaseId,
             ComposeProjectName = projectName,
-            CredentialId = template.CredentialId,
             TemplateId = template.Id,
             TenantSlug = normalized,
+            // {instance}/{product}/{tenant}, stamped once — a fleet's archives group under the product
+            // they belong to, and a later rename of the stack, the product or the instance cannot move
+            // bytes that are already on the storage (design.md §"Backups across tenants").
+            BackupDirectory = BackupNaming.TenantDirectory(
+                options.CurrentValue.Backup.ResolveInstanceName(),
+                template.Product?.Name ?? template.Name,
+                normalized),
+            // Every Backup* field is left null: a tenant *inherits* its backup policy from the template
+            // (invariant 5), which is the one thing copying would get wrong — a fleet-wide schedule
+            // change has to reach the tenants that already exist, not only the next one.
             // Each tenant instance is its own stack and gets its own App API token — a tenant can
             // never read another tenant's status, logs or version.
             AppApiToken = AppApiTokens.Generate(),
@@ -170,7 +197,10 @@ public sealed class TenantProvisioningService(
         var enqueued = deployQueue.Enqueue(stack.Id, CreateTrigger);
         return new TenantProvisionResult(
             TenantProvisionStatus.Created,
-            new TenantDto(stack.Id, normalized, stack.Name, domain, enqueued.Status, null),
+            new TenantDto(
+                stack.Id, normalized, stack.Name, domain, enqueued.Status, null,
+                stack.PinnedReleaseId is null ? TenancyMapping.TrackingLatest : TenancyMapping.TrackingPinned,
+                TenancyMapping.ReleaseRef(template.DefaultPinnedRelease)),
             enqueued.DeployEventId,
             enqueued.Status);
     }

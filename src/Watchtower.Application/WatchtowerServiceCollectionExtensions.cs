@@ -70,6 +70,27 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Scoped data-access helpers (wrap the scoped DbContext).
         services.AddScoped<RegistryAuthBuilder>();
+        // Find-or-create over the product catalogue (ADR-0026), shared by stacks.create and
+        // templates.create so both keep their inline repository fields and resolve to one product.
+        services.AddScoped<ProductCatalog>();
+        // Release intake (ADR-0026 decision 3), shared by the product release webhook and
+        // products.createRelease so both validate, resolve and fingerprint identically. The digest
+        // resolver is the one part that leaves the machine and is registered separately — a test
+        // substitutes it, which is what keeps intake testable without a registry.
+        services.AddScoped<ReleaseIntakeService>();
+        services.AddSingleton<IReleaseDigestResolver, RegistryDigestResolver>();
+        // Release retention (design.md §"Release retention"): the post-create pruning pass intake runs.
+        // Scoped, and its own service rather than a private method on intake, so its four protection
+        // rules can be driven — and mutation-tested — one at a time.
+        services.AddScoped<ReleasePruner>();
+        // Release fan-out (design.md §Convergent fan-out): reads the target predicate through the scoped
+        // context and enqueues onto the singleton deploy queue. Shared by the release webhook and
+        // products.deployRelease so "which stacks does a release reach" has one answer.
+        services.AddScoped<ReleaseRolloutService>();
+        // The pin/rollback pre-flight (design.md §"Image pinning"): every image of the target release is
+        // HEADed before anything is written, so a garbage-collected digest is a refusal rather than a
+        // mid-rollback surprise.
+        services.AddScoped<ReleaseImageValidator>();
         // Realms (docs/central-auth/design.md §13). The resolver is the one place a host, a route or a
         // configuration value is turned into a population; the context is which population the current
         // request's credential lookups may see, and defaults to the operator realm so nothing that predates
@@ -319,8 +340,15 @@ public static class WatchtowerServiceCollectionExtensions {
         // status and wake it after config changes. Idle cost with no repos configured: one database
         // query + one Docker label query per pass.
         services.AddSingleton<GitHubApiClient>();
+        // The per-repo GitHub Actions config pass the orchestrator runs beside the runner reconcile:
+        // registry credentials (docs/ci-runners/design.md) and release configuration
+        // (docs/products/design.md §"Secret sync"), independently hashed and independently isolated.
+        services.AddSingleton<CiActionsConfigSync>();
         services.AddSingleton<CiRunnerOrchestrator>();
         services.AddHostedService(sp => sp.GetRequiredService<CiRunnerOrchestrator>());
+        // Product → CI repo link (ADR-0026 decision 7): reads go through the FK, and the resolver
+        // records it the first time it can derive one from the repository URL.
+        services.AddScoped<CiRepoResolver>();
         // Toolchain detection piggybacks on deploy clones; the recorder persists the profile and
         // wakes the orchestrator so the toolcache warmer converges (docs/ci-runners/design.md).
         services.AddSingleton<CiToolchainRecorder>();
@@ -356,6 +384,11 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<PostgresDumpService>();
         services.AddSingleton<BackupStorageFactory>();
         services.AddSingleton<BackupService>();
+        // The two queues are separate by design, so what happens *after* a backup succeeds is its own
+        // object: singleton, because the pending chains have to outlive the request that registered
+        // them and the backup worker is the thing that releases them (design.md §"Backups across
+        // tenants").
+        services.AddSingleton<BackupChainCoordinator>();
         services.AddSingleton<BackupQueueService>();
         services.AddHostedService(sp => sp.GetRequiredService<BackupQueueService>());
 

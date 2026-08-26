@@ -17,13 +17,16 @@ namespace Watchtower.Application.Services;
 /// </remarks>
 internal static class ComposeOverrideFile {
     /// <summary>
-    /// Extracts the service names and their <see cref="EnvInjectionPlan.InjectTokenLabel"/> values from
-    /// the normalized project JSON.
+    /// Extracts the service names, the images they run, and their
+    /// <see cref="EnvInjectionPlan.InjectTokenLabel"/> and <see cref="EnvInjectionPlan.ReleaseImageLabel"/>
+    /// values from the normalized project JSON.
     /// </summary>
     /// <remarks>
-    /// Only names and that one label are read. The rest of the document is the fully resolved project —
-    /// including every environment value the repository defines — and is deliberately neither parsed
-    /// nor retained.
+    /// Only names, the image and those two labels are read. The rest of the document is the fully
+    /// resolved project — including every environment value the repository defines — and is
+    /// deliberately neither parsed nor retained. The image is the interpolated one Compose resolved, so
+    /// <c>image: ghcr.io/acme/web:${TAG}</c> arrives with the tag already substituted; a build-only
+    /// service declares no image and comes back with null.
     /// </remarks>
     /// <param name="configJson">stdout of <c>docker compose config --format json</c>.</param>
     /// <returns>The services in document order; empty when the document declares none.</returns>
@@ -37,31 +40,72 @@ internal static class ComposeOverrideFile {
 
         var result = new List<EnvInjectionService>();
         foreach (var service in services.EnumerateObject()) {
-            string? label = null;
-            if (service.Value.ValueKind == JsonValueKind.Object
-                && service.Value.TryGetProperty("labels", out var labels))
-                label = ReadLabel(labels, EnvInjectionPlan.InjectTokenLabel);
-            result.Add(new EnvInjectionService(service.Name, label));
+            string? injectToken = null;
+            string? releaseImage = null;
+            string? image = null;
+            if (service.Value.ValueKind == JsonValueKind.Object) {
+                if (service.Value.TryGetProperty("labels", out var labels)) {
+                    injectToken = ReadLabel(labels, EnvInjectionPlan.InjectTokenLabel);
+                    releaseImage = ReadLabel(labels, EnvInjectionPlan.ReleaseImageLabel);
+                }
+                if (service.Value.TryGetProperty("image", out var imageValue)
+                    && imageValue.ValueKind == JsonValueKind.String)
+                    image = imageValue.GetString();
+            }
+            result.Add(new EnvInjectionService(service.Name, injectToken, image, releaseImage));
         }
         return result;
     }
 
     /// <summary>
-    /// Renders the plan as a Compose override document. Returns null when the plan injects nothing —
-    /// a <c>services:</c> key with no entries under it is not a valid Compose file.
+    /// Renders the two plans as one Compose override document. Returns null when neither has anything
+    /// to say — a <c>services:</c> key with no entries under it is not a valid Compose file.
     /// </summary>
-    /// <param name="plan">The plan to render; its ordering is preserved verbatim.</param>
+    /// <remarks>
+    /// One file, not two, and for the same reason there is one <c>ParseServices</c>: compose merges
+    /// override files in argument order, and a second one would put the deploy in the business of
+    /// reasoning about which of its own files wins. Both plans are already ordered by service name, so
+    /// the merge below is a walk over their union in that same order — deterministic, and diffable
+    /// between deploys.
+    /// <para>
+    /// <c>image:</c> is written before <c>environment:</c> purely for readability; Compose's merge is
+    /// key-wise and cares about neither order nor which of the two keys a service happens to carry.
+    /// The digest goes through the same <see cref="QuoteValue"/> path as every injected value, so a
+    /// reference containing a <c>$</c> survives Compose's interpolation pass — digests do not contain
+    /// one today, and a value-specific exemption is exactly how that stops being true unnoticed.
+    /// </para>
+    /// </remarks>
+    /// <param name="plan">
+    /// The environment-injection plan. Each service's variables are written in the plan's own order;
+    /// the services themselves come out in ordinal name order, which is the order both plans are
+    /// already built in — so an environment-only render is byte-identical to what this produced before
+    /// image pinning existed.
+    /// </param>
+    /// <param name="imagePlan">
+    /// The image-pinning plan, or null in <c>Git</c> mode — where this method renders precisely what it
+    /// rendered before ADR-0026's release stage, byte for byte.
+    /// </param>
     /// <returns>The file body, or null when there is nothing to write.</returns>
-    public static string? Render(EnvInjectionPlan plan) {
-        if (plan.Services.Count == 0) return null;
+    public static string? Render(EnvInjectionPlan plan, ImagePinPlan? imagePlan = null) {
+        var pins = imagePlan?.Services ?? [];
+        if (plan.Services.Count == 0 && pins.Count == 0) return null;
+
+        var variablesByService = plan.Services.ToDictionary(s => s.ServiceName, StringComparer.Ordinal);
+        var pinsByService = pins.ToDictionary(p => p.ServiceName, StringComparer.Ordinal);
+        var names = variablesByService.Keys
+            .Union(pinsByService.Keys, StringComparer.Ordinal)
+            .OrderBy(n => n, StringComparer.Ordinal);
 
         // '\n' rather than AppendLine: the file is handed to a Compose CLI that may well be running in a
         // Linux container, and a deterministic body is easier to reason about than a per-OS one.
         var body = new StringBuilder();
         body.Append("# Generated by Watchtower for this deploy — not part of the repository.\n");
         body.Append("services:\n");
-        foreach (var service in plan.Services) {
-            body.Append("  ").Append(QuoteKey(service.ServiceName)).Append(":\n");
+        foreach (var name in names) {
+            body.Append("  ").Append(QuoteKey(name)).Append(":\n");
+            if (pinsByService.TryGetValue(name, out var pin))
+                body.Append("    image: ").Append(QuoteValue(pin.Image)).Append('\n');
+            if (!variablesByService.TryGetValue(name, out var service)) continue;
             body.Append("    environment:\n");
             foreach (var variable in service.Variables)
                 body.Append("      ").Append(QuoteKey(variable.Key)).Append(": ")

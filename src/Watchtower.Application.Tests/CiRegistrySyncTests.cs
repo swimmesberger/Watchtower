@@ -117,11 +117,12 @@ public sealed class CiRegistrySyncTests {
 
     [Fact]
     public async Task Update_SelectingARegistry_FailsNamingTheMissingPatPermission() {
-        // What GitHub answers for a PAT without the Secrets permission — the user-reported case.
-        var gitHub = new StubGitHubApiClient {
-            SecretsAccessError = "The PAT cannot access the repository's Actions secrets — the registry "
-                + "sync needs the fine-grained PAT to also carry the repository Secrets (read and write) permission.",
-        };
+        // The production string, not a paraphrase of it: a stub that invents its own wording proves
+        // only that the stub was wired, which is how "registry sync" survived unnoticed into the
+        // release-sync path's copy of this message.
+        var expected = GitHubApiClient.MissingActionsPermissionMessage(
+            CiActionsConfigSync.RegistryFeature, "Secrets");
+        var gitHub = new StubGitHubApiClient { SecretsAccessError = expected };
         using var host = AuthTestHost.Start(WithUpdateRepo(gitHub));
         var repoId = await AddCiRepoAsync(host);
         await AddRegistryAsync(host);
@@ -130,8 +131,11 @@ public sealed class CiRegistrySyncTests {
         var result = await SendAsync(scope.ServiceProvider, Command(repoId) with { SyncRegistryUrl = RegistryUrl });
 
         Assert.False(result.IsSuccess);
-        Assert.Contains("Secrets (read and write)", result.Error.Message);
+        Assert.Contains(expected, result.Error.Message);
+        Assert.Contains("the registry sync needs", result.Error.Message);
         Assert.Equal([("acme", "shop")], gitHub.SecretsProbes);
+        // …and the probe was told which feature is asking, so the message names this one.
+        Assert.Equal([CiActionsConfigSync.RegistryFeature], gitHub.Features);
         // Selection did not stick — the repo still has no sync registry.
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         Assert.Null(await db.CiRepos.Where(r => r.Id == repoId).Select(r => r.SyncRegistryUrl).SingleAsync(Ct));
@@ -213,9 +217,13 @@ public sealed class CiRegistrySyncTests {
         public string? SecretsAccessError { get; init; }
         public List<(string Owner, string Name)> SecretsProbes { get; } = [];
 
+        /// <summary>Feature name each probe was made under — what decides the message's wording.</summary>
+        public List<string> Features { get; } = [];
+
         public override Task<string?> ValidateSecretsAccessAsync(
-            string owner, string repo, string token, CancellationToken ct = default) {
+            string owner, string repo, string token, string feature, CancellationToken ct = default) {
             SecretsProbes.Add((owner, repo));
+            Features.Add(feature);
             return Task.FromResult(SecretsAccessError);
         }
     }

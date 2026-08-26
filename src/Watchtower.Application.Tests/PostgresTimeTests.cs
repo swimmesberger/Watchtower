@@ -120,9 +120,7 @@ public sealed class PostgresTimeTests {
 
     private static Stack NewStack(string name) => new() {
         Name = name,
-        RepositoryUrl = $"https://example.com/{name}.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = name,
+        Product = TestProducts.New(name),
     };
 }

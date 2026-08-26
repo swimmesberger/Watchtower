@@ -41,6 +41,9 @@ import { SectionHeader } from '@/components/ui/section-header'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
+import { deployTargetVersion, usesReleases } from '@/lib/release'
+import { useProductReleases } from '@/hooks/use-product-releases'
+import { VersionPanel } from './StackVersion'
 
 function webhookUrl(stackId: number): string {
   const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '')
@@ -88,6 +91,13 @@ export function OverviewTab({
 
   const stackContainers = containers.filter((c) => c.stackName === stack.composeProjectName)
 
+  // Invariant 6: the empty state offers a Deploy of its own, so it names its target too. Same shared
+  // query as the header fragment and the Version panel — no extra request.
+  const { data: releaseOptions } = useProductReleases(stack.productId, usesReleases(stack))
+  const emptyStateTarget = usesReleases(stack)
+    ? deployTargetVersion(stack, releaseOptions?.releases)
+    : null
+
   return (
     <div className="space-y-8">
       {/* Containers */}
@@ -109,7 +119,7 @@ export function OverviewTab({
                 onClick={() => deploy.mutate()}
               >
                 {!(deploy.isPending || isDeploying) && <Play />}
-                Deploy
+                {emptyStateTarget ? `Deploy ${emptyStateTarget}` : 'Deploy'}
               </Button>
             }
           />
@@ -122,12 +132,17 @@ export function OverviewTab({
         )}
       </section>
 
-      {/* Image updates */}
+      {/* Invariant 4 — one update mechanism visible. `releaseMode` picks the panel, and this ternary
+          is the only place either of them is rendered, so the two can never appear together. */}
       <section>
-        <ImageUpdatesPanel
-          stack={stack}
-          onChecked={(updated) => qc.setQueryData(['stacks', stackId], updated)}
-        />
+        {usesReleases(stack) ? (
+          <VersionPanel stack={stack} />
+        ) : (
+          <ImageUpdatesPanel
+            stack={stack}
+            onChecked={(updated) => qc.setQueryData(['stacks', stackId], updated)}
+          />
+        )}
       </section>
 
       {/* Webhook */}
@@ -457,6 +472,12 @@ function WebhookCard({ stackId, token }: { stackId: number; token: string | null
 }
 
 // ── Deploy history row ──────────────────────────────────────────────────────────
+//
+// The release chip is on the row since stage 6: `DeployEventDto` carries `releaseVersion` beside the
+// id (one left join in `stacks.events`, not the per-row lookup that kept it out of stage 4b), so a
+// history list answers "which version was this?" without expanding anything. It is absent for a
+// Git-mode deploy, for one that failed before the release was resolved, and for everything that ran
+// before releases existed — the expanded output still names the release on its first line either way.
 
 function DeployEventRow({
   event,
@@ -511,6 +532,11 @@ function DeployEventRow({
         ) : (
           <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
             {event.triggeredBy}
+          </span>
+        )}
+        {event.releaseVersion && (
+          <span className="font-mono text-xs text-text-2" title="Release this deploy applied">
+            {event.releaseVersion}
           </span>
         )}
         <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>

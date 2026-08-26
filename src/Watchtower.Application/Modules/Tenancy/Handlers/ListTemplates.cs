@@ -12,6 +12,14 @@ public sealed class ListTemplates(WatchtowerDbContext db)
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var rows = await db.StackTemplates.AsNoTracking()
+            // The source fields are resolved from the product since ADR-0026.
+            .Include(t => t.Product)
+            // …and the fleet default is a navigation too: without it every row reports "no default"
+            // however many tenants the template pins, because ToDto reads the loaded release, not the id.
+            .Include(t => t.DefaultPinnedRelease)
+            // …and the realm, for the same reason: the DTO names the population this setup serves, and a
+            // missing include would report "no realm" over a template that has one.
+            .Include(t => t.Realm)
             .OrderBy(t => t.Name)
             .Select(t => new { Template = t, Count = t.Instances.Count })
             .ToListAsync(ct);

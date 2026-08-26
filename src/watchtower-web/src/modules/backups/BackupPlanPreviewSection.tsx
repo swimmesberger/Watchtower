@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, Lock, SlidersHorizontal } from 'lucide-react'
+import { Lock, SlidersHorizontal } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
   BackupPlanPreview,
@@ -12,20 +12,11 @@ import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { EmptyState } from '@/components/ui/empty-state'
 import { SectionHeader } from '@/components/ui/section-header'
 import { toast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
+import { BackupOverrideMenu, type BackupOverrideValue } from './BackupOverrideMenu'
 
 // ── Plan preview + per-service overrides (ADR-0020) ─────────────────────────────
 // The dry run of the next backup for the stack as deployed right now: what each container gets
@@ -233,7 +224,10 @@ function SourceCell({ row }: { row: BackupServicePreview }) {
       )}
       {overrides.length > 0 && (
         <span className={cn('text-text-2', labels.length > 0 && 'text-text-3')}>
-          UI override: {overrides.join(', ')}
+          {/* An inherited row is the *template's* setting, not this stack's — saying "UI override"
+              over it would send the reader looking for a stack override that does not exist. */}
+          {o?.inherited ? 'Template policy: ' : 'UI override: '}
+          {overrides.join(', ')}
           {labels.length > 0 && row.source === 'label' ? ' (shadowed by the label)' : ''}
         </span>
       )}
@@ -242,9 +236,14 @@ function SourceCell({ row }: { row: BackupServicePreview }) {
 }
 
 /**
- * Per-row override menu. Each knob a label already sets is disabled — the label wins, exactly as an
- * env-pinned setting is read-only in Settings (ADR-0014). The menu always writes the whole override,
- * so clearing every knob deletes it.
+ * Per-row override menu: {@link BackupOverrideMenu} with this row's labels as the locks. Each knob a
+ * label already sets is disabled — the label wins, exactly as an env-pinned setting is read-only in
+ * Settings (ADR-0014).
+ *
+ * The row's override may be one the *template* set, and this menu deliberately writes a **stack** row
+ * anyway: that is what "override the fleet for this instance" means, and the ladder replaces the
+ * template's row for the service whole (invariant 18). The fleet-wide edit is on the product's Backups
+ * tab, which the "Set by" cell names.
  */
 function OverrideMenu({
   row,
@@ -253,87 +252,37 @@ function OverrideMenu({
 }: {
   row: BackupServicePreview
   pending: boolean
-  onChange: (next: { exclude: boolean; stop: string | null; dump: string | null }) => void
+  onChange: (next: BackupOverrideValue) => void
 }) {
-  const current = {
-    exclude: row.override?.exclude ?? false,
-    stop: row.override?.stop ?? null,
-    dump: row.override?.dump ?? null,
-  }
-  const stopLocked = row.stopLabel != null
-  const excludeLocked = row.excludeLabel != null
-  const dumpLocked = row.dumpLabel != null
-  const hasOverride = row.override != null
-
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant={hasOverride ? 'secondary' : 'ghost'} size="sm" disabled={pending}>
-          <SlidersHorizontal /> Override <ChevronDown className="size-3" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="min-w-[15rem]">
-        <DropdownMenuLabel>
-          During the snapshot{stopLocked ? ' · set by label' : ''}
-        </DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={current.stop ?? 'default'}
-          onValueChange={(v) =>
-            onChange({ ...current, stop: v === 'default' ? null : (v as 'true' | 'false' | 'pause') })
-          }
-        >
-          <DropdownMenuRadioItem value="default" disabled={stopLocked}>
-            Stack default
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="true" disabled={stopLocked}>
-            Stop
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="pause" disabled={stopLocked}>
-            Pause (crash-consistent)
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="false" disabled={stopLocked}>
-            Keep running (hot copy)
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuCheckboxItem
-          checked={current.exclude}
-          disabled={excludeLocked}
-          onCheckedChange={(v) => onChange({ ...current, exclude: v === true })}
-        >
-          Exclude from backup{excludeLocked ? ' · set by label' : ''}
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Database dump{dumpLocked ? ' · set by label' : ''}</DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={current.dump ?? 'default'}
-          onValueChange={(v) =>
-            onChange({ ...current, dump: v === 'default' ? null : (v as 'false' | 'postgres') })
-          }
-        >
-          <DropdownMenuRadioItem value="default" disabled={dumpLocked}>
-            Detect by image
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="postgres" disabled={dumpLocked}>
-            Dump as Postgres
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="false" disabled={dumpLocked}>
-            Never dump (snapshot the volume)
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
-        {hasOverride && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuCheckboxItem
-              checked={false}
-              onCheckedChange={() => onChange({ exclude: false, stop: null, dump: null })}
-            >
-              Clear override
-            </DropdownMenuCheckboxItem>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <BackupOverrideMenu
+      // An inherited row is not this stack's setting, so the menu opens on "no stack override" — which
+      // is the truth, and is what its Clear row would otherwise pretend to undo.
+      value={
+        row.override && row.override.inherited !== true
+          ? {
+              exclude: row.override.exclude,
+              stop: row.override.stop ?? null,
+              dump: row.override.dump ?? null,
+            }
+          : null
+      }
+      locked={{
+        stop: row.stopLabel != null,
+        exclude: row.excludeLabel != null,
+        dump: row.dumpLabel != null,
+      }}
+      pending={pending}
+      scopeDefaultLabel="Stack default"
+      // Stated before the click, and only where it is true: the ladder is per service, not per knob, so
+      // a stack row takes the place of the template's whole row rather than merging with it.
+      note={
+        row.override?.inherited === true
+          ? 'Overriding here replaces the fleet’s whole setting for this service.'
+          : undefined
+      }
+      onChange={onChange}
+    />
   )
 }
 

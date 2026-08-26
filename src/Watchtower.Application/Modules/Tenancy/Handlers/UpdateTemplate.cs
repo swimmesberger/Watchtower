@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Tenancy.Handlers;
 
@@ -11,11 +12,21 @@ namespace Watchtower.Application.Modules.Tenancy.Handlers;
 /// accounts currently using them would stop being admitted on their next request, and the accounts of the
 /// new realm would be let in without anybody having granted them anything. Emptying the category first
 /// makes that an explicit act rather than a side effect of a form save.
+/// <para>
+/// The product moves under the same rule and for the same reason (ADR-0026): repointing a populated
+/// category at another product would put every tenant on a different codebase at its next deploy. The
+/// repository fields are handled as they are on <c>stacks.update</c> — unchanged values pass, a changed
+/// one is refused with a pointer at <c>products.update</c>, and <c>Branch</c> maps onto
+/// <see cref="StackTemplate.BranchOverride"/>.
+/// </para>
 /// </remarks>
 [Handler("templates.update")]
 public sealed class UpdateTemplate(WatchtowerDbContext db)
     : IHandler<UpdateTemplate.Command, Result<UpdateTemplate.Response>> {
-    /// <summary><paramref name="RealmId"/> omitted leaves the category where it is.</summary>
+    /// <summary>
+    /// <paramref name="RealmId"/> omitted leaves the category where it is, and so does
+    /// <paramref name="ProductId"/>.
+    /// </summary>
     public sealed record Command(
         int Id,
         string Name,
@@ -27,7 +38,8 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
         string TargetServiceName,
         int TargetPort,
         IReadOnlyList<TemplateEnvVarInput>? BaseEnvVars,
-        int? RealmId = null);
+        int? RealmId = null,
+        int? ProductId = null);
 
     public sealed record Response(StackTemplateDto Template);
 
@@ -39,29 +51,71 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
         if (command.BaseEnvVars is { Count: > 0 } && TenancyMapping.FirstDuplicateKey(command.BaseEnvVars) is { } dup)
             return AppError.Validation($"Duplicate env var key: '{dup}'");
 
-        var template = await db.StackTemplates.FirstOrDefaultAsync(t => t.Id == command.Id, ct);
+        var template = await db.StackTemplates
+            .Include(t => t.Product)
+            // The response projects the fleet default; without this the save would answer "no default"
+            // and the caller would cache that over a template that has one.
+            .Include(t => t.DefaultPinnedRelease)
+            // …and the realm, for the same reason: the DTO names the population this setup serves, and a
+            // missing include would report "no realm" over a template that has one.
+            .Include(t => t.Realm)
+            .FirstOrDefaultAsync(t => t.Id == command.Id, ct);
         if (template is null)
             return AppError.NotFound($"Template {command.Id} not found");
         if (await db.StackTemplates.AnyAsync(t => t.Name == command.Name && t.Id != command.Id, ct))
             return AppError.Validation($"A template named '{command.Name}' already exists.");
 
         var tenantCount = await db.Stacks.CountAsync(s => s.TemplateId == template.Id, ct);
+
+        // Everything below decides; nothing writes. The mutation block comes after the last refusal, so
+        // a rejected save cannot leave the tracked entity carrying half of it — a repointed ProductId
+        // that a later validation error then abandoned would still be sitting in the change tracker for
+        // whatever else this scope saves.
+        var product = template.Product!;
+        if (command.ProductId is { } newProductId && newProductId != template.ProductId) {
+            if (tenantCount > 0) {
+                return AppError.Conflict(
+                    $"Template '{template.Name}' has {tenantCount} tenant(s), so its product cannot be "
+                    + "changed — every one of them would deploy a different codebase. Remove them first.");
+            }
+            var replacement = await db.Products.FirstOrDefaultAsync(p => p.Id == newProductId, ct);
+            if (replacement is null)
+                return AppError.NotFound($"Product {newProductId} not found.");
+            product = replacement;
+        }
+
+        // Against the product that will be in force, not the one on the row: a caller moving the
+        // template and posting the new product's repository fields is consistent and must pass, while
+        // one posting the old product's is telling us its form is stale.
+        var effective = ProductSourceResolver.Resolve(product, template.BranchOverride);
+        if (RefuseSourceChange(command, product, effective) is { } sourceError)
+            return AppError.Validation(sourceError);
+
+        // The entity, not merely its existence: the response names the realm, so a move that only wrote
+        // the id would answer with the *previous* realm's name off the loaded navigation.
+        Realm? newRealm = null;
         if (command.RealmId is { } realmId && realmId != template.RealmId) {
-            if (!await db.Realms.AnyAsync(r => r.Id == realmId, ct))
+            newRealm = await db.Realms.FirstOrDefaultAsync(r => r.Id == realmId, ct);
+            if (newRealm is null)
                 return AppError.Validation($"No realm exists with id {realmId}.");
             if (tenantCount > 0) {
                 return AppError.Conflict(
                     $"Template '{template.Name}' has {tenantCount} tenant(s), so its realm cannot be " +
                     "changed. Remove them first.");
             }
-            template.RealmId = realmId;
         }
 
+        // Validation is done; from here it is all writes.
+        template.ProductId = product.Id;
+        template.Product = product;
+        if (newRealm is { } accepted) {
+            template.RealmId = accepted.Id;
+            template.Realm = accepted;
+        }
         template.Name = command.Name;
-        template.RepositoryUrl = command.RepositoryUrl;
-        template.ComposeFilePath = command.ComposeFilePath;
-        template.Branch = command.Branch;
-        template.CredentialId = command.CredentialId;
+        // The template's own base really is the product default — unlike a stack's, which may inherit
+        // this very override (see ProductSourceResolver.InheritedBranch).
+        template.BranchOverride = ProductSourceResolver.OverrideFor(command.Branch, product.DefaultBranch);
         template.DomainPattern = command.DomainPattern.Trim();
         template.TargetServiceName = command.TargetServiceName.Trim();
         template.TargetPort = command.TargetPort;
@@ -79,4 +133,25 @@ public sealed class UpdateTemplate(WatchtowerDbContext db)
         // already needed to decide whether the realm may move.
         return new Response(TenancyMapping.ToDto(template, tenantCount));
     }
+
+    /// <summary>
+    /// The message refusing a repository field the caller actually changed, or null. Same contract as
+    /// <c>stacks.update</c>: unchanged values pass, because the UI posts the whole object back.
+    /// </summary>
+    private static string? RefuseSourceChange(Command command, Product product, ProductSource effective) {
+        if (Changed(command.RepositoryUrl, effective.RepositoryUrl))
+            return Refusal("repository URL", product);
+        if (Changed(command.ComposeFilePath, effective.ComposeFilePath))
+            return Refusal("compose file path", product);
+        if (command.CredentialId is { } credentialId && credentialId != effective.CredentialId)
+            return Refusal("git credential", product);
+        return null;
+    }
+
+    /// <summary>Both sides trimmed, for the reason <c>stacks.update</c>'s copy spells out.</summary>
+    private static bool Changed(string? supplied, string effective) =>
+        !string.IsNullOrWhiteSpace(supplied)
+        && !string.Equals(supplied.Trim(), effective.Trim(), StringComparison.Ordinal);
+
+    private static string Refusal(string field, Product product) => ProductCatalog.SourceRefusal(field, product);
 }

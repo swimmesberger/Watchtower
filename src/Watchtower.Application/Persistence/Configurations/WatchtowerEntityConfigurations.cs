@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Persistence.Configurations;
 
@@ -12,13 +13,16 @@ namespace Watchtower.Application.Persistence.Configurations;
 /// snake_cased by convention (<c>UseSnakeCaseNamingConvention</c>); table names are set explicitly.
 /// </summary>
 /// <remarks>
-/// Entities several writers can meet on — <c>Realm</c>, <c>Stack</c>, <c>Route</c>, <c>Group</c> —
-/// carry PostgreSQL's <c>xmin</c> system column as their EF concurrency token (ADR-0024 decision 3),
-/// so a read-modify-write whose row moved underneath it raises <c>DbUpdateConcurrencyException</c>
-/// instead of silently overwriting. <c>xmin</c> rather than a version column of our own because the
-/// database maintains it already: a token nobody has to remember to bump cannot be forgotten on the
-/// one write path where it mattered. <c>User</c> is the exception, and carries Identity's own
-/// <c>ConcurrencyStamp</c> instead — see <c>UserConfiguration</c>.
+/// Entities several writers can meet on — <c>Realm</c>, <c>Product</c>, <c>Stack</c>, <c>Route</c>,
+/// <c>Group</c>, <c>ProxyCertificate</c> — carry PostgreSQL's <c>xmin</c> system column as their EF
+/// concurrency token (ADR-0024 decision 3), so a read-modify-write whose row moved underneath it raises
+/// <c>DbUpdateConcurrencyException</c> instead of silently overwriting. <c>xmin</c> rather than a
+/// version column of our own because the database maintains it already: a token nobody has to remember
+/// to bump cannot be forgotten on the one write path where it mattered. Each of the six implements
+/// <see cref="IHasXmin"/> and carries the token as a <em>real</em> property, so it survives detaching
+/// and attaching (npgsql/efcore.pg#3539 — see <c>XminConcurrency</c> for the reversal). <c>User</c> is
+/// the exception, and carries Identity's own <c>ConcurrencyStamp</c> instead — see
+/// <c>UserConfiguration</c>.
 /// </remarks>
 [EntityConfiguration]
 public sealed class RealmConfiguration : IEntityTypeConfiguration<Realm> {
@@ -113,24 +117,128 @@ public sealed class RegistryConfiguration : IEntityTypeConfiguration<Registry> {
 }
 
 [EntityConfiguration]
+public sealed class ProductConfiguration : IEntityTypeConfiguration<Product> {
+    public void Configure(EntityTypeBuilder<Product> b) {
+        b.ToTable("products");
+        b.HasKey(x => x.Id);
+        // Several writers meet on a product (the edit handler today; the release webhook and the
+        // Actions-secret sync in later stages of ADR-0026), so it carries xmin like Stack and Realm.
+        b.UseXminAsConcurrencyToken();
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.RepositoryUrl).IsRequired();
+        b.Property(x => x.ComposeFilePath).IsRequired();
+        b.Property(x => x.DefaultBranch).IsRequired();
+        b.HasIndex(x => x.Name).IsUnique();
+        // Deliberately no unique index on the repository URL: a second compose file in the same
+        // repository is a second product (ADR-0026 decision 2).
+        b.HasOne(x => x.Credential)
+            .WithMany()
+            .HasForeignKey(x => x.CredentialId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // SetNull, and deliberately not unique: removing a repo from CI must not take the products that
+        // deploy it, and several products (different compose files in one repository) share one CI repo.
+        b.HasOne(x => x.CiRepo)
+            .WithMany()
+            .HasForeignKey(x => x.CiRepoId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // The release webhook looks a product up by the presented bearer token, so the column is
+        // indexed; unique so one token can never name two products. PostgreSQL treats NULLs as
+        // distinct, so any number of products may still have no token.
+        b.HasIndex(x => x.ReleaseWebhookToken).IsUnique();
+        // Stored as the enum name ("Git"/"Releases"). The default is on the model, not only in the
+        // migration, so every environment scaffolds a schema in which a product written without one is
+        // in Git mode — the back-compat contract of ADR-0026 decision 5 expressed as a column default
+        // rather than as something the code has to remember.
+        b.Property(x => x.ReleaseMode).HasConversion<string>().HasDefaultValue(ProductReleaseMode.Git);
+        // The retention floor, defaulted on the model as well as in the migration so a product written
+        // by any path keeps 50 releases rather than 0 — which is what an unset int would ask the pruner
+        // to keep. ReleasePruner.Clamp is the second line of defence against a hand-edited row.
+        b.Property(x => x.RetainReleases).HasDefaultValue(ReleasePruner.DefaultRetainReleases);
+        // The monorepo rule of docs/products/design.md §"Secret sync", as a schema fact: the Actions
+        // secret names (WATCHTOWER_URL / WATCHTOWER_PRODUCT_ID / WATCHTOWER_RELEASE_TOKEN) are fixed, so
+        // two products of one repository both syncing would overwrite each other's token on every pass.
+        // Filtered, because sharing a CI repo is otherwise entirely normal (the plain FK index above
+        // stays), and because "not syncing" must remain unconstrained. The handler reports the conflict
+        // in words; this is what makes the state unrepresentable.
+        //
+        // Two declarations over one column, both spelled out. Declaring the filtered index alone would
+        // suppress the convention index EF creates for the FK — the convention only fires when nothing
+        // already indexes those properties — and the plain lookup the relationship needs would silently
+        // disappear. The second one needs a model name *and* a database name, because the snake-case
+        // convention derives the database name from the columns and both would otherwise collide on
+        // ix_products_ci_repo_id.
+        b.HasIndex(x => x.CiRepoId);
+        b.HasIndex(x => x.CiRepoId, "ix_products_ci_repo_id_sync_release_secrets")
+            .IsUnique()
+            .HasFilter("\"sync_release_secrets\"")
+            .HasDatabaseName("ix_products_ci_repo_id_sync_release_secrets");
+    }
+}
+
+[EntityConfiguration]
+public sealed class ReleaseConfiguration : IEntityTypeConfiguration<Release> {
+    public void Configure(EntityTypeBuilder<Release> b) {
+        b.ToTable("releases");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Version).IsRequired();
+        b.Property(x => x.Branch).IsRequired();
+        b.Property(x => x.Fingerprint).IsRequired();
+        b.Property(x => x.CreatedVia).IsRequired();
+        // The two rules release intake is built on. Unique on version because it is the label an
+        // operator picks a release by, and unique on the fingerprint because that is the idempotency
+        // key — the pre-checks in ReleaseIntakeService exist for the message, these indexes are what
+        // make two concurrent identical webhook calls produce one release.
+        b.HasIndex(x => new { x.ProductId, x.Version }).IsUnique();
+        b.HasIndex(x => new { x.ProductId, x.Fingerprint }).IsUnique();
+        // The listing query: newest-first keyset paging within one product
+        // (`WHERE product_id = @p AND id < @before ORDER BY id DESC`). Neither unique index above can
+        // serve it, because both carry a non-id second column.
+        b.HasIndex(x => new { x.ProductId, x.Id });
+        // Cascade: a release is meaningless without its product, and products.delete already refuses
+        // while any stack or template still references one — so this only ever fires for a product
+        // nothing deploys.
+        b.HasOne(x => x.Product)
+            .WithMany(p => p.Releases)
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class ReleaseImageConfiguration : IEntityTypeConfiguration<ReleaseImage> {
+    public void Configure(EntityTypeBuilder<ReleaseImage> b) {
+        b.ToTable("release_images");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Repository).IsRequired();
+        b.Property(x => x.Digest).IsRequired();
+        // One build produces one image per repository; two rows for the same repository would leave
+        // "which digest does this release pin for ghcr.io/acme/api?" with two answers.
+        b.HasIndex(x => new { x.ReleaseId, x.Repository }).IsUnique();
+        b.HasOne(x => x.Release)
+            .WithMany(r => r.Images)
+            .HasForeignKey(x => x.ReleaseId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
     public void Configure(EntityTypeBuilder<Stack> b) {
         b.ToTable("stacks");
         b.HasKey(x => x.Id);
         b.UseXminAsConcurrencyToken();
         b.Property(x => x.Name).IsRequired();
-        b.Property(x => x.RepositoryUrl).IsRequired();
-        b.Property(x => x.ComposeFilePath).IsRequired();
-        b.Property(x => x.Branch).IsRequired();
         b.Property(x => x.ComposeProjectName).IsRequired();
         // Stored as the enum name (e.g. "Success"); the API maps it to lowercase for the client.
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
-        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The default is on the
-        // model so a row written without one — by a raw INSERT, say — stops its containers, which
-        // is what every stack did before quiesce modes existed.
-        b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
+        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. Nullable since stage 7
+        // of ADR-0026 — null is "inherit", and there is deliberately **no** column default any more: a
+        // default would make a row written without an opinion say "stop" explicitly, which is the one
+        // value the tri-state exists to distinguish from silence. The instance default now lives in
+        // BackupPolicyResolver, where the other two rungs of the ladder are.
+        b.Property(x => x.BackupQuiesceMode).HasConversion<string>();
         // Stored as the enum name ("Running"/"Stopped"); the API maps it to lowercase. The default is
         // on the model so rows written without one — by a raw INSERT, say — count as running,
         // which is what every stack was before desired state existed (ADR-0025).
@@ -144,10 +252,13 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         // the column must be indexed. Unique guards against two stacks ever sharing a token; PostgreSQL
         // treats NULLs as distinct, so any number of stacks may still have no token yet.
         b.HasIndex(x => x.AppApiToken).IsUnique();
-        b.HasOne(x => x.Credential)
-            .WithMany()
-            .HasForeignKey(x => x.CredentialId)
-            .OnDelete(DeleteBehavior.SetNull);
+        // Restrict, like a realm's categories: deleting a product must not silently take every stack
+        // deploying it. The products.delete handler refuses while anything still references it, and
+        // names the blockers.
+        b.HasOne(x => x.Product)
+            .WithMany(p => p.Stacks)
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Restrict);
         // Tenant instances link back to their template; deleting a template detaches (not deletes) them.
         // (TemplateId, TenantSlug) is unique — PostgreSQL treats NULLs as distinct, so standalone stacks
         // (both null) never collide.
@@ -156,6 +267,22 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
             .HasForeignKey(x => x.TemplateId)
             .OnDelete(DeleteBehavior.SetNull);
         b.HasIndex(x => new { x.TemplateId, x.TenantSlug }).IsUnique();
+        // Restrict (ADR-0026 decision 4): deleting a release a stack pins would silently flip that stack
+        // back to latest-tracking — a deploy-behaviour change caused by a delete somewhere else.
+        // products.deleteRelease refuses first and names the stacks; this is the backstop.
+        b.HasOne(x => x.PinnedRelease)
+            .WithMany()
+            .HasForeignKey(x => x.PinnedReleaseId)
+            .OnDelete(DeleteBehavior.Restrict);
+        // SetNull, unlike the pin: this records what once ran, and pruning an old release must not be
+        // refused because a stack still remembers deploying it.
+        b.HasOne(x => x.LastDeployedRelease)
+            .WithMany()
+            .HasForeignKey(x => x.LastDeployedReleaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // The fan-out predicate and products.deleteRelease's guard both look stacks up by the release
+        // they pin; PostgreSQL treats NULLs as distinct, so latest-tracking stacks cost nothing here.
+        b.HasIndex(x => x.PinnedReleaseId);
     }
 }
 
@@ -165,9 +292,6 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
         b.ToTable("stack_templates");
         b.HasKey(x => x.Id);
         b.Property(x => x.Name).IsRequired();
-        b.Property(x => x.RepositoryUrl).IsRequired();
-        b.Property(x => x.ComposeFilePath).IsRequired();
-        b.Property(x => x.Branch).IsRequired();
         b.Property(x => x.DomainPattern).IsRequired();
         b.Property(x => x.TargetServiceName).IsRequired();
         // Deliberately global, not (realm_id, name): a template name is what an operator picks a category
@@ -179,10 +303,45 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
             .WithMany()
             .HasForeignKey(x => x.RealmId)
             .OnDelete(DeleteBehavior.Restrict);
-        b.HasOne(x => x.Credential)
+        // Restrict for the same reason as on Stack: a product delete that took its templates — and
+        // with them every tenant — would be a blast radius discovered afterwards.
+        b.HasOne(x => x.Product)
+            .WithMany(p => p.Templates)
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Restrict);
+        // SetNull, not Restrict like Stack.PinnedReleaseId: this pins nothing that is running, so a
+        // delete that clears it changes no deploy — the next tenant simply tracks latest. What must not
+        // clear it silently is *pruning*, which is a rule in ReleasePruner rather than a schema one,
+        // because retention is the only deleter that would ever reach an old default by accident.
+        b.HasOne(x => x.DefaultPinnedRelease)
             .WithMany()
-            .HasForeignKey(x => x.CredentialId)
+            .HasForeignKey(x => x.DefaultPinnedReleaseId)
             .OnDelete(DeleteBehavior.SetNull);
+        // The pruner's template-default protection query looks templates up by the release they name.
+        b.HasIndex(x => x.DefaultPinnedReleaseId);
+        // Nullable and default-less for the same reason Stack's is: null means the template has no
+        // opinion, and a column default would turn silence into an explicit "stop".
+        b.Property(x => x.BackupQuiesceMode).HasConversion<string>();
+    }
+}
+
+[EntityConfiguration]
+public sealed class TemplateBackupServiceOverrideConfiguration
+    : IEntityTypeConfiguration<TemplateBackupServiceOverride> {
+    public void Configure(EntityTypeBuilder<TemplateBackupServiceOverride> b) {
+        b.ToTable("template_backup_service_overrides");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Service).IsRequired();
+        // One row per (template, service), mirroring the stack-level table exactly: setting an override
+        // upserts, clearing every knob deletes it.
+        b.HasIndex(x => new { x.TemplateId, x.Service }).IsUnique();
+        // Cascade like the stack's: the rows describe services of *this* template's tenants and mean
+        // nothing without it. Deleting a template detaches its tenants (they keep running on their own
+        // product), and they correctly stop inheriting a policy that no longer exists.
+        b.HasOne(x => x.Template)
+            .WithMany(t => t.BackupServiceOverrides)
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -214,6 +373,14 @@ public sealed class DeployEventConfiguration : IEntityTypeConfiguration<DeployEv
             .WithMany(s => s.DeployEvents)
             .HasForeignKey(x => x.StackId)
             .OnDelete(DeleteBehavior.Cascade);
+        // SetNull: the rollout view groups deploy events by release, but a deleted release must not
+        // take the history of what it deployed with it.
+        b.HasOne(x => x.Release)
+            .WithMany()
+            .HasForeignKey(x => x.ReleaseId)
+            .OnDelete(DeleteBehavior.SetNull);
+        // The rollout view's grouping (succeeded / failed / queued per release).
+        b.HasIndex(x => x.ReleaseId);
     }
 }
 
@@ -335,10 +502,12 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User> {
         b.ToTable("users");
         b.HasKey(x => x.Id);
         // No xmin token here, unlike the other editable entities: users already have one in
-        // ConcurrencyStamp, and a second would break the pattern WatchtowerUserStore is built around —
-        // read detached, mutate, attach, write back. A detached read carries no shadow xmin, so every
-        // such write would fail as a phantom conflict. ConcurrencyStamp travels on the entity itself and
-        // survives the round trip, which is exactly why Identity models it as a column.
+        // ConcurrencyStamp, and two tokens on one row is two ways for the same write to be refused.
+        // (The original reason was stronger — a shadow xmin did not survive WatchtowerUserStore's
+        // read-detached / mutate / attach pattern and would have failed every such write as a phantom
+        // conflict. Since the token became a real property that hazard is gone; what remains is that
+        // Identity already models the concept as a column, and ConcurrencyStamp is the one the store,
+        // its callers and Identity's own error paths already speak.)
         b.Property(x => x.UserName).IsRequired();
         b.Property(x => x.NormalizedUserName).IsRequired();
         b.Property(x => x.PasswordHash).IsRequired();
@@ -580,6 +749,13 @@ public sealed class StackUpdateCheckConfiguration : IEntityTypeConfiguration<Sta
             v => new Dictionary<string, string>(v, StringComparer.OrdinalIgnoreCase));
         b.Property(x => x.OutdatedImageDigests)
             .HasConversion(v => FormatDigests(v), v => ParseDigests(v), digestComparer);
+        // Same newline-separated text as OutdatedImages, and deliberately the same shape: it is the
+        // Releases-mode counterpart of that list (a container name never contains a newline).
+        b.Property(x => x.DriftedContainers)
+            .HasConversion(
+                v => string.Join('\n', v),
+                v => v.Length == 0 ? Array.Empty<string>() : v.Split('\n', StringSplitOptions.RemoveEmptyEntries),
+                comparer);
         b.HasOne(x => x.Stack)
             .WithOne(s => s.UpdateCheck)
             .HasForeignKey<StackUpdateCheck>(x => x.StackId)
@@ -675,19 +851,37 @@ public sealed class SigningKeyConfiguration : IEntityTypeConfiguration<SigningKe
 }
 
 /// <summary>
-/// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3).
+/// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3),
+/// mapped onto <see cref="IHasXmin.Xmin"/> — a real property on the entity.
 /// </summary>
 /// <remarks>
-/// A shadow property rather than one on the entity: <c>xmin</c> is the database's own bookkeeping —
-/// the id of the transaction that last wrote the row — so no application code should be able to read
-/// or set it. Npgsql's <c>UseXminAsConcurrencyToken</c> shorthand was removed in the 9.x provider;
-/// this is the mapping it used to emit, in one place so the four entities that want it cannot drift.
+/// <para>
+/// Npgsql's <c>UseXminAsConcurrencyToken</c> shorthand was removed in the 9.x provider; this is the
+/// mapping it used to emit, in one place so the six entities that want it cannot drift.
+/// </para>
+/// <para>
+/// <b>The shadow-versus-real reasoning reverses here, deliberately.</b> This used to declare a shadow
+/// property, on the argument that <c>xmin</c> is the database's own bookkeeping and no application code
+/// should be able to read it. The provider's own maintainer made the opposite call when removing the
+/// shorthand (npgsql/efcore.pg#3539): a shadow token lives in the change tracker rather than on the
+/// object, so it does not survive detaching, attaching or serializing — every read-detached /
+/// mutate / attach flow then fails as a phantom conflict against a <c>default(uint)</c> token that
+/// matches no row. Watchtower had already been bitten twice and had routed around it twice (see
+/// <c>UserConfiguration</c> and <c>CiToolchainRecorder</c>). A real property with a private setter keeps
+/// the property that actually mattered — application code cannot <em>write</em> a token — and drops the
+/// one that only ever cost us: that the value cannot leave its context.
+/// </para>
+/// <para>
+/// The generic constraint is <see cref="IHasXmin"/> on purpose: an entity configured with this helper
+/// but missing the property is a compile error, where the shadow version would have silently created a
+/// second, unread property.
+/// </para>
 /// </remarks>
 internal static class XminConcurrency {
     public static EntityTypeBuilder<T> UseXminAsConcurrencyToken<T>(this EntityTypeBuilder<T> builder)
-        where T : class {
+        where T : class, IHasXmin {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.Property<uint>("xmin")
+        builder.Property(e => e.Xmin)
             .HasColumnName("xmin")
             .HasColumnType("xid")
             .ValueGeneratedOnAddOrUpdate()

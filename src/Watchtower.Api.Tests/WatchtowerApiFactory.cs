@@ -71,6 +71,14 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
         : _proxy;
 
     /// <summary>
+    /// Extra registrations layered on top of the host's own, applied last — so a test can substitute a
+    /// service this factory does not know about (the release-intake registry lookup, say) without every
+    /// such seam having to become a property here. Set through an object initializer, so it is in place
+    /// before the host is built.
+    /// </summary>
+    public Action<IServiceCollection>? AdditionalServices { get; init; }
+
+    /// <summary>
     /// Opts out of the recording proxy provider and leaves the real router — and through it the real
     /// in-process provider — in place. For the tests that are <em>about</em> the in-process proxy: they
     /// project a real route table, bind a real listener state, and ask <c>proxy.getStatus</c> what the
@@ -253,9 +261,13 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
             if (HasIngress)
                 services.AddSingleton<IStartupFilter>(new TestLocalPortStartupFilter());
 
-            if (UseRealForwarder) return;
-            services.RemoveAll<IHttpForwarder>();
-            services.AddSingleton<IHttpForwarder>(new RecordingHttpForwarder());
+            if (!UseRealForwarder) {
+                services.RemoveAll<IHttpForwarder>();
+                services.AddSingleton<IHttpForwarder>(new RecordingHttpForwarder());
+            }
+
+            // Last, so a test's own registration wins over everything above it.
+            AdditionalServices?.Invoke(services);
         });
     }
 

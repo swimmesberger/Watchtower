@@ -14,6 +14,13 @@ public sealed class GetStack(WatchtowerDbContext db, StackUpdateRevalidator reva
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var stack = await db.Stacks.AsNoTracking()
             .Include(s => s.UpdateCheck)
+            // The source lives on the product since ADR-0026, and the branch may be overridden by the
+            // tenant's template, so both navigations are what makes the DTO's source fields resolvable.
+            .Include(s => s.Product)
+            .Include(s => s.Template)
+            // Invariant 6: no surface may render a Deploy button without the version it would deploy.
+            .Include(s => s.PinnedRelease)
+            .Include(s => s.LastDeployedRelease)
             .FirstOrDefaultAsync(s => s.Id == query.Id, ct);
         if (stack is null) return AppError.NotFound($"Stack {query.Id} not found");
         // A pending image update may already have been applied on the host by hand; revalidate that

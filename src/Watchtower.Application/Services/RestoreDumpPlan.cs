@@ -69,7 +69,15 @@ public sealed record RestoreDumpPlan(
         new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>The archive format this version knows how to read in full.</summary>
-    internal const int KnownFormatVersion = 2;
+    /// <remarks>
+    /// <b>Tied to the writer, not spelled again.</b> The two drifted apart exactly once — stage 7 of
+    /// ADR-0026 raised the written manifest to 3 and left this at 2, so every restore of this build's
+    /// own archives would have printed the "newer than this Watchtower understands" warning at the
+    /// operator. A reader that is behind its own writer is never right, and the only way to keep them
+    /// in step is for there to be one number. A future format the reader genuinely cannot follow is a
+    /// *reader* change (new keys understood here) landing with the writer bump, not a second constant.
+    /// </remarks>
+    internal const int KnownFormatVersion = BackupService.ManifestFormatVersion;
 
     /// <summary>Manifest engine values that mean PostgreSQL.</summary>
     private static readonly HashSet<string> PostgresEngines =

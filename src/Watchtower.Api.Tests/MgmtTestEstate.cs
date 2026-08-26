@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Tests;
 using Xunit;
 
 // Watchtower's own entity, not Microsoft.AspNetCore.Routing.Route — which ImplicitUsings pulls in here.
@@ -28,9 +29,7 @@ internal static class MgmtTestEstate {
             var db = sp.GetRequiredService<WatchtowerDbContext>();
             var template = new StackTemplate {
                 Name = name,
-                RepositoryUrl = $"https://example.invalid/{name}.git",
-                ComposeFilePath = "docker-compose.yml",
-                Branch = "main",
+                Product = TestProducts.New(name),
                 DomainPattern = domainPattern,
                 TargetServiceName = "web",
                 TargetPort = 8080,
@@ -200,10 +199,8 @@ internal static class MgmtTestEstate {
 
     private static Stack NewStack(string name) => new() {
         Name = name,
-        RepositoryUrl = $"https://example.invalid/{name}.git",
-        ComposeFilePath = "docker-compose.yml",
-        Branch = "main",
         ComposeProjectName = name,
+        Product = TestProducts.New(name),
         CreatedAt = DateTimeOffset.UtcNow,
     };
 }

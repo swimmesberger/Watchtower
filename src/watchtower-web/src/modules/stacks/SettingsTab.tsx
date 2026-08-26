@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useRouteContext } from '@tanstack/react-router'
 import { api } from '@/lib/api'
 import { apiBase } from '@/lib/config'
+import { usesReleases } from '@/lib/release'
 import type { AutoDeployMode, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
 import { EnvVarEditor } from '@/components/env-var-editor'
 import { Banner } from '@/components/ui/banner'
@@ -24,8 +25,6 @@ import { SectionHeader } from '@/components/ui/section-header'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
 
-const NO_CREDENTIAL = 'none'
-
 function webhookUrl(stackId: number): string {
   const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '')
   return `${base}/api/webhooks/stacks/${stackId}/deploy`
@@ -41,18 +40,20 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     queryFn: () => api.stacks.getEnv(stackId),
   })
 
-  const { data: credentials = [] } = useQuery({
-    queryKey: ['credentials'],
-    queryFn: api.credentials.list,
-  })
+  // Only to decide whether the product is linkable; the branch hint below is derived from the stack
+  // DTO alone, because it is the only source that cannot disagree with what the backend compares.
+  const { caps } = useRouteContext({ from: '__root__' })
+  const productsEnabled = caps.isModuleEnabled('Products')
 
-  const [form, setForm] = useState<Omit<UpdateStackRequest, 'envVars'>>({
+  // The three product-owned fields are deliberately absent: stacks.update refuses a *changed* one,
+  // and a value seeded at mount goes stale the moment someone edits the product elsewhere — which
+  // would then fail every save here with a refusal naming a control this form no longer shows.
+  const [form, setForm] = useState<
+    Omit<UpdateStackRequest, 'envVars' | 'repositoryUrl' | 'composeFilePath' | 'credentialId'>
+  >({
     name: stack.name,
-    repositoryUrl: stack.repositoryUrl,
-    composeFilePath: stack.composeFilePath,
     branch: stack.branch,
     composeProjectName: stack.composeProjectName,
-    credentialId: stack.credentialId,
     webhookToken: stack.webhookToken ?? '',
     webhookEnabled: stack.webhookEnabled,
     autoDeployMode: stack.autoDeployMode,
@@ -99,6 +100,11 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     e.preventDefault()
     update.mutate({
       ...form,
+      // Empty is "not supplied" to the handler's Changed() check, and a null credential is only
+      // refused when it names a *different* one — so all three pass without this form owning them.
+      repositoryUrl: '',
+      composeFilePath: '',
+      credentialId: null,
       composeProjectName: form.composeProjectName || null,
       webhookToken: form.webhookToken || null,
       autoDeployTime: form.autoDeployMode === 'scheduled' ? form.autoDeployTime : null,
@@ -108,10 +114,24 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     })
   }
 
+  // Derived from the stack DTO alone. With no override, the effective branch *is* the branch this
+  // stack inherits — the exact value the handler compares against — so it can be named. With one
+  // set, the inherited value is not on the DTO (for a tenant it is the template's override, not the
+  // product default), so the hint states the state instead of guessing a number.
+  const branchHint = stack.branchOverride
+    ? 'Pinned; clear to inherit.'
+    : `Overrides the inherited branch (${stack.branch}) for this stack.`
+
+  // The one binary this form reads: it relabels the automation section rather than adding a second
+  // one, and a pin parks the whole section (design.md §Stack detail).
+  const releaseMode = usesReleases(stack)
+  const rolloutPaused = releaseMode && stack.pinnedRelease != null
+
   const url = webhookUrl(stackId)
-  const curlHint = form.webhookToken
-    ? `curl -X POST -H "Authorization: Bearer <token>" ${url}`
-    : `curl -X POST ${url}`
+  // Always the authenticated form: an enabled webhook without a token now refuses every call
+  // (ADR-0026 retrofitted the deploy webhook onto the constant-time bearer check), so a copyable
+  // command without the header would only produce a 401.
+  const curlHint = `curl -X POST -H "Authorization: Bearer <token>" ${url}`
 
   return (
     <form onSubmit={handleSave} className="max-w-2xl space-y-8">
@@ -122,8 +142,8 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           description="Where the compose project lives and how it’s deployed."
         />
         <Card>
-          <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="Stack name" required className="md:col-span-2">
+          <CardContent className="space-y-4">
+            <Field label="Stack name" required>
               {({ id }) => (
                 <Input
                   id={id}
@@ -135,20 +155,41 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               )}
             </Field>
 
-            <Field label="Repository URL" required className="md:col-span-2">
-              {({ id }) => (
-                <Input
-                  id={id}
-                  mono
-                  value={form.repositoryUrl}
-                  onChange={(e) => set('repositoryUrl', e.target.value)}
-                  placeholder="https://github.com/owner/repo"
-                  required
-                />
+            {/* Demoted, not deleted (design.md §Stack detail): the repository URL, compose file and
+                credential live on the product since ADR-0026 and editing them here now errors
+                server-side, so the control is replaced by a read-only row in the same position that
+                points at where the value moved. */}
+            <div>
+              <p className="text-[13px] text-text-2">
+                From product{' '}
+                {productsEnabled ? (
+                  <Link
+                    to="/products/$id"
+                    params={{ id: String(stack.productId) }}
+                    className="font-medium text-text hover:text-brand"
+                  >
+                    {stack.productName}
+                  </Link>
+                ) : (
+                  // The catalogue page is gated on the module; a link into a route that redirects
+                  // straight back out is worse than plain text.
+                  <span className="font-medium text-text">{stack.productName}</span>
+                )}{' '}
+                — <span className="font-mono">{stack.repositoryUrl}</span> ·{' '}
+                <span className="font-mono">{stack.composeFilePath}</span>
+              </p>
+              {productsEnabled && (
+                <Link
+                  to="/products/$id"
+                  params={{ id: String(stack.productId) }}
+                  className="mt-1 inline-block text-[13px] text-brand hover:underline"
+                >
+                  Edit product
+                </Link>
               )}
-            </Field>
+            </div>
 
-            <Field label="Branch" hint="Defaults to main">
+            <Field label="Branch" hint={branchHint}>
               {({ id, describedBy }) => (
                 <Input
                   id={id}
@@ -161,27 +202,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               )}
             </Field>
 
-            <Field
-              label="Compose file path"
-              hint="Relative to the repo root, e.g. docker-compose.yml"
-            >
-              {({ id, describedBy }) => (
-                <Input
-                  id={id}
-                  aria-describedby={describedBy}
-                  mono
-                  value={form.composeFilePath}
-                  onChange={(e) => set('composeFilePath', e.target.value)}
-                  placeholder="docker-compose.yml"
-                />
-              )}
-            </Field>
-
-            <Field
-              label="Compose project name"
-              hint="Defaults to the stack name"
-              className="md:col-span-2"
-            >
+            <Field label="Compose project name" hint="Defaults to the stack name">
               {({ id, describedBy }) => (
                 <Input
                   id={id}
@@ -200,29 +221,10 @@ export function SettingsTab({ stack }: { stack: Stack }) {
       <section>
         <SectionHeader
           title="Authentication"
-          description="Only needed for private repos or registries."
+          description="Protects the deploy webhook your CI calls. The clone credential lives on the product."
         />
         <Card>
           <CardContent className="space-y-4">
-            <Field label="Credential" hint="Only needed for private repositories">
-              <Select
-                value={form.credentialId != null ? String(form.credentialId) : NO_CREDENTIAL}
-                onValueChange={(v) => set('credentialId', v === NO_CREDENTIAL ? null : Number(v))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="None (public repository)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_CREDENTIAL}>None (public repository)</SelectItem>
-                  {credentials.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name} ({c.username})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-
             <Field label="Webhook">
               <label className="flex items-center gap-3">
                 <Switch
@@ -237,13 +239,14 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               <>
                 {!form.webhookToken && (
                   <Banner tone="warn" title="No token set">
-                    This webhook is public and can be triggered without authentication.
+                    Every call to this webhook is refused until you set one. Blank no longer means
+                    “anyone may deploy this stack”.
                   </Banner>
                 )}
 
                 <Field
                   label="Webhook token"
-                  hint="Sent as a Bearer token by your CI. Leave blank to allow unauthenticated deploys (not recommended)."
+                  hint="Sent as a Bearer token by your CI. Required — an enabled webhook without one refuses every call."
                 >
                   <SecretField
                     value={form.webhookToken ?? ''}
@@ -266,11 +269,17 @@ export function SettingsTab({ stack }: { stack: Stack }) {
         </Card>
       </section>
 
-      {/* Automatic deployment (pull-based) */}
+      {/* Automatic deployment — the same three AutoDeployMode values in both modes; only the
+          mechanism they name changes (design.md §"Auto-deploy precedence": one automation field,
+          reinterpreted, never a second one). */}
       <section>
         <SectionHeader
-          title="Automatic deployment"
-          description="Redeploy without an inbound webhook: Watchtower polls the registry for newer images and the git branch for new commits."
+          title={releaseMode ? 'Automatic rollout' : 'Automatic deployment'}
+          description={
+            releaseMode
+              ? 'How this deployment picks up the releases your CI publishes.'
+              : 'Redeploy without an inbound webhook: Watchtower polls the registry for newer images and the git branch for new commits.'
+          }
         />
         <Card>
           <CardContent className="space-y-4">
@@ -278,30 +287,59 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               <Select
                 value={form.autoDeployMode ?? 'off'}
                 onValueChange={(v) => set('autoDeployMode', v as AutoDeployMode)}
+                disabled={rolloutPaused}
               >
-                <SelectTrigger>
+                <SelectTrigger disabled={rolloutPaused}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="off">Disabled</SelectItem>
-                  <SelectItem value="onChange">When an update is detected</SelectItem>
+                  <SelectItem value="off">{releaseMode ? 'Off' : 'Disabled'}</SelectItem>
+                  <SelectItem value="onChange">
+                    {releaseMode ? 'When a new release is published' : 'When an update is detected'}
+                  </SelectItem>
                   <SelectItem value="scheduled">Daily at a fixed time</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
 
-            {form.autoDeployMode === 'onChange' && (
+            {/* Disabled with the reason inline, never hidden: a pin is the opt-out from automation
+                (design.md §"Auto-deploy precedence", rule 2), and removing the control would leave
+                the operator guessing why their setting stopped mattering. */}
+            {rolloutPaused && (
               <p className="text-[13px] text-text-2">
-                Polls on the stack update-check interval (Settings → Automation) and redeploys as
-                soon as a newer image or a new commit on{' '}
-                <span className="font-mono">{form.branch || 'main'}</span> is found.
+                Automatic rollout is paused while this deployment is pinned to{' '}
+                {stack.pinnedRelease!.version}.
               </p>
             )}
 
+            {/* Both mode hints describe automation that is not running while a pin is set, so the
+                paused reason above is the only sentence under the control. */}
+            {!rolloutPaused &&
+              form.autoDeployMode === 'onChange' &&
+              (releaseMode ? (
+                <p className="text-[13px] text-text-2">
+                  Deploys within a minute of your CI reporting a new release.
+                </p>
+              ) : (
+                <p className="text-[13px] text-text-2">
+                  Polls on the stack update-check interval (Settings → Automation) and redeploys as
+                  soon as a newer image or a new commit on{' '}
+                  <span className="font-mono">{form.branch || 'main'}</span> is found.
+                </p>
+              ))}
+
+            {/* The field itself stays — never delete a control someone has set — but its hint would
+                describe a schedule the pin has suspended. */}
             {form.autoDeployMode === 'scheduled' && (
               <Field
                 label="Deploy time"
-                hint="Server-local time. Checks once per day at this time and redeploys only if something new is available."
+                hint={
+                  rolloutPaused
+                    ? undefined
+                    : releaseMode
+                      ? 'Server-local time. Deploys the newest release once per day at this time.'
+                      : 'Server-local time. Checks once per day at this time and redeploys only if something new is available.'
+                }
               >
                 {({ id, describedBy }) => (
                   <Input
@@ -311,6 +349,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
                     className="max-w-40"
                     value={form.autoDeployTime ?? ''}
                     onChange={(e) => set('autoDeployTime', e.target.value)}
+                    disabled={rolloutPaused}
                     required
                   />
                 )}

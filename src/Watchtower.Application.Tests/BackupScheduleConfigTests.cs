@@ -105,8 +105,7 @@ public sealed class BackupScheduleConfigTests {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
-            Name = "web-app", RepositoryUrl = "https://example.com/web-app.git", ComposeFilePath = "docker-compose.yml",
-            Branch = "main", ComposeProjectName = "web-app",
+            Name = "web-app", ComposeProjectName = "web-app", Product = TestProducts.New("web-app"),
         };
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(Ct);
@@ -141,8 +140,8 @@ public sealed class BackupScheduleConfigTests {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var stack = new Stack {
-            Name = "web-app", RepositoryUrl = "https://example.com/web-app.git", ComposeFilePath = "docker-compose.yml",
-            Branch = "main", ComposeProjectName = "web-app", BackupEnabled = false,
+            Name = "web-app", ComposeProjectName = "web-app", BackupEnabled = false,
+            Product = TestProducts.New("web-app"),
         };
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(Ct);

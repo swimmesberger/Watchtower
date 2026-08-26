@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Watchtower.Application.Config;
 
 namespace Watchtower.Application.Services;
@@ -69,22 +67,12 @@ public static class AppApiTokens {
         return null;
     }
 
-    /// <summary>Number of random bytes behind each token (256 bits).</summary>
-    private const int EntropyBytes = 32;
-
     /// <summary>
     /// Creates a new token: the <see cref="Prefix"/> followed by 32 cryptographically random bytes
     /// encoded as unpadded base64url, so the value is safe in headers, URLs and <c>.env</c> files.
     /// </summary>
     /// <returns>A fresh token, e.g. <c>wtapp_3q2-7v…</c>.</returns>
-    public static string Generate() {
-        var bytes = RandomNumberGenerator.GetBytes(EntropyBytes);
-        var encoded = Convert.ToBase64String(bytes)
-            .TrimEnd('=')
-            .Replace('+', '-')
-            .Replace('/', '_');
-        return Prefix + encoded;
-    }
+    public static string Generate() => BearerTokens.Generate(Prefix);
 
     /// <summary>
     /// Extracts the token from an <c>Authorization</c> header value. Returns null when the header is
@@ -93,13 +81,8 @@ public static class AppApiTokens {
     /// </summary>
     /// <param name="headerValue">Raw <c>Authorization</c> header value.</param>
     /// <returns>The bearer token, or null when the header is missing or malformed.</returns>
-    public static string? ExtractBearer(string? headerValue) {
-        if (string.IsNullOrWhiteSpace(headerValue)) return null;
-        const string scheme = "Bearer ";
-        if (!headerValue.StartsWith(scheme, StringComparison.OrdinalIgnoreCase)) return null;
-        var token = headerValue[scheme.Length..].Trim();
-        return token.StartsWith(Prefix, StringComparison.Ordinal) ? token : null;
-    }
+    public static string? ExtractBearer(string? headerValue) =>
+        BearerTokens.ExtractBearer(headerValue, Prefix);
 
     /// <summary>
     /// Compares a presented token against a stored one without an early-exit on the first differing
@@ -114,11 +97,7 @@ public static class AppApiTokens {
     /// <param name="presented">Token supplied by the caller.</param>
     /// <param name="stored">Token persisted on the stack row; null/empty always fails.</param>
     /// <returns>True only when both are non-empty and byte-identical.</returns>
-    public static bool Verify(string presented, string? stored) {
-        if (string.IsNullOrEmpty(stored)) return false;
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(presented), Encoding.UTF8.GetBytes(stored));
-    }
+    public static bool Verify(string presented, string? stored) => BearerTokens.Verify(presented, stored);
 
     /// <summary>
     /// Names actually injected into a deploy, in write order. <see cref="BaseUrlVariable"/> is only

@@ -556,6 +556,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("output");
 
+                    b.Property<int?>("ReleaseId")
+                        .HasColumnType("integer")
+                        .HasColumnName("release_id");
+
                     b.Property<int>("StackId")
                         .HasColumnType("integer")
                         .HasColumnName("stack_id");
@@ -576,6 +580,9 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_deploy_events");
+
+                    b.HasIndex("ReleaseId")
+                        .HasDatabaseName("ix_deploy_events_release_id");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_deploy_events_status");
@@ -613,7 +620,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("realm_id");
 
-                    b.Property<uint>("xmin")
+                    b.Property<uint>("Xmin")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
@@ -808,6 +815,119 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("metric_host_samples", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTimeOffset?>("ActionsSyncedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("actions_synced_at");
+
+                    b.Property<string>("ActionsSyncedHash")
+                        .HasColumnType("text")
+                        .HasColumnName("actions_synced_hash");
+
+                    b.Property<int?>("CiRepoId")
+                        .HasColumnType("integer")
+                        .HasColumnName("ci_repo_id");
+
+                    b.Property<string>("ComposeFilePath")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("compose_file_path");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("CredentialId")
+                        .HasColumnType("integer")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("DefaultBranch")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("default_branch");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("LastActionsSyncError")
+                        .HasColumnType("text")
+                        .HasColumnName("last_actions_sync_error");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("ReleaseMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("Git")
+                        .HasColumnName("release_mode");
+
+                    b.Property<bool>("ReleaseWebhookEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("release_webhook_enabled");
+
+                    b.Property<string>("ReleaseWebhookToken")
+                        .HasColumnType("text")
+                        .HasColumnName("release_webhook_token");
+
+                    b.Property<string>("RepositoryUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("repository_url");
+
+                    b.Property<int>("RetainReleases")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(50)
+                        .HasColumnName("retain_releases");
+
+                    b.Property<bool>("SyncReleaseSecrets")
+                        .HasColumnType("boolean")
+                        .HasColumnName("sync_release_secrets");
+
+                    b.Property<uint>("Xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id")
+                        .HasName("pk_products");
+
+                    b.HasIndex("CiRepoId")
+                        .HasDatabaseName("ix_products_ci_repo_id");
+
+                    b.HasIndex("CredentialId")
+                        .HasDatabaseName("ix_products_credential_id");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_products_name");
+
+                    b.HasIndex("ReleaseWebhookToken")
+                        .IsUnique()
+                        .HasDatabaseName("ix_products_release_webhook_token");
+
+                    b.HasIndex(new[] { "CiRepoId" }, "ix_products_ci_repo_id_sync_release_secrets")
+                        .IsUnique()
+                        .HasDatabaseName("ix_products_ci_repo_id_sync_release_secrets")
+                        .HasFilter("\"sync_release_secrets\"");
+
+                    b.ToTable("products", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.ProxyCertificate", b =>
                 {
                     b.Property<int>("Id")
@@ -864,7 +984,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("thumbprint");
 
-                    b.Property<uint>("xmin")
+                    b.Property<uint>("Xmin")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
@@ -911,7 +1031,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("slug");
 
-                    b.Property<uint>("xmin")
+                    b.Property<uint>("Xmin")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
@@ -938,7 +1058,8 @@ namespace Watchtower.Application.Persistence.Migrations
                             CreatedAt = new DateTimeOffset(new DateTime(2026, 8, 10, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
                             IsSystem = true,
                             Name = "Operator",
-                            Slug = "operator"
+                            Slug = "operator",
+                            Xmin = 0u
                         });
                 });
 
@@ -979,6 +1100,113 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDatabaseName("ix_registries_name");
 
                     b.ToTable("registries", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.Release", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Branch")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("branch");
+
+                    b.Property<string>("CommitSha")
+                        .HasColumnType("text")
+                        .HasColumnName("commit_sha");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedVia")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("created_via");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("fingerprint");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer")
+                        .HasColumnName("product_id");
+
+                    b.Property<DateTimeOffset?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at");
+
+                    b.Property<string>("SourceRunUrl")
+                        .HasColumnType("text")
+                        .HasColumnName("source_run_url");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_releases");
+
+                    b.HasIndex("ProductId", "Fingerprint")
+                        .IsUnique()
+                        .HasDatabaseName("ix_releases_product_id_fingerprint");
+
+                    b.HasIndex("ProductId", "Id")
+                        .HasDatabaseName("ix_releases_product_id_id");
+
+                    b.HasIndex("ProductId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ix_releases_product_id_version");
+
+                    b.ToTable("releases", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.ReleaseImage", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Digest")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("digest");
+
+                    b.Property<int>("ReleaseId")
+                        .HasColumnType("integer")
+                        .HasColumnName("release_id");
+
+                    b.Property<string>("Repository")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("repository");
+
+                    b.Property<string>("Tag")
+                        .HasColumnType("text")
+                        .HasColumnName("tag");
+
+                    b.HasKey("Id")
+                        .HasName("pk_release_images");
+
+                    b.HasIndex("ReleaseId", "Repository")
+                        .IsUnique()
+                        .HasDatabaseName("ix_release_images_release_id_repository");
+
+                    b.ToTable("release_images", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Route", b =>
@@ -1067,7 +1295,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("tls_enabled");
 
-                    b.Property<uint>("xmin")
+                    b.Property<uint>("Xmin")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
@@ -1088,7 +1316,7 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.ToTable("routes", null, t =>
                         {
-                            t.HasCheckConstraint("ck_routes_target", "(\"target\" = 'Watchtower' AND \"stack_id\" IS NULL AND \"realm_id\" IS NOT NULL AND \"access_mode\" = 'Public')\nOR (\"target\" = 'Service' AND \"stack_id\" IS NOT NULL AND \"realm_id\" IS NULL)");
+                            t.HasCheckConstraint("ck_routes_target", "(\"target\" = 'Watchtower' AND \"stack_id\" IS NULL AND \"realm_id\" IS NOT NULL AND \"access_mode\" = 'Public')\r\nOR (\"target\" = 'Service' AND \"stack_id\" IS NOT NULL AND \"realm_id\" IS NULL)");
                         });
                 });
 
@@ -1199,30 +1427,25 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("backup_cron");
 
-                    b.Property<bool>("BackupEnabled")
+                    b.Property<string>("BackupDirectory")
+                        .HasColumnType("text")
+                        .HasColumnName("backup_directory");
+
+                    b.Property<bool?>("BackupEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("backup_enabled");
 
                     b.Property<string>("BackupQuiesceMode")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("text")
-                        .HasDefaultValue("Stop")
                         .HasColumnName("backup_quiesce_mode");
 
-                    b.Property<bool>("BackupStopContainers")
+                    b.Property<bool?>("BackupStopContainers")
                         .HasColumnType("boolean")
                         .HasColumnName("backup_stop_containers");
 
-                    b.Property<string>("Branch")
-                        .IsRequired()
+                    b.Property<string>("BranchOverride")
                         .HasColumnType("text")
-                        .HasColumnName("branch");
-
-                    b.Property<string>("ComposeFilePath")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("compose_file_path");
+                        .HasColumnName("branch_override");
 
                     b.Property<string>("ComposeProjectName")
                         .IsRequired()
@@ -1232,10 +1455,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
-
-                    b.Property<int?>("CredentialId")
-                        .HasColumnType("integer")
-                        .HasColumnName("credential_id");
 
                     b.Property<string>("DesiredState")
                         .IsRequired()
@@ -1256,6 +1475,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("last_deployed_commit");
 
+                    b.Property<int?>("LastDeployedReleaseId")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_deployed_release_id");
+
                     b.Property<DateTimeOffset?>("LastScheduledBackupAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_scheduled_backup_at");
@@ -1265,10 +1488,13 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
-                    b.Property<string>("RepositoryUrl")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("repository_url");
+                    b.Property<int?>("PinnedReleaseId")
+                        .HasColumnType("integer")
+                        .HasColumnName("pinned_release_id");
+
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer")
+                        .HasColumnName("product_id");
 
                     b.Property<int?>("TemplateId")
                         .HasColumnType("integer")
@@ -1286,7 +1512,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("webhook_token");
 
-                    b.Property<uint>("xmin")
+                    b.Property<uint>("Xmin")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
@@ -1299,12 +1525,18 @@ namespace Watchtower.Application.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_stacks_app_api_token");
 
-                    b.HasIndex("CredentialId")
-                        .HasDatabaseName("ix_stacks_credential_id");
+                    b.HasIndex("LastDeployedReleaseId")
+                        .HasDatabaseName("ix_stacks_last_deployed_release_id");
 
                     b.HasIndex("Name")
                         .IsUnique()
                         .HasDatabaseName("ix_stacks_name");
+
+                    b.HasIndex("PinnedReleaseId")
+                        .HasDatabaseName("ix_stacks_pinned_release_id");
+
+                    b.HasIndex("ProductId")
+                        .HasDatabaseName("ix_stacks_product_id");
 
                     b.HasIndex("TemplateId", "TenantSlug")
                         .IsUnique()
@@ -1395,23 +1627,33 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
-                    b.Property<string>("Branch")
-                        .IsRequired()
+                    b.Property<string>("BackupCron")
                         .HasColumnType("text")
-                        .HasColumnName("branch");
+                        .HasColumnName("backup_cron");
 
-                    b.Property<string>("ComposeFilePath")
-                        .IsRequired()
+                    b.Property<bool?>("BackupEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("backup_enabled");
+
+                    b.Property<string>("BackupQuiesceMode")
                         .HasColumnType("text")
-                        .HasColumnName("compose_file_path");
+                        .HasColumnName("backup_quiesce_mode");
+
+                    b.Property<bool?>("BackupStopContainers")
+                        .HasColumnType("boolean")
+                        .HasColumnName("backup_stop_containers");
+
+                    b.Property<string>("BranchOverride")
+                        .HasColumnType("text")
+                        .HasColumnName("branch_override");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
-                    b.Property<int?>("CredentialId")
+                    b.Property<int?>("DefaultPinnedReleaseId")
                         .HasColumnType("integer")
-                        .HasColumnName("credential_id");
+                        .HasColumnName("default_pinned_release_id");
 
                     b.Property<string>("DomainPattern")
                         .IsRequired()
@@ -1423,14 +1665,13 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer")
+                        .HasColumnName("product_id");
+
                     b.Property<int>("RealmId")
                         .HasColumnType("integer")
                         .HasColumnName("realm_id");
-
-                    b.Property<string>("RepositoryUrl")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("repository_url");
 
                     b.Property<int>("TargetPort")
                         .HasColumnType("integer")
@@ -1444,12 +1685,15 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_stack_templates");
 
-                    b.HasIndex("CredentialId")
-                        .HasDatabaseName("ix_stack_templates_credential_id");
+                    b.HasIndex("DefaultPinnedReleaseId")
+                        .HasDatabaseName("ix_stack_templates_default_pinned_release_id");
 
                     b.HasIndex("Name")
                         .IsUnique()
                         .HasDatabaseName("ix_stack_templates_name");
+
+                    b.HasIndex("ProductId")
+                        .HasDatabaseName("ix_stack_templates_product_id");
 
                     b.HasIndex("RealmId")
                         .HasDatabaseName("ix_stack_templates_realm_id");
@@ -1496,9 +1740,22 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
+                    b.Property<int?>("AvailableReleaseId")
+                        .HasColumnType("integer")
+                        .HasColumnName("available_release_id");
+
+                    b.Property<string>("AvailableReleaseVersion")
+                        .HasColumnType("text")
+                        .HasColumnName("available_release_version");
+
                     b.Property<DateTimeOffset>("CheckedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("checked_at");
+
+                    b.Property<string>("DriftedContainers")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("drifted_containers");
 
                     b.Property<bool>("HasUpdates")
                         .HasColumnType("boolean")
@@ -1522,6 +1779,46 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasName("pk_stack_update_checks");
 
                     b.ToTable("stack_update_checks", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.TemplateBackupServiceOverride", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Dump")
+                        .HasColumnType("text")
+                        .HasColumnName("dump");
+
+                    b.Property<bool>("Exclude")
+                        .HasColumnType("boolean")
+                        .HasColumnName("exclude");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("service");
+
+                    b.Property<string>("Stop")
+                        .HasColumnType("text")
+                        .HasColumnName("stop");
+
+                    b.Property<int>("TemplateId")
+                        .HasColumnType("integer")
+                        .HasColumnName("template_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_template_backup_service_overrides");
+
+                    b.HasIndex("TemplateId", "Service")
+                        .IsUnique()
+                        .HasDatabaseName("ix_template_backup_service_overrides_template_id_service");
+
+                    b.ToTable("template_backup_service_overrides", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.TemplateManagementGrant", b =>
@@ -1721,12 +2018,20 @@ namespace Watchtower.Application.Persistence.Migrations
 
             modelBuilder.Entity("Watchtower.Application.Entities.DeployEvent", b =>
                 {
+                    b.HasOne("Watchtower.Application.Entities.Release", "Release")
+                        .WithMany()
+                        .HasForeignKey("ReleaseId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_deploy_events_releases_release_id");
+
                     b.HasOne("Watchtower.Application.Entities.Stack", "Stack")
                         .WithMany("DeployEvents")
                         .HasForeignKey("StackId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_deploy_events_stacks_stack_id");
+
+                    b.Navigation("Release");
 
                     b.Navigation("Stack");
                 });
@@ -1785,6 +2090,25 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.CiRepo", "CiRepo")
+                        .WithMany()
+                        .HasForeignKey("CiRepoId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_products_ci_repos_ci_repo_id");
+
+                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
+                        .WithMany()
+                        .HasForeignKey("CredentialId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_products_credentials_credential_id");
+
+                    b.Navigation("CiRepo");
+
+                    b.Navigation("Credential");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Realm", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Route", "LoginRoute")
@@ -1805,6 +2129,30 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_registries_credentials_credential_id");
 
                     b.Navigation("Credential");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.Release", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Product", "Product")
+                        .WithMany("Releases")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_releases_products_product_id");
+
+                    b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.ReleaseImage", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Release", "Release")
+                        .WithMany("Images")
+                        .HasForeignKey("ReleaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_release_images_releases_release_id");
+
+                    b.Navigation("Release");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Route", b =>
@@ -1856,11 +2204,24 @@ namespace Watchtower.Application.Persistence.Migrations
 
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
                 {
-                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
+                    b.HasOne("Watchtower.Application.Entities.Release", "LastDeployedRelease")
                         .WithMany()
-                        .HasForeignKey("CredentialId")
+                        .HasForeignKey("LastDeployedReleaseId")
                         .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_stacks_credentials_credential_id");
+                        .HasConstraintName("fk_stacks_releases_last_deployed_release_id");
+
+                    b.HasOne("Watchtower.Application.Entities.Release", "PinnedRelease")
+                        .WithMany()
+                        .HasForeignKey("PinnedReleaseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_stacks_releases_pinned_release_id");
+
+                    b.HasOne("Watchtower.Application.Entities.Product", "Product")
+                        .WithMany("Stacks")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_stacks_products_product_id");
 
                     b.HasOne("Watchtower.Application.Entities.StackTemplate", "Template")
                         .WithMany("Instances")
@@ -1868,7 +2229,11 @@ namespace Watchtower.Application.Persistence.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_stacks_stack_templates_template_id");
 
-                    b.Navigation("Credential");
+                    b.Navigation("LastDeployedRelease");
+
+                    b.Navigation("PinnedRelease");
+
+                    b.Navigation("Product");
 
                     b.Navigation("Template");
                 });
@@ -1899,11 +2264,18 @@ namespace Watchtower.Application.Persistence.Migrations
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
                 {
-                    b.HasOne("Watchtower.Application.Entities.Credential", "Credential")
+                    b.HasOne("Watchtower.Application.Entities.Release", "DefaultPinnedRelease")
                         .WithMany()
-                        .HasForeignKey("CredentialId")
+                        .HasForeignKey("DefaultPinnedReleaseId")
                         .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_stack_templates_credentials_credential_id");
+                        .HasConstraintName("fk_stack_templates_releases_default_pinned_release_id");
+
+                    b.HasOne("Watchtower.Application.Entities.Product", "Product")
+                        .WithMany("Templates")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_stack_templates_products_product_id");
 
                     b.HasOne("Watchtower.Application.Entities.Realm", "Realm")
                         .WithMany()
@@ -1912,7 +2284,9 @@ namespace Watchtower.Application.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_stack_templates_realms_realm_id");
 
-                    b.Navigation("Credential");
+                    b.Navigation("DefaultPinnedRelease");
+
+                    b.Navigation("Product");
 
                     b.Navigation("Realm");
                 });
@@ -1939,6 +2313,18 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_stack_update_checks_stacks_stack_id");
 
                     b.Navigation("Stack");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.TemplateBackupServiceOverride", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.StackTemplate", "Template")
+                        .WithMany("BackupServiceOverrides")
+                        .HasForeignKey("TemplateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_template_backup_service_overrides_stack_templates_template_");
+
+                    b.Navigation("Template");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.TemplateManagementGrant", b =>
@@ -1986,6 +2372,20 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>
+                {
+                    b.Navigation("Releases");
+
+                    b.Navigation("Stacks");
+
+                    b.Navigation("Templates");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.Release", b =>
+                {
+                    b.Navigation("Images");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
                 {
                     b.Navigation("DeployEvents");
@@ -1997,6 +2397,8 @@ namespace Watchtower.Application.Persistence.Migrations
 
             modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
                 {
+                    b.Navigation("BackupServiceOverrides");
+
                     b.Navigation("BaseEnvVars");
 
                     b.Navigation("Instances");

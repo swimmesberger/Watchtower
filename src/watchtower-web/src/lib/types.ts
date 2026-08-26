@@ -26,12 +26,257 @@ export interface Credential {
   createdAt: string
 }
 
-export interface Stack {
+/**
+ * Which update mechanism a product's deployments use (ADR-0026 §"Two modes, one switch"). `git` is the
+ * default and every migrated product: branch-HEAD clones and registry polling. `releases` is flipped on
+ * by the first accepted release: a deploy is one release's commit plus its image digests.
+ *
+ * **This is the binary the UI hangs on (invariant 4):** the Updates panel renders in `git` mode, the
+ * Version panel in `releases` mode, never both.
+ */
+export type ReleaseMode = 'git' | 'releases'
+
+/**
+ * A git repository Watchtower can deploy — its compose file, default branch and clone credential
+ * (ADR-0026). Every stack and every template references one; the source fields they expose are
+ * read-only projections of this.
+ */
+export interface Product {
   id: number
+  name: string
+  description: string | null
+  repositoryUrl: string
+  composeFilePath: string
+  defaultBranch: string
+  credentialId: number | null
+  credentialName: string | null
+  createdAt: string
+  /** How many stacks deploy this product. */
+  stackCount: number
+  /** How many templates instantiate it, each with its own tenants. */
+  templateCount: number
+  /** Whether this product's CI may report releases to the webhook. */
+  releaseWebhookEnabled: boolean
+  /** The newest release, or null while the product has none. */
+  latestRelease: ProductReleaseSummary | null
+  /** `git` until the first release flips it to `releases`; operator-revertible. */
+  releaseMode: ReleaseMode
+  /**
+   * How many releases the post-create pruning pass keeps. Always inside 5…1000 — the server clamps it
+   * on the way in *and* on the way out, so this is the number that will actually be enforced.
+   */
+  retainReleases: number
+}
+
+/** The newest release of a product, as much as a header line or a catalogue row needs. */
+export interface ProductReleaseSummary {
+  id: number
+  version: string
+  createdAt: string
+  /** The commit it pins, when it records one — the other half of the "latest ≠ branch head" line. */
+  commitSha: string | null
+}
+
+/** How a release arrived. */
+export type ReleaseSource = 'webhook' | 'manual'
+
+/** One row of the Releases tab. The digests live behind the row expansion (`products.getRelease`). */
+export interface Release {
+  id: number
+  version: string
+  commitSha: string | null
+  branch: string
+  createdVia: ReleaseSource
+  createdAt: string
+  /** When the build itself was published, if the reporter said. Display only — the list is ordered by id. */
+  publishedAt: string | null
+  sourceRunUrl: string | null
+  imageCount: number
+}
+
+/** One image a release pins. */
+export interface ReleaseImage {
+  repository: string
+  tag: string | null
+  digest: string
+}
+
+/** The expanded release: its images and its notes. */
+export interface ReleaseDetail {
+  id: number
+  productId: number
+  productName: string
+  version: string
+  commitSha: string | null
+  branch: string
+  createdVia: ReleaseSource
+  createdAt: string
+  publishedAt: string | null
+  sourceRunUrl: string | null
+  notes: string | null
+  images: ReleaseImage[]
+}
+
+/** `products.listReleases`: one keyset page, newest first. */
+export interface ReleasePage {
+  releases: Release[]
+  /** Whether an older page exists — what "Show older" keys on. */
+  hasMore: boolean
+}
+
+/** `products.createRelease`: recording a build by hand. */
+export interface CreateReleaseRequest {
+  version: string
+  commitSha?: string | null
+  images: string[]
+  notes?: string | null
+}
+
+/** `products.rotateReleaseToken`: the new token, and the webhook it just enabled. */
+export interface ReleaseTokenRotation {
+  enabled: boolean
+  token: string
+  /** True when the product syncs its release secrets, so the new token is already on its way to GitHub. */
+  resyncing: boolean
+}
+
+/**
+ * `products.setReleaseWebhook`. No token: enabling may have generated one, and the value is read from
+ * `products.get` — the one place it is served.
+ */
+export interface ReleaseWebhookState {
+  enabled: boolean
+}
+
+/** One stack deploying a product, as `products.get` rosters it. */
+export interface ProductStack extends VersionState {
+  id: number
+  name: string
+  /** The effective branch: the stack's override when it has one, else the product default. */
+  branch: string
+  branchOverride: string | null
+  templateId: number | null
+  /** Set when the stack is a tenant of `templateId`; null for standalone stacks. */
+  tenantSlug: string | null
+  lastDeployStatus: 'success' | 'failed' | 'running' | 'queued' | null
+  lastDeployedAt: string | null
+}
+
+/**
+ * A stack's version policy and where it actually is — the three fields every roster row, chip and
+ * rollup reads, and the shape `lib/release.ts`'s roster helpers take.
+ *
+ * `Stack`, `ProductStack` and `Tenant` all carry it (the backend spells the same wire shape in three
+ * modules, deliberately: modules do not reach into each other's contracts), so one set of derivations
+ * serves the stack page, the product roster and the Instances roster.
+ */
+export interface VersionState {
+  /** Derived from the pin, not stored: `pinned` when `pinnedRelease` is set, else `latest`. */
+  trackingMode: TrackingMode
+  pinnedRelease: StackReleaseRef | null
+  lastDeployedRelease: StackReleaseRef | null
+}
+
+/** One template instantiating a product, as `products.get` rosters it. */
+export interface ProductTemplate {
+  id: number
+  name: string
+  branch: string
+  branchOverride: string | null
+  tenantCount: number
+}
+
+/** `products.get`: the product plus everything that deploys it. */
+export interface ProductDetail {
+  product: Product
+  stacks: ProductStack[]
+  templates: ProductTemplate[]
+  /**
+   * The release webhook bearer, or null when none has been generated. Only on the detail response —
+   * the catalogue lists every product and must not carry every product's secret.
+   */
+  releaseWebhookToken: string | null
+  /**
+   * The product's branch head when it is a commit no release was built from — the "latest ≠ branch
+   * head" warning. Derived server-side from what the periodic check already polled; null when nothing
+   * can say so (no releases, no stack on the product's own branch, or never checked). Never a count:
+   * how *many* commits there are cannot be known without a clone.
+   */
+  unreleasedCommitSha: string | null
+}
+
+export interface CreateProductRequest {
   name: string
   repositoryUrl: string
   composeFilePath: string
+  defaultBranch: string
+  description?: string | null
+  credentialId?: number | null
+}
+
+export interface UpdateProductRequest extends CreateProductRequest {
+  /**
+   * `git` or `releases`, or omitted to leave it alone — the operator's manual override of the switch
+   * the first release flips automatically. `releases` is refused for a product with no releases.
+   */
+  releaseMode?: ReleaseMode | null
+  /**
+   * How many releases to keep, or omitted to leave it alone. Clamped to 5…1000 server-side rather than
+   * refused, because the pruner clamps whatever it reads anyway.
+   */
+  retainReleases?: number | null
+}
+
+/** `products.getReleaseRollout`: what one release actually reached. */
+export interface ReleaseRollout {
+  releaseId: number
+  version: string
+  succeeded: number
+  failed: number
+  queued: number
+  running: number
+  /** Stacks of the product with no deploy event for this release at all. */
+  skipped: number
+  stacks: ReleaseRolloutStack[]
+}
+
+/**
+ * One stack's line in a rollout. A row with a `skipReason` describes the stack as it is **now** — the
+ * fan-out records nothing per stack it skipped, so "pinned" can mean "pinned since", not "pinned then".
+ */
+export interface ReleaseRolloutStack {
+  stackId: number
+  stackName: string
+  tenantSlug: string | null
+  /** The deploy event's status, or `skipped` for a stack the rollout never reached. */
+  status: 'queued' | 'running' | 'success' | 'failed' | 'skipped'
+  startedAt: string | null
+  finishedAt: string | null
+  deployEventId: number | null
+  /** `stopped`, `pinned` or `not deployed`; null for a row that has a deploy event. */
+  skipReason: string | null
+}
+
+/** `products.retryFailedRollout`: what the retry re-enqueued, and what it deliberately did not. */
+export interface RetryFailedRolloutResult {
+  retried: number
+  /** Failed stacks left alone because they are stopped or now pinned to a different release. */
+  skipped: number
+  deployEventIds: number[]
+}
+
+export interface Stack {
+  id: number
+  name: string
+  /** The product this stack is a running copy of. */
+  productId: number
+  productName: string
+  repositoryUrl: string
+  composeFilePath: string
+  /** The effective branch — `branchOverride` when set, else the product's default. */
   branch: string
+  /** Set only when this stack deploys a branch other than the one it would inherit. */
+  branchOverride: string | null
   composeProjectName: string
   credentialId: number | null
   webhookToken: string | null
@@ -55,6 +300,57 @@ export interface Stack {
   newCommitSha: string | null
   /** ISO timestamp of the last update check. Null when never checked. */
   updatesCheckedAt: string | null
+  /** The product's update mechanism — the switch between the Updates and Version panels (invariant 4). */
+  releaseMode: ReleaseMode
+  /** Derived from the pin, not stored: `pinned` when `pinnedRelease` is set, else `latest`. */
+  trackingMode: TrackingMode
+  /** The release this stack is pinned to, or null when it tracks latest. */
+  pinnedRelease: StackReleaseRef | null
+  /** The release the last successful deploy applied, when there was one. */
+  lastDeployedRelease: StackReleaseRef | null
+  /**
+   * From the cached update check: the newest release when it differs from `lastDeployedRelease`.
+   * Computed for pinned stacks too — that is what the "behind" chip counts against.
+   */
+  availableReleaseId: number | null
+  /** Its version label, denormalized so a list renders it without a second call. */
+  availableReleaseVersion: string | null
+  /** Running containers not on the deployed release's digests. Null when never checked. */
+  driftedContainers: string[] | null
+}
+
+/** Whether a stack follows the newest release or stays on one it was pinned to. */
+export type TrackingMode = 'latest' | 'pinned'
+
+/** A release named on a stack: enough for a chip, not enough to need a second call. */
+export interface StackReleaseRef {
+  id: number
+  version: string
+}
+
+/**
+ * `stacks.setRelease`. `deployed` is false when the caller asked for no deploy **and** when the stack is
+ * stopped — a stopped stack is pinned successfully and simply not deployed, which is a result to show,
+ * not an error.
+ */
+export interface SetStackReleaseResult {
+  stack: Stack
+  deployed: boolean
+  deployEventId: number | null
+  /**
+   * The pre-deploy backup's tracking event, when one was asked for. Present with `deployed: false` is
+   * the "backing up first" state: the deploy is chained to this run and happens only if it succeeds.
+   */
+  backupEventId?: number | null
+}
+
+/** `products.deployRelease`: what the roll-out actually targeted. */
+export interface DeployReleaseResult {
+  releaseId: number
+  version: string
+  /** Latest-tracking, running stacks only — pinned and stopped ones are skipped. */
+  stacksEnqueued: number
+  deployEventIds: number[]
 }
 
 export type AutoDeployMode = 'off' | 'onChange' | 'scheduled'
@@ -69,6 +365,13 @@ export interface DeployEvent {
   output: string | null
   startedAt: string
   finishedAt: string | null
+  /**
+   * The release this deploy applied, stamped at execution. Null in Git mode, for a deploy that failed
+   * before the release was resolved, and for every deploy that ran before releases existed.
+   */
+  releaseId: number | null
+  /** Its label, denormalized beside the id so a history row renders a chip without a lookup per row. */
+  releaseVersion: string | null
 }
 
 export interface Container {
@@ -144,6 +447,11 @@ export interface UpdateCredentialRequest {
 
 export interface CreateStackRequest {
   name: string
+  /**
+   * An existing product to deploy. When set the repository fields must be left empty — the product
+   * owns them — and `branch` becomes a per-stack override if it differs from the product default.
+   */
+  productId?: number | null
   repositoryUrl: string
   composeFilePath: string
   branch: string
@@ -785,17 +1093,35 @@ export interface ProxyStatus {
 export interface StackTemplate {
   id: number
   name: string
+  /** The product every tenant of this template deploys. */
+  productId: number
+  productName: string
   repositoryUrl: string
   composeFilePath: string
+  /** The effective branch — `branchOverride` when set, else the product's default. */
   branch: string
+  /** Set only when this template's tenants deploy a branch other than the product default. */
+  branchOverride: string | null
   credentialId: number | null
   domainPattern: string
   targetServiceName: string
   targetPort: number
   /** The realm every tenant of this category signs in to. Defaults to the operator realm. */
   realmId: number
+  /**
+   * That realm, named — so a surface can *say* which population a setup serves without `realms.list`,
+   * which is Admin-only. Null only if a read path forgot to include the navigation.
+   */
+  realmName: string | null
   createdAt: string
   instanceCount: number
+  /**
+   * The release every *future* tenant is pinned to, or null when new tenants track latest. Copied onto
+   * each tenant at provisioning — a tenant can be repinned afterwards without leaving the fleet default.
+   */
+  defaultPinnedRelease: StackReleaseRef | null
+  /** The product's update mechanism — the switch the Instances Version column and rollup key on. */
+  releaseMode: ReleaseMode
 }
 
 export interface TemplateEnvVar {
@@ -809,13 +1135,46 @@ export interface TemplateEnvVarInput {
   value: string
 }
 
-export interface Tenant {
+export interface Tenant extends VersionState {
   stackId: number
   tenantSlug: string
   stackName: string
   domain: string | null
   lastDeployStatus: string | null
   lastDeployedAt: string | null
+}
+
+/**
+ * `templates.adoptStack`: an existing standalone stack became a tenant, keeping its containers,
+ * volumes, data, name and compose project.
+ */
+export interface AdoptStackResult {
+  /** The adopted stack as a roster row. Its `domain` is the stack's *primary* one, which may not be `domain`. */
+  tenant: Tenant
+  /** The managed route this call created, rendered from the setup's domain pattern. */
+  domain: string
+  /** Base env keys copied in because the stack did not define them; its own values were never replaced. */
+  envKeysAdded: string[]
+  /** False when the stack already had a canonical domain and kept it — the new one is an extra way in. */
+  domainIsPrimary: boolean
+}
+
+/** `templates.setTenantsRelease`: the fleet-wide pin, and the deploys it enqueued. */
+export interface SetTenantsReleaseResult {
+  /** How many tenants had their pin written — plus the template default, always. */
+  tenantCount: number
+  /** How many were enqueued: fewer when `deploy` was false, and when a tenant is stopped. */
+  deployed: number
+  deployEventIds: number[]
+  /** What the fleet now pins, or null when the pin was cleared. */
+  release: StackReleaseRef | null
+  /**
+   * How many tenants had a pre-deploy backup enqueued *instead* of a deploy. Non-zero only when the
+   * caller asked to back up first; each deploys when its own backup succeeds, and the backup queue runs
+   * them one at a time.
+   */
+  backedUp?: number | null
+  backupEventIds?: number[] | null
 }
 
 /**
@@ -833,6 +1192,8 @@ export interface TemplateGrant {
 
 export interface CreateTemplateRequest {
   name: string
+  /** An existing product to instantiate. When set the repository fields must be left empty. */
+  productId?: number | null
   repositoryUrl: string
   composeFilePath: string
   branch: string
@@ -1041,17 +1402,100 @@ export interface BackupEvent {
  */
 export type BackupQuiesceMode = 'stop' | 'pause'
 
-/** A stack's backup participation. */
+/**
+ * Which rung of the backup policy ladder decided a value: the stack itself, the template it inherits
+ * from, or the instance default. The ladder is `compose label > stack override > template policy >
+ * instance default` (design.md §"Backups across tenants"); the label rung is per service and appears on
+ * {@link BackupSettingSource} instead.
+ */
+export type BackupPolicySource = 'stack' | 'template' | 'instance'
+
+/**
+ * A stack's backup participation.
+ *
+ * The first four fields are the **effective** policy — what the next run will actually do — and have not
+ * moved, so nothing that read them before has to change. `own*` is what the stack itself says, with
+ * `null` meaning "inherit", and `*Source` says which rung produced the effective value.
+ */
 export interface BackupStackConfig {
   stackId: number
-  /** Included in the backup schedule. */
+  /** Effective: included in the backup schedule. */
   enabled: boolean
-  /** Quiesce the stack's stateful containers during the snapshot for consistency (ADR-0016 §2). */
+  /** Effective: quiesce the stack's stateful containers during the snapshot (ADR-0016 §2). */
   stopContainers: boolean
-  /** This stack's schedule override; null follows the instance-wide schedule. */
+  /** Effective: the expression this stack runs on; null follows the instance-wide schedule. */
   cron: string | null
-  /** How unlabelled stateful containers are quiesced when `stopContainers` is on. */
+  /** Effective: how unlabelled stateful containers are quiesced when `stopContainers` is on. */
   quiesceMode: BackupQuiesceMode
+  /** What the stack itself says; null (arriving as `undefined`) means it inherits. */
+  ownEnabled?: boolean | null
+  ownStopContainers?: boolean | null
+  ownCron?: string | null
+  ownQuiesceMode?: BackupQuiesceMode | null
+  enabledSource: BackupPolicySource
+  stopContainersSource: BackupPolicySource
+  cronSource: BackupPolicySource
+  quiesceModeSource: BackupPolicySource
+  /** The template whose policy this stack inherits; omitted for a standalone stack. */
+  templateId?: number | null
+  templateName?: string | null
+}
+
+/**
+ * A template's backup policy — the rung every tenant inherits. Every field is nullable: null (which
+ * arrives as `undefined`) means the template has no opinion and the instance default applies.
+ */
+export interface BackupTemplatePolicy {
+  templateId: number
+  templateName: string
+  enabled?: boolean | null
+  stopContainers?: boolean | null
+  cron?: string | null
+  quiesceMode?: BackupQuiesceMode | null
+  /** How many instances the policy reaches. */
+  tenantCount: number
+  /** How many of those override at least one field, so a policy edit will not reach them. */
+  overriddenTenantCount: number
+  /**
+   * The template's own per-service rows, in service order — the fifth thing the policy card edits.
+   *
+   * These are the *fleet's* settings, not one instance's effective ladder: an instance's plan preview
+   * also renders inherited rows, but an instance that overrides a service replaces the template's row
+   * for it whole, so a preview cannot be read as "what the fleet says". Every entry has
+   * `inherited: true`, which is what it is from an instance's point of view.
+   */
+  serviceOverrides: BackupServiceOverride[]
+}
+
+/**
+ * How a product's deployments are doing on backups — the Backups tab's rollup line.
+ *
+ * `backedUpRecently + stale + failed + never === enrolled`, in that priority order, so the numbers can
+ * be read as a partition rather than four overlapping counts. `notEnrolled` is deliberate
+ * non-participation, not a failure, and is reported (and rendered) neutrally.
+ */
+export interface BackupProductRollup {
+  deployments: number
+  enrolled: number
+  notEnrolled: number
+  backedUpRecently: number
+  /** Last backed up outside the window, nothing wrong — the schedule has not come round. */
+  stale: number
+  /** Has succeeded before, and its newest terminal run failed. Excludes `never`. */
+  failed: number
+  never: number
+  /** The width of the "recently" window, so the copy is not hard-coded to 24. */
+  windowHours: number
+}
+
+/** Everything the product Backups tab renders above its history. */
+export interface ProductBackups {
+  templates: BackupTemplatePolicy[]
+  rollup: BackupProductRollup
+  /** What "follow the instance schedule" resolves to right now. */
+  instanceCron: string
+  /** The instance master switch; false means nothing runs on a schedule at all. */
+  scheduleEnabled: boolean
 }
 
 /**
@@ -1066,13 +1510,18 @@ export interface BackupServiceOverride {
   stop?: 'true' | 'false' | 'pause' | null
   /** Omitted on the wire when not set. */
   dump?: 'false' | 'postgres' | null
+  /** True when the row is the template's rather than the stack's — read-only here, edited on the product. */
+  inherited?: boolean | null
 }
 
 /** What the next backup run would do with one container. */
 export type BackupServiceAction = 'stop' | 'pause' | 'keep' | 'dump' | 'excluded' | 'notRunning'
 
-/** Where a per-service decision came from: the mount rule / stack default, a compose label, or a UI override. */
-export type BackupSettingSource = 'default' | 'label' | 'override'
+/**
+ * Where a per-service decision came from: the mount rule / stack default, a compose label, a UI override
+ * on the stack, or one inherited from the stack's template.
+ */
+export type BackupSettingSource = 'default' | 'label' | 'override' | 'template'
 
 /** One row of the backup plan preview. */
 export interface BackupServicePreview {
@@ -1181,13 +1630,37 @@ export interface CiRepo {
 }
 
 /**
- * The CI view of one stack: whether its repository is on github.com (only those can get Actions
- * runners) and the linked CI repo when enabled. Stacks deploying the same repository share one
- * CI repo — one runner pool, one toolcache.
+ * The CI view of one product: whether its repository is on github.com (only those can get Actions
+ * runners) and the linked CI repo when enabled. Products over the same repository share one CI
+ * repo — one runner pool, one toolcache — as do all the stacks deploying them.
  */
-export interface StackCi {
+export interface CiLink {
   isGitHub: boolean
   owner: string | null
   name: string | null
   repo: CiRepo | null
+  /**
+   * Whether this *product's* release configuration is pushed to the repo's Actions config. Per
+   * product, not per repo: the runner pool is shared, the release token never is.
+   */
+  syncReleaseSecrets: boolean
+  /** State of that sync; null while it is off — the same rule `registrySync` follows. */
+  releaseSecretsSync: CiReleaseSecretsSync | null
+  /**
+   * Why this product cannot sync at all, in words, or null when it could: a non-github.com remote, or
+   * CI runners never enabled (no PAT to write with). Both mean the manual token path is the only one,
+   * and the Releases tab keeps its instructions exactly as prominent as before.
+   */
+  releaseSecretsSyncBlocked: string | null
+}
+
+/**
+ * State of the release configuration -> GitHub Actions sync (WATCHTOWER_URL /
+ * WATCHTOWER_PRODUCT_ID variables + the WATCHTOWER_RELEASE_TOKEN secret).
+ */
+export interface CiReleaseSecretsSync {
+  /** 'synced' | 'pending' (push not attempted yet or values changed) | 'failed'. */
+  status: 'synced' | 'pending' | 'failed'
+  syncedAt: string | null
+  error: string | null
 }

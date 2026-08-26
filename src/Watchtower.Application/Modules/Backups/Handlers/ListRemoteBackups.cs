@@ -24,16 +24,17 @@ public sealed class ListRemoteBackups(
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var stack = await db.Stacks.AsNoTracking()
-            .Where(s => s.Id == query.StackId)
-            .Select(s => new { s.Name })
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(s => s.Id == query.StackId, ct);
         if (stack is null)
             return AppError.NotFound($"Stack {query.StackId} not found");
 
         var backup = options.CurrentValue.Backup;
         try {
             using var storage = storageFactory.Create(backup);
-            var directory = BackupNaming.StackDirectory(backup.ResolveInstanceName(), stack.Name);
+            // The persisted directory when the stack has one, the computed legacy value otherwise — the
+            // same answer the run and the restore get, which is what keeps the picker showing the
+            // archives a restore can actually reach.
+            var directory = BackupNaming.ResolveDirectory(stack, backup.ResolveInstanceName());
             var files = (await storage.ListFilesAsync(directory, ct))
                 .Select(f => (File: f, TakenAt: BackupNaming.ParseTimestamp(f.Name)))
                 .Where(x => x.TakenAt is not null)

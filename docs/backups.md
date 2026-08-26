@@ -128,7 +128,18 @@ write permission fail there with the server's own words rather than in a 03:30 r
 
 The remote layout is `{base}/{instance}/{stack}/{project}_{yyyyMMddTHHmmssZ}.tar.gz[.enc]` — which
 instance and stack a file belongs to is readable straight off its path, and the UTC timestamp in the
-name is what retention works from.
+name is what retention works from. A **tenant** of a product gets one more level,
+`{base}/{instance}/{product}/{tenant}/…`, so a fleet's archives group under the product they belong
+to instead of scattering across one flat list of `{template}-{tenant}` directories.
+
+**The directory is stamped once, when the stack is created, and does not move afterwards.** Renaming
+a stack — or the Watchtower instance, or the product — therefore no longer orphans the archives
+already written under the old path: Watchtower keeps reading and writing where the bytes actually
+are. (Before this, every one of those renames silently stranded the history.) A stack created by an
+older Watchtower has no stamp yet and keeps using the computed `{instance}/{stack}` path exactly as
+it always did, until its next *successful* backup records that path on the stack. If you genuinely
+want a stack's archives to move, move the files on the storage and clear the stack's stored
+directory; nothing in Watchtower rewrites remote paths for you.
 
 ### Local directory
 
@@ -234,8 +245,9 @@ For each detected, **running** Postgres the run
   containers are stopped, so dump and file snapshot describe one state) and streams the SQL into
   `backup/_dumps/{service}.sql`;
 - records the dump in the manifest (`dumps[]`: service, engine, file, image, user, the volumes it
-  covers, the databases it contained, size) and bumps `formatVersion` to `2` — only archives with
-  dumps carry v2; a stack without Postgres produces the same archive as before.
+  covers, the databases it contained, size). The manifest's `formatVersion` is written
+  unconditionally (currently 3 — see the version history above), so a Postgres-less stack's archive
+  differs from a pre-v2 one only by the manifest's version and its product/tenancy/release keys.
 
 A container that is not running (exited, paused, restarting) falls back to the volume snapshot
 with a `WARNING:`. A **failing `pg_dumpall` fails the run** — no silent fallback to a hot copy of a

@@ -47,18 +47,22 @@ public sealed record BackupContainer(
     BackupServiceOverride? Override = null) {
 
     /// <summary>The effective <c>watchtower.backup.exclude</c> value and where it comes from.</summary>
-    public BackupSetting Exclude => Resolve(ExcludeLabel, Override?.Exclude == true ? "true" : null);
+    public BackupSetting Exclude => Resolve(ExcludeLabel, Override?.Exclude == true ? "true" : null, OverrideSource);
 
     /// <summary>The effective <c>watchtower.backup.stop</c> value and where it comes from.</summary>
-    public BackupSetting Stop => Resolve(StopLabel, Override?.Stop);
+    public BackupSetting Stop => Resolve(StopLabel, Override?.Stop, OverrideSource);
 
     /// <summary>The effective <c>watchtower.backup.dump</c> value and where it comes from.</summary>
-    public BackupSetting Dump => Resolve(DumpLabel, Override?.Dump);
+    public BackupSetting Dump => Resolve(DumpLabel, Override?.Dump, OverrideSource);
+
+    /// <summary>Whether the attached override was configured on the stack or inherited from its template.</summary>
+    private BackupSettingSource OverrideSource =>
+        Override?.FromTemplate == true ? BackupSettingSource.Template : BackupSettingSource.Override;
 
     /// <summary>The label wins; the override fills a gap; otherwise there is no setting at all.</summary>
-    private static BackupSetting Resolve(string? label, string? overrideValue) =>
+    private static BackupSetting Resolve(string? label, string? overrideValue, BackupSettingSource overrideSource) =>
         label is not null ? new(label, BackupSettingSource.Label)
-        : overrideValue is not null ? new(overrideValue, BackupSettingSource.Override)
+        : overrideValue is not null ? new(overrideValue, overrideSource)
         : new(null, BackupSettingSource.Default);
 
     /// <summary>
@@ -134,6 +138,14 @@ public enum BackupSettingSource {
 
     /// <summary>A per-service override configured in Watchtower's UI, filling in for an absent label.</summary>
     Override,
+
+    /// <summary>
+    /// A per-service override the stack <em>inherited</em> from its template, filling in for an absent
+    /// label where the stack itself configured nothing for that service (design.md §"Backups across
+    /// tenants"). The fleet's setting, rendered as such so an operator is not left looking for a stack
+    /// override that does not exist.
+    /// </summary>
+    Template,
 }
 
 /// <summary>One effective per-service setting: the value (label syntax) and where it came from.</summary>
@@ -149,7 +161,14 @@ public sealed record BackupSetting(string? Value, BackupSettingSource Source);
 /// <param name="Exclude">True stands in for <c>watchtower.backup.exclude=true</c>.</param>
 /// <param name="Stop"><c>"true"</c>, <c>"false"</c> or <c>"pause"</c>, standing in for <c>watchtower.backup.stop</c>.</param>
 /// <param name="Dump"><c>"false"</c> or <c>"postgres"</c>, standing in for <c>watchtower.backup.dump</c>.</param>
-public sealed record BackupServiceOverride(bool Exclude = false, string? Stop = null, string? Dump = null) {
+/// <param name="FromTemplate">
+/// True when this row came from the stack's <see cref="Entities.StackTemplate"/> rather than from the
+/// stack itself. Presentation only — it changes no decision, it changes what the preview calls the
+/// decision's source, so a tenant's Backups tab says "template policy" instead of pointing at an
+/// override the stack does not have.
+/// </param>
+public sealed record BackupServiceOverride(
+    bool Exclude = false, string? Stop = null, string? Dump = null, bool FromTemplate = false) {
     /// <summary>True when nothing is set — such an override is not worth a row.</summary>
     public bool IsEmpty => !Exclude && Stop is null && Dump is null;
 }

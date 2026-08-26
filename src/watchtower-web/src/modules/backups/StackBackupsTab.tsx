@@ -3,9 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Archive, ChevronDown, ChevronRight, History, Lock, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { BackupEvent, BackupQuiesceMode, Stack } from '@/lib/types'
+import type { BackupEvent, BackupPolicySource, BackupQuiesceMode, Stack } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
 import { absoluteTitle, formatBytes, formatDuration, timeAgo } from '@/lib/format'
+import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -39,6 +40,11 @@ import { BackupPlanPreviewSection } from './BackupPlanPreviewSection'
 // Per-stack participation in the backup schedule (with an optional cron override, ADR-0018), a
 // run-now action, and the run history. The storage target, the instance-wide schedule, retention
 // and encryption live in Settings.
+//
+// Since ADR-0026 stage 7 every control here is one rung of a ladder: `compose label > stack override >
+// template policy > instance default`. The switches show the *effective* value, and a chip beside each
+// says which rung produced it. A tenant that inherits gets a "Use fleet policy" way back, because the
+// only way to express "inherit" through a two-state switch is a separate control that clears the value.
 
 export function StackBackupsTab({ stack }: { stack: Stack }) {
   const qc = useQueryClient()
@@ -69,11 +75,13 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
   })
 
   const setConfig = useMutation({
+    // Nullable throughout: the whole policy is posted on every call, and null clears a field so the
+    // stack goes back to inheriting.
     mutationFn: (next: {
-      enabled: boolean
-      stopContainers: boolean
+      enabled: boolean | null
+      stopContainers: boolean | null
       cron: string | null
-      quiesceMode: BackupQuiesceMode
+      quiesceMode: BackupQuiesceMode | null
     }) =>
       api.backups.setStackConfig(
         stack.id,
@@ -201,27 +209,46 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
       ) : (
         <Card>
           <CardContent className="flex flex-col gap-5">
+            {config.templateName && (
+              <p className="text-[13px] text-text-2">
+                This is an instance of{' '}
+                <span className="font-medium text-text">{config.templateName}</span>. Anything left on
+                the fleet policy follows that template and moves with it; anything set here stays set
+                until it is cleared again.
+              </p>
+            )}
+
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">
                   Include in the backup schedule
+                  <SetBy source={config.enabledSource} templateName={config.templateName} />
                 </span>
                 <span className="mt-0.5 block text-[13px] text-text-2">
                   Backs this stack up automatically on the schedule below.
                 </span>
               </span>
-              <Switch
-                checked={config.enabled}
+              {/* A tenant gets three states, not two — see the remarks on InheritableToggle. */}
+              <InheritableToggle
+                label="Include in the backup schedule"
+                own={config.ownEnabled}
+                effective={config.enabled}
+                templateName={config.templateName}
+                inheritedFrom={config.enabledSource}
+                onLabel="On"
+                offLabel="Off"
                 disabled={setConfig.isPending}
-                onCheckedChange={(v) =>
+                onChange={(v) =>
                   setConfig.mutate({
                     enabled: v,
-                    stopContainers: config.stopContainers,
-                    cron: config.cron,
-                    quiesceMode: config.quiesceMode,
+                    // The stack's *own* values for the fields this control is not touching. Sending
+                    // the effective ones would silently turn every inherited field into an override
+                    // the moment any one control is used.
+                    stopContainers: config.ownStopContainers ?? null,
+                    cron: config.ownCron ?? null,
+                    quiesceMode: config.ownQuiesceMode ?? null,
                   })
                 }
-                aria-label="Include in the backup schedule"
               />
             </label>
 
@@ -229,6 +256,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
               <span className="min-w-0">
                 <span className="block text-[13px] font-medium text-text">
                   Stop stateful containers during the snapshot
+                  <SetBy source={config.stopContainersSource} templateName={config.templateName} />
                 </span>
                 <span className="mt-0.5 block text-[13px] text-text-2">
                   Stops only the containers that mount the volumes being archived (typically just
@@ -237,18 +265,23 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
                   nothing is stopped; a write-active volume may be captured mid-write.
                 </span>
               </span>
-              <Switch
-                checked={config.stopContainers}
+              <InheritableToggle
+                label="Stop stateful containers during the snapshot"
+                own={config.ownStopContainers}
+                effective={config.stopContainers}
+                templateName={config.templateName}
+                inheritedFrom={config.stopContainersSource}
+                onLabel="On"
+                offLabel="Off"
                 disabled={setConfig.isPending}
-                onCheckedChange={(v) =>
+                onChange={(v) =>
                   setConfig.mutate({
-                    enabled: config.enabled,
+                    enabled: config.ownEnabled ?? null,
                     stopContainers: v,
-                    cron: config.cron,
-                    quiesceMode: config.quiesceMode,
+                    cron: config.ownCron ?? null,
+                    quiesceMode: config.ownQuiesceMode ?? null,
                   })
                 }
-                aria-label="Stop stateful containers during the snapshot"
               />
             </label>
 
@@ -258,6 +291,7 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
                 className="text-[13px] font-medium text-text"
               >
                 Quiesce mode
+                <SetBy source={config.quiesceModeSource} templateName={config.templateName} />
               </label>
               <span className="text-[13px] text-text-2">
                 How the stateful containers are taken out of service for the snapshot.{' '}
@@ -273,38 +307,87 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
                 <code className="font-mono text-[12px]">pause</code>) overrides this for that service.
               </span>
               <Select
-                value={config.quiesceMode}
+                // A tenant selects among three: `inherit` when it has no value of its own, so the
+                // control shows what is true rather than a concrete word it does not own. A standalone
+                // stack has no Inherit row (see below), so it selects the effective value — giving it
+                // `inherit` would set the trigger to an option that is not in the list, and Radix
+                // renders that as an empty box.
+                value={config.templateName ? (config.ownQuiesceMode ?? INHERIT) : config.quiesceMode}
                 disabled={setConfig.isPending || !config.stopContainers}
                 onValueChange={(v) =>
                   setConfig.mutate({
-                    enabled: config.enabled,
-                    stopContainers: config.stopContainers,
-                    cron: config.cron,
-                    quiesceMode: v as BackupQuiesceMode,
+                    enabled: config.ownEnabled ?? null,
+                    stopContainers: config.ownStopContainers ?? null,
+                    cron: config.ownCron ?? null,
+                    quiesceMode: v === INHERIT ? null : (v as BackupQuiesceMode),
                   })
                 }
               >
-                <SelectTrigger id="backup-quiesce-mode" className="max-w-[320px]">
+                <SelectTrigger id="backup-quiesce-mode" className="max-w-[380px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="stop">Stop (default — application-consistent)</SelectItem>
+                  {/* Offered only where inheriting is a distinct outcome. On a standalone stack the
+                      ladder is stack-then-instance, so "inherit" and an explicit "stop" behave
+                      identically and a third option would be a distinction without a difference. */}
+                  {config.templateName && (
+                    <SelectItem value={INHERIT}>
+                      {inheritLabel(
+                        config.quiesceMode === 'pause' ? 'Pause' : 'Stop',
+                        config.quiesceModeSource,
+                        config.templateName,
+                      )}
+                    </SelectItem>
+                  )}
+                  {/* Not "(default — …)": the instance default is only this stack's default when
+                      nothing above it disagrees, and for a tenant of a pause fleet it does. The word
+                      "default" belongs on the Inherit row, which names where the default comes from. */}
+                  <SelectItem value="stop">Stop (application-consistent)</SelectItem>
                   <SelectItem value="pause">Pause (crash-consistent, seconds of downtime)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
+            {/* Every field can be handed back one at a time through its own control; this is the
+                all-at-once shortcut. Only offered when there is a fleet to hand it back to, and only
+                when something is actually overridden — a button that clears nothing teaches nothing. */}
+            {config.templateName && hasOwnValues(config) && (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={setConfig.isPending}
+                  onClick={() =>
+                    setConfig.mutate({
+                      enabled: null,
+                      stopContainers: null,
+                      cron: null,
+                      quiesceMode: null,
+                    })
+                  }
+                >
+                  Use {config.templateName}’s policy
+                </Button>
+                <span className="text-[13px] text-text-3">
+                  Clears this instance’s own settings and follows the fleet again.
+                </span>
+              </div>
+            )}
+
             <ScheduleOverride
-              key={config.cron ?? ''}
-              value={config.cron}
+              key={config.ownCron ?? ''}
+              value={config.ownCron ?? null}
+              effectiveCron={config.cron}
+              cronSource={config.cronSource}
+              templateName={config.templateName ?? null}
               instanceCron={globalConfig?.cron ?? null}
               pending={setConfig.isPending}
               onSave={(cron) =>
                 setConfig.mutate({
-                  enabled: config.enabled,
-                  stopContainers: config.stopContainers,
+                  enabled: config.ownEnabled ?? null,
+                  stopContainers: config.ownStopContainers ?? null,
                   cron,
-                  quiesceMode: config.quiesceMode,
+                  quiesceMode: config.ownQuiesceMode ?? null,
                 })
               }
             />
@@ -378,6 +461,9 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
   )
 }
 
+/** The sentinel a tri-state control uses for "no opinion" — the empty string is not a select value. */
+const INHERIT = 'inherit'
+
 /** The run log's FAILED line — the exception message the server appends on the failure path. */
 function failureReason(output: string | null): string {
   const line = output
@@ -388,17 +474,159 @@ function failureReason(output: string | null): string {
 }
 
 /**
- * This stack's own cron expression (ADR-0018). Empty means it follows the instance schedule, so the
- * placeholder and the preview both show what that currently is. The server validates the expression
- * and reports a bad one through the mutation's error toast.
+ * The Inherit row's text.
+ *
+ * **It may only name a value when that value is the one inheriting would actually give.** While the
+ * field *is* inherited, the effective value and the inherited value are the same thing, so the row
+ * says which and from where — that is what makes "Inherit" an option whose consequence the reader can
+ * see. While the stack **overrides** the field, the effective value is the stack's own and naming it
+ * here would promise that picking Inherit changes nothing, when it is precisely the control that
+ * changes it back. The wire carries no "what you would inherit" value (the resolver stops at the
+ * winner), so the row drops the parenthetical rather than inventing one: it says where the answer
+ * would come from, and the reader sees the new value the moment they pick it.
+ */
+function inheritLabel(
+  effectiveValue: string,
+  source: BackupPolicySource,
+  templateName: string | null | undefined,
+): string {
+  const from = source === 'template' && templateName ? templateName : 'instance default'
+  return source === 'stack'
+    ? `Inherit from ${templateName ?? 'the instance default'}`
+    : `Inherit (currently: ${effectiveValue} — from ${from})`
+}
+
+/**
+ * A nullable boolean control.
+ *
+ * **For a tenant this must be three states, not two.** A `Switch` can only render on or off, so an
+ * inherited `true` looks exactly like an owned `true` — and the two are not the same thing: toggling
+ * such a switch twice, or "confirming" the value already on screen, silently detaches the field from
+ * the fleet and freezes it at whatever the fleet happened to say that day. The select renders the
+ * inherited state *as inherited* and names the value in force, so choosing what is on screen is a
+ * no-op and choosing anything else is visibly a decision. Picking Inherit is also the per-field
+ * revert, which is why there is no separate revert affordance per row.
+ *
+ * **For a standalone stack it stays the switch it has always been.** There the ladder is
+ * stack-then-instance, so "inherit" and an explicit value that equals the instance default behave
+ * identically — a third state would be a distinction the reader cannot act on, on a page a hobby
+ * install has been reading unchanged since ADR-0016.
+ */
+function InheritableToggle({
+  label,
+  own,
+  effective,
+  templateName,
+  inheritedFrom,
+  onLabel,
+  offLabel,
+  disabled,
+  onChange,
+}: {
+  label: string
+  /** What the stack itself says; null/undefined means it inherits. */
+  own: boolean | null | undefined
+  /** What is actually in force right now — what the Inherit row has to name. */
+  effective: boolean
+  templateName: string | null | undefined
+  inheritedFrom: BackupPolicySource
+  onLabel: string
+  offLabel: string
+  disabled: boolean
+  onChange: (value: boolean | null) => void
+}) {
+  if (!templateName) {
+    return (
+      <Switch
+        checked={effective}
+        disabled={disabled}
+        onCheckedChange={onChange}
+        aria-label={label}
+      />
+    )
+  }
+  return (
+    <Select
+      value={own != null ? String(own) : INHERIT}
+      disabled={disabled}
+      onValueChange={(v) => onChange(v === INHERIT ? null : v === 'true')}
+    >
+      <SelectTrigger aria-label={label} className="w-[300px] shrink-0">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={INHERIT}>
+          {inheritLabel(effective ? onLabel : offLabel, inheritedFrom, templateName)}
+        </SelectItem>
+        <SelectItem value="true">{onLabel}</SelectItem>
+        <SelectItem value="false">{offLabel}</SelectItem>
+      </SelectContent>
+    </Select>
+  )
+}
+
+/**
+ * Where an effective backup setting came from. A chip beside the control rather than prose, because
+ * the reader's question is "is this mine or the fleet's?" and the answer has to be legible without
+ * reading a sentence.
+ *
+ * Two things it deliberately does not say. Nothing for a value the stack set itself — a control
+ * showing a value the stack owns already means that. And **nothing at all on a standalone stack**,
+ * where the ladder has only one rung below the labels: a hobby install would otherwise grow a "Set
+ * by: instance default" chip on every row of a page that has not changed, which is exactly the kind
+ * of noise design.md's UX bar rules out. Provenance is only information where there is more than one
+ * possible answer.
+ */
+function SetBy({
+  source,
+  templateName,
+}: {
+  source: BackupPolicySource
+  templateName?: string | null
+}) {
+  if (source === 'stack' || !templateName) return null
+  return (
+    <Badge tone="neutral" size="sm" className="ml-2 align-middle font-normal">
+      {source === 'template' ? `Set by: ${templateName}` : 'Set by: instance default'}
+    </Badge>
+  )
+}
+
+/** True when the stack overrides at least one field — i.e. there is something to hand back. */
+function hasOwnValues(config: {
+  ownEnabled?: boolean | null
+  ownStopContainers?: boolean | null
+  ownCron?: string | null
+  ownQuiesceMode?: BackupQuiesceMode | null
+}): boolean {
+  // `!= null` throughout: the API omits nulls, so an unset field arrives as `undefined`.
+  return (
+    config.ownEnabled != null ||
+    config.ownStopContainers != null ||
+    config.ownCron != null ||
+    config.ownQuiesceMode != null
+  )
+}
+
+/**
+ * This stack's own cron expression (ADR-0018). Empty means it inherits — the fleet's expression when
+ * the stack is a tenant of a template that sets one, otherwise the instance schedule — so the preview
+ * names whichever of those actually applies rather than always saying "instance". The server validates
+ * the expression and reports a bad one through the mutation's error toast.
  */
 function ScheduleOverride({
   value,
+  effectiveCron,
+  cronSource,
+  templateName,
   instanceCron,
   pending,
   onSave,
 }: {
   value: string | null
+  effectiveCron: string | null
+  cronSource: BackupPolicySource
+  templateName: string | null
   instanceCron: string | null
   pending: boolean
   onSave: (cron: string | null) => void
@@ -406,15 +634,26 @@ function ScheduleOverride({
   const [draft, setDraft] = useState(value ?? '')
   const trimmed = draft.trim()
   const dirty = trimmed !== (value ?? '')
-  const preview = describeSchedule(trimmed, instanceCron)
+  const preview =
+    trimmed.length === 0 && cronSource === 'template'
+      ? {
+        text: `Follows ${templateName ?? 'the fleet policy'}: `
+          + `${effectiveCron === null
+            ? 'the instance schedule'
+            : describeCron(effectiveCron) ?? effectiveCron}.`,
+        invalid: false,
+      }
+      : describeSchedule(trimmed, instanceCron)
 
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[13px] font-medium text-text">Schedule override</span>
+      <span className="text-[13px] font-medium text-text">
+        Schedule override
+        <SetBy source={cronSource} templateName={templateName} />
+      </span>
       <span className="text-[13px] text-text-2">
-        Runs this stack on its own cron expression instead of the instance schedule — five fields
-        (minute hour day-of-month month day-of-week), server-local time. Leave empty to follow the
-        instance.
+        Runs this stack on its own cron expression instead of the inherited one — five fields
+        (minute hour day-of-month month day-of-week), server-local time. Leave empty to inherit.
       </span>
       <div className="flex flex-wrap items-center gap-2">
         <Input
@@ -444,7 +683,7 @@ function ScheduleOverride({
               onSave(null)
             }}
           >
-            Use instance schedule
+            {templateName ? 'Use the inherited schedule' : 'Use instance schedule'}
           </Button>
         )}
       </div>

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { Boxes, Play, Plus, Square, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
+import { deployTargetVersion, usesReleases } from '@/lib/release'
 import type { Stack } from '@/lib/types'
 import { absoluteTitle, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -33,12 +34,13 @@ function isDeploying(stack: Stack): boolean {
   return stack.lastDeployStatus === 'running' || stack.lastDeployStatus === 'queued'
 }
 
-const repoLabel = (url: string) => url.replace(/^https:\/\/github\.com\//, '')
-
 export function StacksPage() {
   const qc = useQueryClient()
   const { status } = stacksApi.useSearch()
   const navigate = stacksApi.useNavigate()
+  // The catalogue page is gated on the Products module, so the product cell only links when it is
+  // somewhere the reader can actually land.
+  const productsEnabled = stacksApi.useRouteContext().caps.isModuleEnabled('Products')
 
   const [pendingDelete, setPendingDelete] = useState<Stack | null>(null)
 
@@ -114,6 +116,7 @@ export function StacksPage() {
   })
 
   const filtered = status ? stacks.filter((s) => matchesFilter(s, status)) : stacks
+  const anyReleaseMode = stacks.some(usesReleases)
 
   function clearFilter() {
     navigate({ search: {} })
@@ -168,6 +171,54 @@ export function StacksPage() {
     )
   }
 
+  /**
+   * Invariant 6 on a list: the cell beside each row's Deploy button states what that button would
+   * apply. In `Git` mode that is the branch, exactly as this column has always shown. In `Releases`
+   * mode the branch is meaningless — the deploy checks out the release's commit — so the chip
+   * becomes the version, with `pinned` beside it when the row is not tracking latest.
+   *
+   * Derived from the list DTO alone (`pin ?? availableReleaseVersion ?? lastDeployedRelease`), so the
+   * page still makes exactly one request. Null only for a Releases-mode product with no releases at
+   * all; the row then shows nothing rather than a made-up value.
+   */
+  function VersionCell({ stack }: { stack: Stack }) {
+    if (!usesReleases(stack)) return <Badge tone="neutral">{stack.branch}</Badge>
+    const target = deployTargetVersion(stack)
+    if (!target) return <span className="text-text-3">—</span>
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <Badge tone="neutral">{target}</Badge>
+        {stack.pinnedRelease && (
+          <Badge tone="neutral" size="sm">
+            pinned
+          </Badge>
+        )}
+      </span>
+    )
+  }
+
+  /** The product a stack runs, linked only when the catalogue page is actually reachable. */
+  function ProductCell({ stack }: { stack: Stack }) {
+    const className = 'block max-w-[20ch] truncate text-[13px] text-text-2'
+    if (!productsEnabled) {
+      return (
+        <span className={className} title={stack.repositoryUrl}>
+          {stack.productName}
+        </span>
+      )
+    }
+    return (
+      <Link
+        to="/products/$id"
+        params={{ id: String(stack.productId) }}
+        className={cn(className, 'hover:text-brand')}
+        title={stack.repositoryUrl}
+      >
+        {stack.productName}
+      </Link>
+    )
+  }
+
   function DeleteButton({ stack }: { stack: Stack }) {
     return (
       <Tooltip label="Delete stack">
@@ -200,18 +251,20 @@ export function StacksPage() {
       ),
     },
     {
-      key: 'repo',
-      header: 'Repository',
-      cell: (s) => (
-        <span className="block max-w-[22ch] truncate font-mono text-[13px] text-text-2">
-          {repoLabel(s.repositoryUrl)}
-        </span>
-      ),
+      key: 'product',
+      header: 'Product',
+      // Replaces the Repository column rather than joining it: the product carries the identity and
+      // the repository URL rides along as its tooltip, keeping this list at the width it had.
+      cell: (s) => <ProductCell stack={s} />,
     },
     {
       key: 'branch',
-      header: 'Branch',
-      cell: (s) => <Badge tone="neutral">{s.branch}</Badge>,
+      // "Branch" while every product on this box is in Git mode — an install that never opts into
+      // releases sees this page exactly as it always was (design.md §Migration morning-after). The
+      // moment one release-mode stack is listed the column is answering a broader question, and says
+      // so; a Git row's branch is still the version it deploys.
+      header: anyReleaseMode ? 'Version' : 'Branch',
+      cell: (s) => <VersionCell stack={s} />,
     },
     {
       key: 'status',
@@ -267,8 +320,21 @@ export function StacksPage() {
         )}
       </div>
 
-      <p className="truncate font-mono text-[13px] text-text-2">
-        {repoLabel(s.repositoryUrl)} · {s.branch}
+      {/* Mobile parity with the table: the product names the source, and the same cell qualifies it
+          with what a Deploy from this card would apply — the branch, or the release version. */}
+      <p className="truncate text-[13px] text-text-2" title={s.repositoryUrl}>
+        {s.productName} ·{' '}
+        <span className="font-mono">{(usesReleases(s) ? deployTargetVersion(s) : s.branch) ?? '—'}</span>
+        {/* Guarded like the desktop VersionCell: a pin surviving a Releases→Git revert is inert
+            in Git mode and must not decorate a branch label. */}
+        {usesReleases(s) && s.pinnedRelease && (
+          <>
+            {' '}
+            <Badge tone="neutral" size="sm">
+              pinned
+            </Badge>
+          </>
+        )}
       </p>
 
       <p className="text-[13px] text-text-2">
@@ -298,11 +364,25 @@ export function StacksPage() {
       title="No stacks yet"
       description="Register a git repo with a compose file to start deploying."
       action={
-        <Button asChild variant="primary">
-          <Link to="/stacks/new">
-            <Plus /> New stack
-          </Link>
-        </Button>
+        // The mirror of the Products empty state's "Just deploying one repo?" line: the two pages
+        // teach each other's entry point, so whichever one a fresh operator lands on first names the
+        // other workflow — a sentence for the other persona, not a competing button.
+        <div className="flex flex-col items-center gap-3">
+          <Button asChild variant="primary">
+            <Link to="/stacks/new">
+              <Plus /> New stack
+            </Link>
+          </Button>
+          {productsEnabled && (
+            <p className="text-[13px] text-text-2">
+              Running one product for many tenants?{' '}
+              <Link to="/products" className="text-brand hover:underline">
+                Start from Products
+              </Link>
+              .
+            </p>
+          )}
+        </div>
       }
     />
   )

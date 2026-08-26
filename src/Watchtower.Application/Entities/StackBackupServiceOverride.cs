@@ -20,3 +20,30 @@ public sealed class StackBackupServiceOverride {
     /// <summary><c>"false"</c> or <c>"postgres"</c> — stands in for <c>watchtower.backup.dump</c>; null = not set.</summary>
     public string? Dump { get; set; }
 }
+
+/// <summary>
+/// The template-level twin of <see cref="StackBackupServiceOverride"/>: per-service backup settings every
+/// tenant of a <see cref="StackTemplate"/> inherits, so a fleet's "never back up the cache service" is
+/// configured once instead of once per tenant (design.md §"Backups across tenants").
+/// </summary>
+/// <remarks>
+/// <b>Precedence is per service, not per knob.</b> A stack that has a row for a service replaces the
+/// template's row for that service outright; a service the stack says nothing about takes the template's
+/// row whole. Per-knob merging is not expressible here — <see cref="StackBackupServiceOverride.Exclude"/>
+/// is a plain <c>bool</c>, so "the stack does not override exclude" and "the stack overrides it to false"
+/// are the same value — and inventing a fourth state to make it expressible would buy a merge nobody
+/// asked for. The compose label still beats both (ADR-0020).
+/// </remarks>
+public sealed class TemplateBackupServiceOverride {
+    public int Id { get; set; }
+    public int TemplateId { get; set; }
+    public StackTemplate? Template { get; set; }
+    /// <inheritdoc cref="StackBackupServiceOverride.Service"/>
+    public required string Service { get; set; }
+    /// <inheritdoc cref="StackBackupServiceOverride.Exclude"/>
+    public bool Exclude { get; set; }
+    /// <inheritdoc cref="StackBackupServiceOverride.Stop"/>
+    public string? Stop { get; set; }
+    /// <inheritdoc cref="StackBackupServiceOverride.Dump"/>
+    public string? Dump { get; set; }
+}

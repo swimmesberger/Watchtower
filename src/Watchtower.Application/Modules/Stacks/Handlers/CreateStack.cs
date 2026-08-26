@@ -1,3 +1,7 @@
+using Elarion.Abstractions.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -5,9 +9,25 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.Stacks.Handlers;
 
 /// <summary>Creates a new stack. Initial environment variables (if any) are set atomically.</summary>
+/// <remarks>
+/// ADR-0026's implicit-product contract lives here: the inline repository fields stay, and the product
+/// behind them is found-or-created silently, so creating a stack remains one form and every existing
+/// API client keeps working. A caller that already knows its product passes <c>ProductId</c> instead —
+/// supplying both is a validation error rather than a silent precedence rule nobody could guess.
+/// </remarks>
 [Handler("stacks.create")]
-public sealed class CreateStack(WatchtowerDbContext db, SelfProjectNameProvider selfProjects)
+public sealed class CreateStack(
+    WatchtowerDbContext db,
+    SelfProjectNameProvider selfProjects,
+    ProductCatalog products,
+    IOptionsMonitor<WatchtowerOptions> options,
+    AuditLog audit,
+    ICurrentUser currentUser)
     : IHandler<CreateStack.Command, Result<CreateStack.Response>> {
+    /// <param name="ProductId">
+    /// An existing product to deploy. When set, the repository fields must be absent or empty, and
+    /// <paramref name="Branch"/> becomes a per-stack override if it differs from the product default.
+    /// </param>
     public sealed record Command(
         string Name,
         string RepositoryUrl,
@@ -19,7 +39,8 @@ public sealed class CreateStack(WatchtowerDbContext db, SelfProjectNameProvider 
         bool WebhookEnabled,
         string? AutoDeployMode,
         string? AutoDeployTime,
-        IReadOnlyList<StackEnvVarInput>? EnvVars);
+        IReadOnlyList<StackEnvVarInput>? EnvVars,
+        int? ProductId = null);
 
     public sealed record Response(StackDto Stack);
 
@@ -41,13 +62,28 @@ public sealed class CreateStack(WatchtowerDbContext db, SelfProjectNameProvider 
             is { } projectNameError)
             return AppError.Validation(projectNameError);
 
+        // Opened before the product is resolved so a product created implicitly for this stack rolls
+        // back with it: a failed creation must not leave an orphan in the catalogue.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        var (product, created, productError) = await products.ResolveAsync(
+            command.ProductId, command.RepositoryUrl, command.ComposeFilePath, command.Branch,
+            command.CredentialId, ct);
+        if (productError is { } error) return error;
+
         var stack = new Stack {
             Name = command.Name,
-            RepositoryUrl = command.RepositoryUrl,
-            ComposeFilePath = command.ComposeFilePath,
-            Branch = command.Branch,
+            ProductId = product!.Id,
+            Product = product,
+            // The product default is the right base here, unlike on stacks.update: a stack created
+            // through this handler has no template, so there is no inherited override to compare against.
+            BranchOverride = ProductSourceResolver.OverrideFor(command.Branch, product.DefaultBranch),
             ComposeProjectName = projectName,
-            CredentialId = command.CredentialId,
+            // Stamped at creation and stable thereafter: renaming the stack (or the instance) later must
+            // not orphan archives that are already written under this path — design.md §"Backups across
+            // tenants", and the fix for a hazard that predates products entirely.
+            BackupDirectory = BackupNaming.StackDirectory(
+                options.CurrentValue.Backup.ResolveInstanceName(), command.Name),
             WebhookToken = command.WebhookToken,
             WebhookEnabled = command.WebhookEnabled,
             // App API token is minted up front so operators can hand it to the application before
@@ -59,7 +95,6 @@ public sealed class CreateStack(WatchtowerDbContext db, SelfProjectNameProvider 
             CreatedAt = DateTimeOffset.UtcNow,
         };
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
         db.Stacks.Add(stack);
         await db.SaveChangesAsync(ct);
 
@@ -69,6 +104,16 @@ public sealed class CreateStack(WatchtowerDbContext db, SelfProjectNameProvider 
             await db.SaveChangesAsync(ct);
         }
         await tx.CommitAsync(ct);
+
+        // A product that appeared because someone created a stack is still a product an operator will
+        // later find in the catalogue and wonder about; the trail says where it came from.
+        if (created) {
+            await audit.RecordAsync(
+                ProductCatalog.AuditCategory, "product.create", product.Name,
+                $"{product.RepositoryUrl} ({product.ComposeFilePath}) @ {product.DefaultBranch} — "
+                + "implicit via stacks.create",
+                actor: await audit.ActorAsync(currentUser, ct), ct: ct);
+        }
 
         return new Response(StackMapping.ToDto(stack, check: null));
     }

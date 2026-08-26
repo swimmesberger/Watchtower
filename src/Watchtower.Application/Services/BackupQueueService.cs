@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ public sealed record BackupEnqueueResult(int BackupEventId, string Status);
 /// </remarks>
 public class BackupQueueService(
     BackupService backupService,
+    BackupChainCoordinator chain,
     IServiceScopeFactory scopeFactory,
     ILogger<BackupQueueService> logger) : BackgroundService {
 
@@ -43,12 +45,25 @@ public class BackupQueueService(
     /// Enqueues a backup for <paramref name="stackId"/>. Returns the tracking event — a fresh
     /// <c>queued</c> one, or the stack's already-waiting backup event (coalesced).
     /// </summary>
-    public virtual BackupEnqueueResult Enqueue(int stackId, string triggeredBy) {
+    /// <param name="stackId">The stack to back up.</param>
+    /// <param name="triggeredBy">What to record on the event — see <see cref="BackupTriggers"/>.</param>
+    /// <param name="chainStep">
+    /// Optional work to run once (and only if) this backup succeeds — the pre-deploy and final-backup
+    /// chains of design.md §"Backups across tenants". Registered <em>inside</em> the lock and before the
+    /// job is written to the channel, so a run that fails in milliseconds cannot finish before its
+    /// follow-up is attached. A coalesced request attaches to the pending event, which is exactly right:
+    /// one backup, both follow-ups.
+    /// </param>
+    public virtual BackupEnqueueResult Enqueue(
+        int stackId, string triggeredBy, BackupChainStep? chainStep = null) {
         lock (_lock) {
-            if (_queuedBackupByStack.TryGetValue(stackId, out var pending))
+            if (_queuedBackupByStack.TryGetValue(stackId, out var pending)) {
+                if (chainStep is not null) chain.Attach(pending, chainStep);
                 return new BackupEnqueueResult(pending, "queued");
+            }
 
             var eventId = CreateEvent(stackId, triggeredBy);
+            if (chainStep is not null) chain.Attach(eventId, chainStep);
             _queuedBackupByStack[stackId] = eventId;
             _channel.Writer.TryWrite(new Job(eventId, stackId, JobKind.Backup, FileName: null));
             return new BackupEnqueueResult(eventId, "queued");
@@ -67,7 +82,7 @@ public class BackupQueueService(
                 || _runningStackId == stackId;
             if (busy) return null;
 
-            var eventId = CreateEvent(stackId, triggeredBy: "restore");
+            var eventId = CreateEvent(stackId, BackupTriggers.Restore);
             _queuedRestoreStacks.Add(stackId);
             _channel.Writer.TryWrite(new Job(eventId, stackId, JobKind.Restore, fileName));
             return new BackupEnqueueResult(eventId, "queued");
@@ -116,6 +131,13 @@ public class BackupQueueService(
                     lock (_lock) {
                         _runningStackId = null;
                     }
+                    // Whatever was chained to this backup runs (or is refused) here, from the stored
+                    // outcome rather than from whether the call above threw: BackupService catches its
+                    // own failures and records them on the event, so the event is the only honest source
+                    // of "did it work". Restores are never chained, and a missing event answers false —
+                    // the stack was deleted mid-run, so a follow-up would have nothing to act on.
+                    if (job.Kind == JobKind.Backup)
+                        await NotifyChainAsync(job.EventId, stoppingToken);
                 }
             }
         } catch (OperationCanceledException) {
@@ -136,6 +158,32 @@ public class BackupQueueService(
         } catch (Exception ex) {
             logger.LogError(ex, "Could not reconcile containers left paused by an interrupted backup; will retry");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Reads the terminal status the run recorded and lets <see cref="BackupChainCoordinator"/> release
+    /// (or refuse) whatever was chained to it.
+    /// </summary>
+    /// <remarks>
+    /// Never allowed to take the worker loop down: a chain that throws must not stop the queue draining,
+    /// so the coordinator's own per-step catch is backed by this one.
+    /// </remarks>
+    private async Task NotifyChainAsync(int eventId, CancellationToken ct) {
+        try {
+            bool success;
+            using (var scope = scopeFactory.CreateScope()) {
+                var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+                success = await db.BackupEvents.AsNoTracking()
+                    .Where(e => e.Id == eventId)
+                    .Select(e => e.Status)
+                    .FirstOrDefaultAsync(CancellationToken.None) == BackupStatuses.Success;
+            }
+            await chain.OnBackupFinishedAsync(eventId, success, ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogError(ex, "Could not run the work chained to backup event {EventId}", eventId);
         }
     }
 

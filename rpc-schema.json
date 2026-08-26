@@ -162,6 +162,13 @@
           "limit": {
             "type": "integer",
             "default": 50
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         }
       },
@@ -346,6 +353,166 @@
         ]
       }
     },
+    "backups.getProductBackups": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "templateId": {
+                  "type": "integer"
+                },
+                "templateName": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "stopContainers": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "cron": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "quiesceMode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tenantCount": {
+                  "type": "integer"
+                },
+                "overriddenTenantCount": {
+                  "type": "integer"
+                },
+                "serviceOverrides": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "service": {
+                        "type": "string"
+                      },
+                      "exclude": {
+                        "type": "boolean"
+                      },
+                      "stop": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "dump": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "inherited": {
+                        "type": "boolean",
+                        "default": false
+                      }
+                    },
+                    "required": [
+                      "service",
+                      "exclude",
+                      "stop",
+                      "dump"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "templateId",
+                "templateName",
+                "enabled",
+                "stopContainers",
+                "cron",
+                "quiesceMode",
+                "tenantCount",
+                "overriddenTenantCount",
+                "serviceOverrides"
+              ]
+            }
+          },
+          "rollup": {
+            "type": "object",
+            "properties": {
+              "deployments": {
+                "type": "integer"
+              },
+              "enrolled": {
+                "type": "integer"
+              },
+              "notEnrolled": {
+                "type": "integer"
+              },
+              "backedUpRecently": {
+                "type": "integer"
+              },
+              "stale": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "never": {
+                "type": "integer"
+              },
+              "windowHours": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "deployments",
+              "enrolled",
+              "notEnrolled",
+              "backedUpRecently",
+              "stale",
+              "failed",
+              "never",
+              "windowHours"
+            ]
+          },
+          "instanceCron": {
+            "type": "string"
+          },
+          "scheduleEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "templates",
+          "rollup",
+          "instanceCron",
+          "scheduleEnabled"
+        ]
+      }
+    },
     "backups.getStackConfig": {
       "params": {
         "type": "object",
@@ -381,6 +548,54 @@
               },
               "quiesceMode": {
                 "type": "string"
+              },
+              "ownEnabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownStopContainers": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownCron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownQuiesceMode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enabledSource": {
+                "type": "string"
+              },
+              "stopContainersSource": {
+                "type": "string"
+              },
+              "cronSource": {
+                "type": "string"
+              },
+              "quiesceModeSource": {
+                "type": "string"
+              },
+              "templateId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "templateName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -388,7 +603,17 @@
               "enabled",
               "stopContainers",
               "cron",
-              "quiesceMode"
+              "quiesceMode",
+              "ownEnabled",
+              "ownStopContainers",
+              "ownCron",
+              "ownQuiesceMode",
+              "enabledSource",
+              "stopContainersSource",
+              "cronSource",
+              "quiesceModeSource",
+              "templateId",
+              "templateName"
             ]
           }
         },
@@ -567,6 +792,10 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "inherited": {
+                          "type": "boolean",
+                          "default": false
                         }
                       },
                       "required": [
@@ -756,6 +985,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "inherited": {
+                "type": "boolean",
+                "default": false
               }
             },
             "required": [
@@ -779,10 +1012,16 @@
             "type": "integer"
           },
           "enabled": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "stopContainers": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "cron": {
             "type": [
@@ -828,6 +1067,54 @@
               },
               "quiesceMode": {
                 "type": "string"
+              },
+              "ownEnabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownStopContainers": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownCron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownQuiesceMode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enabledSource": {
+                "type": "string"
+              },
+              "stopContainersSource": {
+                "type": "string"
+              },
+              "cronSource": {
+                "type": "string"
+              },
+              "quiesceModeSource": {
+                "type": "string"
+              },
+              "templateId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "templateName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -835,12 +1122,238 @@
               "enabled",
               "stopContainers",
               "cron",
-              "quiesceMode"
+              "quiesceMode",
+              "ownEnabled",
+              "ownStopContainers",
+              "ownCron",
+              "ownQuiesceMode",
+              "enabledSource",
+              "stopContainersSource",
+              "cronSource",
+              "quiesceModeSource",
+              "templateId",
+              "templateName"
             ]
           }
         },
         "required": [
           "config"
+        ]
+      }
+    },
+    "backups.setTemplatePolicy": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "stopContainers": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "cron": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "quiesceMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "policy": {
+            "type": "object",
+            "properties": {
+              "templateId": {
+                "type": "integer"
+              },
+              "templateName": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "stopContainers": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "cron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "quiesceMode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tenantCount": {
+                "type": "integer"
+              },
+              "overriddenTenantCount": {
+                "type": "integer"
+              },
+              "serviceOverrides": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "service": {
+                      "type": "string"
+                    },
+                    "exclude": {
+                      "type": "boolean"
+                    },
+                    "stop": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "dump": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "inherited": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "required": [
+                    "service",
+                    "exclude",
+                    "stop",
+                    "dump"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "templateId",
+              "templateName",
+              "enabled",
+              "stopContainers",
+              "cron",
+              "quiesceMode",
+              "tenantCount",
+              "overriddenTenantCount",
+              "serviceOverrides"
+            ]
+          }
+        },
+        "required": [
+          "policy"
+        ]
+      }
+    },
+    "backups.setTemplateServiceOverride": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "exclude": {
+            "type": "boolean",
+            "default": false
+          },
+          "stop": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "dump": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "templateId",
+          "service"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "override": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "exclude": {
+                "type": "boolean"
+              },
+              "stop": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "dump": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inherited": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "service",
+              "exclude",
+              "stop",
+              "dump"
+            ]
+          }
+        },
+        "required": [
+          "override"
         ]
       }
     },
@@ -1327,6 +1840,240 @@
         ]
       }
     },
+    "ci.enableForProduct": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "fullName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "maxConcurrentRunners": {
+                "type": "integer"
+              },
+              "runnerImage": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "extraLabels": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "allowDockerSocket": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "runnerStatus": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "desiredRunners": {
+                    "type": "integer"
+                  },
+                  "runningRunners": {
+                    "type": "integer"
+                  },
+                  "totalSpawned": {
+                    "type": "integer"
+                  },
+                  "lastError": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastErrorAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "backoffUntil": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "desiredRunners",
+                  "runningRunners",
+                  "totalSpawned",
+                  "lastError",
+                  "lastErrorAt",
+                  "backoffUntil"
+                ]
+              },
+              "toolchain": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "toolchains": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "version",
+                        "source"
+                      ]
+                    }
+                  },
+                  "hasDockerfile": {
+                    "type": "boolean"
+                  },
+                  "detectedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "warmStatus": {
+                    "type": "string"
+                  },
+                  "lastWarmedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "lastWarmError": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "toolchains",
+                  "hasDockerfile",
+                  "detectedAt",
+                  "warmStatus",
+                  "lastWarmedAt",
+                  "lastWarmError"
+                ]
+              },
+              "syncRegistryUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "registrySync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "owner",
+              "name",
+              "fullName",
+              "credentialId",
+              "enabled",
+              "maxConcurrentRunners",
+              "runnerImage",
+              "extraLabels",
+              "allowDockerSocket",
+              "createdAt",
+              "runnerStatus",
+              "toolchain",
+              "syncRegistryUrl",
+              "registrySync"
+            ]
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    },
     "ci.enableForStack": {
       "params": {
         "type": "object",
@@ -1558,6 +2305,303 @@
         },
         "required": [
           "repo"
+        ]
+      }
+    },
+    "ci.getProductCi": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ci": {
+            "type": "object",
+            "properties": {
+              "isGitHub": {
+                "type": "boolean"
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repo": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "fullName": {
+                    "type": "string"
+                  },
+                  "credentialId": {
+                    "type": "integer"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "maxConcurrentRunners": {
+                    "type": "integer"
+                  },
+                  "runnerImage": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "extraLabels": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "allowDockerSocket": {
+                    "type": "boolean"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "runnerStatus": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "desiredRunners": {
+                        "type": "integer"
+                      },
+                      "runningRunners": {
+                        "type": "integer"
+                      },
+                      "totalSpawned": {
+                        "type": "integer"
+                      },
+                      "lastError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "lastErrorAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "backoffUntil": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "desiredRunners",
+                      "runningRunners",
+                      "totalSpawned",
+                      "lastError",
+                      "lastErrorAt",
+                      "backoffUntil"
+                    ]
+                  },
+                  "toolchain": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "toolchains": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string"
+                            },
+                            "version": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "version",
+                            "source"
+                          ]
+                        }
+                      },
+                      "hasDockerfile": {
+                        "type": "boolean"
+                      },
+                      "detectedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "warmStatus": {
+                        "type": "string"
+                      },
+                      "lastWarmedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "lastWarmError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "toolchains",
+                      "hasDockerfile",
+                      "detectedAt",
+                      "warmStatus",
+                      "lastWarmedAt",
+                      "lastWarmError"
+                    ]
+                  },
+                  "syncRegistryUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "registrySync": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "status": {
+                        "type": "string"
+                      },
+                      "syncedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "syncedAt",
+                      "error"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "owner",
+                  "name",
+                  "fullName",
+                  "credentialId",
+                  "enabled",
+                  "maxConcurrentRunners",
+                  "runnerImage",
+                  "extraLabels",
+                  "allowDockerSocket",
+                  "createdAt",
+                  "runnerStatus",
+                  "toolchain",
+                  "syncRegistryUrl",
+                  "registrySync"
+                ]
+              },
+              "syncReleaseSecrets": {
+                "type": "boolean",
+                "default": false
+              },
+              "releaseSecretsSync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ],
+                "default": null
+              },
+              "releaseSecretsSyncBlocked": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "isGitHub",
+              "owner",
+              "name",
+              "repo"
+            ]
+          }
+        },
+        "required": [
+          "ci"
         ]
       }
     },
@@ -1868,6 +2912,47 @@
                   "syncRegistryUrl",
                   "registrySync"
                 ]
+              },
+              "syncReleaseSecrets": {
+                "type": "boolean",
+                "default": false
+              },
+              "releaseSecretsSync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ],
+                "default": null
+              },
+              "releaseSecretsSyncBlocked": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
               }
             },
             "required": [
@@ -2177,6 +3262,307 @@
         },
         "required": [
           "removed"
+        ]
+      }
+    },
+    "ci.setReleaseSecretsSync": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "productId",
+          "enabled"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ci": {
+            "type": "object",
+            "properties": {
+              "isGitHub": {
+                "type": "boolean"
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repo": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "fullName": {
+                    "type": "string"
+                  },
+                  "credentialId": {
+                    "type": "integer"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "maxConcurrentRunners": {
+                    "type": "integer"
+                  },
+                  "runnerImage": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "extraLabels": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "allowDockerSocket": {
+                    "type": "boolean"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "runnerStatus": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "desiredRunners": {
+                        "type": "integer"
+                      },
+                      "runningRunners": {
+                        "type": "integer"
+                      },
+                      "totalSpawned": {
+                        "type": "integer"
+                      },
+                      "lastError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "lastErrorAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "backoffUntil": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "desiredRunners",
+                      "runningRunners",
+                      "totalSpawned",
+                      "lastError",
+                      "lastErrorAt",
+                      "backoffUntil"
+                    ]
+                  },
+                  "toolchain": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "toolchains": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string"
+                            },
+                            "version": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "version",
+                            "source"
+                          ]
+                        }
+                      },
+                      "hasDockerfile": {
+                        "type": "boolean"
+                      },
+                      "detectedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "warmStatus": {
+                        "type": "string"
+                      },
+                      "lastWarmedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "lastWarmError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "toolchains",
+                      "hasDockerfile",
+                      "detectedAt",
+                      "warmStatus",
+                      "lastWarmedAt",
+                      "lastWarmError"
+                    ]
+                  },
+                  "syncRegistryUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "registrySync": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "status": {
+                        "type": "string"
+                      },
+                      "syncedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date-time"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "syncedAt",
+                      "error"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "owner",
+                  "name",
+                  "fullName",
+                  "credentialId",
+                  "enabled",
+                  "maxConcurrentRunners",
+                  "runnerImage",
+                  "extraLabels",
+                  "allowDockerSocket",
+                  "createdAt",
+                  "runnerStatus",
+                  "toolchain",
+                  "syncRegistryUrl",
+                  "registrySync"
+                ]
+              },
+              "syncReleaseSecrets": {
+                "type": "boolean",
+                "default": false
+              },
+              "releaseSecretsSync": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "syncedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "syncedAt",
+                  "error"
+                ],
+                "default": null
+              },
+              "releaseSecretsSyncBlocked": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "isGitHub",
+              "owner",
+              "name",
+              "repo"
+            ]
+          }
+        },
+        "required": [
+          "ci"
         ]
       }
     },
@@ -4005,6 +5391,1367 @@
         "required": [
           "published",
           "conflicts"
+        ]
+      }
+    },
+    "products.create": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "defaultBranch"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "defaultBranch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              },
+              "releaseWebhookEnabled": {
+                "type": "boolean"
+              },
+              "latestRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "commitSha": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "createdAt",
+                  "commitSha"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "retainReleases": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "repositoryUrl",
+              "composeFilePath",
+              "defaultBranch",
+              "credentialId",
+              "credentialName",
+              "createdAt",
+              "stackCount",
+              "templateCount",
+              "releaseWebhookEnabled",
+              "latestRelease",
+              "releaseMode",
+              "retainReleases"
+            ]
+          }
+        },
+        "required": [
+          "product"
+        ]
+      }
+    },
+    "products.createRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "commitSha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "productId",
+          "version",
+          "images"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "release": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "commitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": "string"
+              },
+              "createdVia": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "publishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "sourceRunUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "digest": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "repository",
+                    "tag",
+                    "digest"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "productId",
+              "productName",
+              "version",
+              "commitSha",
+              "branch",
+              "createdVia",
+              "createdAt",
+              "publishedAt",
+              "sourceRunUrl",
+              "notes",
+              "images"
+            ]
+          }
+        },
+        "required": [
+          "release"
+        ]
+      }
+    },
+    "products.delete": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "products.deleteRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "products.deployRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "releaseId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "stacksEnqueued": {
+            "type": "integer"
+          },
+          "deployEventIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "releaseId",
+          "version",
+          "stacksEnqueued",
+          "deployEventIds"
+        ]
+      }
+    },
+    "products.get": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "defaultBranch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              },
+              "releaseWebhookEnabled": {
+                "type": "boolean"
+              },
+              "latestRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "commitSha": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "createdAt",
+                  "commitSha"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "retainReleases": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "repositoryUrl",
+              "composeFilePath",
+              "defaultBranch",
+              "credentialId",
+              "credentialName",
+              "createdAt",
+              "stackCount",
+              "templateCount",
+              "releaseWebhookEnabled",
+              "latestRelease",
+              "releaseMode",
+              "retainReleases"
+            ]
+          },
+          "stacks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "templateId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tenantSlug": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployStatus": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastDeployedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "trackingMode": {
+                  "type": "string"
+                },
+                "pinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "lastDeployedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "branch",
+                "branchOverride",
+                "templateId",
+                "tenantSlug",
+                "lastDeployStatus",
+                "lastDeployedAt",
+                "trackingMode",
+                "pinnedRelease",
+                "lastDeployedRelease"
+              ]
+            }
+          },
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tenantCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "branch",
+                "branchOverride",
+                "tenantCount"
+              ]
+            }
+          },
+          "releaseWebhookToken": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unreleasedCommitSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "product",
+          "stacks",
+          "templates",
+          "releaseWebhookToken",
+          "unreleasedCommitSha"
+        ]
+      }
+    },
+    "products.getRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "release": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "commitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": "string"
+              },
+              "createdVia": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "publishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "sourceRunUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "digest": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "repository",
+                    "tag",
+                    "digest"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "productId",
+              "productName",
+              "version",
+              "commitSha",
+              "branch",
+              "createdVia",
+              "createdAt",
+              "publishedAt",
+              "sourceRunUrl",
+              "notes",
+              "images"
+            ]
+          }
+        },
+        "required": [
+          "release"
+        ]
+      }
+    },
+    "products.getReleaseRollout": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rollout": {
+            "type": "object",
+            "properties": {
+              "releaseId": {
+                "type": "integer"
+              },
+              "version": {
+                "type": "string"
+              },
+              "succeeded": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "queued": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "integer"
+              },
+              "skipped": {
+                "type": "integer"
+              },
+              "stacks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stackId": {
+                      "type": "integer"
+                    },
+                    "stackName": {
+                      "type": "string"
+                    },
+                    "tenantSlug": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "finishedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "deployEventId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "skipReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "stackId",
+                    "stackName",
+                    "tenantSlug",
+                    "status",
+                    "startedAt",
+                    "finishedAt",
+                    "deployEventId",
+                    "skipReason"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "releaseId",
+              "version",
+              "succeeded",
+              "failed",
+              "queued",
+              "running",
+              "skipped",
+              "stacks"
+            ]
+          }
+        },
+        "required": [
+          "rollout"
+        ]
+      }
+    },
+    "products.list": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "repositoryUrl": {
+                  "type": "string"
+                },
+                "composeFilePath": {
+                  "type": "string"
+                },
+                "defaultBranch": {
+                  "type": "string"
+                },
+                "credentialId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "credentialName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "stackCount": {
+                  "type": "integer"
+                },
+                "templateCount": {
+                  "type": "integer"
+                },
+                "releaseWebhookEnabled": {
+                  "type": "boolean"
+                },
+                "latestRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "commitSha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "createdAt",
+                    "commitSha"
+                  ]
+                },
+                "releaseMode": {
+                  "type": "string"
+                },
+                "retainReleases": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "description",
+                "repositoryUrl",
+                "composeFilePath",
+                "defaultBranch",
+                "credentialId",
+                "credentialName",
+                "createdAt",
+                "stackCount",
+                "templateCount",
+                "releaseWebhookEnabled",
+                "latestRelease",
+                "releaseMode",
+                "retainReleases"
+              ]
+            }
+          }
+        },
+        "required": [
+          "products"
+        ]
+      }
+    },
+    "products.listReleases": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "limit": {
+            "type": "integer",
+            "default": 20
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "releases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "commitSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "createdVia": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "publishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "sourceRunUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "imageCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "version",
+                "commitSha",
+                "branch",
+                "createdVia",
+                "createdAt",
+                "publishedAt",
+                "sourceRunUrl",
+                "imageCount"
+              ]
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "releases",
+          "hasMore"
+        ]
+      }
+    },
+    "products.retryFailedRollout": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "releaseId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "retried": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "deployEventIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "retried",
+          "skipped",
+          "deployEventIds"
+        ]
+      }
+    },
+    "products.rotateReleaseToken": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "resyncing": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "token",
+          "enabled",
+          "resyncing"
+        ]
+      }
+    },
+    "products.setReleaseWebhook": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "productId",
+          "enabled"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      }
+    },
+    "products.update": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repositoryUrl": {
+            "type": "string"
+          },
+          "composeFilePath": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "credentialId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "releaseMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "retainReleases": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repositoryUrl",
+          "composeFilePath",
+          "defaultBranch"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "defaultBranch": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "credentialName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "templateCount": {
+                "type": "integer"
+              },
+              "releaseWebhookEnabled": {
+                "type": "boolean"
+              },
+              "latestRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "commitSha": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "createdAt",
+                  "commitSha"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "retainReleases": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "description",
+              "repositoryUrl",
+              "composeFilePath",
+              "defaultBranch",
+              "credentialId",
+              "credentialName",
+              "createdAt",
+              "stackCount",
+              "templateCount",
+              "releaseWebhookEnabled",
+              "latestRelease",
+              "releaseMode",
+              "retainReleases"
+            ]
+          }
+        },
+        "required": [
+          "product"
         ]
       }
     },
@@ -6115,6 +8862,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -6123,6 +8876,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -6204,14 +8963,80 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -6226,7 +9051,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -6304,6 +9136,13 @@
                 "value"
               ]
             }
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -6332,6 +9171,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -6340,6 +9185,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -6421,14 +9272,80 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -6443,7 +9360,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -6560,6 +9484,20 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "releaseId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "releaseVersion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
                 }
               },
               "required": [
@@ -6603,6 +9541,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -6611,6 +9555,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -6692,14 +9642,80 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -6714,7 +9730,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -6819,6 +9842,12 @@
                 "name": {
                   "type": "string"
                 },
+                "productId": {
+                  "type": "integer"
+                },
+                "productName": {
+                  "type": "string"
+                },
                 "repositoryUrl": {
                   "type": "string"
                 },
@@ -6827,6 +9856,12 @@
                 },
                 "branch": {
                   "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "composeProjectName": {
                   "type": "string"
@@ -6908,14 +9943,80 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "releaseMode": {
+                  "type": "string"
+                },
+                "trackingMode": {
+                  "type": "string"
+                },
+                "pinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "lastDeployedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "availableReleaseId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "availableReleaseVersion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "driftedContainers": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "required": [
                 "id",
                 "name",
+                "productId",
+                "productName",
                 "repositoryUrl",
                 "composeFilePath",
                 "branch",
+                "branchOverride",
                 "composeProjectName",
                 "credentialId",
                 "webhookToken",
@@ -6930,7 +10031,14 @@
                 "hasUpdates",
                 "outdatedImages",
                 "newCommitSha",
-                "updatesCheckedAt"
+                "updatesCheckedAt",
+                "releaseMode",
+                "trackingMode",
+                "pinnedRelease",
+                "lastDeployedRelease",
+                "availableReleaseId",
+                "availableReleaseVersion",
+                "driftedContainers"
               ]
             }
           }
@@ -7051,16 +10159,31 @@
         ]
       }
     },
-    "stacks.start": {
+    "stacks.setRelease": {
       "params": {
         "type": "object",
         "properties": {
-          "id": {
+          "stackId": {
             "type": "integer"
+          },
+          "releaseId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deploy": {
+            "type": "boolean",
+            "default": true
+          },
+          "backupFirst": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
-          "id"
+          "stackId",
+          "releaseId"
         ]
       },
       "result": {
@@ -7075,6 +10198,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -7083,6 +10212,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -7164,14 +10299,80 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -7186,7 +10387,261 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
+            ]
+          },
+          "deployed": {
+            "type": "boolean"
+          },
+          "deployEventId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "backupEventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "stack",
+          "deployed",
+          "deployEventId"
+        ]
+      }
+    },
+    "stacks.start": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
+              "repositoryUrl": {
+                "type": "string"
+              },
+              "composeFilePath": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "composeProjectName": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "webhookToken": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "webhookEnabled": {
+                "type": "boolean"
+              },
+              "autoDeployMode": {
+                "type": "string"
+              },
+              "autoDeployTime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "desiredState": {
+                "type": "string"
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "lastDeployedCommit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "hasUpdates": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "outdatedImages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "newCommitSha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updatesCheckedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "productId",
+              "productName",
+              "repositoryUrl",
+              "composeFilePath",
+              "branch",
+              "branchOverride",
+              "composeProjectName",
+              "credentialId",
+              "webhookToken",
+              "webhookEnabled",
+              "autoDeployMode",
+              "autoDeployTime",
+              "desiredState",
+              "lastDeployStatus",
+              "lastDeployedAt",
+              "lastDeployedCommit",
+              "createdAt",
+              "hasUpdates",
+              "outdatedImages",
+              "newCommitSha",
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           },
           "started": {
@@ -7223,6 +10678,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -7231,6 +10692,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -7312,14 +10779,80 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -7334,7 +10867,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -7444,6 +10984,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -7452,6 +10998,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "composeProjectName": {
                 "type": "string"
@@ -7533,14 +11085,80 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "releaseMode": {
+                "type": "string"
+              },
+              "trackingMode": {
+                "type": "string"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "availableReleaseId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "availableReleaseVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "driftedContainers": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "composeProjectName",
               "credentialId",
               "webhookToken",
@@ -7555,7 +11173,14 @@
               "hasUpdates",
               "outdatedImages",
               "newCommitSha",
-              "updatesCheckedAt"
+              "updatesCheckedAt",
+              "releaseMode",
+              "trackingMode",
+              "pinnedRelease",
+              "lastDeployedRelease",
+              "availableReleaseId",
+              "availableReleaseVersion",
+              "driftedContainers"
             ]
           }
         },
@@ -8189,6 +11814,48 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "trackingMode": {
+                "type": "string",
+                "default": "latest"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
               }
             },
             "required": [
@@ -8203,6 +11870,164 @@
         },
         "required": [
           "tenant"
+        ]
+      }
+    },
+    "templates.adoptStack": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "stackId": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "templateId",
+          "stackId",
+          "slug"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "tenantSlug": {
+                "type": "string"
+              },
+              "stackName": {
+                "type": "string"
+              },
+              "domain": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployStatus": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastDeployedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "trackingMode": {
+                "type": "string",
+                "default": "latest"
+              },
+              "pinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
+              },
+              "lastDeployedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "stackId",
+              "tenantSlug",
+              "stackName",
+              "domain",
+              "lastDeployStatus",
+              "lastDeployedAt"
+            ]
+          },
+          "domain": {
+            "type": "string"
+          },
+          "envKeysAdded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "domainIsPrimary": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tenant",
+          "domain",
+          "envKeysAdded",
+          "domainIsPrimary"
+        ]
+      }
+    },
+    "templates.backupAll": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "backupEventIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "count",
+          "backupEventIds"
         ]
       }
     },
@@ -8264,6 +12089,13 @@
               "null"
             ],
             "default": null
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8290,6 +12122,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -8298,6 +12136,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "credentialId": {
                 "type": [
@@ -8317,27 +12161,60 @@
               "realmId": {
                 "type": "integer"
               },
+              "realmName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
               },
               "instanceCount": {
                 "type": "integer"
+              },
+              "defaultPinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "credentialId",
               "domainPattern",
               "targetServiceName",
               "targetPort",
               "realmId",
+              "realmName",
               "createdAt",
-              "instanceCount"
+              "instanceCount",
+              "defaultPinnedRelease",
+              "releaseMode"
             ]
           }
         },
@@ -8418,6 +12295,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -8426,6 +12309,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "credentialId": {
                 "type": [
@@ -8445,27 +12334,60 @@
               "realmId": {
                 "type": "integer"
               },
+              "realmName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
               },
               "instanceCount": {
                 "type": "integer"
+              },
+              "defaultPinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "credentialId",
               "domainPattern",
               "targetServiceName",
               "targetPort",
               "realmId",
+              "realmName",
               "createdAt",
-              "instanceCount"
+              "instanceCount",
+              "defaultPinnedRelease",
+              "releaseMode"
             ]
           },
           "baseEnvVars": {
@@ -8568,6 +12490,12 @@
                 "name": {
                   "type": "string"
                 },
+                "productId": {
+                  "type": "integer"
+                },
+                "productName": {
+                  "type": "string"
+                },
                 "repositoryUrl": {
                   "type": "string"
                 },
@@ -8576,6 +12504,12 @@
                 },
                 "branch": {
                   "type": "string"
+                },
+                "branchOverride": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "credentialId": {
                   "type": [
@@ -8595,27 +12529,60 @@
                 "realmId": {
                   "type": "integer"
                 },
+                "realmName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
                 },
                 "instanceCount": {
                   "type": "integer"
+                },
+                "defaultPinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "releaseMode": {
+                  "type": "string"
                 }
               },
               "required": [
                 "id",
                 "name",
+                "productId",
+                "productName",
                 "repositoryUrl",
                 "composeFilePath",
                 "branch",
+                "branchOverride",
                 "credentialId",
                 "domainPattern",
                 "targetServiceName",
                 "targetPort",
                 "realmId",
+                "realmName",
                 "createdAt",
-                "instanceCount"
+                "instanceCount",
+                "defaultPinnedRelease",
+                "releaseMode"
               ]
             }
           }
@@ -8720,6 +12687,48 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "trackingMode": {
+                  "type": "string",
+                  "default": "latest"
+                },
+                "pinnedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ],
+                  "default": null
+                },
+                "lastDeployedRelease": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ],
+                  "default": null
                 }
               },
               "required": [
@@ -8750,6 +12759,10 @@
           },
           "removeVolumes": {
             "type": "boolean"
+          },
+          "finalBackup": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -8763,6 +12776,17 @@
         "properties": {
           "slug": {
             "type": "string"
+          },
+          "removed": {
+            "type": "boolean",
+            "default": true
+          },
+          "backupEventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8795,6 +12819,97 @@
         },
         "required": [
           "removed"
+        ]
+      }
+    },
+    "templates.setTenantsRelease": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "releaseId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deploy": {
+            "type": "boolean",
+            "default": false
+          },
+          "backupFirst": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "templateId",
+          "releaseId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "object",
+            "properties": {
+              "tenantCount": {
+                "type": "integer"
+              },
+              "deployed": {
+                "type": "integer"
+              },
+              "deployEventIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "release": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "backedUp": {
+                "type": "integer",
+                "default": 0
+              },
+              "backupEventIds": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "integer"
+                },
+                "default": null
+              }
+            },
+            "required": [
+              "tenantCount",
+              "deployed",
+              "deployEventIds",
+              "release"
+            ]
+          }
+        },
+        "required": [
+          "result"
         ]
       }
     },
@@ -8859,6 +12974,13 @@
               "null"
             ],
             "default": null
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8886,6 +13008,12 @@
               "name": {
                 "type": "string"
               },
+              "productId": {
+                "type": "integer"
+              },
+              "productName": {
+                "type": "string"
+              },
               "repositoryUrl": {
                 "type": "string"
               },
@@ -8894,6 +13022,12 @@
               },
               "branch": {
                 "type": "string"
+              },
+              "branchOverride": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "credentialId": {
                 "type": [
@@ -8913,27 +13047,60 @@
               "realmId": {
                 "type": "integer"
               },
+              "realmName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time"
               },
               "instanceCount": {
                 "type": "integer"
+              },
+              "defaultPinnedRelease": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ]
+              },
+              "releaseMode": {
+                "type": "string"
               }
             },
             "required": [
               "id",
               "name",
+              "productId",
+              "productName",
               "repositoryUrl",
               "composeFilePath",
               "branch",
+              "branchOverride",
               "credentialId",
               "domainPattern",
               "targetServiceName",
               "targetPort",
               "realmId",
+              "realmName",
               "createdAt",
-              "instanceCount"
+              "instanceCount",
+              "defaultPinnedRelease",
+              "releaseMode"
             ]
           }
         },
@@ -9601,6 +13768,9 @@
         ]
       },
       "Networks": {
+        "features": []
+      },
+      "Products": {
         "features": []
       },
       "Proxy": {

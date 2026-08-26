@@ -12,7 +12,7 @@ namespace Watchtower.Application.Entities;
 /// the source (printable ASCII, no comma — see the Groups module handlers) rather than being escaped at
 /// each forwarding site, so no writer can produce a name that a reader would split into two.
 /// </remarks>
-public sealed class Group {
+public sealed class Group : IHasXmin {
     public int Id { get; set; }
 
     /// <summary>
@@ -39,4 +39,12 @@ public sealed class Group {
     public required string NormalizedName { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Mapped by <c>XminConcurrency.UseXminAsConcurrencyToken</c>; see <see cref="IHasXmin"/> for why
+    /// this is a real property rather than an EF shadow property. Last, because it is the database's
+    /// bookkeeping rather than part of what this entity means.
+    /// </remarks>
+    public uint Xmin { get; private set; }
 }

@@ -1,5 +1,24 @@
 namespace Watchtower.Application.Entities;
 
+/// <summary>
+/// The values <see cref="BackupEvent.Status"/> takes. Constants rather than an enum for the same reason
+/// <see cref="Services.DeployTriggers"/> is: the column is free text and has been since ADR-0016, and
+/// converting it now would only turn historical rows into a migration problem.
+/// </summary>
+public static class BackupStatuses {
+    /// <summary>Accepted and waiting on the single-flight queue.</summary>
+    public const string Queued = "queued";
+
+    /// <summary>The worker picked it up.</summary>
+    public const string Running = "running";
+
+    /// <summary>The archive reached the storage.</summary>
+    public const string Success = "success";
+
+    /// <summary>The run failed; <see cref="BackupEvent.Output"/> carries the reason.</summary>
+    public const string Failed = "failed";
+}
+
 /// <summary>Records the status and outcome of a single stack backup run (ADR-0016).</summary>
 public sealed class BackupEvent {
     public int Id { get; set; }
