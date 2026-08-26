@@ -80,23 +80,9 @@ public sealed class TenantTeardownService(
     /// <returns>Whether the tenant was removed, and why not when it wasn't.</returns>
     public async Task<TenantTeardownResult> TeardownAsync(
         int templateId, string? slug, bool removeVolumes, CancellationToken ct) {
-        // An unusable slug cannot name a stored tenant — normalization is what created the stored value.
-        var normalized = TenancyMapping.NormalizeSlug(slug);
-        if (normalized is null)
-            return NotFound(slug);
-
-        var tenant = await db.Stacks.AsNoTracking()
-            .Where(s => s.TemplateId == templateId && s.TenantSlug == normalized)
-            .Select(s => new { s.Id, s.ComposeProjectName })
-            .FirstOrDefaultAsync(ct);
-        if (tenant is null)
-            return NotFound(normalized);
-
-        var deployActive = await db.DeployEvents.AsNoTracking()
-            .AnyAsync(e => e.StackId == tenant.Id && (e.Status == "running" || e.Status == "queued"), ct);
-        if (deployActive)
-            return new TenantTeardownResult(TenantTeardownStatus.DeployActive, normalized,
-                $"Tenant '{normalized}' has a deploy in progress; retry once it has finished.");
+        var (failure, tenant) = await ResolveAsync(templateId, slug, ct);
+        if (failure is not null || tenant is null) return failure!;
+        var normalized = tenant.Slug;
 
         var (exitCode, output) = await compose.DownProjectAsync(tenant.ComposeProjectName, removeVolumes, ct);
         if (exitCode != 0) {
@@ -111,11 +97,56 @@ public sealed class TenantTeardownService(
 
         // Past the destructive point: the containers are gone, so the row has to go with them whatever
         // the caller does with its request.
-        await db.Stacks.Where(s => s.Id == tenant.Id).ExecuteDeleteAsync(CancellationToken.None);
+        await db.Stacks.Where(s => s.Id == tenant.StackId).ExecuteDeleteAsync(CancellationToken.None);
         // The route rows cascaded away with the stack; reload so the proxy stops serving the dead domain.
         await proxy.ApplyAsync(CancellationToken.None);
 
         return new TenantTeardownResult(TenantTeardownStatus.Removed, normalized);
+    }
+
+    /// <summary>The tenant a teardown would act on, once it is known to exist and to be idle.</summary>
+    /// <param name="StackId">Its stack id — what a chained final backup is enqueued against.</param>
+    /// <param name="Slug">The normalized slug, i.e. the stored identifier.</param>
+    /// <param name="ComposeProjectName">The project <c>compose down</c> is run for.</param>
+    public sealed record ResolvedTenant(int StackId, string Slug, string ComposeProjectName);
+
+    /// <summary>
+    /// The two checks that must pass before anything is destroyed — the tenant exists, and no deploy is
+    /// in flight — separated from the teardown so the <em>final-backup</em> path can run them at the
+    /// moment the operator asks rather than minutes later when the backup finishes.
+    /// </summary>
+    /// <remarks>
+    /// The deploy check is re-run by <see cref="TeardownAsync"/> when the chain eventually calls it, so
+    /// a deploy that starts while the final backup runs still refuses the teardown. Checking here as
+    /// well is what turns "your removal was aborted 4 minutes later" into an immediate refusal in the
+    /// dialog for the case that is knowable immediately.
+    /// </remarks>
+    /// <param name="templateId">Template the tenant belongs to.</param>
+    /// <param name="slug">Requested slug; normalized here.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The failure to report, or the resolved tenant. Exactly one is non-null.</returns>
+    public async Task<(TenantTeardownResult? Failure, ResolvedTenant? Tenant)> ResolveAsync(
+        int templateId, string? slug, CancellationToken ct) {
+        // An unusable slug cannot name a stored tenant — normalization is what created the stored value.
+        var normalized = TenancyMapping.NormalizeSlug(slug);
+        if (normalized is null)
+            return (NotFound(slug), null);
+
+        var tenant = await db.Stacks.AsNoTracking()
+            .Where(s => s.TemplateId == templateId && s.TenantSlug == normalized)
+            .Select(s => new { s.Id, s.ComposeProjectName })
+            .FirstOrDefaultAsync(ct);
+        if (tenant is null)
+            return (NotFound(normalized), null);
+
+        var deployActive = await db.DeployEvents.AsNoTracking()
+            .AnyAsync(e => e.StackId == tenant.Id && (e.Status == "running" || e.Status == "queued"), ct);
+        if (deployActive) {
+            return (new TenantTeardownResult(TenantTeardownStatus.DeployActive, normalized,
+                $"Tenant '{normalized}' has a deploy in progress; retry once it has finished."), null);
+        }
+
+        return (null, new ResolvedTenant(tenant.Id, normalized, tenant.ComposeProjectName));
     }
 
     private static TenantTeardownResult NotFound(string? slug) =>

@@ -1,5 +1,7 @@
 using System.Collections.Frozen;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Tenancy;
 using Watchtower.Application.Persistence;
@@ -58,8 +60,12 @@ public sealed record TenantProvisionResult(
 /// <param name="db">Scoped Watchtower database context.</param>
 /// <param name="deployQueue">Deploy queue the initial deploy is enqueued on.</param>
 /// <param name="selfProjects">Resolver for Watchtower's own (reserved) compose project name.</param>
+/// <param name="options">Live Watchtower options; the instance name is read once, to stamp the tenant's backup directory.</param>
 public sealed class TenantProvisioningService(
-    WatchtowerDbContext db, DeployQueueService deployQueue, SelfProjectNameProvider selfProjects) {
+    WatchtowerDbContext db,
+    DeployQueueService deployQueue,
+    SelfProjectNameProvider selfProjects,
+    IOptionsMonitor<WatchtowerOptions> options) {
     /// <summary>What the initial deploy of a freshly provisioned tenant is recorded as.</summary>
     public const string CreateTrigger = "tenant-create";
 
@@ -142,6 +148,16 @@ public sealed class TenantProvisioningService(
             ComposeProjectName = projectName,
             TemplateId = template.Id,
             TenantSlug = normalized,
+            // {instance}/{product}/{tenant}, stamped once — a fleet's archives group under the product
+            // they belong to, and a later rename of the stack, the product or the instance cannot move
+            // bytes that are already on the storage (design.md §"Backups across tenants").
+            BackupDirectory = BackupNaming.TenantDirectory(
+                options.CurrentValue.Backup.ResolveInstanceName(),
+                template.Product?.Name ?? template.Name,
+                normalized),
+            // Every Backup* field is left null: a tenant *inherits* its backup policy from the template
+            // (invariant 5), which is the one thing copying would get wrong — a fleet-wide schedule
+            // change has to reach the tenants that already exist, not only the next one.
             // Each tenant instance is its own stack and gets its own App API token — a tenant can
             // never read another tenant's status, logs or version.
             AppApiToken = AppApiTokens.Generate(),

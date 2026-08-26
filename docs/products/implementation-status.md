@@ -2,11 +2,12 @@
 
 Living companion to [design.md](design.md) and
 [ADR-0026](../decisions/0026-products-are-the-deployable-unit.md). The design doc says what to
-build; this file says how far it got, what is owed, and what a fresh session needs to know before
-touching stage 7. **Update it at the end of every stage.**
+build; this file says how far it got and what is owed. **The roadmap is complete**: stages 0–7 have
+all landed, so this file is now the handover for whoever maintains the feature rather than the brief
+for the next stage.
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 6
-(tenant release policy).
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 7
+(tenant-aware backups) — the final stage.
 
 ## Where things stand
 
@@ -24,9 +25,11 @@ Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-0
 | `0c51bc9` | **5 — secret sync** | `CiActionsConfigSync`, the per-repo Actions-config pass lifted out of `CiRunnerOrchestrator` and generalized into two independent contributors with independent hash guards. Registry (unchanged, state on `CiRepo`) plus release (new, state on `Product`): the `WATCHTOWER_URL` and `WATCHTOWER_PRODUCT_ID` variables and the sealed-box `WATCHTOWER_RELEASE_TOKEN` secret. `Product` gained `SyncReleaseSecrets`, `ActionsSyncedHash`, `ActionsSyncedAt`, `LastActionsSyncError` in one additive migration (`AddReleaseSecretSync`) with the filtered unique index `ix_products_ci_repo_id_sync_release_secrets`. `CiRepoResolver.FindSyncingProductsAsync` is the reverse lookup. `ci.setReleaseSecretsSync` is the toggle (PAT probe, monorepo refusal in words, token minted when missing); `products.rotateReleaseToken` and `products.update` clear the hash and wake the loop, and a repository move turns the sync off. `ci.getProductCi` carries the state. Frontend: a release-secrets card on the CI tab built to `RegistrySyncCard`'s pattern, and the Releases tab's token card collapses its manual instructions and switches the snippet to `${{ vars.WATCHTOWER_* }}` once — and only once — a push has actually landed. |
 
 | `bd2adbd` | **6 — tenant release policy** | `StackTemplate.DefaultPinnedReleaseId` (SET NULL) and `Product.RetainReleases` (default 50) in one additive migration (`AddTenantReleasePolicy`). `TenantProvisioningService` copies the default onto each new tenant — the one field family ADR-0026 copies. `templates.setTenantsRelease` writes the pin onto every tenant *and* the template default in one call, behind the `stacks.setRelease` pre-flight and its Git-mode refusal. `products.getReleaseRollout` / `products.retryFailedRollout` are the partial-failure surface, and `DeployEventDto` gained `releaseId`/`releaseVersion` (the widening 4b owed). `ReleasePruner` is release retention, run post-create by `ReleaseIntakeService` and guarded by four protection rules (invariant 15). Frontend: the Instances roster's Version column, rollup and bulk action; `components/set-release-dialog.tsx` (the shared roll-out dialog, two apply paths); the Releases tab's contextual row action and per-row rollout summary + Retry failed; the product Settings mode-revert control and the Overview "latest ≠ branch head" warning; the deploy-history version chip. `useProductReleases` moved to `hooks/use-product-releases.ts` — three modules read it now. |
+| `_pending_` | **7 — tenant-aware backups** | The last stage. `Stack.BackupDirectory` (nullable, stamped at creation, legacy rows computed as before and stamped on their next *successful* backup); `Stack.BackupEnabled/BackupStopContainers/BackupQuiesceMode` widened to tri-state; `StackTemplate.BackupEnabled?/BackupCron?/BackupStopContainers?/BackupQuiesceMode?` plus the `template_backup_service_overrides` table — one additive migration (`AddTenantAwareBackups`) that rewrites no values. `BackupPolicyResolver` is the one answer to "what policy does this stack run under" (invariant 18), read by the schedule tick, the run, the preparation and the plan preview. `BackupChainCoordinator` is backup-then-something (invariant 19): the `pre-deploy` trigger behind `stacks.setRelease(backupFirst)` / `templates.setTenantsRelease(backupFirst)`, and the `final` trigger behind `templates.removeTenant(finalBackup)`. `templates.backupAll`, `backups.getProductBackups`, `backups.setTemplatePolicy`, and a `productId` filter on `backups.events`. Manifest `formatVersion` 3 (`productId`/`productName`/`templateId`/`tenantSlug`/`releaseId`/`releaseVersion`, appended). The stage-6 owed item is paid: `RetainReleases` on `products.update` (clamped) with a field on product Settings. Frontend: the product Backups tab (`modules/backups/ProductBackupsTab.tsx`, contributed to `productDetailTabs` at order 35), provenance chips and a "use the fleet policy" reset on the stack Backups tab, the pre-rollout checkbox in the roll-out dialog, and the final-backup switch on the remove-tenant confirm. |
 
-**Next: stage 7 (tenant-aware backups)** — the last stage. The roadmap table in
-[design.md](design.md#staged-roadmap) is the authority for scope per stage.
+**The roadmap is complete.** Every stage in
+[design.md](design.md#staged-roadmap) has landed. What follows is the accepted debt and the
+invariants a maintainer has to keep.
 
 **Every 4b deferral landed in stage 6.** The mode-revert control, the "latest ≠ branch head" warning,
 the per-row contextual labels and the instance-checklist roll-out dialog are all shipped; the list that
@@ -38,16 +41,9 @@ stood here is gone. One 4b note survives unchanged:
   be read (the chip names it) but not re-selected from a dropdown, and "N behind" degrades to a bare
   `behind` chip rather than guessing a number.
 
-Two things stage 6 deliberately did **not** ship:
-
-- **`RetainReleases` has no RPC setter and no UI.** The column exists, defaults to 50, is clamped to
-  5…1000 on read, and is what the pruner reads — but nothing exposes it, so changing it means editing
-  the row. Accepted for now because the four protection rules make the default safe for every shape of
-  fleet, and a retention field on the Settings tab is a control nobody asked for yet. Owed if an
-  operator ever wants a different floor; it is one field on `products.update` plus one input.
-- **The pre-rollout-backup checkbox** the roll-out dialog is supposed to offer (design.md §Backups,
-  "Back up each instance before deploying"). It needs `templates.backupAll` and the `pre-deploy` deploy
-  trigger, which are stage 7's, so the dialog ships without it and gains it there.
+**Both things stage 6 deliberately did not ship landed in stage 7**: `RetainReleases` has its setter
+(`products.update`, clamped to 5…1000, with a field on product Settings and the clamped value echoed
+back into the form after a save) and the roll-out dialog has its pre-rollout-backup checkbox.
 
 Two zero-release edges in `Releases` mode, both reachable only through a mode revert (a product is
 flipped *into* `Releases` by its first release, so the state cannot occur naturally): the stack
@@ -199,6 +195,70 @@ to its Git-mode 52px circle — renders version-less exactly as it did before st
     together — it writes both halves in one call, so "the fleet is on 1.4.0" survives the next tenant.
     `Provision_TakesTheDefaultOnce_SoALaterFleetMoveDoesNotFollowIt` is the test that would fail if the
     copy ever became a read-through.
+18. **There is exactly one backup policy ladder, and `BackupPolicyResolver` is it.** The rungs are
+    **compose label > stack override > template policy > instance default** (ADR-0020 extended by
+    design.md §"Backups across tenants"). The label rung is per *service* and belongs to `BackupPlan`,
+    which has always applied it; the three below it are per *stack* and live in the resolver. Every
+    consumer of `Stack.BackupEnabled` and its three siblings goes through it — `BackupScheduleJob`,
+    `BackupService.ExecuteBackupAsync`/`PrepareAsync`, `PreviewPlanAsync`, `BackupStackConfigDto.From`
+    — so a tenant cannot be scheduled by one reading of the ladder and prepared by another. Reading a
+    `Backup*` column directly to decide behaviour is the bug the class exists to prevent.
+    The stack tab's standalone-switch design additionally rests on the three instance defaults being
+    compile-time constants in the resolver — inherit vs. explicit-equal-to-default is therefore
+    unobservable on a standalone stack. Making any of the three configurable breaks that assumption
+    and the standalone tab must become tri-state too.
+    Three consequences that are easy to break separately:
+    - **The four fields resolve independently.** A tenant that overrides only the quiesce mode keeps
+      inheriting the fleet's schedule and enrolment. `OneOverriddenField_DoesNotDetachTheOthersFromTheTemplate`
+      pins it, and so does the *write* path: the stack Backups tab posts the stack's **own** values for
+      the fields a control is not touching, never the effective ones — otherwise flipping one switch
+      would silently freeze all four. Verified live: flipping "include in the schedule" on a tenant
+      wrote `backup_enabled` and left the other three columns null.
+    - **`false` is an answer and null is silence.** A tenant that opted out by hand stays out when the
+      fleet is switched on. That is also why the migration only widens the column type and rewrites no
+      values (`TheMigration_OnlyRelaxesTheColumns_AndBackfillsNothing` asserts on the generated SQL):
+      every pre-existing row keeps its value *as an explicit one*, so nothing an operator had configured
+      started inheriting the day the feature shipped.
+    - **The scheduler's SQL predicate narrows; the resolver decides.** `BackupScheduleJob` filters to
+      `enabled == true OR (enabled == null AND template.enabled == true)` because it runs once a minute
+      over every stack, and then re-resolves each candidate. Widening the predicate is safe (the
+      resolver refuses); *narrowing* it silently drops tenants, which is what
+      `ScheduleTick_EnqueuesATenantEnrolledOnlyByItsTemplate` guards.
+    Per-service overrides follow the same ladder but **per service, not per knob**: a stack row replaces
+    the template's row for that service outright. Per-knob merging is not expressible —
+    `StackBackupServiceOverride.Exclude` is a plain `bool`, so "not overridden" and "overridden to
+    false" are the same value.
+19. **A chained backup gates its follow-up, and a failed one leaves a trail where the follow-up would
+    have been.** The backup queue is single-flight process-wide and the deploy queue is per stack behind
+    an instance-wide gate; neither can express "and then the other one", so `BackupChainCoordinator`
+    holds that relationship. Four rules:
+    - **The key is the backup event id**, which is exactly what coalescing collapses onto — two
+      pre-deploy requests for one stack become one backup with both follow-ups attached, and both run.
+    - **The step is attached inside `Enqueue`'s lock, before the job reaches the channel.** Attaching
+      after the enqueue is a race: a run that fails in milliseconds (no storage configured) would finish
+      before its follow-up existed, and the follow-up would then hang off a dead event forever.
+    - **The follow-up is decided from the stored terminal status, not from whether the call threw.**
+      `BackupService` catches its own failures and records them on the event, so the event is the only
+      honest source of "did it work".
+    - **A failure is visible where the missing thing would have been.** A blocked deploy writes a
+      *failed `DeployEvent`* under the trigger it would have carried, naming the backup run; an aborted
+      teardown writes a `backups`/`tenant.remove.aborted` audit row and the tenant is simply still
+      there. Silence in either place is the failure mode.
+    The corollary for `templates.removeTenant(finalBackup: true)`: it answers `removed: false` with a
+    `backupEventId` and the removal happens later. Blocking the RPC until a possibly-minutes-long backup
+    behind every other backup on the box finished was the alternative, and it is worse.
+20. **`Stack.BackupDirectory` is stamped once and never recomputed.** It closes a hazard that predates
+    products — renaming a stack orphaned its archives — and it closes it by making the directory a
+    stored fact rather than a function of two mutable inputs. `BackupNaming.ResolveDirectory` is the one
+    answer, read by all four sites (run, restore download, remote listing, retention), so a stack cannot
+    be written to one directory and listed from another. Null means "compute it as we always did", which
+    is what keeps an upgraded install's existing archives discoverable: the instance name is
+    *configuration*, so no migration could have backfilled a value without guessing. A legacy row is
+    stamped after its next **successful** backup — the moment the value is known to be where the bytes
+    actually went — guarded both in memory and in SQL (`WHERE backup_directory IS NULL`), so a run
+    holding a stale copy can never overwrite one. The visible consequence, and it is deliberate: an
+    instance rename no longer moves a stamped stack's archives. Before this column an instance rename
+    orphaned *every* archive of *every* stack, so the new behaviour is strictly better and never worse.
 
 ## Owed work and accepted debt
 
@@ -263,6 +323,40 @@ not owed work:
   worth. Accepted: the savepoint create/release path is covered by every implicit-create test, and
   the branch itself only rolls back to the savepoint, detaches the speculative entity and loops back
   into the same re-read. Revisit if it ever grows a decision.
+
+### From stage 7
+
+- **A chain does not survive a process restart.** `BackupChainCoordinator` holds its pending steps in
+  memory, like both queues: a Watchtower that dies between a backup finishing and its deploy being
+  enqueued loses the chain, and the backup event is the durable record that the backup happened. That
+  is the same guarantee the deploy queue already gives (a queued deploy does not survive a restart
+  either); buying more means a durable job table, which this feature does not justify. The blast radius
+  is one un-run deploy, or one tenant that was going to be removed and now is not — both re-triggerable
+  by hand, and the second is the safe direction to fail in.
+- **Template-level per-service overrides have a table, an entity and a resolver rung, but no UI.**
+  `template_backup_service_overrides` is created, `BackupService.LoadOverridesAsync` reads it under the
+  stack's own rows and tags what it inherited (`BackupServiceOverride.FromTemplate`), and the stack's
+  plan preview renders those rows as "Template policy: …" instead of "UI override: …". What is missing
+  is a way to *write* them: the product Backups tab's policy card covers the four stack-level fields
+  only. Deferred deliberately — the per-service editor is the plan preview's table, which is per stack
+  and needs live containers to render, and a fleet has no containers of its own. The honest v2 is a
+  per-service editor on the template that borrows one instance's service list; until then a fleet-wide
+  exclusion is set per tenant or written as a compose label, which is the answer ADR-0020 prefers anyway.
+- **`products.deployRelease` does not offer a pre-deploy backup.** The checkbox is the roll-out
+  *dialog's*, and the dialog applies through `stacks.setRelease` / `templates.setTenantsRelease`, which
+  both take `backupFirst`. `products.deployRelease` is the "Deploy latest" button — one click, no
+  dialog, no consequence sentence — and bolting a hidden backup onto it would make a button that
+  currently returns in milliseconds take minutes with nothing on screen saying why. An operator who
+  wants the guarded rollout opens the dialog.
+- **The backup fan-out is serial and the UI can only say so, not estimate it.** `templates.backupAll`
+  and a `backupFirst` rollout both queue N runs onto the single-flight queue. The dialog and the toast
+  state "backups run one at a time" (design.md §Risks, open question 12); neither predicts a duration,
+  because that needs a per-stack size history nothing records.
+- **`BackupService.StampDirectoryAsync` is the only part of the run path tested directly.** Driving
+  `ExecuteBackupAsync` end to end needs a Docker daemon and a storage provider, so the stamp's two
+  guards are tested on their own and the *call site* (after success, never after a failure) is verified
+  by reading rather than by a test. The live pass exercised the failure direction for real: nine failed
+  runs against an unreachable daemon left every `backup_directory` untouched.
 
 ## Environment and process notes
 
@@ -638,3 +732,201 @@ when someone asks "and what happens when that lookup misses?".
 **Mutation-checked again** for the five backend fixes: dropping the transaction wrapper, dropping the
 Git-mode guard, dropping either `DefaultPinnedRelease` include, and removing the clamp's ceiling — each
 failed exactly the test written for it.
+
+## Stage 7 handoff — tenant-aware backups
+
+**Where the ladder lives, and the two shapes it comes in.** `Services/BackupPolicyResolver.cs` is pure
+and static: it takes a `Stack`, its `StackTemplate?` and nothing else, and returns four effective values
+each paired with a `BackupPolicySource` (`Stack` / `Template` / `Instance`). That pairing is the whole
+reason it is a record rather than four booleans — the "Set by: …" chips on the Backups tab and the
+`*Source` fields on `BackupStackConfigDto` are the same answer the run used, not a second derivation.
+The instance rung is three constants on the resolver (`DefaultEnabled = false`,
+`DefaultStopContainers = true`, `DefaultQuiesceMode = Stop`) rather than new `BackupOptions` knobs:
+`Backup:Enabled` already means something else (the schedule master switch, checked before any stack is
+looked at), and inventing instance-wide defaults for the other two would be a settings surface nobody
+asked for. Anything that ever wants them configurable adds them there, and the resolver is the only
+place that changes.
+
+**The chain, in one paragraph.** `BackupQueueService.Enqueue` gained an optional `BackupChainStep`,
+registered inside the same lock that writes the job to the channel. When the worker finishes a *backup*
+(never a restore) it reads the event's terminal status and calls
+`BackupChainCoordinator.OnBackupFinishedAsync`, which pops every step keyed on that event id and either
+runs it or refuses it. Two kinds today — `Deploy` (enqueue on the deploy queue under the trigger the
+caller intended) and `TenantTeardown` (resolve `TenantTeardownService` from a fresh scope and run it) —
+and a third would be a case in two switches. The coordinator is a singleton and takes
+`DeployQueueService` plus `IServiceScopeFactory`; `BackupQueueService` depends on *it*, not the other way
+round, which is what keeps the cycle open.
+
+**Why `templates.backupAll` lives in the Backups module although it is named `templates.*`.** The
+operation is a backup, it audits under `backups`, and the right thing for it to do when the Backups
+module is switched off is to disappear — which module gating gives for free and a home in Tenancy would
+not. `ci.getStackCi` set the precedent that a handler's name and its module need not agree.
+
+**The one wire shape worth knowing before touching `backups.setStackConfig`.** The first five members of
+`BackupStackConfigDto` are the *effective* policy and have not moved, so the management API and any
+script reading `enabled`/`cron` gets the same answer it always did. The tri-state values are the new
+`own*` members, and the write side takes `bool?`/`string?` throughout: **the whole policy is posted on
+every call**, so a field the caller omits is cleared, not left. The stack Backups tab therefore sends the
+stack's *own* values for every control it is not touching — sending the effective ones would turn every
+inherited field into an override the first time any switch is flipped, which is the subtlest way this
+feature could have failed.
+
+**Two behaviour changes worth a release-note line.** A caller of `backups.setStackConfig` that omitted
+`quiesceMode` used to get an explicit `stop`; it now gets "inherit", which resolves to `stop` for every
+standalone stack (identical) and to the fleet's choice for a tenant (the improvement). And the archive
+manifest is `formatVersion: 3` — additive, with the v1 body byte-identical up to `encrypted` and every
+key since appended after it, so a reader that knew v1 or v2 still finds what it knew where it was.
+
+**Live verification** (podman + API + Vite on 55436/5080/5177, the stage-4b recipe; no Docker daemon, so
+every backup run failed for real — which turned out to be the useful direction). Confirmed with real
+wire data: four tenants provisioned and stamped `prod/acme-web/{slug}` with all four `Backup*` columns
+null, the standalone stack stamped `prod/acme-web-prod`; the product Backups tab's three inherit selects,
+its live cron preview ("every day at 02:15") and its dirty state; a policy save writing the template row
+alone and the tenant's tab immediately reading `Set by: acme-tenants` / "Follows acme-tenants: every day
+at 02:15"; flipping one tenant switch writing **one** column and leaving three null; "Use acme-tenants's
+policy" clearing all four; the roll-out dialog's pre-rollout checkbox (visible only with Deploy-now on,
+carrying the "4 of them finish well apart" duration line) and its consequence sentence changing to "and
+be deployed after a backup. An instance whose backup fails is not deployed."; **the chain end to end** —
+four `pre-deploy` runs failed and produced four failed `release-manual` deploy events reading "The
+pre-deploy backup failed, so this deploy did not run. See backup run #N"; `templates.backupAll` queueing
+four runs and one `backup.all` audit row; the rollup moving to "0 backed up in the last 24 h · 4 failed ·
+5 never · 5 deployments" with the fleet history naming each instance; the remove-tenant confirm
+defaulting its final-backup switch **on**, its toast ("Backing up initech before removing it…") and the
+abort path — the tenant still standing with `tenant.remove.aborted` recorded. No console errors.
+
+Two things the live pass changed. The retention field showed the number the operator typed after a save
+that **clamped** it (type 2, store 5) — the same stale-form shape the stage-6 review caught on
+`releaseMode`, fixed by re-seeding from the saved product. And the "Set by: instance default" chip was
+rendering on every row of a *standalone* stack's Backups tab, where the ladder has one rung and the chip
+is therefore noise on a page that has not otherwise changed; it is now suppressed when the stack has no
+template.
+
+**Mutation testing** — nineteen mutations, seventeen caught, two proven equivalent:
+
+| Mutation | Caught by |
+| --- | --- |
+| Template rung outranks the stack | 6 tests across both suites |
+| Template rung dropped | 9 tests |
+| Stack cron rung dropped | 3 tests |
+| Chain runs the follow-up regardless of the outcome | both blocking tests |
+| Chain leaves no trail on failure | both blocking tests |
+| `setRelease` with `backupFirst` also deploys immediately | `SetRelease_WithBackupFirst_…` |
+| `setTenantsRelease` with `backupFirst` also deploys | `SetTenantsRelease_WithBackupFirst_…` |
+| `removeTenant` ignores `finalBackup` | `RemoveTenant_WithFinalBackup_…` |
+| `ResolveDirectory` ignores the persisted value | `ResolveDirectory_PrefersTheStampedValue…` |
+| Provisioning copies the template's policy instead of inheriting | `Provision_…LeavesEveryBackupFieldInheriting` |
+| The retention clamp is dropped | `Update_SetsTheReleaseRetentionFloor…` |
+| The `productId` filter is ignored | `ListBackupEvents_FiltersByProduct` |
+| The rollup counts any failure rather than the newest terminal run | `GetProductBackups_RollsTheFleetUp…` |
+| `backupAll`'s template filter is widened | `BackupAll_QueuesEveryTenantOfTheTemplate…` |
+| `setTemplatePolicy` fans out onto the tenants | `SetTemplatePolicy_WritesTheTemplateAlone…` |
+| The migration backfills the relaxed columns | `TheMigration_OnlyRelaxesTheColumns…` |
+| Both stamp guards removed together | `StampDirectory_FillsALegacyStackOnce…` |
+
+The two survivors are **equivalent mutants, not gaps**, and both are defence in depth: dropping the
+schedule query's `BackupEnabled == null` guard changes nothing because the resolver refuses the row
+anyway (the query narrows, the resolver decides — invariant 18), and dropping `StampDirectoryAsync`'s
+in-memory early return changes nothing because the SQL predicate still says `IS NULL`. Removing the
+*load-bearing* half of the second one does fail the test, which is the check that matters.
+
+**Verification at hand-over** (from the repo root): clean `--no-incremental` Release build with
+**0 warnings**; `dotnet test` 39 failures out of 2046, which is *exactly* the Windows baseline family and
+count this document records at stage 4a (17 `CertificateStoreTests`, 11 ACME across four classes, 4
+`CertificateManagerTests`, 2 `CertificateManagerProjectionTests`, and one each of `AuthEndpointTests`,
+`BackupPlanOverrideTests`, `ProxyIngressEndpointReloadTests`, `ProxyChangeSignalTests`,
+`FileStateImportTests`) — no new failures; `has-pending-model-changes` clean; the schema diff additive
+(three new methods — `backups.getProductBackups`, `backups.setTemplatePolicy`, `templates.backupAll` —
+plus new optional fields; the only removed lines are `required`-array entries that gained a successor and
+the two `backups.setStackConfig` booleans that widened to nullable); `npm run build` green.
+
+### Stage 7 review round — what changed after the first pass
+
+One of these was a real bug that every operator would have hit on their first restore; the rest are
+the kind of thing that only shows up when someone asks "and what does this number mean when both are
+true?".
+
+- **The restore reader was behind its own writer.** `RestoreDumpPlan.KnownFormatVersion` stayed at 2
+  while the writer moved to 3, so **every restore of an archive this build wrote** would have printed
+  "the archive says formatVersion 3, which is newer than this Watchtower understands" — an operator
+  stopping a restore over nothing. The constant is now `= BackupService.ManifestFormatVersion`, so the
+  two cannot drift again: a format the reader genuinely cannot follow is a *reader* change landing with
+  the writer bump, not a second number. `AnArchiveThisBuildCouldHaveWritten_ProducesNoFormatWarning`
+  is the test that would have caught it (a `[Theory]` over 1, 2 and the writer's own constant), and
+  the forward-compatibility test now uses 4.
+- **The stack Backups tab's two switches were two-state over a three-state field.** An inherited `true`
+  looked exactly like an owned `true`, so "confirming" the value already on screen — or toggling twice —
+  silently detached the field from the fleet and froze it at whatever the fleet said that day. A tenant
+  now gets a select whose first row *is* the inherited state and names the value in force
+  (`Inherit (currently: Pause — from acme-tenants)`), which makes choosing what is on screen a no-op and
+  choosing anything else visibly a decision; picking that row is also the per-field revert, so the
+  bulk "Use X's policy" button is now a shortcut rather than the only way back. A **standalone** stack
+  keeps the switches it has always had: there the ladder is stack-then-instance, so "inherit" and an
+  explicit value equal to the instance default behave identically and a third state would be a
+  distinction the reader cannot act on. The quiesce select's `Stop (default — application-consistent)`
+  lost the word *default*, which was a lie for a tenant whose fleet says pause; the default is named on
+  the Inherit row, where it can say where it comes from.
+- **The rollup counted some stacks twice and blamed others for a choice.** A stack that had never been
+  backed up *and* whose last run failed appeared in both `failed` and `never`, so three stacks could
+  read as four problems; and a stack nobody had put in the schedule was counted as "never backed up",
+  painting a deliberate choice red forever. The buckets are now a **partition of the enrolled stacks**
+  in priority order — never > failed > backed-up-recently > stale — so they sum to `enrolled` and the
+  line adds up, with `notEnrolled` reported apart and rendered neutrally. Enrolment is the *resolved*
+  policy's (invariant 18), so a tenant enrolled only by its template counts and one that opted out by
+  hand does not. `GetProductBackups_PartitionsTheEnrolledFleetIntoFourBuckets` asserts the sum itself;
+  `GetProductBackups_CountsUnenrolledStacksApart_AndReadsEnrolmentThroughTheLadder` covers the
+  denominator.
+- **The compose-label snippet was rendering rows the stack does not own.** Its contract is "paste this,
+  delete your overrides, nothing changes", which a tenant cannot honour for a row it inherits — and
+  rendering it would quietly copy one instance's *fleet* policy into one instance's compose file, which
+  is the opposite of what a fleet policy is for. `ComposeLabelSnippet.Render` now skips
+  `FromTemplate` rows (`TheSnippetRendersTheStacksOwnOverridesOnly_NotTheOnesItInherits`).
+- **`TemplatePolicyCard`'s comment claimed a re-seed it did not do.** It is now the stage-6 pattern for
+  real: dirtiness is measured against what the form was last *seeded* from (a ref), never against the
+  live prop — otherwise a policy moving behind the page turns the dirty flag true by itself and the next
+  Save posts the stale mount values back over it — and the effect re-seeds only a form the reader has
+  not touched, so an edit in progress survives a refetch. A successful save re-seeds from what the
+  **server stored**, not from what was typed, because the cron is trimmed on the way in.
+- **The audit line's "(inherited)" suffix described the wrong field.** With the stop switch on, the
+  clause names the *quiesce mode*, so it now takes that field's provenance; only the keep-running clause
+  takes the switch's. Saying the fleet chose pause when the stack did (or the reverse) is exactly the
+  kind of thing an audit trail exists not to do.
+- **A pre-deploy chain whose stack was deleted mid-run tried to write a foreign-key violation.** A
+  backup takes minutes and a delete needs no permission from the backup queue; the blocked-deploy path
+  now checks the stack still exists, logs once and writes nothing — there is nobody left to read the
+  record anyway.
+- **A double-clicked final-backup removal read as if nothing had happened.** The row stays on screen
+  until the backup succeeds, so a second click enqueued a second removal. Two halves, both small: the
+  row now disables itself with "Backing up before removal…" while its chain is in flight (page-local
+  state — the durable record is the backup event, and this exists only to stop the second click), and
+  the coordinator treats `TenantNotFound` on a chained teardown as **success**, because two steps landing
+  on one coalesced backup is a legitimate shape and the second one finding the tenant already gone is
+  the outcome it wanted. Auditing that as a failure would have put a red row under a removal that worked.
+- **"Unstamped" is now spelled the same way in all three places that ask it** — `ResolveDirectory`, the
+  stamp's in-memory guard and its SQL predicate all treat an empty string like null. Belt and braces
+  (the column is only ever written from `BackupNaming`, whose `Sanitize` never returns blank), but three
+  predicates that disagree about the same question is how the fourth one gets written wrong.
+
+**Two defects the review round's own live pass found**, both in the control m4 introduced and neither
+visible from a typecheck. The Inherit row named the value in force even while the stack *overrode* the
+field — so over an owned "Stop" it read "Inherit (currently: Stop — from instance default)" and promised
+that picking it changed nothing, when picking it is exactly what changes it back to the fleet's Pause.
+It now drops the parenthetical while the field is overridden ("Inherit from acme-tenants") and keeps it
+while the field is genuinely inherited, because the wire carries no separate "what you would inherit"
+value and inventing one would be a guess. And the **standalone** stack's quiesce trigger rendered
+*blank*: its value was the `inherit` sentinel while its option list deliberately has no Inherit row, and
+Radix shows a value with no matching item as an empty box. It selects the effective value there, as it
+did before the stage.
+
+**Two tests the first pass owed, both now present.**
+`TwoChainedEnqueuesForOneStack_CoalesceOntoOneEvent_AndBothStepsFire` drives the coalescing branch
+through the real `BackupQueueService.Enqueue` (not `Attach`) against the host's own coordinator, with
+the deploy queue replaced by a recorder — attaching by hand would have tested the dictionary and skipped
+the decision that fills it. `ALabelAlsoWinsOverAnOverrideInheritedFromATemplate` pins the top rung
+against the new one: a compose label beats a template-inherited service override, and the *unlabelled*
+service in the same plan is attributed to `Template` rather than to a stack override the reader would go
+looking for and never find.
+
+**Wire impact of the review round:** the rollup DTO gained three members (`enrolled`, `notEnrolled`,
+`stale`) — the only non-additive part of the round, and it is a field nothing outside this tab reads,
+shipped in the same stage that introduced it. Everything else (M1, the tab work, the snippet, the audit
+wording, the chain guards) leaves `rpc-schema.json` byte-identical.

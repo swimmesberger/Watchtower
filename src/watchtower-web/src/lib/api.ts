@@ -20,6 +20,8 @@ import type {
   BackupQuiesceMode,
   BackupServiceOverride,
   BackupStackConfig,
+  BackupTemplatePolicy,
+  ProductBackups,
   UpdateBackupConfigRequest,
   Container,
   ContainerEnvVar,
@@ -168,6 +170,7 @@ export const api = {
         credentialId: data.credentialId ?? null,
         // Null means "leave it alone", which is what every caller but the mode control sends.
         releaseMode: data.releaseMode ?? null,
+        retainReleases: data.retainReleases ?? null,
       })).product as Product,
     delete: async (id: number) => {
       await rpc('products.delete', { id })
@@ -285,11 +288,15 @@ export const api = {
      * pre-flighted server-side, so a release whose digests are gone comes back as a `409` naming the
      * reference and nothing is written — surface that message verbatim.
      */
-    setRelease: async (id: number, releaseId: number | null, deploy = true) =>
+    setRelease: async (
+      id: number, releaseId: number | null, deploy = true, backupFirst = false) =>
       (await rpc('stacks.setRelease', {
         stackId: id,
         releaseId,
         deploy,
+        // Back up first and deploy only on success: the response then carries a backupEventId and
+        // `deployed: false`, because the deploy is the chain's to enqueue.
+        backupFirst,
       })) as SetStackReleaseResult,
   },
 
@@ -470,9 +477,13 @@ export const api = {
         localBasePath: data.localBasePath ?? null,
       })).config as BackupConfig,
     testStorage: async () => (await rpc('backups.testStorage', {})).description as string,
-    events: async (stackId?: number, limit?: number) =>
-      (await rpc('backups.events', { stackId: stackId ?? null, limit: limit ?? 50 }))
-        .events as BackupEvent[],
+    events: async (stackId?: number, limit?: number, productId?: number) =>
+      (await rpc('backups.events', {
+        stackId: stackId ?? null,
+        limit: limit ?? 50,
+        // The fleet history: every deployment of one product. Additive — omitting it is the old call.
+        productId: productId ?? null,
+      })).events as BackupEvent[],
     run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
     listRemote: async (stackId: number) =>
       (await rpc('backups.listRemote', { stackId })).files as BackupRemoteFile[],
@@ -480,15 +491,40 @@ export const api = {
       (await rpc('backups.restore', { stackId, fileName })).restore as BackupRunAccepted,
     getStackConfig: async (stackId: number) =>
       (await rpc('backups.getStackConfig', { stackId })).config as BackupStackConfig,
+    /**
+     * Writes the stack's own backup policy. Every field is tri-state: null clears it and the stack goes
+     * back to inheriting (its template's policy when it is a tenant, otherwise the instance default).
+     * The whole policy is posted on every call, so an omitted field means "clear it", not "leave it".
+     */
     setStackConfig: async (
       stackId: number,
-      enabled: boolean,
-      stopContainers: boolean,
+      enabled: boolean | null,
+      stopContainers: boolean | null,
       cron: string | null,
-      quiesceMode: BackupQuiesceMode,
+      quiesceMode: BackupQuiesceMode | null,
     ) =>
-      (await rpc('backups.setStackConfig', { stackId, enabled, stopContainers, cron, quiesceMode }))
-        .config as BackupStackConfig,
+      (await rpc('backups.setStackConfig', {
+        stackId, enabled, stopContainers, cron, quiesceMode,
+      })).config as BackupStackConfig,
+
+    /** The product Backups tab's read model: the template policies and the fleet rollup. */
+    getProductBackups: async (productId: number) =>
+      (await rpc('backups.getProductBackups', { productId })) as ProductBackups,
+
+    /**
+     * Writes the backup policy a template's instances inherit. Not a fan-out: an instance that set a
+     * value of its own keeps it, which is what keeps the inheritance live.
+     */
+    setTemplatePolicy: async (
+      templateId: number,
+      enabled: boolean | null,
+      stopContainers: boolean | null,
+      cron: string | null,
+      quiesceMode: BackupQuiesceMode | null,
+    ) =>
+      (await rpc('backups.setTemplatePolicy', {
+        templateId, enabled, stopContainers, cron, quiesceMode,
+      })).policy as BackupTemplatePolicy,
     previewPlan: async (stackId: number) =>
       (await rpc('backups.previewPlan', { stackId })).preview as BackupPlanPreview,
     setServiceOverride: async (
@@ -545,8 +581,18 @@ export const api = {
       (await rpc('templates.listTenants', { templateId })).tenants as Tenant[],
     deployAll: async (templateId: number) =>
       (await rpc('templates.deployAll', { templateId })).count as number,
-    removeTenant: async (templateId: number, slug: string, removeVolumes: boolean) =>
-      (await rpc('templates.removeTenant', { templateId, slug, removeVolumes })).slug as string,
+    /**
+     * Removes a tenant. With `finalBackup` the removal becomes asynchronous: the response says
+     * `removed: false` with a `backupEventId`, and the tenant disappears when that backup succeeds. A
+     * failed backup aborts the removal and the tenant stays.
+     */
+    removeTenant: async (
+      templateId: number, slug: string, removeVolumes: boolean, finalBackup = false) =>
+      (await rpc('templates.removeTenant', { templateId, slug, removeVolumes, finalBackup })) as {
+        slug: string
+        removed: boolean
+        backupEventId?: number | null
+      },
     listGrants: async (templateId: number) =>
       (await rpc('templates.listGrants', { templateId })).grants as TemplateGrant[],
     grantManagement: async (templateId: number, stackId: number, allowDelete: boolean) =>
@@ -564,9 +610,18 @@ export const api = {
      * registry that did not answer) plus `409` for a Git-mode product and a validation error for a
      * release of another product — surface them verbatim.
      */
-    setTenantsRelease: async (templateId: number, releaseId: number | null, deploy: boolean) =>
-      (await rpc('templates.setTenantsRelease', { templateId, releaseId, deploy }))
+    setTenantsRelease: async (
+      templateId: number, releaseId: number | null, deploy: boolean, backupFirst = false) =>
+      (await rpc('templates.setTenantsRelease', { templateId, releaseId, deploy, backupFirst }))
         .result as SetTenantsReleaseResult,
+
+    /**
+     * Backs up every instance of a template — the backup twin of `deployAll`, and what an operator
+     * presses before a risky fleet change. Serial: the backup queue is single-flight process-wide, so
+     * the returned count is what was *queued*, not what has run.
+     */
+    backupAll: async (templateId: number) =>
+      (await rpc('templates.backupAll', { templateId })).count as number,
   },
 
   metrics: {

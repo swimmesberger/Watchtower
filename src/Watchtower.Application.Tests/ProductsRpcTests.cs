@@ -424,6 +424,50 @@ public sealed class ProductsRpcTests {
     }
 
     /// <summary>
+    /// The release-retention floor is settable, clamped rather than refused, and left alone when the
+    /// caller says nothing about it.
+    /// </summary>
+    /// <remarks>
+    /// Clamped, not refused, because <c>ReleasePruner</c> clamps whatever it reads anyway (invariant 15):
+    /// refusing here would be the only way for the stored number and the enforced number to disagree.
+    /// The audit line says when a value was clamped, so an operator who typed 2 is not left believing it.
+    /// </remarks>
+    [Fact]
+    public async Task Update_SetsTheReleaseRetentionFloor_ClampedAndAudited() {
+        using var host = AuthTestHost.Start();
+        await using var scope = host.Services.CreateAsyncScope();
+        var productId = await AddProductAsync(scope.ServiceProvider, "shop", Repo, "main");
+        var update = ActivatorUtilities.CreateInstance<UpdateProduct>(scope.ServiceProvider);
+
+        var set = await update.HandleAsync(
+            new UpdateProduct.Command(productId, "shop", Repo, Compose, "main", RetainReleases: 120), Ct);
+        Assert.True(set.IsSuccess, Describe(set));
+        Assert.Equal(120, set.Value.Product.RetainReleases);
+
+        // Below the floor and above the ceiling both land on the bound the pruner would apply.
+        var low = await update.HandleAsync(
+            new UpdateProduct.Command(productId, "shop", Repo, Compose, "main", RetainReleases: 1), Ct);
+        Assert.Equal(ReleasePruner.MinRetainReleases, low.Value.Product.RetainReleases);
+        var high = await update.HandleAsync(
+            new UpdateProduct.Command(productId, "shop", Repo, Compose, "main", RetainReleases: 100_000), Ct);
+        Assert.Equal(ReleasePruner.MaxRetainReleases, high.Value.Product.RetainReleases);
+
+        // Omitted means "leave it", not "reset it" — every pre-stage-7 caller posts the form without it.
+        var untouched = await update.HandleAsync(
+            new UpdateProduct.Command(productId, "shop", Repo, Compose, "main"), Ct);
+        Assert.Equal(ReleasePruner.MaxRetainReleases, untouched.Value.Product.RetainReleases);
+
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var details = await db.AuditEvents.AsNoTracking()
+            .Where(e => e.Action == "product.update")
+            .OrderBy(e => e.Id)
+            .Select(e => e.Detail!)
+            .ToListAsync(Ct);
+        Assert.Contains(details, d => d.Contains("release retention 50 → 120", StringComparison.Ordinal));
+        Assert.Contains(details, d => d.Contains("(clamped from 1)", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// "Who changed the credential behind this product?" is asked after a clone starts failing, so it
     /// gets its own action rather than a line inside a general update detail.
     /// </summary>

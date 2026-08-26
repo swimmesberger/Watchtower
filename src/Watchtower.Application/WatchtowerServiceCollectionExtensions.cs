@@ -380,6 +380,11 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<PostgresDumpService>();
         services.AddSingleton<BackupStorageFactory>();
         services.AddSingleton<BackupService>();
+        // The two queues are separate by design, so what happens *after* a backup succeeds is its own
+        // object: singleton, because the pending chains have to outlive the request that registered
+        // them and the backup worker is the thing that releases them (design.md §"Backups across
+        // tenants").
+        services.AddSingleton<BackupChainCoordinator>();
         services.AddSingleton<BackupQueueService>();
         services.AddHostedService(sp => sp.GetRequiredService<BackupQueueService>());
 

@@ -26,6 +26,12 @@ public sealed class UpdateProduct(
     /// <c>"git"</c> or <c>"releases"</c>, or null to leave it as it is — the operator's manual override
     /// of the switch the first release flips automatically (ADR-0026 decision 5).
     /// </param>
+    /// <param name="RetainReleases">
+    /// How many releases the post-create pruning pass keeps, or null to leave it as it is. Clamped to
+    /// <see cref="ReleasePruner.MinRetainReleases"/>…<see cref="ReleasePruner.MaxRetainReleases"/> rather
+    /// than refused: the pruner clamps what it reads anyway (invariant 15), so refusing here would only
+    /// mean the stored value and the enforced value could disagree.
+    /// </param>
     public sealed record Command(
         int Id,
         string Name,
@@ -34,7 +40,8 @@ public sealed class UpdateProduct(
         string DefaultBranch,
         string? Description = null,
         int? CredentialId = null,
-        string? ReleaseMode = null);
+        string? ReleaseMode = null,
+        int? RetainReleases = null);
 
     public sealed record Response(ProductDto Product);
 
@@ -112,6 +119,14 @@ public sealed class UpdateProduct(
             changes.Add($"default branch {product.DefaultBranch} → {defaultBranch}");
         if (!string.Equals(product.Description, description, StringComparison.Ordinal))
             changes.Add("description edited");
+        if (command.RetainReleases is { } requestedRetain) {
+            var retain = ReleasePruner.Clamp(requestedRetain);
+            if (retain != product.RetainReleases) {
+                changes.Add($"release retention {product.RetainReleases} → {retain}"
+                    + (retain != requestedRetain ? $" (clamped from {requestedRetain})" : ""));
+                product.RetainReleases = retain;
+            }
+        }
 
         product.Name = name;
         product.Description = description;

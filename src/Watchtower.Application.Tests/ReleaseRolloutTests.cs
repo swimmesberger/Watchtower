@@ -122,14 +122,21 @@ internal sealed class RecordingDeployQueue : DeployQueueService {
         _scopeFactory = scopeFactory;
 
     /// <summary>Builds one over a test host's services.</summary>
-    public static RecordingDeployQueue Create(AuthTestHost host) =>
-        new(host.Services.GetRequiredService<IServiceScopeFactory>(),
+    public static RecordingDeployQueue Create(AuthTestHost host) => Create(host.Services);
+
+    /// <summary>
+    /// Builds one over a raw provider — what a <c>services.Replace(… sp => …)</c> registration needs, so
+    /// a test can make the *host's own* <c>DeployQueueService</c> the recorder rather than handing one to
+    /// a handler by hand. That matters wherever the thing under test resolves the queue itself.
+    /// </summary>
+    public static RecordingDeployQueue Create(IServiceProvider services) =>
+        new(services.GetRequiredService<IServiceScopeFactory>(),
             new StubGitCloneService(),
             new RecordingComposeCliService(),
-            host.Services.GetRequiredService<DockerEngineClient>(),
-            host.Services.GetRequiredService<DeployOutputBroadcaster>(),
-            host.Services.GetRequiredService<CaddyManager>(),
-            host.Services.GetRequiredService<
+            services.GetRequiredService<DockerEngineClient>(),
+            services.GetRequiredService<DeployOutputBroadcaster>(),
+            services.GetRequiredService<CaddyManager>(),
+            services.GetRequiredService<
                 Microsoft.Extensions.Options.IOptionsMonitor<Config.WatchtowerOptions>>());
 
     /// <summary>Every enqueue, in call order.</summary>

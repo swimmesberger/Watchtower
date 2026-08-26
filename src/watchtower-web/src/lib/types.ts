@@ -61,6 +61,11 @@ export interface Product {
   latestRelease: ProductReleaseSummary | null
   /** `git` until the first release flips it to `releases`; operator-revertible. */
   releaseMode: ReleaseMode
+  /**
+   * How many releases the post-create pruning pass keeps. Always inside 5…1000 — the server clamps it
+   * on the way in *and* on the way out, so this is the number that will actually be enforced.
+   */
+  retainReleases: number
 }
 
 /** The newest release of a product, as much as a header line or a catalogue row needs. */
@@ -215,6 +220,11 @@ export interface UpdateProductRequest extends CreateProductRequest {
    * the first release flips automatically. `releases` is refused for a product with no releases.
    */
   releaseMode?: ReleaseMode | null
+  /**
+   * How many releases to keep, or omitted to leave it alone. Clamped to 5…1000 server-side rather than
+   * refused, because the pruner clamps whatever it reads anyway.
+   */
+  retainReleases?: number | null
 }
 
 /** `products.getReleaseRollout`: what one release actually reached. */
@@ -327,6 +337,11 @@ export interface SetStackReleaseResult {
   stack: Stack
   deployed: boolean
   deployEventId: number | null
+  /**
+   * The pre-deploy backup's tracking event, when one was asked for. Present with `deployed: false` is
+   * the "backing up first" state: the deploy is chained to this run and happens only if it succeeds.
+   */
+  backupEventId?: number | null
 }
 
 /** `products.deployRelease`: what the roll-out actually targeted. */
@@ -1131,6 +1146,13 @@ export interface SetTenantsReleaseResult {
   deployEventIds: number[]
   /** What the fleet now pins, or null when the pin was cleared. */
   release: StackReleaseRef | null
+  /**
+   * How many tenants had a pre-deploy backup enqueued *instead* of a deploy. Non-zero only when the
+   * caller asked to back up first; each deploys when its own backup succeeds, and the backup queue runs
+   * them one at a time.
+   */
+  backedUp?: number | null
+  backupEventIds?: number[] | null
 }
 
 /**
@@ -1358,17 +1380,91 @@ export interface BackupEvent {
  */
 export type BackupQuiesceMode = 'stop' | 'pause'
 
-/** A stack's backup participation. */
+/**
+ * Which rung of the backup policy ladder decided a value: the stack itself, the template it inherits
+ * from, or the instance default. The ladder is `compose label > stack override > template policy >
+ * instance default` (design.md §"Backups across tenants"); the label rung is per service and appears on
+ * {@link BackupSettingSource} instead.
+ */
+export type BackupPolicySource = 'stack' | 'template' | 'instance'
+
+/**
+ * A stack's backup participation.
+ *
+ * The first four fields are the **effective** policy — what the next run will actually do — and have not
+ * moved, so nothing that read them before has to change. `own*` is what the stack itself says, with
+ * `null` meaning "inherit", and `*Source` says which rung produced the effective value.
+ */
 export interface BackupStackConfig {
   stackId: number
-  /** Included in the backup schedule. */
+  /** Effective: included in the backup schedule. */
   enabled: boolean
-  /** Quiesce the stack's stateful containers during the snapshot for consistency (ADR-0016 §2). */
+  /** Effective: quiesce the stack's stateful containers during the snapshot (ADR-0016 §2). */
   stopContainers: boolean
-  /** This stack's schedule override; null follows the instance-wide schedule. */
+  /** Effective: the expression this stack runs on; null follows the instance-wide schedule. */
   cron: string | null
-  /** How unlabelled stateful containers are quiesced when `stopContainers` is on. */
+  /** Effective: how unlabelled stateful containers are quiesced when `stopContainers` is on. */
   quiesceMode: BackupQuiesceMode
+  /** What the stack itself says; null (arriving as `undefined`) means it inherits. */
+  ownEnabled?: boolean | null
+  ownStopContainers?: boolean | null
+  ownCron?: string | null
+  ownQuiesceMode?: BackupQuiesceMode | null
+  enabledSource: BackupPolicySource
+  stopContainersSource: BackupPolicySource
+  cronSource: BackupPolicySource
+  quiesceModeSource: BackupPolicySource
+  /** The template whose policy this stack inherits; omitted for a standalone stack. */
+  templateId?: number | null
+  templateName?: string | null
+}
+
+/**
+ * A template's backup policy — the rung every tenant inherits. Every field is nullable: null (which
+ * arrives as `undefined`) means the template has no opinion and the instance default applies.
+ */
+export interface BackupTemplatePolicy {
+  templateId: number
+  templateName: string
+  enabled?: boolean | null
+  stopContainers?: boolean | null
+  cron?: string | null
+  quiesceMode?: BackupQuiesceMode | null
+  /** How many instances the policy reaches. */
+  tenantCount: number
+  /** How many of those override at least one field, so a policy edit will not reach them. */
+  overriddenTenantCount: number
+}
+
+/**
+ * How a product's deployments are doing on backups — the Backups tab's rollup line.
+ *
+ * `backedUpRecently + stale + failed + never === enrolled`, in that priority order, so the numbers can
+ * be read as a partition rather than four overlapping counts. `notEnrolled` is deliberate
+ * non-participation, not a failure, and is reported (and rendered) neutrally.
+ */
+export interface BackupProductRollup {
+  deployments: number
+  enrolled: number
+  notEnrolled: number
+  backedUpRecently: number
+  /** Last backed up outside the window, nothing wrong — the schedule has not come round. */
+  stale: number
+  /** Has succeeded before, and its newest terminal run failed. Excludes `never`. */
+  failed: number
+  never: number
+  /** The width of the "recently" window, so the copy is not hard-coded to 24. */
+  windowHours: number
+}
+
+/** Everything the product Backups tab renders above its history. */
+export interface ProductBackups {
+  templates: BackupTemplatePolicy[]
+  rollup: BackupProductRollup
+  /** What "follow the instance schedule" resolves to right now. */
+  instanceCron: string
+  /** The instance master switch; false means nothing runs on a schedule at all. */
+  scheduleEnabled: boolean
 }
 
 /**
@@ -1383,13 +1479,18 @@ export interface BackupServiceOverride {
   stop?: 'true' | 'false' | 'pause' | null
   /** Omitted on the wire when not set. */
   dump?: 'false' | 'postgres' | null
+  /** True when the row is the template's rather than the stack's — read-only here, edited on the product. */
+  inherited?: boolean | null
 }
 
 /** What the next backup run would do with one container. */
 export type BackupServiceAction = 'stop' | 'pause' | 'keep' | 'dump' | 'excluded' | 'notRunning'
 
-/** Where a per-service decision came from: the mount rule / stack default, a compose label, or a UI override. */
-export type BackupSettingSource = 'default' | 'label' | 'override'
+/**
+ * Where a per-service decision came from: the mount rule / stack default, a compose label, a UI override
+ * on the stack, or one inherited from the stack's template.
+ */
+export type BackupSettingSource = 'default' | 'label' | 'override' | 'template'
 
 /** One row of the backup plan preview. */
 export interface BackupServicePreview {

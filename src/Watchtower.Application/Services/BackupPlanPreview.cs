@@ -61,30 +61,37 @@ public sealed record BackupServicePreview(
 /// <param name="Services">One row per container, plus one per override whose service is not deployed; ordered by service then container.</param>
 /// <param name="Warnings">The planner's and dump policy's warnings, <c>WARNING: </c> prefix stripped.</param>
 /// <param name="LabelSnippet">The UI overrides rendered as compose labels to paste, or null when there are none.</param>
+/// <param name="Policy">
+/// The stack-level policy the run would operate under and where each field came from — the
+/// "Set by: template policy" labels on the Backups tab. Resolved once, by
+/// <see cref="BackupPolicyResolver"/>, and handed here so the preview cannot describe a different
+/// ladder than the run walked.
+/// </param>
 public sealed record BackupPlanPreview(
     bool Deployed,
     IReadOnlyList<string> Volumes,
     IReadOnlyList<ExcludedBackupVolume> ExcludedVolumes,
     IReadOnlyList<BackupServicePreview> Services,
     IReadOnlyList<string> Warnings,
-    string? LabelSnippet) {
+    string? LabelSnippet,
+    BackupPolicy Policy) {
 
     /// <summary>Assembles the preview from the run's prepared inputs. Pure.</summary>
     /// <param name="containers">Every container of the project, as the planner saw them (overrides attached).</param>
     /// <param name="plan">The plan the run would execute.</param>
     /// <param name="dumpTargets">The databases the run would dump.</param>
-    /// <param name="overrides">The stack's UI overrides by service name.</param>
+    /// <param name="overrides">The stack's effective per-service overrides by service name.</param>
     /// <param name="dumpWarnings">Lines the dump policy logged while selecting targets (any prefix).</param>
-    /// <param name="stopContainers">The stack's master switch, for the wording of the keep rows.</param>
-    /// <param name="quiesceMode">The stack's default quiesce mode, for the wording of unlabelled rows.</param>
+    /// <param name="policy">The resolved stack-level policy, for the wording of the keep rows and the tab's provenance labels.</param>
     public static BackupPlanPreview Build(
         IReadOnlyList<BackupContainer> containers,
         BackupPlan plan,
         IReadOnlyList<DumpTarget> dumpTargets,
         IReadOnlyDictionary<string, BackupServiceOverride> overrides,
         IReadOnlyList<string> dumpWarnings,
-        bool stopContainers,
-        BackupQuiesceMode quiesceMode) {
+        BackupPolicy policy) {
+        var stopContainers = policy.StopContainers;
+        var quiesceMode = policy.QuiesceMode;
         var quiesced = plan.Quiesce.ToDictionary(s => s.Container.Id, StringComparer.Ordinal);
         var kept = plan.Keep.ToDictionary(k => k.Container.Id, StringComparer.Ordinal);
         var dumped = dumpTargets.ToDictionary(t => t.ContainerId, StringComparer.Ordinal);
@@ -103,8 +110,11 @@ public sealed record BackupPlanPreview(
         foreach (var (service, o) in overrides.Where(kv => !present.Contains(kv.Key)).OrderBy(kv => kv.Key, StringComparer.Ordinal))
             rows.Add(new BackupServicePreview(
                 service, null, "absent", [], BackupServiceAction.NotRunning,
-                "no container of this service is deployed — the override applies once there is one",
-                BackupSettingSource.Override, null, null, null, o));
+                o.FromTemplate
+                    ? "no container of this service is deployed — the template's setting applies once there is one"
+                    : "no container of this service is deployed — the override applies once there is one",
+                o.FromTemplate ? BackupSettingSource.Template : BackupSettingSource.Override,
+                null, null, null, o));
 
         rows.Sort((a, b) => {
             var byService = string.CompareOrdinal(a.Service, b.Service);
@@ -117,7 +127,7 @@ public sealed record BackupPlanPreview(
             .ToList();
         return new BackupPlanPreview(
             containers.Count > 0 || plan.Volumes.Count > 0 || plan.Excluded.Count > 0,
-            plan.Volumes, plan.Excluded, rows, warnings, ComposeLabelSnippet.Render(overrides));
+            plan.Volumes, plan.Excluded, rows, warnings, ComposeLabelSnippet.Render(overrides), policy);
     }
 
     /// <summary>The action/reason/source of one container, from the plan's and the dump policy's view of it.</summary>
@@ -158,6 +168,7 @@ public sealed record BackupPlanPreview(
             var why = step.Source switch {
                 BackupSettingSource.Label => $"by {BackupPlan.StopLabel}={c.Stop.Value} label",
                 BackupSettingSource.Override => $"by UI override stop={c.Stop.Value}",
+                BackupSettingSource.Template => $"by template policy stop={c.Stop.Value}",
                 _ => $"{mountsText} — stack default {(quiesceMode == BackupQuiesceMode.Pause ? "pause" : "stop")}",
             };
             return (step.Mode == BackupQuiesceMode.Pause ? BackupServiceAction.Pause : BackupServiceAction.Stop,
@@ -189,11 +200,15 @@ public sealed record BackupPlanPreview(
             BackupSettingSource.Default);
     }
 
-    /// <summary>"label watchtower.backup.x=y" or "UI override x=y" — the source in words.</summary>
-    private static string Origin(BackupSetting setting, string label) =>
-        setting.Source == BackupSettingSource.Override
-            ? $"UI override {label[(label.LastIndexOf('.') + 1)..]}={setting.Value}"
-            : $"label {label}={setting.Value}";
+    /// <summary>"label watchtower.backup.x=y", "UI override x=y" or "template policy x=y" — the source in words.</summary>
+    private static string Origin(BackupSetting setting, string label) => setting.Source switch {
+        BackupSettingSource.Override => $"UI override {Knob(label)}={setting.Value}",
+        BackupSettingSource.Template => $"template policy {Knob(label)}={setting.Value}",
+        _ => $"label {label}={setting.Value}",
+    };
+
+    /// <summary>The last segment of a label key — <c>watchtower.backup.stop</c> → <c>stop</c>.</summary>
+    private static string Knob(string label) => label[(label.LastIndexOf('.') + 1)..];
 }
 
 /// <summary>
@@ -201,10 +216,25 @@ public sealed record BackupPlanPreview(
 /// "versioned with the stack" (ADR-0020). Byte-for-byte the values the planner would read back, so
 /// pasting the snippet and deleting the overrides changes nothing about the next run.
 /// </summary>
+/// <remarks>
+/// <b>The stack's own rows only.</b> Since stage 7 of ADR-0026 the effective override map can also
+/// carry rows a tenant <em>inherits</em> from its template
+/// (<see cref="BackupServiceOverride.FromTemplate"/>), and those are not this stack's settings to
+/// promote: the promise above is "paste this and delete the overrides" — deleting an override the stack
+/// does not have is not something the reader can do, and the fleet's row would keep applying to every
+/// other tenant regardless. Rendering them would also quietly copy one instance's fleet policy into one
+/// instance's compose file, which is the opposite of what a fleet policy is for.
+/// </remarks>
 public static class ComposeLabelSnippet {
     /// <summary>The snippet, or null when there is nothing to render.</summary>
+    /// <param name="overrides">
+    /// The effective per-service overrides; rows inherited from a template are skipped (see the remarks).
+    /// </param>
     public static string? Render(IReadOnlyDictionary<string, BackupServiceOverride> overrides) {
-        var services = overrides.Where(kv => !kv.Value.IsEmpty).OrderBy(kv => kv.Key, StringComparer.Ordinal).ToList();
+        var services = overrides
+            .Where(kv => !kv.Value.IsEmpty && !kv.Value.FromTemplate)
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .ToList();
         if (services.Count == 0) return null;
         var sb = new StringBuilder("services:\n");
         foreach (var (service, o) in services) {

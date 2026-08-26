@@ -1,5 +1,7 @@
 using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -18,6 +20,7 @@ public sealed class CreateStack(
     WatchtowerDbContext db,
     SelfProjectNameProvider selfProjects,
     ProductCatalog products,
+    IOptionsMonitor<WatchtowerOptions> options,
     AuditLog audit,
     ICurrentUser currentUser)
     : IHandler<CreateStack.Command, Result<CreateStack.Response>> {
@@ -76,6 +79,11 @@ public sealed class CreateStack(
             // through this handler has no template, so there is no inherited override to compare against.
             BranchOverride = ProductSourceResolver.OverrideFor(command.Branch, product.DefaultBranch),
             ComposeProjectName = projectName,
+            // Stamped at creation and stable thereafter: renaming the stack (or the instance) later must
+            // not orphan archives that are already written under this path — design.md §"Backups across
+            // tenants", and the fix for a hazard that predates products entirely.
+            BackupDirectory = BackupNaming.StackDirectory(
+                options.CurrentValue.Backup.ResolveInstanceName(), command.Name),
             WebhookToken = command.WebhookToken,
             WebhookEnabled = command.WebhookEnabled,
             // App API token is minted up front so operators can hand it to the application before

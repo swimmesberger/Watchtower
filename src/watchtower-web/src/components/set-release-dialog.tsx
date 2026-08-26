@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useRouteContext } from '@tanstack/react-router'
 import { api } from '@/lib/api'
 import type { Release, VersionState } from '@/lib/types'
 import { rosterVersion } from '@/lib/release'
@@ -93,6 +94,9 @@ export function SetReleaseDialog({
   onApplied?: () => void
 }) {
   const qc = useQueryClient()
+  // The pre-rollout backup checkbox is only honest where the Backups module exists to honour it.
+  const { caps } = useRouteContext({ from: '__root__' })
+  const backupsEnabled = caps.isModuleEnabled('Backups')
   const { data } = useProductReleases(productId, open)
   const releases = useMemo(() => data?.releases ?? [], [data])
   const newestId = releases[0]?.id ?? null
@@ -100,6 +104,13 @@ export function SetReleaseDialog({
   const [pin, setPin] = useState<number | null>(seedReleaseId ?? null)
   const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set())
   const [deploy, setDeploy] = useState(true)
+  /**
+   * "Back up each instance before deploying" — the operational answer to the caveat that Watchtower
+   * rolls code and images back but never the application's database (design.md §"Rollback and
+   * canary"). Off by default: it turns a rollout into a serial run that takes as long as N backups,
+   * which is a cost to opt into rather than one to discover.
+   */
+  const [backupFirst, setBackupFirst] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const allIds = useMemo(() => targets.map((t) => t.stackId), [targets])
@@ -129,6 +140,7 @@ export function SetReleaseDialog({
       setPin(seedReleaseId ?? null)
       setSelected(new Set(ids))
       setDeploy(true)
+      setBackupFirst(false)
       setError(null)
       return
     }
@@ -161,24 +173,33 @@ export function SetReleaseDialog({
 
   const apply = useMutation({
     mutationFn: async () => {
+      const backingUp = deploy && backupFirst
       if (asFleet) {
-        const result = await api.templates.setTenantsRelease(fleet!.templateId, pin, deploy)
+        const result = await api.templates.setTenantsRelease(
+          fleet!.templateId, pin, deploy, backingUp)
         // The server's own counts, not the checklist's: a tenant provisioned since this dialog
         // opened is written by the fleet call and absent from the list it was rendered from.
-        return { written: result.tenantCount, deployed: result.deployed }
+        return {
+          written: result.tenantCount,
+          deployed: result.deployed,
+          backedUp: result.backedUp ?? 0,
+        }
       }
       // Sequential rather than parallel: each of these can enqueue a deploy, and firing a fleet's
       // worth at once only races them into the same instance-wide gate. The first refusal stops the
       // run and is surfaced verbatim — a half-applied set is visible in the roster either way, and
       // pushing on past a refusal would hide the reason behind the last one.
       let deployed = 0
+      let backedUp = 0
       for (const target of selectedTargets) {
-        const result = await api.stacks.setRelease(target.stackId, pin, deploy)
+        const result = await api.stacks.setRelease(target.stackId, pin, deploy, backingUp)
         if (result.deployed) deployed += 1
+        // `!= null`: the API omits nulls, so a plain deploy leaves the field undefined.
+        if (result.backupEventId != null) backedUp += 1
       }
-      return { written: selectedTargets.length, deployed }
+      return { written: selectedTargets.length, deployed, backedUp }
     },
-    onSuccess: ({ written, deployed }) => {
+    onSuccess: ({ written, deployed, backedUp }) => {
       qc.invalidateQueries({ queryKey: ['stacks'] })
       qc.invalidateQueries({ queryKey: ['product', productId] })
       if (fleet) {
@@ -189,9 +210,13 @@ export function SetReleaseDialog({
       toast.success(
         pinLabel ? `Pinned to ${pinLabel}.` : 'Now tracking latest.',
         `${written} ${noun}${written === 1 ? '' : 's'} updated`
-          + (deploy
-            ? `, ${deployed} deploying.`
-            : '. Nothing was deployed.'),
+          + (!deploy
+            ? '. Nothing was deployed.'
+            // Backing up first means nothing is deploying *yet*: each deploy is chained to its own
+            // backup and only runs if that succeeds, so reporting "N deploying" would be a lie.
+            : backedUp > 0
+              ? `, ${backedUp} backing up first — each deploys when its backup succeeds.`
+              : `, ${deployed} deploying.`),
       )
       onApplied?.()
       onOpenChange(false)
@@ -209,6 +234,9 @@ export function SetReleaseDialog({
     })
 
   const nothingToDo = selectedTargets.length === 0 && !asFleet
+  // How many will actually be deployed (and therefore backed up first): a stopped instance is pinned
+  // and skipped, so counting the whole selection would overstate how long a serial backup run takes.
+  const deployingCount = selectedTargets.filter((t) => !t.stopped).length
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -349,6 +377,37 @@ export function SetReleaseDialog({
             <span className="text-sm text-text">Deploy now</span>
           </label>
 
+          {/* design.md §"Backups across tenants". Offered only when a deploy is actually going to
+              happen — there is nothing to guard otherwise — and only when the backups module is
+              enabled, because the checkbox would otherwise promise something nothing can do. */}
+          {deploy && backupsEnabled && (
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                checked={backupFirst}
+                onChange={(e) => setBackupFirst(e.target.checked)}
+                className="mt-0.5 size-4 shrink-0 accent-[var(--brand)]"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-text">
+                  Back up each {fleet ? 'instance' : 'deployment'} before deploying
+                </span>
+                <span className="mt-0.5 block text-[13px] text-text-2">
+                  Watchtower can roll code and images back, but never the application’s database — a
+                  backup taken first is what makes a rollback safe. Each deploy runs only if its own
+                  backup succeeded.
+                  {deployingCount > 1 && (
+                    <>
+                      {' '}
+                      <strong>Backups run one at a time</strong>, so {deployingCount} of them finish
+                      well apart and the deploys trickle out behind them.
+                    </>
+                  )}
+                </span>
+              </span>
+            </label>
+          )}
+
           {/* The live consequence sentence. It says which of the two apply paths is about to run,
               because the difference — whether the template default moves with the instances — is
               invisible otherwise. */}
@@ -358,6 +417,7 @@ export function SetReleaseDialog({
               stoppedCount: selectedTargets.filter((t) => t.stopped).length,
               pinLabel,
               deploy,
+              backupFirst: deploy && backupsEnabled && backupFirst,
               fleetName: fleet?.templateName ?? null,
               movesFleetDefault: asFleet,
             })}
@@ -406,6 +466,7 @@ function consequence({
   stoppedCount,
   pinLabel,
   deploy,
+  backupFirst,
   fleetName,
   movesFleetDefault,
 }: {
@@ -414,6 +475,8 @@ function consequence({
   /** How to name the release Apply will pin to, or null to clear the pin. See the remarks. */
   pinLabel: string | null
   deploy: boolean
+  /** Whether each deploy waits on its own backup — which changes "deployed" into "deployed if". */
+  backupFirst: boolean
   fleetName: string | null
   /** Whether this apply also writes the template's default for future instances. */
   movesFleetDefault: boolean
@@ -428,13 +491,18 @@ function consequence({
   }
 
   const deploying = deploy && count - stoppedCount > 0
+  // "deployed after a backup" rather than "deployed": the deploy is conditional on the backup, and a
+  // sentence that promised it outright would describe the happy path as the only path.
+  const deployed = backupFirst ? 'deployed after a backup' : 'deployed'
   let sentence = `${count} ${noun}${count === 1 ? '' : 's'} `
     + (pinLabel
       // Two shapes rather than one clause bolted on, because "and deployed" only parses after the
       // passive half: "will go back to tracking latest and deployed" is not a sentence.
-      ? `will be pinned to ${pinLabel}${deploying ? ' and deployed' : ''}`
-      : `will go back to tracking latest${deploying ? ', and be deployed' : ''}`)
+      ? `will be pinned to ${pinLabel}${deploying ? ` and ${deployed}` : ''}`
+      : `will go back to tracking latest${deploying ? `, and be ${deployed}` : ''}`)
   sentence += '.'
+  if (deploying && backupFirst)
+    sentence += ' An instance whose backup fails is not deployed.'
   if (deploy && stoppedCount > 0) {
     sentence += ` ${stoppedCount} ${stoppedCount === 1 ? 'is' : 'are'} stopped, so `
       + `${stoppedCount === 1 ? 'it is' : 'they are'} pinned but not deployed.`

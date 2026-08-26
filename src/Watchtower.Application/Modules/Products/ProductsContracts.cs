@@ -29,7 +29,8 @@ public sealed record ProductDto(
     int TemplateCount,
     bool ReleaseWebhookEnabled,
     ProductReleaseSummaryDto? LatestRelease,
-    string ReleaseMode);
+    string ReleaseMode,
+    int RetainReleases);
 
 /// <summary>The newest release of a product, as much of it as a header line or a catalogue row needs.</summary>
 /// <param name="CommitSha">
@@ -190,7 +191,10 @@ public static class ProductMapping {
         ProductReleaseSummaryDto? latestRelease = null) => new(
         p.Id, p.Name, p.Description, p.RepositoryUrl, p.ComposeFilePath, p.DefaultBranch,
         p.CredentialId, credentialName, p.CreatedAt, stackCount, templateCount,
-        p.ReleaseWebhookEnabled, latestRelease, ReleaseModeToDto(p.ReleaseMode));
+        p.ReleaseWebhookEnabled, latestRelease, ReleaseModeToDto(p.ReleaseMode),
+        // Clamped on the way out as well as in the pruner, so the Settings field shows the number that
+        // will actually be enforced rather than whatever a hand-edited row happens to hold.
+        Services.ReleasePruner.Clamp(p.RetainReleases));
 
     /// <summary>Enum → lowercase wire value: "git", "releases".</summary>
     public static string ReleaseModeToDto(ProductReleaseMode mode) => mode.ToString().ToLowerInvariant();

@@ -230,10 +230,12 @@ public sealed class StackConfiguration : IEntityTypeConfiguration<Stack> {
         b.Property(x => x.LastDeployStatus).HasConversion<string>();
         // Stored as the enum name (e.g. "OnChange"); the API maps it to camelCase for the client.
         b.Property(x => x.AutoDeployMode).HasConversion<string>();
-        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. The default is on the
-        // model so a row written without one — by the SQLite importer, say — stops its containers, which
-        // is what every stack did before quiesce modes existed.
-        b.Property(x => x.BackupQuiesceMode).HasConversion<string>().HasDefaultValue(BackupQuiesceMode.Stop);
+        // Stored as the enum name ("Stop"/"Pause"); the API maps it to lowercase. Nullable since stage 7
+        // of ADR-0026 — null is "inherit", and there is deliberately **no** column default any more: a
+        // default would make a row written without an opinion say "stop" explicitly, which is the one
+        // value the tri-state exists to distinguish from silence. The instance default now lives in
+        // BackupPolicyResolver, where the other two rungs of the ladder are.
+        b.Property(x => x.BackupQuiesceMode).HasConversion<string>();
         // Stored as the enum name ("Running"/"Stopped"); the API maps it to lowercase. The default is
         // on the model so rows written without one — by the SQLite importer, say — count as running,
         // which is what every stack was before desired state existed (ADR-0025).
@@ -314,6 +316,29 @@ public sealed class StackTemplateConfiguration : IEntityTypeConfiguration<StackT
             .OnDelete(DeleteBehavior.SetNull);
         // The pruner's template-default protection query looks templates up by the release they name.
         b.HasIndex(x => x.DefaultPinnedReleaseId);
+        // Nullable and default-less for the same reason Stack's is: null means the template has no
+        // opinion, and a column default would turn silence into an explicit "stop".
+        b.Property(x => x.BackupQuiesceMode).HasConversion<string>();
+    }
+}
+
+[EntityConfiguration]
+public sealed class TemplateBackupServiceOverrideConfiguration
+    : IEntityTypeConfiguration<TemplateBackupServiceOverride> {
+    public void Configure(EntityTypeBuilder<TemplateBackupServiceOverride> b) {
+        b.ToTable("template_backup_service_overrides");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Service).IsRequired();
+        // One row per (template, service), mirroring the stack-level table exactly: setting an override
+        // upserts, clearing every knob deletes it.
+        b.HasIndex(x => new { x.TemplateId, x.Service }).IsUnique();
+        // Cascade like the stack's: the rows describe services of *this* template's tenants and mean
+        // nothing without it. Deleting a template detaches its tenants (they keep running on their own
+        // product), and they correctly stop inheriting a policy that no longer exists.
+        b.HasOne(x => x.Template)
+            .WithMany(t => t.BackupServiceOverrides)
+            .HasForeignKey(x => x.TemplateId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 

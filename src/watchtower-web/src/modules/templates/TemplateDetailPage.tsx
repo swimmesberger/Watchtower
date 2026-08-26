@@ -74,6 +74,22 @@ export function TemplateDetailPage() {
   const [pendingRevoke, setPendingRevoke] = useState<TemplateGrant | null>(null)
   const [pendingRemoveTenant, setPendingRemoveTenant] = useState<Tenant | null>(null)
   const [removeVolumes, setRemoveVolumes] = useState(false)
+  /**
+   * Take one last backup before the tenant goes, and remove it only if that succeeds.
+   *
+   * **Default on where backups exist**, unlike the volume purge beside it: this is the one moment a
+   * tenant's data can be lost for good, and the safe answer is the one that should not need a click.
+   * It makes the removal asynchronous (the tenant disappears when the backup finishes), which the
+   * confirm dialog and the toast both say.
+   */
+  const backupsEnabled = caps.isModuleEnabled('Backups')
+  const [finalBackup, setFinalBackup] = useState(backupsEnabled)
+  /**
+   * Slugs whose removal is waiting on a final backup. Page-local and deliberately so: the durable
+   * record is the backup event, and the row disappears (or the audit trail says why it did not) on its
+   * own. This exists to stop the *second click*, which is the only thing a reader can do wrong here.
+   */
+  const [backingUpForRemoval, setBackingUpForRemoval] = useState<ReadonlySet<string>>(() => new Set())
   // A single mutation observer only exposes its latest call's variables, so concurrent toggles on
   // different rows need their own pending bookkeeping to keep each row disabled until it settles.
   const [allowDeletePendingIds, setAllowDeletePendingIds] = useState<ReadonlySet<number>>(
@@ -167,9 +183,22 @@ export function TemplateDetailPage() {
   })
 
   const removeTenant = useMutation({
-    mutationFn: (t: Tenant) => api.templates.removeTenant(templateId, t.tenantSlug, removeVolumes),
-    onSuccess: (slug) => {
-      toast.success(`Tenant ${slug} removed.`)
+    mutationFn: (t: Tenant) =>
+      api.templates.removeTenant(
+        templateId, t.tenantSlug, removeVolumes, backupsEnabled && finalBackup),
+    onSuccess: (result) => {
+      // Two outcomes, and they are genuinely different: without a final backup the tenant is gone by
+      // the time this returns; with one it is still there and goes when the backup succeeds. Saying
+      // "removed" in the second case would have the reader looking for a row that is still on screen.
+      if (result.removed) {
+        toast.success(`Tenant ${result.slug} removed.`)
+      } else {
+        setBackingUpForRemoval((previous) => new Set(previous).add(result.slug))
+        toast.info(
+          `Backing up ${result.slug} before removing it…`,
+          'It is removed once the backup succeeds. If the backup fails, nothing is removed.',
+        )
+      }
       // Teardown deletes the stack row, cascading its routes away, and drops instanceCount.
       qc.invalidateQueries({ queryKey: ['tenants', templateId] })
       qc.invalidateQueries({ queryKey: ['template', templateId] })
@@ -278,15 +307,27 @@ export function TemplateDetailPage() {
   // Shared by the table cell and the mobile card so the disabled-state reason travels with both.
   const removeTenantButton = (t: Tenant) => {
     const deploying = isDeploying(t)
+    // A final-backup removal is asynchronous: the row stays on screen until the backup succeeds, and
+    // a second click would enqueue a second removal of the same tenant. Harmless on the server (the
+    // backup coalesces and the second teardown finds the tenant already gone, which the coordinator
+    // treats as success), but it reads as if nothing happened the first time — so the row says what
+    // is actually going on instead.
+    const backingUp = backingUpForRemoval.has(t.tenantSlug)
+    const blocked = deploying || backingUp
+    const reason = deploying
+      ? 'Deploy in progress'
+      : backingUp
+        ? 'Backing up before removal…'
+        : 'Remove tenant'
     return (
-      <Tooltip label={deploying ? 'Deploy in progress' : 'Remove tenant'}>
+      <Tooltip label={reason}>
         {/* A disabled button swallows pointer events and can't take focus, so the wrapping span is
-            the trigger — made focusable while deploying so keyboard users get the reason too. */}
-        <span className="inline-flex" tabIndex={deploying ? 0 : undefined}>
+            the trigger — made focusable while blocked so keyboard users get the reason too. */}
+        <span className="inline-flex" tabIndex={blocked ? 0 : undefined}>
           <Button
             size="icon-sm"
             variant="ghost"
-            disabled={deploying}
+            disabled={blocked}
             aria-label={`Remove ${t.tenantSlug}`}
             onClick={() => openRemoveTenant(t)}
             className="text-text-2 hover:text-danger"
@@ -707,14 +748,32 @@ export function TemplateDetailPage() {
         title={pendingRemoveTenant ? `Remove ${pendingRemoveTenant.tenantSlug}?` : 'Remove tenant?'}
         description="This permanently deletes the tenant's stack, its route, its environment and its deployment history, and removes its containers. Cannot be undone."
         extra={
-          <label className="flex items-center gap-3">
-            <Switch
-              checked={removeVolumes}
-              onCheckedChange={setRemoveVolumes}
-              disabled={removeTenant.isPending}
-            />
-            <span className="text-sm text-text">Also remove volumes (destroys tenant data)</span>
-          </label>
+          <div className="flex flex-col gap-3">
+            <label className="flex items-center gap-3">
+              <Switch
+                checked={removeVolumes}
+                onCheckedChange={setRemoveVolumes}
+                disabled={removeTenant.isPending}
+              />
+              <span className="text-sm text-text">Also remove volumes (destroys tenant data)</span>
+            </label>
+            {backupsEnabled && (
+              <label className="flex items-start gap-3">
+                <Switch
+                  checked={finalBackup}
+                  onCheckedChange={setFinalBackup}
+                  disabled={removeTenant.isPending}
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm text-text">Take a final backup first</span>
+                  <span className="mt-0.5 block text-[13px] text-text-2">
+                    The tenant is removed once the backup succeeds, so removal happens in the
+                    background rather than immediately. If the backup fails, nothing is removed.
+                  </span>
+                </span>
+              </label>
+            )}
+          </div>
         }
         confirmLabel="Remove"
         tone="danger"

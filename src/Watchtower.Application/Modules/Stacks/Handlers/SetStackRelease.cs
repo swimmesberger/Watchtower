@@ -34,6 +34,7 @@ public sealed class SetStackRelease(
     WatchtowerDbContext db,
     ReleaseImageValidator validator,
     DeployQueueService deployQueue,
+    BackupQueueService backupQueue,
     AuditLog audit,
     ICurrentUser currentUser)
     : IHandler<SetStackRelease.Command, Result<SetStackRelease.Response>> {
@@ -49,7 +50,12 @@ public sealed class SetStackRelease(
     /// default, because a pin nobody deploys leaves the stack running something the UI no longer claims
     /// it runs; false is Save, for an operator staging a change before a maintenance window.
     /// </param>
-    public sealed record Command(int StackId, int? ReleaseId, bool Deploy = true);
+    /// <param name="BackupFirst">
+    /// Take a backup before deploying, and deploy only if it succeeds — the roll-out dialog's "Back up
+    /// each instance before deploying" (design.md §"Backups across tenants"). Ignored when
+    /// <paramref name="Deploy"/> is false: there is nothing to guard.
+    /// </param>
+    public sealed record Command(int StackId, int? ReleaseId, bool Deploy = true, bool BackupFirst = false);
 
     /// <param name="Deployed">
     /// Whether a deploy was actually enqueued. False when the caller asked not to, and when the stack is
@@ -57,7 +63,12 @@ public sealed class SetStackRelease(
     /// make "pin it, then start it" impossible.
     /// </param>
     /// <param name="DeployEventId">The tracking event, when one was enqueued.</param>
-    public sealed record Response(StackDto Stack, bool Deployed, int? DeployEventId);
+    /// <param name="BackupEventId">
+    /// The pre-deploy backup's tracking event, when one was enqueued. Its presence with
+    /// <paramref name="Deployed"/> false is the "backing up first" state: the deploy is chained to this
+    /// run and will be enqueued when — and only when — it succeeds.
+    /// </param>
+    public sealed record Response(StackDto Stack, bool Deployed, int? DeployEventId, int? BackupEventId = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var stack = await db.Stacks
@@ -128,6 +139,17 @@ public sealed class SetStackRelease(
         // A stopped stack is disabled, not misconfigured: the pin is recorded and the deploy is simply
         // not enqueued, so starting it later applies the pin like any other deploy.
         var deploy = command.Deploy && stack.DesiredState != StackDesiredState.Stopped;
+        if (deploy && command.BackupFirst) {
+            // Backup first, deploy on success. The deploy is not enqueued here at all — the chain
+            // enqueues it, so a failed backup leaves nothing to cancel and the response can honestly say
+            // nothing is deploying yet.
+            var backup = backupQueue.Enqueue(
+                stack.Id, BackupTriggers.PreDeploy,
+                BackupChainStep.ForDeploy(stack.Id, DeployTriggers.ReleaseManual));
+            return new Response(
+                StackMapping.ToDto(saved, saved.UpdateCheck), Deployed: false, DeployEventId: null,
+                BackupEventId: backup.BackupEventId);
+        }
         var deployEventId = deploy
             ? deployQueue.Enqueue(stack.Id, DeployTriggers.ReleaseManual).DeployEventId
             : (int?)null;

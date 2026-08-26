@@ -511,10 +511,15 @@ Backups today are entirely stack-scoped and template-blind. The extension builds
 - **Per-tenant storage folders.** A persisted `Stack.BackupDirectory` column, set at creation,
   replaces the on-the-fly `BackupNaming.StackDirectory(instance, stackName)` at all three
   path-composition sites (run, restore, remote listing) and in retention. Tenants get
-  `{instance}/{productName}/{tenantSlug}/`; standalone stacks keep `{instance}/{stackName}/`; the
-  migration backfills every existing stack with its *current* computed directory so existing
-  archives stay discoverable. Side benefit: renaming a stack no longer orphans its archives (a
-  pre-existing hazard).
+  `{instance}/{productName}/{tenantSlug}/`; standalone stacks keep `{instance}/{stackName}/`. Side
+  benefit: renaming a stack no longer orphans its archives (a pre-existing hazard).
+  **The column is nullable and the migration backfills nothing** — null means "compute it as we always
+  did", which keeps every existing archive discoverable without a migration guessing at a value SQL
+  cannot see: the instance name is *configuration* (`Backup:InstanceName`, defaulting to the machine
+  name), not a column. A legacy stack is stamped with that computed path after its next *successful*
+  backup, which is the moment the value is known to be where the bytes really went. The reasoning, and
+  the consequence that a stamped stack no longer follows an instance rename, are invariant 20 in
+  [implementation-status.md](implementation-status.md#invariants--do-not-break-these).
 - **Policy once, inherited live.** Template-level backup policy mirrors the stack fields with the
   "null = inherit" idiom `BackupCron` already uses: `StackTemplate.BackupEnabled?/BackupCron?/
   BackupStopContainers?/BackupQuiesceMode?` plus template-level service overrides

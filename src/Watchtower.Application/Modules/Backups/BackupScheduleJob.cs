@@ -64,18 +64,28 @@ public sealed class BackupScheduleJob(
         }
         var grace = BackupSchedule.ResolveMisfireGrace(backup);
 
+        // The ladder in SQL: a stack that says yes, or a tenant that says nothing over a template that
+        // says yes. Kept as a predicate rather than "load everything and resolve in memory" because this
+        // runs once a minute against every stack on the box. `BackupPolicyResolver` is still the only
+        // thing that decides — the query narrows, and the resolver below confirms.
         var stacks = await db.Stacks
-            .Where(s => s.BackupEnabled)
+            .Include(s => s.Template)
+            .Where(s => s.BackupEnabled == true
+                || (s.BackupEnabled == null && s.Template != null && s.Template.BackupEnabled == true))
             .OrderBy(s => s.Name)
             .ToListAsync(ct);
         if (stacks.Count == 0) return 0;
 
         var enqueued = 0;
         foreach (var stack in stacks) {
+            var policy = BackupPolicyResolver.Resolve(stack, stack.Template);
+            if (!policy.Enabled) continue;
             CronExpression? cron = globalCron;
-            if (stack.BackupCron is not null) {
-                if (BackupSchedule.TryParse(stack.BackupCron, out var own, out var ownError)) cron = own;
-                else logger.LogWarning("Invalid backup schedule override on stack {StackName}: {Error}; using the instance schedule", stack.Name, ownError);
+            if (policy.Cron is { } expression) {
+                if (BackupSchedule.TryParse(expression, out var own, out var ownError)) cron = own;
+                else logger.LogWarning(
+                    "Invalid backup schedule override ({Source}) for stack {StackName}: {Error}; using the instance schedule",
+                    policy.CronSource, stack.Name, ownError);
             }
             if (cron is null) continue;
 
@@ -98,7 +108,7 @@ public sealed class BackupScheduleJob(
             }
 
             if (decision.DueAt is not { } due) continue;
-            var result = queue.Enqueue(stack.Id, "schedule");
+            var result = queue.Enqueue(stack.Id, BackupTriggers.Schedule);
             stack.LastScheduledBackupAt = due;
             enqueued++;
             logger.LogInformation(

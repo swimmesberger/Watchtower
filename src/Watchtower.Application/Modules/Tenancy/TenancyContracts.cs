@@ -84,11 +84,20 @@ public sealed record TenantDto(
 /// </param>
 /// <param name="DeployEventIds">The tracking events, one per enqueued tenant.</param>
 /// <param name="Release">The release the fleet now pins, or null when the pin was cleared.</param>
+/// <param name="BackedUp">
+/// How many tenants had a <em>pre-deploy backup</em> enqueued instead of a deploy. Non-zero only when
+/// the caller asked to back up first: each of those deploys when — and only when — its backup succeeds,
+/// so <paramref name="Deployed"/> is 0 and this is the number that is actually happening. The backup
+/// queue is single-flight, so they run one after another (design.md §Risks, open question 12).
+/// </param>
+/// <param name="BackupEventIds">The tracking events, one per enqueued backup.</param>
 public sealed record SetTenantsReleaseResultDto(
     int TenantCount,
     int Deployed,
     IReadOnlyList<int> DeployEventIds,
-    ReleaseRefDto? Release);
+    ReleaseRefDto? Release,
+    int BackedUp = 0,
+    IReadOnlyList<int>? BackupEventIds = null);
 
 /// <summary>
 /// One stack's permission to manage a template's tenants through the public management API

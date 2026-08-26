@@ -162,6 +162,13 @@
           "limit": {
             "type": "integer",
             "default": 50
+          },
+          "productId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         }
       },
@@ -346,6 +353,129 @@
         ]
       }
     },
+    "backups.getProductBackups": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "templateId": {
+                  "type": "integer"
+                },
+                "templateName": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "stopContainers": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "cron": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "quiesceMode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tenantCount": {
+                  "type": "integer"
+                },
+                "overriddenTenantCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "templateId",
+                "templateName",
+                "enabled",
+                "stopContainers",
+                "cron",
+                "quiesceMode",
+                "tenantCount",
+                "overriddenTenantCount"
+              ]
+            }
+          },
+          "rollup": {
+            "type": "object",
+            "properties": {
+              "deployments": {
+                "type": "integer"
+              },
+              "enrolled": {
+                "type": "integer"
+              },
+              "notEnrolled": {
+                "type": "integer"
+              },
+              "backedUpRecently": {
+                "type": "integer"
+              },
+              "stale": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "never": {
+                "type": "integer"
+              },
+              "windowHours": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "deployments",
+              "enrolled",
+              "notEnrolled",
+              "backedUpRecently",
+              "stale",
+              "failed",
+              "never",
+              "windowHours"
+            ]
+          },
+          "instanceCron": {
+            "type": "string"
+          },
+          "scheduleEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "templates",
+          "rollup",
+          "instanceCron",
+          "scheduleEnabled"
+        ]
+      }
+    },
     "backups.getStackConfig": {
       "params": {
         "type": "object",
@@ -381,6 +511,54 @@
               },
               "quiesceMode": {
                 "type": "string"
+              },
+              "ownEnabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownStopContainers": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownCron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownQuiesceMode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enabledSource": {
+                "type": "string"
+              },
+              "stopContainersSource": {
+                "type": "string"
+              },
+              "cronSource": {
+                "type": "string"
+              },
+              "quiesceModeSource": {
+                "type": "string"
+              },
+              "templateId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "templateName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -388,7 +566,17 @@
               "enabled",
               "stopContainers",
               "cron",
-              "quiesceMode"
+              "quiesceMode",
+              "ownEnabled",
+              "ownStopContainers",
+              "ownCron",
+              "ownQuiesceMode",
+              "enabledSource",
+              "stopContainersSource",
+              "cronSource",
+              "quiesceModeSource",
+              "templateId",
+              "templateName"
             ]
           }
         },
@@ -567,6 +755,10 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "inherited": {
+                          "type": "boolean",
+                          "default": false
                         }
                       },
                       "required": [
@@ -756,6 +948,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "inherited": {
+                "type": "boolean",
+                "default": false
               }
             },
             "required": [
@@ -779,10 +975,16 @@
             "type": "integer"
           },
           "enabled": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "stopContainers": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "cron": {
             "type": [
@@ -828,6 +1030,54 @@
               },
               "quiesceMode": {
                 "type": "string"
+              },
+              "ownEnabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownStopContainers": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ownCron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ownQuiesceMode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enabledSource": {
+                "type": "string"
+              },
+              "stopContainersSource": {
+                "type": "string"
+              },
+              "cronSource": {
+                "type": "string"
+              },
+              "quiesceModeSource": {
+                "type": "string"
+              },
+              "templateId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "templateName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -835,12 +1085,122 @@
               "enabled",
               "stopContainers",
               "cron",
-              "quiesceMode"
+              "quiesceMode",
+              "ownEnabled",
+              "ownStopContainers",
+              "ownCron",
+              "ownQuiesceMode",
+              "enabledSource",
+              "stopContainersSource",
+              "cronSource",
+              "quiesceModeSource",
+              "templateId",
+              "templateName"
             ]
           }
         },
         "required": [
           "config"
+        ]
+      }
+    },
+    "backups.setTemplatePolicy": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "stopContainers": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "cron": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "quiesceMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "policy": {
+            "type": "object",
+            "properties": {
+              "templateId": {
+                "type": "integer"
+              },
+              "templateName": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "stopContainers": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "cron": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "quiesceMode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tenantCount": {
+                "type": "integer"
+              },
+              "overriddenTenantCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "templateId",
+              "templateName",
+              "enabled",
+              "stopContainers",
+              "cron",
+              "quiesceMode",
+              "tenantCount",
+              "overriddenTenantCount"
+            ]
+          }
+        },
+        "required": [
+          "policy"
         ]
       }
     },
@@ -5003,6 +5363,9 @@
               },
               "releaseMode": {
                 "type": "string"
+              },
+              "retainReleases": {
+                "type": "integer"
               }
             },
             "required": [
@@ -5019,7 +5382,8 @@
               "templateCount",
               "releaseWebhookEnabled",
               "latestRelease",
-              "releaseMode"
+              "releaseMode",
+              "retainReleases"
             ]
           }
         },
@@ -5355,6 +5719,9 @@
               },
               "releaseMode": {
                 "type": "string"
+              },
+              "retainReleases": {
+                "type": "integer"
               }
             },
             "required": [
@@ -5371,7 +5738,8 @@
               "templateCount",
               "releaseWebhookEnabled",
               "latestRelease",
-              "releaseMode"
+              "releaseMode",
+              "retainReleases"
             ]
           },
           "stacks": {
@@ -5847,6 +6215,9 @@
                 },
                 "releaseMode": {
                   "type": "string"
+                },
+                "retainReleases": {
+                  "type": "integer"
                 }
               },
               "required": [
@@ -5863,7 +6234,8 @@
                 "templateCount",
                 "releaseWebhookEnabled",
                 "latestRelease",
-                "releaseMode"
+                "releaseMode",
+                "retainReleases"
               ]
             }
           }
@@ -6100,6 +6472,13 @@
               "null"
             ],
             "default": null
+          },
+          "retainReleases": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -6194,6 +6573,9 @@
               },
               "releaseMode": {
                 "type": "string"
+              },
+              "retainReleases": {
+                "type": "integer"
               }
             },
             "required": [
@@ -6210,7 +6592,8 @@
               "templateCount",
               "releaseWebhookEnabled",
               "latestRelease",
-              "releaseMode"
+              "releaseMode",
+              "retainReleases"
             ]
           }
         },
@@ -9639,6 +10022,10 @@
           "deploy": {
             "type": "boolean",
             "default": true
+          },
+          "backupFirst": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -9865,6 +10252,13 @@
               "integer",
               "null"
             ]
+          },
+          "backupEventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -11308,6 +11702,37 @@
         ]
       }
     },
+    "templates.backupAll": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "templateId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "templateId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "backupEventIds": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "count",
+          "backupEventIds"
+        ]
+      }
+    },
     "templates.create": {
       "params": {
         "type": "object",
@@ -12015,6 +12440,10 @@
           },
           "removeVolumes": {
             "type": "boolean"
+          },
+          "finalBackup": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -12028,6 +12457,17 @@
         "properties": {
           "slug": {
             "type": "string"
+          },
+          "removed": {
+            "type": "boolean",
+            "default": true
+          },
+          "backupEventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -12079,6 +12519,10 @@
           "deploy": {
             "type": "boolean",
             "default": false
+          },
+          "backupFirst": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -12121,6 +12565,20 @@
                   "id",
                   "version"
                 ]
+              },
+              "backedUp": {
+                "type": "integer",
+                "default": 0
+              },
+              "backupEventIds": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "integer"
+                },
+                "default": null
               }
             },
             "required": [

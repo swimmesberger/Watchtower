@@ -95,29 +95,191 @@ public sealed record BackupEventDto(
 /// containers are quiesced (<c>stop</c> or <c>pause</c>, ADR-0019) and its schedule override (a
 /// five-field cron expression; null = the instance-wide schedule applies).
 /// </summary>
+/// <remarks>
+/// <b>The first five members are the effective policy and have not moved</b>, so every existing reader
+/// (the management API, scripts) keeps getting the same answer to "is this stack backed up, and how".
+/// What stage 7 of ADR-0026 adds is the two halves that were previously indistinguishable: the stack's
+/// <em>own</em> values (<c>Own*</c>, null = inherit) and where each effective value actually came from
+/// (<c>*Source</c>) — the Backups tab's "Set by: template policy" labels.
+/// </remarks>
+/// <param name="StackId">The stack.</param>
+/// <param name="Enabled">Effective: whether the schedule includes this stack.</param>
+/// <param name="StopContainers">Effective: whether the run quiesces the volume writers.</param>
+/// <param name="Cron">Effective: the stack's own expression, or null when it follows the instance schedule.</param>
+/// <param name="QuiesceMode">Effective: <c>stop</c> or <c>pause</c>.</param>
+/// <param name="OwnEnabled">What the stack itself says, or null when it inherits.</param>
+/// <param name="OwnStopContainers">What the stack itself says, or null when it inherits.</param>
+/// <param name="OwnCron">What the stack itself says, or null when it inherits.</param>
+/// <param name="OwnQuiesceMode">What the stack itself says, or null when it inherits.</param>
+/// <param name="EnabledSource">One of <c>stack</c>, <c>template</c>, <c>instance</c>.</param>
+/// <param name="StopContainersSource">One of <c>stack</c>, <c>template</c>, <c>instance</c>.</param>
+/// <param name="CronSource">One of <c>stack</c>, <c>template</c>, <c>instance</c>.</param>
+/// <param name="QuiesceModeSource">One of <c>stack</c>, <c>template</c>, <c>instance</c>.</param>
+/// <param name="TemplateId">The template whose policy this stack inherits, or null for a standalone stack.</param>
+/// <param name="TemplateName">Its name, so the UI can say <em>which</em> fleet policy without a second query.</param>
 public sealed record BackupStackConfigDto(
-    int StackId, bool Enabled, bool StopContainers, string? Cron, string QuiesceMode) {
-    internal static BackupStackConfigDto From(Entities.Stack stack) => new(
-        stack.Id, stack.BackupEnabled, stack.BackupStopContainers, stack.BackupCron,
-        BackupQuiesceModes.ToWire(stack.BackupQuiesceMode));
+    int StackId,
+    bool Enabled,
+    bool StopContainers,
+    string? Cron,
+    string QuiesceMode,
+    bool? OwnEnabled,
+    bool? OwnStopContainers,
+    string? OwnCron,
+    string? OwnQuiesceMode,
+    string EnabledSource,
+    string StopContainersSource,
+    string CronSource,
+    string QuiesceModeSource,
+    int? TemplateId,
+    string? TemplateName) {
+    internal static BackupStackConfigDto From(Entities.Stack stack) {
+        var policy = BackupPolicyResolver.Resolve(stack, stack.Template);
+        return new BackupStackConfigDto(
+            stack.Id,
+            policy.Enabled,
+            policy.StopContainers,
+            policy.Cron,
+            BackupQuiesceModes.ToWire(policy.QuiesceMode),
+            stack.BackupEnabled,
+            stack.BackupStopContainers,
+            stack.BackupCron,
+            stack.BackupQuiesceMode is { } own ? BackupQuiesceModes.ToWire(own) : null,
+            BackupPolicySources.ToWire(policy.EnabledSource),
+            BackupPolicySources.ToWire(policy.StopContainersSource),
+            BackupPolicySources.ToWire(policy.CronSource),
+            BackupPolicySources.ToWire(policy.QuiesceModeSource),
+            stack.TemplateId,
+            stack.Template?.Name);
+    }
 }
+
+/// <summary>
+/// A template's backup policy — the rung every tenant inherits. Every field is nullable: null means the
+/// template has no opinion and the instance default applies.
+/// </summary>
+/// <param name="TemplateId">The template.</param>
+/// <param name="TemplateName">Its name.</param>
+/// <param name="Enabled">Whether tenants are in the backup schedule; null = instance default (off).</param>
+/// <param name="StopContainers">Whether a tenant's run quiesces the volume writers; null = instance default (on).</param>
+/// <param name="Cron">The fleet's schedule expression; null = the instance schedule.</param>
+/// <param name="QuiesceMode"><c>stop</c> or <c>pause</c>; null = instance default (stop).</param>
+/// <param name="TenantCount">How many tenants the policy reaches — the UI's "applies to N instances".</param>
+/// <param name="OverriddenTenantCount">
+/// How many of them override at least one of the four fields, so the card can say that moving the policy
+/// will not reach all of them. Deliberately a count and not a list: the roster is the Instances tab's job.
+/// </param>
+public sealed record BackupTemplatePolicyDto(
+    int TemplateId,
+    string TemplateName,
+    bool? Enabled,
+    bool? StopContainers,
+    string? Cron,
+    string? QuiesceMode,
+    int TenantCount,
+    int OverriddenTenantCount) {
+    internal static BackupTemplatePolicyDto From(
+        Entities.StackTemplate template, int tenantCount, int overriddenTenantCount) => new(
+        template.Id,
+        template.Name,
+        template.BackupEnabled,
+        template.BackupStopContainers,
+        template.BackupCron,
+        template.BackupQuiesceMode is { } mode ? BackupQuiesceModes.ToWire(mode) : null,
+        tenantCount,
+        overriddenTenantCount);
+}
+
+/// <summary>
+/// How a product's deployments are doing on backups, for the product Backups tab's rollup line
+/// ("19 backed up in the last 24 h · 1 failed · 2 never").
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The four buckets are a partition of <paramref name="Enrolled"/>, in priority order</b> —
+/// <see cref="Never"/>, then <see cref="Failed"/>, then <see cref="BackedUpRecently"/>, then
+/// <see cref="Stale"/> — so they sum to it exactly and a reader can add them up. Overlapping buckets
+/// were the first shape and they were wrong in the way rollups usually are: a stack that had never been
+/// backed up *and* whose last attempt failed appeared in two counts, so "1 failed · 2 never" over three
+/// stacks read as four problems.
+/// </para>
+/// <para>
+/// <b>The denominator is enrolment, not existence.</b> A stack nobody put in the schedule is not
+/// failing at anything, and counting it as "never backed up" turns a deliberate choice into a red
+/// number that never goes away. Those are <see cref="NotEnrolled"/>, reported separately and rendered
+/// neutrally.
+/// </para>
+/// </remarks>
+/// <param name="Deployments">Every stack of the product.</param>
+/// <param name="Enrolled">How many the resolved policy actually includes in the schedule — the denominator.</param>
+/// <param name="NotEnrolled">The rest. Deliberate non-participation, not a failure.</param>
+/// <param name="BackedUpRecently">Enrolled, with a successful backup inside the window and no newer failure.</param>
+/// <param name="Stale">
+/// Enrolled, last backed up successfully <em>outside</em> the window, with no newer failure. Not
+/// "failed" — nothing went wrong, the schedule simply has not come round (or is switched off).
+/// </param>
+/// <param name="Failed">
+/// Enrolled, has succeeded at some point, and its newest terminal run failed. Excludes
+/// <see cref="Never"/>: a stack that has never been backed up is described by that, and saying it twice
+/// would double-count the one thing wrong with it.
+/// </param>
+/// <param name="Never">Enrolled, with no successful backup at all, ever.</param>
+/// <param name="WindowHours">The width of the "recently" window, so the UI need not hard-code 24.</param>
+public sealed record BackupProductRollupDto(
+    int Deployments,
+    int Enrolled,
+    int NotEnrolled,
+    int BackedUpRecently,
+    int Stale,
+    int Failed,
+    int Never,
+    int WindowHours);
 
 /// <summary>The wire form of <see cref="BackupQuiesceMode"/>: lowercase, like every other enum on this API.</summary>
 internal static class BackupQuiesceModes {
     public const string Stop = "stop";
     public const string Pause = "pause";
 
+    /// <summary>The word a caller sends to clear a value and go back to inheriting.</summary>
+    public const string Inherit = "inherit";
+
     public static string ToWire(BackupQuiesceMode mode) => mode == BackupQuiesceMode.Pause ? Pause : Stop;
 
-    /// <summary>Null and blank read as <see cref="Stop"/> (the default); anything else has to be one of the two words.</summary>
-    public static bool TryParse(string? value, out BackupQuiesceMode mode) {
-        mode = BackupQuiesceMode.Stop;
+    /// <summary>
+    /// Reads the tri-state wire value: null, blank and <see cref="Inherit"/> all mean "no opinion, walk
+    /// the ladder"; <c>stop</c> and <c>pause</c> are explicit; anything else is refused.
+    /// </summary>
+    /// <remarks>
+    /// A caller that omitted the field used to get an explicit <c>stop</c>. It now gets "inherit", which
+    /// resolves to <c>stop</c> for every standalone stack — the same behaviour — and to the fleet's
+    /// choice for a tenant, which is the improvement stage 7 exists for.
+    /// </remarks>
+    public static bool TryParse(string? value, out BackupQuiesceMode? mode) {
+        mode = null;
         if (string.IsNullOrWhiteSpace(value)) return true;
-        if (string.Equals(value.Trim(), Stop, StringComparison.OrdinalIgnoreCase)) return true;
-        if (!string.Equals(value.Trim(), Pause, StringComparison.OrdinalIgnoreCase)) return false;
+        var trimmed = value.Trim();
+        if (string.Equals(trimmed, Inherit, StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(trimmed, Stop, StringComparison.OrdinalIgnoreCase)) {
+            mode = BackupQuiesceMode.Stop;
+            return true;
+        }
+        if (!string.Equals(trimmed, Pause, StringComparison.OrdinalIgnoreCase)) return false;
         mode = BackupQuiesceMode.Pause;
         return true;
     }
+
+    /// <summary>The message a rejected quiesce mode is refused with — one wording, both write paths.</summary>
+    public static string ParseError(string? value) =>
+        $"Unknown quiesce mode '{value}' — expected \"{Stop}\", \"{Pause}\" or \"{Inherit}\".";
+}
+
+/// <summary>The wire form of <see cref="BackupPolicySource"/>.</summary>
+internal static class BackupPolicySources {
+    public static string ToWire(BackupPolicySource source) => source switch {
+        BackupPolicySource.Stack => "stack",
+        BackupPolicySource.Template => "template",
+        _ => "instance",
+    };
 }
 
 /// <summary>
@@ -126,9 +288,19 @@ internal static class BackupQuiesceModes {
 /// <c>watchtower.backup.stop</c> (<c>true</c>/<c>false</c>/<c>pause</c>), <c>dump</c> for
 /// <c>watchtower.backup.dump</c> (<c>false</c>/<c>postgres</c>). Null = not set.
 /// </summary>
-public sealed record BackupServiceOverrideDto(string Service, bool Exclude, string? Stop, string? Dump) {
+/// <param name="Service">The compose service.</param>
+/// <param name="Exclude">Stands in for <c>watchtower.backup.exclude=true</c>.</param>
+/// <param name="Stop">Stands in for <c>watchtower.backup.stop</c>.</param>
+/// <param name="Dump">Stands in for <c>watchtower.backup.dump</c>.</param>
+/// <param name="Inherited">
+/// True when the row came from the stack's template rather than from the stack, so the tab can label it
+/// and point the edit at the fleet policy instead of offering a stack override that would silently
+/// replace the whole inherited row.
+/// </param>
+public sealed record BackupServiceOverrideDto(
+    string Service, bool Exclude, string? Stop, string? Dump, bool Inherited = false) {
     internal static BackupServiceOverrideDto From(string service, BackupServiceOverride o) =>
-        new(service, o.Exclude, o.Stop, o.Dump);
+        new(service, o.Exclude, o.Stop, o.Dump, o.FromTemplate);
 }
 
 /// <summary>One row of the plan preview: a container, what the next run would do with it, why, and the inputs.</summary>
@@ -201,6 +373,7 @@ internal static class BackupSettingSources {
     public static string ToWire(BackupSettingSource source) => source switch {
         BackupSettingSource.Label => "label",
         BackupSettingSource.Override => "override",
+        BackupSettingSource.Template => "template",
         _ => "default",
     };
 }
@@ -248,4 +421,12 @@ public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 [JsonSerializable(typeof(GetBackupPlanPreview.Response), TypeInfoPropertyName = "GetBackupPlanPreviewResponse")]
 [JsonSerializable(typeof(SetBackupServiceOverride.Command), TypeInfoPropertyName = "SetBackupServiceOverrideCommand")]
 [JsonSerializable(typeof(SetBackupServiceOverride.Response), TypeInfoPropertyName = "SetBackupServiceOverrideResponse")]
+[JsonSerializable(typeof(BackupTemplatePolicyDto))]
+[JsonSerializable(typeof(BackupProductRollupDto))]
+[JsonSerializable(typeof(GetProductBackups.Query), TypeInfoPropertyName = "GetProductBackupsQuery")]
+[JsonSerializable(typeof(GetProductBackups.Response), TypeInfoPropertyName = "GetProductBackupsResponse")]
+[JsonSerializable(typeof(SetTemplateBackupPolicy.Command), TypeInfoPropertyName = "SetTemplateBackupPolicyCommand")]
+[JsonSerializable(typeof(SetTemplateBackupPolicy.Response), TypeInfoPropertyName = "SetTemplateBackupPolicyResponse")]
+[JsonSerializable(typeof(BackupAllTenants.Command), TypeInfoPropertyName = "BackupAllTenantsCommand")]
+[JsonSerializable(typeof(BackupAllTenants.Response), TypeInfoPropertyName = "BackupAllTenantsResponse")]
 public sealed partial class BackupsJsonContext : JsonSerializerContext;

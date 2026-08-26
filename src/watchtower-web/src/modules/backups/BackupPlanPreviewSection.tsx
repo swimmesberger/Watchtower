@@ -233,7 +233,10 @@ function SourceCell({ row }: { row: BackupServicePreview }) {
       )}
       {overrides.length > 0 && (
         <span className={cn('text-text-2', labels.length > 0 && 'text-text-3')}>
-          UI override: {overrides.join(', ')}
+          {/* An inherited row is the *template's* setting, not this stack's — saying "UI override"
+              over it would send the reader looking for a stack override that does not exist. */}
+          {o?.inherited ? 'Template policy: ' : 'UI override: '}
+          {overrides.join(', ')}
           {labels.length > 0 && row.source === 'label' ? ' (shadowed by the label)' : ''}
         </span>
       )}

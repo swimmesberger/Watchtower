@@ -50,6 +50,7 @@ public sealed class SetTenantsRelease(
     WatchtowerDbContext db,
     ReleaseImageValidator validator,
     DeployQueueService deployQueue,
+    BackupQueueService backupQueue,
     AuditLog audit,
     ICurrentUser currentUser)
     : IHandler<SetTenantsRelease.Command, Result<SetTenantsRelease.Response>> {
@@ -62,7 +63,14 @@ public sealed class SetTenantsRelease(
     /// <c>stacks.setRelease</c>: one stack redeploying is an operator watching one deploy, and a fleet
     /// redeploying is an event to opt into.
     /// </param>
-    public sealed record Command(int TemplateId, int? ReleaseId, bool Deploy = false);
+    /// <param name="BackupFirst">
+    /// Back each tenant up before deploying it, and deploy only the ones whose backup succeeds — the
+    /// roll-out dialog's answer to the database-rollback caveat (design.md §"Rollback and canary").
+    /// Ignored when <paramref name="Deploy"/> is false. The backup queue is single-flight, so a fleet
+    /// backs up one tenant at a time and the deploys trickle out behind it.
+    /// </param>
+    public sealed record Command(
+        int TemplateId, int? ReleaseId, bool Deploy = false, bool BackupFirst = false);
 
     public sealed record Response(SetTenantsReleaseResultDto Result);
 
@@ -157,12 +165,24 @@ public sealed class SetTenantsRelease(
         // A stopped tenant is disabled, not misconfigured (ADR-0025): its pin is written and its deploy
         // is skipped, exactly as stacks.setRelease treats a stopped stack.
         var deployEventIds = new List<int>();
+        var backupEventIds = new List<int>();
         if (command.Deploy) {
-            foreach (var tenant in tenants.Where(t => t.DesiredState != StackDesiredState.Stopped))
-                deployEventIds.Add(deployQueue.Enqueue(tenant.Id, DeployTriggers.ReleaseManual).DeployEventId);
+            foreach (var tenant in tenants.Where(t => t.DesiredState != StackDesiredState.Stopped)) {
+                if (command.BackupFirst) {
+                    // The deploy is not enqueued at all: the chain enqueues it when the backup succeeds,
+                    // so a tenant whose backup fails is left exactly as it was — pinned, not deployed,
+                    // with a failed deploy event saying why (BackupChainCoordinator).
+                    backupEventIds.Add(backupQueue.Enqueue(
+                        tenant.Id, BackupTriggers.PreDeploy,
+                        BackupChainStep.ForDeploy(tenant.Id, DeployTriggers.ReleaseManual)).BackupEventId);
+                } else {
+                    deployEventIds.Add(deployQueue.Enqueue(tenant.Id, DeployTriggers.ReleaseManual).DeployEventId);
+                }
+            }
         }
 
         return new Response(new SetTenantsReleaseResultDto(
-            tenants.Count, deployEventIds.Count, deployEventIds, TenancyMapping.ReleaseRef(target)));
+            tenants.Count, deployEventIds.Count, deployEventIds, TenancyMapping.ReleaseRef(target),
+            backupEventIds.Count, backupEventIds));
     }
 }

@@ -21,7 +21,7 @@ public sealed class RunBackup(WatchtowerDbContext db, BackupQueueService queue)
         if (!await db.Stacks.AnyAsync(s => s.Id == command.StackId, ct))
             return AppError.NotFound($"Stack {command.StackId} not found");
 
-        var result = queue.Enqueue(command.StackId, "manual");
+        var result = queue.Enqueue(command.StackId, BackupTriggers.Manual);
         return new Response(new BackupRunAcceptedDto(result.BackupEventId, result.Status));
     }
 }

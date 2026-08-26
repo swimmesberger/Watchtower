@@ -38,6 +38,9 @@ export function SettingsTab({ product }: { product: Product }) {
     composeFilePath: product.composeFilePath,
     credentialId: product.credentialId,
     releaseMode: product.releaseMode as ReleaseMode,
+    // A string, not a number: an <input type="number"> the reader is mid-edit on is legitimately
+    // empty, and coercing that to 0 every keystroke would make the field unusable.
+    retainReleases: String(product.retainReleases),
   })
   const [error, setError] = useState<string | null>(null)
   const [confirmSource, setConfirmSource] = useState(false)
@@ -82,6 +85,14 @@ export function SettingsTab({ product }: { product: Product }) {
   // Not merely "the select says git": a product already in Git mode is not reverting anything.
   const revertingToGit = modeChanged && selectedMode === 'git'
 
+  // The retention floor. Parsed here so the save gate and the hint agree on what "a usable number"
+  // means; the server clamps to 5…1000 anyway, so an out-of-range entry is corrected rather than
+  // refused — and the hint says the bounds so nobody has to discover them by being corrected.
+  const retainParsed = /^\d+$/.test(form.retainReleases.trim())
+    ? Number(form.retainReleases.trim())
+    : null
+  const retainChanged = retainParsed != null && retainParsed !== product.retainReleases
+
   // Both kinds block a delete and both take the new source at their next deploy, so both are
   // counted and both are named — a count that only mentioned stacks would understate the blast
   // radius of a save and misdescribe the refusal a delete is about to hit.
@@ -108,6 +119,9 @@ export function SettingsTab({ product }: { product: Product }) {
         // (the first release published flips Git → Releases), so a stale value posted back by a save
         // minutes later would silently revert a flip that had already landed.
         releaseMode: modeChanged ? selectedMode : null,
+        // Same "null leaves it alone" rule. Sent only when the field actually parses and differs, so
+        // an empty box mid-edit is not a request to reset the floor.
+        retainReleases: retainChanged ? Number(form.retainReleases) : null,
       }),
     onSuccess: (updated) => {
       qc.invalidateQueries({ queryKey: ['product', product.id] })
@@ -119,6 +133,11 @@ export function SettingsTab({ product }: { product: Product }) {
       // An open template detail reads ['template', id], which the plural key above does not cover —
       // and its "From product …" line is exactly what this save just changed.
       qc.invalidateQueries({ queryKey: ['template'] })
+      // The one field the server may legitimately not store as typed: retention is *clamped* to
+      // 5…1000 rather than refused, so a save of "2" stores 5. The form is seeded once at mount and
+      // never remounts on a refetch, so without this the box keeps showing 2 over a product that
+      // keeps 5 — and the next save would post 2 again, looking like a change that does nothing.
+      set('retainReleases', String(updated.retainReleases))
       setError(null)
       toast.success(`Saved ${updated.name}.`)
     },
@@ -312,6 +331,42 @@ export function SettingsTab({ product }: { product: Product }) {
                   in Git mode. The next release published switches this back automatically.
                 </Banner>
               )}
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
+      {/* Retention is a release concern, so it sits with the other release control rather than in a
+          section of its own — and, like it, only once the product actually has releases to prune. */}
+      {product.latestRelease && (
+        <section>
+          <SectionHeader
+            title="Release retention"
+            description="How much release history this product keeps."
+          />
+          <Card>
+            <CardContent className="space-y-3">
+              <Field
+                label="Releases to keep"
+                hint="Between 5 and 1000. Pruning runs when a new release is recorded."
+              >
+                {({ id, describedBy }) => (
+                  <Input
+                    id={id}
+                    aria-describedby={describedBy}
+                    className="md:w-40"
+                    inputMode="numeric"
+                    value={form.retainReleases}
+                    onChange={(e) => set('retainReleases', e.target.value)}
+                    placeholder="50"
+                  />
+                )}
+              </Field>
+              <p className="text-[13px] text-text-2">
+                Older releases are deleted, except any that a deployment pins, that a template names as
+                its default for new instances, that a deployment last deployed, or that any deploy in
+                the history refers to. Those are kept however far past the floor they are.
+              </p>
             </CardContent>
           </Card>
         </section>

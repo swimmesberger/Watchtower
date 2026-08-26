@@ -128,12 +128,46 @@ public sealed class Stack {
     /// </summary>
     public StackDesiredState DesiredState { get; set; } = StackDesiredState.Running;
 
-    /// <summary>When true the backup schedule includes this stack (ADR-0016). Manual runs work regardless.</summary>
-    public bool BackupEnabled { get; set; }
+    /// <summary>
+    /// The remote directory this stack's archives are written to and read from, relative to the storage
+    /// provider's base path — <c>{instance}/{stack}</c> for a standalone stack,
+    /// <c>{instance}/{product}/{tenant}</c> for a tenant (design.md §"Backups across tenants"). Null on
+    /// a stack created before the column existed, which resolves to the computed legacy value instead.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Stamped once and stable thereafter.</b> Renaming a stack no longer orphans its archives — the
+    /// pre-existing hazard this column exists to close — and, by the same rule, renaming the Watchtower
+    /// <em>instance</em> does not move a stack whose directory is already stamped. That is deliberate:
+    /// the directory names where bytes already are, and no rename can move bytes that live on somebody
+    /// else's SFTP server. (Before this column, an instance rename orphaned every archive of every
+    /// stack, so the new behaviour is strictly better and never worse.)
+    /// </para>
+    /// <para>
+    /// Null means "compute it as we always did" (<see cref="Services.BackupNaming.StackDirectory"/> from
+    /// the live instance name and the stack's current name), so every archive an upgraded install
+    /// already holds stays discoverable with no migration writing a value the database cannot know. A
+    /// legacy stack is stamped with exactly that computed value after its next <em>successful</em>
+    /// backup, which is the moment we know the value is the one the storage really uses.
+    /// </para>
+    /// </remarks>
+    public string? BackupDirectory { get; set; }
+
+    /// <summary>
+    /// When true the backup schedule includes this stack (ADR-0016); manual runs work regardless. Null
+    /// inherits — the template's policy for a tenant, otherwise the instance default (off).
+    /// </summary>
+    /// <remarks>
+    /// Tri-state since stage 7 of ADR-0026, like <see cref="BackupCron"/> has always been. Existing
+    /// rows kept their explicit <c>true</c>/<c>false</c> through the migration, so nothing an operator
+    /// had configured started inheriting; only rows written afterwards start out null.
+    /// Resolve it through <see cref="Services.BackupPolicyResolver"/>, never by reading it directly.
+    /// </remarks>
+    public bool? BackupEnabled { get; set; }
     /// <summary>
     /// Optional per-stack schedule: a five-field cron expression (server-local wall clock) that
-    /// replaces the instance-wide <c>Backup:Cron</c> for this stack (ADR-0018). Null = follow the
-    /// instance schedule.
+    /// replaces the instance-wide <c>Backup:Cron</c> for this stack (ADR-0018). Null inherits — the
+    /// template's expression for a tenant, otherwise the instance schedule.
     /// </summary>
     public string? BackupCron { get; set; }
     /// <summary>
@@ -143,16 +177,18 @@ public sealed class Stack {
     /// </summary>
     public DateTimeOffset? LastScheduledBackupAt { get; set; }
     /// <summary>
-    /// When true (default), the stack's running containers are stopped for the duration of the
-    /// volume archive step and restarted afterwards, so the snapshot is consistent (ADR-0016 §2).
+    /// When true, the stack's running containers are stopped for the duration of the volume archive
+    /// step and restarted afterwards, so the snapshot is consistent (ADR-0016 §2). Null inherits — the
+    /// template's policy for a tenant, otherwise the instance default (on).
     /// </summary>
-    public bool BackupStopContainers { get; set; } = true;
+    public bool? BackupStopContainers { get; set; }
     /// <summary>
     /// How the containers <see cref="BackupStopContainers"/> selects are quiesced when their service
-    /// carries no explicit <c>watchtower.backup.stop</c> label: stopped (default, application-consistent)
-    /// or paused (cgroup freeze, milliseconds of downtime, crash-consistent) — ADR-0019.
+    /// carries no explicit <c>watchtower.backup.stop</c> label: stopped (application-consistent) or
+    /// paused (cgroup freeze, milliseconds of downtime, crash-consistent) — ADR-0019. Null inherits —
+    /// the template's policy for a tenant, otherwise the instance default (stop).
     /// </summary>
-    public BackupQuiesceMode BackupQuiesceMode { get; set; } = BackupQuiesceMode.Stop;
+    public BackupQuiesceMode? BackupQuiesceMode { get; set; }
 
     /// <summary>Set when this stack is a tenant instance of a <see cref="StackTemplate"/>; null for standalone stacks.</summary>
     public int? TemplateId { get; set; }

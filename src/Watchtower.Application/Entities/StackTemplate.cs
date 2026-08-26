@@ -82,10 +82,35 @@ public sealed class StackTemplate {
 
     public DateTimeOffset CreatedAt { get; set; }
 
+    /// <summary>
+    /// Backup policy every tenant of this template <em>inherits</em> — not copies (invariant 5). Null on
+    /// each field means the template has no opinion and the instance default applies; a tenant that sets
+    /// its own value overrides the template for that field alone (design.md §"Backups across tenants").
+    /// </summary>
+    /// <remarks>
+    /// Resolution is the ADR-0020 ladder extended by one rung and lives in exactly one place,
+    /// <see cref="Services.BackupPolicyResolver"/>: <b>compose label &gt; stack override &gt; template
+    /// policy &gt; instance default</b>. Nothing else may read these fields to decide behaviour — a
+    /// second reader is how the schedule and the run start disagreeing about whether a tenant is backed
+    /// up at all.
+    /// </remarks>
+    public bool? BackupEnabled { get; set; }
+
+    /// <inheritdoc cref="BackupEnabled"/>
+    public string? BackupCron { get; set; }
+
+    /// <inheritdoc cref="BackupEnabled"/>
+    public bool? BackupStopContainers { get; set; }
+
+    /// <inheritdoc cref="BackupEnabled"/>
+    public BackupQuiesceMode? BackupQuiesceMode { get; set; }
+
     /// <summary>Shared environment defaults; tenant overrides are merged over these at creation.</summary>
     public ICollection<StackTemplateEnvVar> BaseEnvVars { get; set; } = [];
     /// <summary>The tenant stacks created from this template.</summary>
     public ICollection<Stack> Instances { get; set; } = [];
+    /// <summary>Per-service backup settings every tenant of this template inherits (ADR-0020).</summary>
+    public ICollection<TemplateBackupServiceOverride> BackupServiceOverrides { get; set; } = [];
 }
 
 /// <summary>A shared environment default on a <see cref="StackTemplate"/>.</summary>
