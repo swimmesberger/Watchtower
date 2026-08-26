@@ -674,6 +674,33 @@ the first release the whole card collapses to one link.
 - Tab changes: CI leaves for the product (6 → 5 tabs, all runtime concerns); the known
   missing-domains gap is filled by a Domains *section* on Overview, not a tab.
 
+### Dashboard
+
+A **Fleets** section between Active deployments and the stacks grid, one card per fleet — where a
+*fleet* is simply a product that has tenancy with at least one instance. The card: product name
+(→ the product), tenant count, a danger `N failing` chip **only when a tenant's last deploy failed**,
+the roster's own rollup line verbatim (`10 on latest · 1 pinned · 1 behind`, `Releases` mode only —
+invariant 4 reaches here too), the latest release with its age, and a quiet *Open instances →*.
+**No Deploy button:** every fleet action already lives on the product page beside the dialog that
+states its consequence, and a card with no Deploy owes no version next to one (invariant 6).
+
+The grid below it then **drops the stacks those cards represent**. Forty near-identical cards that
+differ only by customer name are a list, not a dashboard; the card says everything the forty said in
+aggregate, and the failing chip is what keeps a broken tenant visible. Only tenants of a fleet that
+actually rendered a card are dropped — a detached tenant, or one whose fleet card is missing for any
+reason, keeps its own card, because a stack that appears nowhere is the one outcome this may not
+produce. With fleets on screen the grid is headed **Other stacks**; with none it is **Stacks**, as
+before. The Summary cards stay global and unchanged: a tenant is a stack, and the fleet card is
+presentation, not ontology.
+
+**Self-adjusting, never asked.** There is no persona toggle and no setting. An install with no
+tenancy has no fleets, renders no section, and gets byte-for-byte the dashboard it had before this
+existed — verified by DOM comparison, not by eye. That is a DOM claim, not a request claim: with the
+Products and Tenancy modules *on* (the default), every dashboard load now issues one extra parallel
+`products.list`, fleets or not, because "there are no fleets" is itself an answer only that call can
+give — and the grid's first paint waits for it. With either module off, the section is not
+contributed and the join issues no request. The threshold is data the install already has.
+
 ### Explanation strategy
 
 | Surface | Used for | Rule |
@@ -703,12 +730,18 @@ domain pattern → the live preview.
 | Releases list unbounded | 20 + "Show older", digests behind row expansion |
 | Instances tab carrying three jobs | Config collapsed to a summary card; the tab most likely to split later |
 | Mobile: 5-column instance table | Card fallback leading with slug + version + status |
+| Dashboard drowning in tenant cards | The Fleets section: one card per fleet, its tenants dropped from the grid; absent entirely on an install with no fleets |
 
 ### Migration morning-after
 
-Stacks, stack detail, Routes and the dashboard are visually unchanged except the Product column and
-the header link. **No migrated product has releases, so everything new is dormant until opted in —
-an explicit acceptance criterion.** The one genuinely jarring change, Templates → Products in the
+Stacks, stack detail and Routes are visually unchanged except the Product column and the header
+link, and so is the dashboard for any install without tenancy. **No migrated product has releases,
+so everything new is dormant until opted in — an explicit acceptance criterion.** The one exception
+is deliberate and is §Dashboard's: a migrated install that *does* have templates meets the Fleets
+section on its first visit, with its tenants folded into one card per fleet. That install is exactly
+the one whose dashboard was already unreadable, the fold is reversible by reading (the tenants are
+one click away on Instances, and unchanged on `/stacks`), and no version surface appears on the card
+until the product has releases. The one genuinely jarring change, Templates → Products in the
 sidebar, gets three mitigations: redirects, a one-time info banner on Products ("Templates moved
 here — a template is now a product's tenancy setup; yours are unchanged under each product's
 Instances tab"), and a `tenants` badge on migrated tenancy products. The upgrade note rides the

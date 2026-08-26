@@ -6,8 +6,9 @@ build; this file says how far it got and what is owed. **The roadmap is complete
 all landed, so this file is now the handover for whoever maintains the feature rather than the brief
 for the next stage.
 
-Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 8b
-(end-state IA + the two owed frontend gaps) — **the last piece**. Stage 7 was the last *feature* stage;
+Branch: `wt/watchtower-multi-tenant-design-bad75e` (pushed). Last updated 2026-08-26 after stage 8c
+(the dashboard fleet view — a user-requested addition to the end-state PR, frontend only). Stage 8b
+was the last *structural* piece: the end-state IA plus the two owed frontend gaps. Stage 7 was the last *feature* stage;
 8a added no behaviour an operator can see, retired four accepted-debt entries and moved the `xmin`
 concurrency token onto the entities; 8b lands the information architecture design.md always specified
 (Templates leaves the sidebar and becomes the product's Instances tab) plus the two frontend deferrals
@@ -33,6 +34,8 @@ debt that is architectural rather than an irreducible trade-off is paid before i
 | `3666733` | **7 — tenant-aware backups** | The last stage. `Stack.BackupDirectory` (nullable, stamped at creation, legacy rows computed as before and stamped on their next *successful* backup); `Stack.BackupEnabled/BackupStopContainers/BackupQuiesceMode` widened to tri-state; `StackTemplate.BackupEnabled?/BackupCron?/BackupStopContainers?/BackupQuiesceMode?` plus the `template_backup_service_overrides` table — one additive migration (`AddTenantAwareBackups`) that rewrites no values. `BackupPolicyResolver` is the one answer to "what policy does this stack run under" (invariant 18), read by the schedule tick, the run, the preparation and the plan preview. `BackupChainCoordinator` is backup-then-something (invariant 19): the `pre-deploy` trigger behind `stacks.setRelease(backupFirst)` / `templates.setTenantsRelease(backupFirst)`, and the `final` trigger behind `templates.removeTenant(finalBackup)`. `templates.backupAll`, `backups.getProductBackups`, `backups.setTemplatePolicy`, and a `productId` filter on `backups.events`. Manifest `formatVersion` 3 (`productId`/`productName`/`templateId`/`tenantSlug`/`releaseId`/`releaseVersion`, appended). The stage-6 owed item is paid: `RetainReleases` on `products.update` (clamped) with a field on product Settings. Frontend: the product Backups tab (`modules/backups/ProductBackupsTab.tsx`, contributed to `productDetailTabs` at order 35), provenance chips and a "use the fleet policy" reset on the stack Backups tab, the pre-rollout checkbox in the roll-out dialog, and the final-backup switch on the remove-tenant confirm. |
 | `77b0f72` | **8a — end-state hardening** | No behaviour an operator can see: the asynchronous registry-resolution path, two `xmin` concurrency retries, the `ProductCatalog` savepoint seam, and `xmin` as a real `IHasXmin` property with the empty `XminConcurrencyTokenAsProperty` migration. Written up in full in the two "From stage 8a" sections below. |
 | `f57f9e7` | **8b — end-state IA + the owed frontend gaps** | The fold design.md §Navigation always specified, and the last two deferrals. **Templates leaves the sidebar**: the Tenancy module now contributes an **Instances** tab to `productDetailTabs` (order 30, so CI moved 30 → 32 and the design's Overview/Releases/Instances/CI/Backups/Settings order holds), and `modules/templates/{TemplatesPage,TemplateNewPage,TemplateDetailPage}.tsx` are **deleted** — their content moved into `InstancesTab.tsx` (summary card + [Edit], add-tenant row, Management API, rollup, roster, every dialog) and `TenancyConfigForm.tsx` (the template form **minus the whole Source card**, with the `{tenant}` live preview). `/templates` and `/templates/new` redirect to `/products`; `/templates/$id` resolves through `TemplateRedirect.tsx` to `/products/$id?tab=instances`. The one-time "Templates moved here" banner on the catalogue (`localStorage`). **Template per-service backup overrides got their write side**: `backups.setTemplateServiceOverride` (contract-identical to `backups.setServiceOverride`, audited `backups`/`template.service-override.update`), `BackupTemplatePolicyDto.ServiceOverrides` on the read side, and an editor on the product Backups tab's policy card that borrows one instance's service list; `BackupOverrideMenu.tsx` is now the one override control both rungs render. **The pin pickers page**: `useProductReleases` became a keyset infinite query and both pickers grew "Show older", so a pin older than the first page is selectable again. From the review round: design.md's **Next-steps card** on the product Overview (the last unbuilt §UX element), the two-module gate that makes the Tenancy-without-Products combination behave, the override menu's consequence line, and design.md's tab cap amended 5 → 6. |
+
+| `_pending_` | **8c — the dashboard fleet view** | A user-requested addition to the end state, and **frontend only** (two files, zero backend, no new RPC). `modules/dashboard/sections.tsx` gains a **Fleets** section (order 45) rendering one card per fleet — product, tenant count, a danger `N failing` chip, the roster's rollup line and the latest release with its age — and `StacksGridSection` drops the stacks those cards represent. The join is `useFleets()`, a dashboard-owned hook both sections call: `products.list` gated on the `Products` module says which products have tenancy, one `products.get` per fleet (on the `['product', id]` key the product page already uses) says which of its stacks are tenants, and the live `stacks.list` rows supply every value rendered. Written up under "Stage 8c" below. |
 
 **The roadmap is complete, and so is the design.** Every stage in
 [design.md](design.md#staged-roadmap) has landed, and with 8b so has every UX commitment in
@@ -1274,3 +1277,114 @@ clean (no entity changed — the new handler writes a table that already existed
 diff **additive** (one new method, `backups.setTemplateServiceOverride`, plus `serviceOverrides` on
 `BackupTemplatePolicyDto` — the only removed lines are the two `required`-array entries that gained a
 successor); `npm run typecheck` and `npm run build` green.
+
+## Stage 8c handover — the dashboard fleet view
+
+**Why it exists.** A tenancy install's dashboard was a grid of forty near-identical cards differing
+only by customer name, which is a list, not a dashboard. design.md §Dashboard is the spec; this is
+what landed. Two files, both frontend (`modules/dashboard/sections.tsx`,
+`modules/dashboard/module.tsx`), **zero backend files and no new RPC** — the whole feature is a
+client-side join of two calls the app already serves.
+
+**Why the dashboard module owns it, and not products or tenancy.** The Fleets section and the stacks
+grid are one rule seen from two sides: the grid drops exactly the stacks the cards represent. One
+owner of both halves is the only arrangement in which that rule is stated once and cannot drift; a
+section contributed by another module would need the grid to re-derive the same set. Modules never
+import each other, and this imports none — only `lib/api`, `lib/release` and `lib/types`, which is
+the same allowance stage 4b's `lib/release.ts` was created under.
+
+**The join, and the one thing it works around.** `useFleets()` is the hook both sections call
+(React Query dedupes them onto one request each):
+
+- `products.list`, `enabled` on `caps.isModuleEnabled('Products')` — the gate that makes this
+  self-adjusting at the *query* level and not merely at the render level. A fleet is a product with
+  `templateCount > 0`.
+- one `products.get` per fleet, on the `['product', id]` key the product detail page itself uses, so
+  the click-through from a card costs nothing. This is the workaround: **`StackDto` carries no
+  `templateId`**, so `stacks.list` alone cannot tell a tenant from a standalone stack, and
+  `ProductStackDto` — which does carry it — was already on the wire. Adding the field to `StackDto`
+  would have been a backend change for a presentation rule. The real cost of this choice is the
+  *payload*, not the round trips: `products.get` is the one response that carries the release webhook
+  token (deliberately kept off the catalogue DTO), and the dashboard now fetches and caches it for
+  every fleet on every load, for a card that renders none of it. The handlers are ungated, so nothing
+  new becomes *reachable* — but if `products.get` ever grows heavier or gains gating, revisit with a
+  lighter roster read.
+- the live `stacks.list` rows the grid already holds. **The roster answers membership; the live list
+  answers state.** Every value a card renders (status, pin, deployed release) comes from the same
+  rows the grid renders, so the two can never disagree about a stack, and the card follows the grid's
+  poll for free.
+
+`settled` is the third return value and it is what keeps the grid from flashing: until every roster
+has answered, "is this stack a tenant" has no answer, and rendering a tenant card that vanishes a
+moment later reads as a glitch (the Next-steps card's reasoning, one screen over). It is true from
+the first render when there is nothing to look up, so a hobby install waits for nothing. A failed
+`products.list` is deliberately silent for the same reason the section is: no fleets, today's
+dashboard, and no second error banner over a grid that still works.
+
+**Four rules in the card, each of which could have shipped wrong:**
+
+- **No Deploy button.** Every fleet action already lives on the product page next to the dialog that
+  states its consequence, and a card with no Deploy owes no version beside one — invariant 6 is
+  trivially true here rather than newly enforced. The rollup *is* the fleet's version surface.
+- **The rollup is `Releases`-mode only.** `versionRollup` over the tenants with the product's own
+  `latestRelease.id` as newest (invariant 7 — the id, never a timestamp), rendered in the Instances
+  roster's exact words. In Git mode the three buckets describe nothing, so the line is absent:
+  invariant 4 on a third surface, verified live by a `releases → git` revert. The *latest release*
+  line stays in Git mode, matching the catalogue's own "Latest release" column — it is a fact about
+  the product, not an update mechanism.
+- **The failing chip classifies exactly as `StacksPage`'s failed filter and `StackCard`'s red dot do**
+  (`lastDeployStatus === 'failed'`), deliberately and not more narrowly. It is now the only thing
+  standing between a tenant's failure and invisibility, so classifying it *differently* from the cards
+  it replaces is how a failure would go missing. A stopped tenant is not failing under that rule — its
+  last deploy succeeded — which is the outcome asked for; a stopped tenant whose last deploy *did*
+  fail is still counted, because that one was red in the grid yesterday.
+- **A tenancy setup with no tenants gets no card**, and if it is the only one, no section. It runs
+  nothing; finishing that setup is the product page's job.
+
+**The exclusion rule is membership, not "has a template id".** Only tenants of a fleet that actually
+rendered a card are dropped from the grid. A tenant whose fleet card is missing for any reason — the
+Products module off, the roster query failed, a fleet filtered out for having no tenants — keeps its
+own card, because the one outcome this may never produce is a stack that appears nowhere. A detached
+tenant (`templateId` null) was never in the set. Two consequences: the grid's heading becomes **Other
+stacks** while fleets are on screen (calling the remainder "Stacks" would contradict the Summary's
+total two sections up), and an install whose every stack is a tenant renders **no grid section at
+all** rather than an empty heading over the "No stacks yet" empty state, which would be false.
+
+**Summary and Active deployments are untouched, on purpose.** The Summary stays global — a tenant is
+a stack, it exists, and the fleet card is presentation rather than ontology. On the verification
+install it read `5 · 4 · 1` over two fleet cards and no grid.
+
+**Live verification** (podman on 55440 + API on 5090 + Vite on 5180 through a throwaway config, since
+this host already had something on `:5080`; the stage-4b recipe otherwise). Eight states, all against
+real wire data and real `docker.io` digest resolution for the two releases:
+
+- **Hobby install → byte-identical, proven mechanically.** Two standalone stacks, no templates. The
+  dashboard's `main` innerHTML was captured, the two changed files were `git stash`ed, the page
+  reloaded, and the strings compared: **identical, 13 013 characters, exact equality**. Not "looks the
+  same".
+- **Products module off** (`Modules__Products__Enabled=false`, API restarted): no Fleets section,
+  heading back to "Stacks", every tenant carded, and — instrumenting `fetch` — the dashboard's RPC set
+  was `stacks.list · metrics.host · deployments.active · metrics.stacks`, with **no `products.*` call
+  at all**. The `enabled` gate holds at the query level.
+- **A three-tenant fleet with releases**: `saas-app · 3 tenants · [1 failing] · 1 on latest · 1 pinned
+  · 1 behind · 1.4.0 · 2m ago · Open instances →`, with the three tenants gone from the grid and the
+  product's *standalone* stack (`saas-app-staging` — same product, no template) still carded beside
+  the two hobby stacks under **Other stacks**.
+- **Silence is healthy**: a second fleet with two successful tenants and no releases rendered
+  `internal-tools · 2 tenants · No releases yet` — no chip, no rollup.
+- **Git-mode revert**: the rollup line disappeared, everything else stayed.
+- **Zero-tenant fleet**: a template added to `blog` with no tenants produced no card, and `blog`
+  stayed in the grid.
+- **Detached tenant**: nulling one tenant's `template_id` moved it back into the grid, and the card
+  correctly read `1 tenant`.
+- **Every stack a tenant**: deleting the three non-tenant stacks left two fleet cards and **no grid
+  section**, with the Summary still reporting all five stacks.
+- **Click-through**: *Open instances →* → `/products/3?tab=instances` with Instances selected, whose
+  roster rollup read `1 on latest · 1 pinned · 1 behind` — the same three words as the card, from the
+  same function.
+- **375px**: cards 343px wide, stacked, `scrollWidth - clientWidth === 0`. No console errors in any
+  state, and the fleet card carries no `<button>` at all (asserted in the DOM, not by eye).
+
+**Verification at hand-over**: `npm run typecheck` and `npm run build` green; `dotnet build` untouched
+and unnecessary — `git status` shows two `.tsx` files and these two documents and nothing else, so
+`rpc-schema.json`, the migrations and the test suite cannot have moved.
