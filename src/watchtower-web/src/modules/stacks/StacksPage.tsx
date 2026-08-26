@@ -364,11 +364,25 @@ export function StacksPage() {
       title="No stacks yet"
       description="Register a git repo with a compose file to start deploying."
       action={
-        <Button asChild variant="primary">
-          <Link to="/stacks/new">
-            <Plus /> New stack
-          </Link>
-        </Button>
+        // The mirror of the Products empty state's "Just deploying one repo?" line: the two pages
+        // teach each other's entry point, so whichever one a fresh operator lands on first names the
+        // other workflow — a sentence for the other persona, not a competing button.
+        <div className="flex flex-col items-center gap-3">
+          <Button asChild variant="primary">
+            <Link to="/stacks/new">
+              <Plus /> New stack
+            </Link>
+          </Button>
+          {productsEnabled && (
+            <p className="text-[13px] text-text-2">
+              Running one product for many tenants?{' '}
+              <Link to="/products" className="text-brand hover:underline">
+                Start from Products
+              </Link>
+              .
+            </p>
+          )}
+        </div>
       }
     />
   )
