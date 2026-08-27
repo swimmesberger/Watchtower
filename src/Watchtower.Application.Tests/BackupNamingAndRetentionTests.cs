@@ -54,6 +54,43 @@ public sealed class BackupNamingAndRetentionTests {
     public void SanitizeYieldsASafeSingleSegment(string input, string expected) =>
         Assert.Equal(expected, BackupNaming.Sanitize(input));
 
+    // ── The instance's own directory (ADR-0027) ──────────────────────────────
+
+    [Fact]
+    public void TheInstanceDirectoryIsASiblingOfTheStackDirectories() {
+        // One folder per instance holds everything a rebuild needs: Watchtower's database next to the
+        // stacks whose volumes it describes.
+        Assert.Equal("prod/_watchtower", BackupNaming.InstanceDirectory("prod"));
+        Assert.Equal("prod/web-app", BackupNaming.StackDirectory("prod", "web-app"));
+    }
+
+    [Fact]
+    public void InstanceArchivesParticipateInRetentionLikeAnyOther() {
+        // Retention and the remote listing key off the timestamp suffix alone, so the instance stem is
+        // not a special case for either — which is what lets both paths share one implementation.
+        var taken = new DateTimeOffset(2026, 8, 26, 3, 30, 0, TimeSpan.Zero);
+        var name = BackupNaming.FileName(BackupNaming.InstanceFileStem, taken, encrypted: true);
+
+        Assert.Equal("watchtower_20260826T033000Z.tar.gz.enc", name);
+        Assert.Equal(taken, BackupNaming.ParseTimestamp(name));
+    }
+
+    [Theory]
+    [InlineData("_watchtower")]
+    [InlineData("_WATCHTOWER")]
+    [InlineData("_watchtower ")]
+    public void TheInstanceDirectoryNameIsReservedAgainstStacks(string stackName) =>
+        // A stack sanitizing onto it would write its archives among Watchtower's own, and retention —
+        // which prunes a directory, not a stack — would then count the two as one set.
+        Assert.True(BackupNaming.IsReserved(stackName));
+
+    [Theory]
+    [InlineData("watchtower")]
+    [InlineData("_watchtower-backups")]
+    [InlineData("web-app")]
+    public void OrdinaryStackNamesAreNotReserved(string stackName) =>
+        Assert.False(BackupNaming.IsReserved(stackName));
+
     // ── Retention ────────────────────────────────────────────────────────────
 
     [Fact]

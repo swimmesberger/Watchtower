@@ -27,6 +27,15 @@ public static class WatchtowerSessionDefaults {
     /// so there is one rule and not two.
     /// </remarks>
     public const string SystemRealmPolicy = "WatchtowerSystemRealm";
+
+    /// <summary>
+    /// <see cref="SystemRealmPolicy"/> plus the admin role — the middleware-side equivalent of a handler's
+    /// <c>[RequireRole(WatchtowerClaims.AdminRole)]</c>, for the endpoints that hand out an entire
+    /// instance (ADR-0027): the full backup bundle carries the key-protection secret, the backup
+    /// passphrase and the storage credentials in plain text, so downloading one is not something an
+    /// ordinary operator session should be able to do.
+    /// </summary>
+    public const string SystemAdminPolicy = "WatchtowerSystemAdmin";
 }
 
 /// <summary>

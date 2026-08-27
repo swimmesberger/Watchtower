@@ -255,6 +255,22 @@ public sealed record BackupOptions {
     /// <summary>The default for <see cref="StopTimeoutSeconds"/>.</summary>
     public const int DefaultStopTimeoutSeconds = 5;
 
+    /// <summary>
+    /// Whether the schedule also backs up Watchtower's own database (ADR-0027), as a dumps-only archive
+    /// under <see cref="Services.BackupNaming.InstanceDirectory"/>. On by default: an instance whose
+    /// stacks are backed up but whose own state is not can restore every stack's data and none of the
+    /// configuration that deploys it. Needs <see cref="EncryptionPassphrase"/> — the dump carries every
+    /// database role's password hash — and a PostgreSQL that runs as a container on this daemon.
+    /// </summary>
+    public bool IncludeSelf { get; init; } = true;
+
+    /// <summary>
+    /// The container running Watchtower's own PostgreSQL, by name or id, when
+    /// <see cref="Services.SelfPostgresLocator"/> cannot work it out — several database containers on
+    /// one daemon and none of them answering to the connection string's host. Blank = detect it.
+    /// </summary>
+    public string? SelfPostgresContainer { get; init; }
+
     /// <summary>Storage backend the archives are shipped to: <c>sftp</c> (default) or <c>local</c>.</summary>
     public string Provider { get; init; } = "sftp";
 

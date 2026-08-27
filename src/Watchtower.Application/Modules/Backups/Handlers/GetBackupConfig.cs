@@ -36,6 +36,8 @@ public sealed class GetBackupConfig(IOptionsMonitor<WatchtowerOptions> options, 
         WatchtowerSettingPaths.BackupSftpPrivateKeyPassphrase,
         WatchtowerSettingPaths.BackupSftpBasePath,
         WatchtowerSettingPaths.BackupLocalBasePath,
+        WatchtowerSettingPaths.BackupIncludeSelf,
+        WatchtowerSettingPaths.BackupSelfPostgresContainer,
     ];
 
     public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {

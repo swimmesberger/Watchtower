@@ -38,6 +38,7 @@ public sealed class BackupService(
     BackupArchiveService archiveService,
     PostgresDumpService postgres,
     BackupStorageFactory storageFactory,
+    BackupRetentionRunner retention,
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<WatchtowerOptions> options,
     AuditLog audit,
@@ -49,29 +50,37 @@ public sealed class BackupService(
     /// <summary>The compose label a stack's volumes carry.</summary>
     private const string ComposeProjectLabel = "com.docker.compose.project";
 
+    /// <summary>
+    /// Why a run on this path had no stack to work with. Covers both ways that happens: the stack was
+    /// deleted while the run waited (the ordinary one), and a stackless instance event reached the stack
+    /// path at all (ADR-0027 gave <see cref="BackupEvent.StackId"/> a null case, and the queue routes
+    /// those elsewhere — so this half is a bug rather than a state, and says as much).
+    /// </summary>
+    private const string StacklessMessage =
+        "This run has no stack: it was either deleted while the run was queued, or the event belongs to "
+        + "an instance backup and reached the stack path by mistake.";
+
     /// <summary>Runs the backup for an event created by <see cref="BackupQueueService.Enqueue"/>.</summary>
     public async Task ExecuteBackupAsync(int backupEventId, CancellationToken ct) {
         var output = new StringBuilder();
         // Locked: a dependency level is quiesced concurrently, and its tasks all log.
         void Log(string line) { lock (output) output.AppendLine(line); }
 
-        int stackId;
         string triggeredBy;
         Stack? stack;
         using (var scope = scopeFactory.CreateScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var evt = await db.BackupEvents.FirstOrDefaultAsync(e => e.Id == backupEventId, ct);
             if (evt is null) return; // stack (and its events) deleted while queued
-            stackId = evt.StackId;
             triggeredBy = evt.TriggeredBy;
-            stack = await LoadStackAsync(db, stackId, ct);
+            stack = evt.StackId is { } id ? await LoadStackAsync(db, id, ct) : null;
             evt.Status = "running";
             evt.StartedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
         }
 
         if (stack is null) {
-            await FinishAsync(backupEventId, success: false, "Stack no longer exists.", null, null, ct);
+            await FinishAsync(backupEventId, success: false, StacklessMessage, null, null, ct);
             return;
         }
 
@@ -201,14 +210,14 @@ public sealed class BackupService(
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             var evt = await db.BackupEvents.FirstOrDefaultAsync(e => e.Id == backupEventId, ct);
             if (evt is null) return;
-            stack = await LoadStackAsync(db, evt.StackId, ct);
+            stack = evt.StackId is { } id ? await LoadStackAsync(db, id, ct) : null;
             evt.Status = "running";
             evt.StartedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
         }
 
         if (stack is null) {
-            await FinishAsync(backupEventId, success: false, "Stack no longer exists.", null, null, ct);
+            await FinishAsync(backupEventId, success: false, StacklessMessage, null, null, ct);
             return;
         }
 
@@ -253,8 +262,8 @@ public sealed class BackupService(
             log($"Downloaded {sizeBytes} bytes{(encrypted ? " (encrypted)" : "")}");
 
             // 2. Scan the table of contents and match it against the host's volumes.
-            var contents = await WithSpoolTarAsync(spoolPath, encrypted, backup,
-                tar => ReadContentsAsync(tar, encrypted, ct));
+            var contents = await BackupArchiveReader.ReadContentsAsync(
+                spoolPath, Passphrase(encrypted, backup), ct);
             if (contents.ManifestJson is null)
                 log("Note: the archive carries no manifest (single-volume download?) — proceeding by its directory layout.");
 
@@ -349,10 +358,11 @@ public sealed class BackupService(
             try {
                 // 9. Wipe + extract, unless the archive is dumps only.
                 if (plan.Volumes.Count > 0) {
-                    await WithSpoolTarAsync<object?>(spoolPath, encrypted, backup, async tar => {
-                        await archiveService.RestoreArchiveAsync(plan.Volumes, tar, backup.HelperImage, ct);
-                        return null;
-                    });
+                    await BackupArchiveReader.WithArchiveAsync<object?>(
+                        spoolPath, Passphrase(encrypted, backup), async tar => {
+                            await archiveService.RestoreArchiveAsync(plan.Volumes, tar, backup.HelperImage, ct);
+                            return null;
+                        });
                     log("Archive extracted into the volumes.");
                 }
 
@@ -435,52 +445,12 @@ public sealed class BackupService(
     private static Task<long> ExtractDumpAsync(
         string spoolPath, bool encrypted, BackupOptions backup, string relativeFile, string destination,
         CancellationToken ct) =>
-        WithSpoolTarAsync(spoolPath, encrypted, backup, async tar => {
-            var wanted = $"backup/{relativeFile}";
-            await using var reader = new TarReader(tar, leaveOpen: true);
-            while (await reader.GetNextEntryAsync(cancellationToken: ct) is { } entry) {
-                if (!string.Equals(entry.Name.TrimStart('.', '/'), wanted, StringComparison.Ordinal)) continue;
-                if (entry.DataStream is not { } data) break;
-                await using var file = File.Create(destination);
-                await data.CopyToAsync(file, ct);
-                return file.Length;
-            }
-            // The table-of-contents scan found it a moment ago, so this means the archive changed
-            // under us or is damaged — either way, not something to restore from.
-            throw new InvalidOperationException(
-                $"The archive does not contain '{wanted}', although its table of contents lists it.");
-        });
+        BackupArchiveReader.ExtractAsync(
+            spoolPath, Passphrase(encrypted, backup), relativeFile, destination, ct);
 
-    /// <summary>
-    /// Runs <paramref name="action"/> over the spool opened as an uncompressed tar stream
-    /// (file → optional decrypt → gunzip), disposing every layer afterwards — including the file
-    /// handle, which the delete in the caller's finally depends on.
-    /// </summary>
-    private static async Task<T> WithSpoolTarAsync<T>(
-        string spoolPath, bool encrypted, BackupOptions backup, Func<Stream, Task<T>> action) {
-        await using var file = File.OpenRead(spoolPath);
-        var inner = encrypted
-            ? BackupEncryption.CreateDecryptingStream(file, backup.EncryptionPassphrase!)
-            : file;
-        try {
-            await using var tar = new GZipStream(inner, CompressionMode.Decompress, leaveOpen: true);
-            return await action(tar);
-        } finally {
-            if (!ReferenceEquals(inner, file)) await inner.DisposeAsync();
-        }
-    }
-
-    /// <summary>Scans the tar, translating decode failures on encrypted archives into a passphrase hint.</summary>
-    private static async Task<BackupArchiveContents> ReadContentsAsync(
-        Stream tar, bool encrypted, CancellationToken ct) {
-        try {
-            return await BackupArchiveInspector.InspectAsync(tar, ct);
-        } catch (Exception ex) when (encrypted
-            && ex is InvalidDataException or System.Security.Cryptography.CryptographicException) {
-            throw new InvalidOperationException(
-                $"Could not read the encrypted archive — is the encryption passphrase the one it was written with? ({ex.Message})");
-        }
-    }
+    /// <summary>The passphrase this archive was written with, or null when it was not encrypted.</summary>
+    private static string? Passphrase(bool encrypted, BackupOptions backup) =>
+        encrypted ? backup.EncryptionPassphrase : null;
 
     /// <summary>Why a container that mounts a volume being restored was nevertheless left running.</summary>
     private static string RestoreKeepReason(BackupKeepReason reason) => reason switch {
@@ -605,7 +575,7 @@ public sealed class BackupService(
                 await read.CopyToAsync(dest, uploadCt);
             }, ct);
 
-            await ApplyRetentionAsync(storage, directory, backup, log, ct);
+            await retention.ApplyAsync(storage, directory, backup, log, ct);
             return new RunResult(
                 relativePath, sizeBytes, volumes.Count, stopped.StoppedCount, plan.Excluded.Count, dumps.Count,
                 stopped.PausedCount, directory);
@@ -1009,35 +979,6 @@ public sealed class BackupService(
         return unpaused.Count;
     }
 
-    private async Task ApplyRetentionAsync(
-        IBackupStorage storage, string directory, BackupOptions backup, Action<string> log, CancellationToken ct) {
-        if (backup.RetentionDays <= 0 && backup.RetentionMaxCount <= 0) return;
-        try {
-            var names = (await storage.ListFilesAsync(directory, ct)).Select(f => f.Name).ToList();
-            var deletions = BackupRetention.SelectDeletions(
-                names, DateTimeOffset.UtcNow, backup.RetentionDays, backup.RetentionMaxCount);
-            foreach (var name in deletions) {
-                await storage.DeleteFileAsync($"{directory}/{name}", ct);
-                log($"Retention: deleted {name}");
-            }
-            if (deletions.Count > 0) {
-                // A retention change can prune a large backlog at once — cap the listing so one
-                // pathological pass cannot bloat the audit row.
-                var listed = string.Join(", ", deletions.Take(10));
-                await audit.RecordAsync(AuditCategory, "retention.prune", directory,
-                    $"{RetentionSummary(backup)} · deleted {deletions.Count} archive(s): {listed}"
-                    + (deletions.Count > 10 ? ", …" : ""),
-                    ct: CancellationToken.None);
-            }
-        } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
-            // The backup itself succeeded — an unreachable prune retries on the next run.
-            log($"WARNING: retention pruning failed: {ex.Message}");
-            await audit.RecordAsync(AuditCategory, "retention.prune", directory, RetentionSummary(backup),
-                success: false, error: ex.Message, ct: CancellationToken.None);
-            logger.LogWarning(ex, "Retention pruning failed for {Directory}", directory);
-        }
-    }
-
     /// <summary>
     /// The archive's self-description, written to <c>backup/backup-manifest.json</c>.
     /// </summary>
@@ -1099,8 +1040,11 @@ public sealed class BackupService(
     /// </summary>
     internal const int ManifestFormatVersion = 3;
 
-    /// <summary>One entry of the manifest's <c>dumps</c> array.</summary>
-    private static JsonNode DumpNode(BackupDumpEntry dump) => new JsonObject {
+    /// <summary>
+    /// One entry of the manifest's <c>dumps</c> array. Shared with the instance manifest (ADR-0027), so
+    /// a reader that can parse a stack archive's dumps can parse Watchtower's own.
+    /// </summary>
+    internal static JsonNode DumpNode(BackupDumpEntry dump) => new JsonObject {
         ["service"] = dump.Service,
         ["engine"] = dump.Engine.ToString().ToLowerInvariant(),
         ["file"] = dump.File,

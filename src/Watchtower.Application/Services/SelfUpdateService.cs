@@ -410,7 +410,12 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             ApplyError = error,
         }, ct);
 
-    private static string[] GetCurrentGroupIds() {
+    /// <summary>
+    /// The process's supplementary group ids, which a spawned coordinator needs to be able to use the
+    /// Docker socket at all. Shared with the instance-restore coordinator (ADR-0027 §5), which is
+    /// spawned the same way and for the same reason.
+    /// </summary>
+    internal static string[] GetCurrentGroupIds() {
         try {
             foreach (var line in File.ReadLines("/proc/self/status")) {
                 if (!line.StartsWith("Groups:", StringComparison.Ordinal)) continue;
@@ -537,9 +542,25 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             .FirstOrDefaultAsync(ct);
     }
 
-    private sealed record DetectedSelfInfo {
+    /// <summary>
+    /// Which container and image Watchtower is running as, or empty when it is not containerised.
+    /// </summary>
+    /// <remarks>
+    /// Also what the instance restore needs (ADR-0027 §5): the coordinator it spawns has to be built
+    /// from this image and told which container to stop, and both answers come from the same
+    /// <c>HOSTNAME</c> → inspect this service already does for the self-update.
+    /// </remarks>
+    public sealed record DetectedSelfInfo {
         public string? ContainerId { get; init; }
         public string? ImageName { get; init; }
         public bool IsRunningInContainer { get; init; }
     }
+
+    /// <summary>
+    /// <inheritdoc cref="DetectedSelfInfo" path="/summary"/> Never throws: an undetectable self is
+    /// reported as an empty record, and the caller says what that means for what it was about to do.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    public Task<DetectedSelfInfo> DetectSelfAsync(CancellationToken ct = default) =>
+        TryInspectSelfAsync(ct);
 }

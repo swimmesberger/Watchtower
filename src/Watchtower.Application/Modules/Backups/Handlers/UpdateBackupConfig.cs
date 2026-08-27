@@ -39,7 +39,9 @@ public sealed class UpdateBackupConfig(
         string? SftpPrivateKey = null,
         string? SftpPrivateKeyPassphrase = null,
         string? SftpBasePath = null,
-        string? LocalBasePath = null);
+        string? LocalBasePath = null,
+        bool? IncludeSelf = null,
+        string? SelfPostgresContainer = null);
 
     public sealed record Response(BackupConfigDto Config);
 
@@ -90,6 +92,10 @@ public sealed class UpdateBackupConfig(
         Check(WatchtowerSettingPaths.BackupSftpPrivateKeyPassphrase, command.SftpPrivateKeyPassphrase is not null);
         Check(WatchtowerSettingPaths.BackupSftpBasePath, Changed(command.SftpBasePath, sftp.BasePath));
         Check(WatchtowerSettingPaths.BackupLocalBasePath, Changed(command.LocalBasePath, backup.Local.BasePath));
+        Check(WatchtowerSettingPaths.BackupIncludeSelf,
+            command.IncludeSelf is { } includeSelf && includeSelf != backup.IncludeSelf);
+        Check(WatchtowerSettingPaths.BackupSelfPostgresContainer,
+            Changed(command.SelfPostgresContainer, backup.SelfPostgresContainer));
         if (violations.Count > 0)
             return EnvironmentSettingPins.PinnedError(violations);
 
@@ -126,6 +132,12 @@ public sealed class UpdateBackupConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupSftpBasePath, command.SftpBasePath.Trim(), ct);
         if (command.LocalBasePath is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.BackupLocalBasePath, command.LocalBasePath.Trim(), ct);
+        if (command.IncludeSelf is { } includeSelfValue)
+            await SetUnlessPinnedAsync(
+                WatchtowerSettingPaths.BackupIncludeSelf, includeSelfValue ? "true" : "false", ct);
+        if (command.SelfPostgresContainer is not null)
+            await SetUnlessPinnedAsync(
+                WatchtowerSettingPaths.BackupSelfPostgresContainer, command.SelfPostgresContainer.Trim(), ct);
 
         // Echo the written values (the config provider reloads asynchronously — same reasoning as
         // proxy.updateConfig): immediately consistent for the caller.
@@ -151,6 +163,8 @@ public sealed class UpdateBackupConfig(
             Local = backup.Local with {
                 BasePath = Coalesce(command.LocalBasePath, backup.Local.BasePath) ?? "",
             },
+            IncludeSelf = command.IncludeSelf ?? backup.IncludeSelf,
+            SelfPostgresContainer = Coalesce(command.SelfPostgresContainer, backup.SelfPostgresContainer),
         };
 
         // Recorded post-write so the trail answers "what was the configuration at that time" —
@@ -169,6 +183,7 @@ public sealed class UpdateBackupConfig(
             + $" · provider {provider}"
             + $" · {BackupService.RetentionSummary(echoed)}"
             + (string.IsNullOrEmpty(echoed.EncryptionPassphrase) ? "" : " · encrypted")
+            + $" · Watchtower's own database {(echoed.IncludeSelf ? "included" : "excluded")}"
             + (updatedSecrets.Count > 0 ? $" · secrets updated: {string.Join(", ", updatedSecrets)}" : "");
         await audit.RecordAsync(BackupService.AuditCategory, "config.update", "backup settings", detail,
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);

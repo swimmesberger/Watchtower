@@ -394,9 +394,12 @@ public sealed class BackupEventConfiguration : IEntityTypeConfiguration<BackupEv
         // The history view reads newest-first per stack; the startup sweep scans by status.
         b.HasIndex(x => new { x.StackId, x.StartedAt });
         b.HasIndex(x => x.Status);
+        // Optional since ADR-0027: an instance self-backup has no stack. Still cascading, so a deleted
+        // stack takes its own history with it — only the stackless rows outlive every stack.
         b.HasOne(x => x.Stack)
             .WithMany()
             .HasForeignKey(x => x.StackId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

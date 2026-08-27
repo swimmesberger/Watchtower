@@ -25,6 +25,13 @@ using Watchtower.Application.Services.Yarp;
 if (CoordinatorMode.IsApplicable(args))
     await CoordinatorMode.RunAndExitAsync(args);
 
+// ── Restore-coordinator mode ──────────────────────────────────────────────────
+// The same trick for the instance restore (ADR-0027): Watchtower cannot replay a dump over the database
+// its own connection pool is holding open, so a sibling stops it, replays, and starts it again. The web
+// host is NOT started in this mode either.
+if (RestoreCoordinatorMode.IsApplicable(args))
+    await RestoreCoordinatorMode.RunAndExitAsync(args);
+
 // ── Schema export mode ──────────────────────────────────────────────────────────
 // Generates rpc-schema.json (consumed by the frontend client generator) and exits without
 // starting the web server or touching the database.
@@ -156,14 +163,23 @@ if (authEnabled) {
         .AddAuthentication(WatchtowerSessionDefaults.AuthenticationScheme)
         .AddScheme<AuthenticationSchemeOptions, WatchtowerSessionAuthenticationHandler>(
             WatchtowerSessionDefaults.AuthenticationScheme, configureOptions: null);
-    builder.Services.AddAuthorization(o => o.AddPolicy(
-        WatchtowerSessionDefaults.SystemRealmPolicy,
-        p => p
-            // Authenticated first, so an anonymous caller still gets the 401 challenge it always did
-            // rather than a 403 that tells it a session would not have helped.
-            .RequireAuthenticatedUser()
-            // …and then the same operator-realm rule the handler pipeline applies, read off the principal.
-            .RequireAssertion(context => WatchtowerClaims.IsSystemRealm(context.User))));
+    builder.Services.AddAuthorization(o => {
+        o.AddPolicy(
+            WatchtowerSessionDefaults.SystemRealmPolicy,
+            p => p
+                // Authenticated first, so an anonymous caller still gets the 401 challenge it always did
+                // rather than a 403 that tells it a session would not have helped.
+                .RequireAuthenticatedUser()
+                // …and then the same operator-realm rule the handler pipeline applies, read off the principal.
+                .RequireAssertion(context => WatchtowerClaims.IsSystemRealm(context.User)));
+        // The same, plus the admin role — for the endpoints that hand out a whole instance (ADR-0027).
+        o.AddPolicy(
+            WatchtowerSessionDefaults.SystemAdminPolicy,
+            p => p
+                .RequireAuthenticatedUser()
+                .RequireAssertion(context => WatchtowerClaims.IsSystemRealm(context.User))
+                .RequireRole(WatchtowerClaims.AdminRole));
+    });
     // Per-IP throttle on the login endpoint (design.md §9). Registered only in this mode because the
     // route it protects is only mapped here; the policy is attached to that one route, not global.
     builder.Services.AddWatchtowerLoginRateLimiter();
@@ -251,6 +267,8 @@ app.MapElarionJsonRpc();
 app.MapElarionEndpoints(app.Configuration);
 // Webhook, SSE streams, and health.
 app.MapWatchtowerHttpEndpoints(authEnabled);
+// Full backup bundle download (ADR-0027) — a file, so not a JSON-RPC handler. Admin-only.
+app.MapInstanceBackupEndpoints(authEnabled);
 
 // SPA fallback: any unmatched route returns index.html so the client router handles it.
 app.MapFallbackToFile("index.html");
@@ -279,6 +297,10 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
             .SetProperty(e => e.FinishedAt, DateTimeOffset.UtcNow)
             .SetProperty(e => e.Output,
                 e => (e.Output ?? "") + "\n[Reset: process restarted while backup was in progress]"));
+
+    // A bundle staged by a previous process (ADR-0027 §4) is unreachable — the state that knew about it
+    // went with the process — so it would only occupy the disk until the container is recreated.
+    scope.ServiceProvider.GetRequiredService<BackupBundleService>().CleanStagingDirectory();
 
     // ADR-0022's upgrade guard: an instance that was serving routes under the old implicit `caddy`
     // default is pinned to caddy once, so the default flip cannot switch a working proxy silently.

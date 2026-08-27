@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Elarion.Abstractions.Scheduling;
+using Elarion.Settings;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -33,6 +35,7 @@ namespace Watchtower.Application.Modules.Backups;
 public sealed class BackupScheduleJob(
     WatchtowerDbContext db,
     BackupQueueService queue,
+    ISettingsManager settings,
     IOptionsMonitor<WatchtowerOptions> options,
     TimeProvider timeProvider,
     ILogger<BackupScheduleJob> logger) {
@@ -42,6 +45,9 @@ public sealed class BackupScheduleJob(
     // Missed windows are reported once per (stack, window) for the life of the process; the cursor does
     // not move for a skip, so without this the same skip would be logged every minute until the next run.
     private static readonly ConcurrentDictionary<int, DateTimeOffset> LoggedMisses = new();
+
+    /// <summary>The instance self-backup's missed window, deduplicated like <see cref="LoggedMisses"/>.</summary>
+    private static DateTimeOffset? _loggedInstanceMiss;
 
     [ScheduledJob(JobName, FixedRate = "1m", Overlap = ScheduledJobOverlap.Skip)]
     public async ValueTask RunAsync(CancellationToken ct) =>
@@ -64,6 +70,12 @@ public sealed class BackupScheduleJob(
         }
         var grace = BackupSchedule.ResolveMisfireGrace(backup);
 
+        // Watchtower's own database runs on the instance-wide expression — there is one instance, so
+        // there is nothing to override it with (ADR-0027).
+        var enqueuedInstance = globalCron is null
+            ? 0
+            : await TickInstanceAsync(backup, globalCron, now, grace, timeZone, ct);
+
         // The ladder in SQL: a stack that says yes, or a tenant that says nothing over a template that
         // says yes. Kept as a predicate rather than "load everything and resolve in memory" because this
         // runs once a minute against every stack on the box. `BackupPolicyResolver` is still the only
@@ -74,9 +86,9 @@ public sealed class BackupScheduleJob(
                 || (s.BackupEnabled == null && s.Template != null && s.Template.BackupEnabled == true))
             .OrderBy(s => s.Name)
             .ToListAsync(ct);
-        if (stacks.Count == 0) return 0;
+        if (stacks.Count == 0) return enqueuedInstance;
 
-        var enqueued = 0;
+        var enqueued = enqueuedInstance;
         foreach (var stack in stacks) {
             var policy = BackupPolicyResolver.Resolve(stack, stack.Template);
             if (!policy.Enabled) continue;
@@ -119,4 +131,74 @@ public sealed class BackupScheduleJob(
         if (enqueued > 0) await db.SaveChangesAsync(ct);
         return enqueued;
     }
+
+    /// <summary>
+    /// The same window evaluation for Watchtower's own database (ADR-0027). Returns 1 when it enqueued.
+    /// </summary>
+    /// <remarks>
+    /// The cursor is a settings row rather than a column, because there is no instance table to put it on
+    /// — <see cref="WatchtowerSettingPaths.BackupSelfLastScheduledAt"/>, read through the settings manager
+    /// rather than the options monitor so a value written last tick is certainly seen this tick (the
+    /// configuration snapshot reloads asynchronously, and a stale cursor would fire the window twice).
+    /// </remarks>
+    private async ValueTask<int> TickInstanceAsync(
+        BackupOptions backup, CronExpression cron, DateTimeOffset now, TimeSpan grace,
+        TimeZoneInfo timeZone, CancellationToken ct) {
+        if (!backup.IncludeSelf) return 0;
+
+        var cursor = ParseCursor(await settings.GetStringAsync(
+            WatchtowerSettingPaths.BackupSelfLastScheduledAt, SettingsScope.Global, ct));
+
+        ScheduleDecision decision;
+        try {
+            decision = BackupSchedule.Evaluate(cron, now, cursor, grace, timeZone);
+        } catch (InvalidOperationException ex) {
+            logger.LogWarning(ex, "The backup schedule has no upcoming window for Watchtower's own database");
+            return 0;
+        }
+
+        if (decision.MissedAt is { } missed && _loggedInstanceMiss != missed) {
+            _loggedInstanceMiss = missed;
+            logger.LogInformation(
+                "Backup window {Window:o} for Watchtower's own database was missed (older than the {Grace} "
+                + "misfire grace); skipped", missed, grace);
+        }
+
+        if (decision.DueAt is not { } due) return 0;
+
+        // Refused rather than run: without a passphrase the run would fail every night and fill the
+        // history with failures, and the dump it would have written carries every role's password hash.
+        // The cursor still moves — a window that was evaluated is a window that is over, and leaving it
+        // open would re-fire it (and re-log) on every tick until the passphrase appears.
+        await StoreCursorAsync(due, ct);
+        if (string.IsNullOrEmpty(backup.EncryptionPassphrase)) {
+            logger.LogWarning(
+                "Backup window {Window:o} open for Watchtower's own database, but no encryption passphrase "
+                + "is configured — skipping. Set one under Settings → Backups.", due);
+            return 0;
+        }
+
+        var result = queue.EnqueueInstance(BackupTriggers.Schedule);
+        logger.LogInformation(
+            "Backup window {Window:o} open — enqueued Watchtower's own database (event {EventId})",
+            due, result.BackupEventId);
+        return 1;
+    }
+
+    /// <summary>Writes the instance cursor round-trip formatted, so it parses back exactly.</summary>
+    private async ValueTask StoreCursorAsync(DateTimeOffset due, CancellationToken ct) =>
+        await settings.SetStringAsync(
+            WatchtowerSettingPaths.BackupSelfLastScheduledAt, due.UtcDateTime.ToString("O"),
+            SettingsScope.Global, expectedVersion: null, ct);
+
+    /// <summary>
+    /// The stored cursor, or null when there is none — or when it is unreadable, which is treated as
+    /// "never ran": the misfire grace then bounds how far back the first window can be.
+    /// </summary>
+    private static DateTimeOffset? ParseCursor(string? stored) =>
+        DateTimeOffset.TryParse(
+            stored, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var cursor)
+            ? cursor
+            : null;
 }

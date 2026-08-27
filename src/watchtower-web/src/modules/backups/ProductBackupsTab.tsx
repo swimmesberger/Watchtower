@@ -684,8 +684,11 @@ function FleetHistoryRow({
 }: {
   event: {
     id: number
-    stackId: number
-    stackName: string
+    // Nullable since ADR-0027 gave the history stackless (instance) rows. They cannot reach this list —
+    // it is filtered by product, and an instance run has no stack — but the row still has to say what it
+    // would render rather than trusting a filter two layers away.
+    stackId: number | null
+    stackName: string | null
     triggeredBy: string
     status: string
     remotePath: string | null
@@ -717,7 +720,9 @@ function FleetHistoryRow({
         <StatusBadge status={event.status} size="sm" />
         {/* Which instance — the column a per-stack history has no need of and a fleet history cannot
             do without. */}
-        <span className="min-w-0 truncate text-[13px] font-medium text-text">{event.stackName}</span>
+        <span className="min-w-0 truncate text-[13px] font-medium text-text">
+          {event.stackName ?? 'Watchtower'}
+        </span>
         <Badge tone="neutral" size="sm">
           {event.triggeredBy}
         </Badge>

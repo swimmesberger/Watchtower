@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link, useRouteContext } from '@tanstack/react-router'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -8,11 +9,12 @@ import {
   RotateCcw,
   Timer,
 } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, BUNDLE_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AuthConfig,
   AutomationConfig,
   BackupConfig,
+  BackupEvent,
   BackupProvider,
   MetricsBackend,
   MetricsConfig,
@@ -22,7 +24,7 @@ import type {
   UpdateSelfConfigRequest,
 } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
-import { absoluteTitle, formatUptime, shortDigest, timeAgo } from '@/lib/format'
+import { absoluteTitle, formatBytes, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { ContainerLogs } from '@/components/container-logs'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -32,6 +34,7 @@ import { Field } from '@/components/ui/field'
 import { Input, Textarea } from '@/components/ui/input'
 import { SecretField } from '@/components/ui/secret-field'
 import { Skeleton } from '@/components/ui/skeleton'
+import { StatusBadge } from '@/components/ui/status-badge'
 import {
   Select,
   SelectContent,
@@ -41,6 +44,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/use-toast'
+import { RecoveryChecklistCard } from './RecoveryChecklist'
 
 const NO_CREDENTIAL = 'none' // Radix Select has no empty-string value.
 
@@ -152,6 +156,11 @@ export function SettingsPage() {
       <ProxyCard />
 
       <BackupsCard />
+
+      <InstanceBackupCard />
+
+      {/* Self-hiding: renders only while a restore has left stacks to bring back (ADR-0027). */}
+      <RecoveryChecklistCard />
 
       <AuthCard />
     </div>
@@ -1926,6 +1935,317 @@ function BackupsCard() {
               </Button>
               {dirty && <span className="text-[13px] text-text-2">Unsaved changes</span>}
             </div>
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  )
+}
+
+// ── Watchtower's own database (ADR-0027) ─────────────────────────────────────
+// Its own card rather than a section of the backups card: the stack backups are a policy an operator
+// configures, this is a thing they *do* — and it carries the run action, the archive list, and (from
+// stage 2) the bundle export.
+
+/** How an instance archive's own run is summarised in the card's history list. */
+function InstanceRunRow({ event }: { event: BackupEvent }) {
+  const finished = event.finishedAt ?? event.startedAt
+  return (
+    <li className="flex items-baseline justify-between gap-3 py-1.5 text-[13px]">
+      <span className="flex min-w-0 items-baseline gap-2">
+        <StatusBadge status={event.status} />
+        <span className="truncate text-text-2">{event.triggeredBy}</span>
+      </span>
+      <span className="shrink-0 text-text-3" title={absoluteTitle(finished)}>
+        {event.sizeBytes != null && `${formatBytes(event.sizeBytes)} · `}
+        {timeAgo(finished)}
+      </span>
+    </li>
+  )
+}
+
+function InstanceBackupCard() {
+  const qc = useQueryClient()
+  // Every action in this card is admin-only on the server (the archive it produces is the instance), so
+  // an operator without the role is shown nothing rather than buttons that answer 403.
+  const { caps } = useRouteContext({ from: '__root__' })
+  const isAdmin = caps.hasRole('Admin')
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['backups', 'config'],
+    queryFn: api.backups.getConfig,
+    staleTime: 60_000,
+    enabled: isAdmin,
+  })
+
+  // A run in flight is worth watching: it is one dump, so it finishes in seconds to minutes.
+  const { data: events } = useQuery({
+    queryKey: ['backups', 'events', 'instance'],
+    queryFn: () => api.backups.events(undefined, 10, undefined, 'instance'),
+    enabled: isAdmin,
+    refetchInterval: query => {
+      const runs = query.state.data ?? []
+      return runs.some(e => e.status === 'queued' || e.status === 'running') ? 2000 : false
+    },
+  })
+
+  const [container, setContainer] = useState<string | null>(null)
+  const containerValue = container ?? data?.selfPostgresContainer ?? ''
+  const containerDirty =
+    container != null && container.trim() !== (data?.selfPostgresContainer ?? '').trim()
+
+  // Both writes go through the whole-config handler, so the stored values for every other field are
+  // resent unchanged — the same shape the backups card posts.
+  const save = useMutation({
+    mutationFn: (patch: { includeSelf?: boolean; selfPostgresContainer?: string }) => {
+      if (!data) throw new Error('Backup settings are still loading.')
+      return api.backups.updateConfig({
+        enabled: data.enabled,
+        cron: data.cron,
+        instanceName: data.instanceName,
+        retentionDays: data.retentionDays,
+        retentionMaxCount: data.retentionMaxCount,
+        helperImage: data.helperImage,
+        provider: data.provider,
+        ...patch,
+      })
+    },
+    onSuccess: next => {
+      qc.setQueryData(['backups', 'config'], next)
+      setContainer(null)
+      toast.success('Saved — changes apply immediately.')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Failed to save.'),
+  })
+
+  const run = useMutation({
+    mutationFn: api.backups.runInstance,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['backups', 'events', 'instance'] })
+      toast.success('Backing up Watchtower’s database — the run appears below.')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Could not start the backup.'),
+  })
+
+  // An export dumps the database and downloads every stack's newest archive, so it is minutes of work
+  // and the only honest progress signal is the run itself.
+  const exporting = (events ?? []).some(
+    e => e.triggeredBy === 'bundle-export' && (e.status === 'queued' || e.status === 'running'),
+  )
+  const { data: bundle } = useQuery({
+    queryKey: ['backups', 'bundle'],
+    queryFn: api.backups.getBundleStatus,
+    enabled: isAdmin,
+    refetchInterval: () => (exporting ? 2000 : false),
+  })
+
+  // The polling above stops the moment the run leaves 'running', which is one tick before the finished
+  // bundle would have been read — so the transition itself is what asks for it.
+  useEffect(() => {
+    if (!exporting) void qc.invalidateQueries({ queryKey: ['backups', 'bundle'] })
+  }, [exporting, qc])
+
+  const exportBundle = useMutation({
+    mutationFn: api.backups.exportBundle,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['backups', 'events', 'instance'] })
+      toast.success('Building the bundle — this takes a while for a large estate.')
+    },
+    onError: err => toast.error(err instanceof Error ? err.message : 'Could not start the export.'),
+  })
+
+  const isPinned = (path: string) => data?.pinnedPaths.includes(path) ?? false
+  const noPassphrase = data != null && !data.hasEncryptionPassphrase
+
+  if (!isAdmin) return null
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-text">Watchtower’s own database</h2>
+        <p className="mt-0.5 text-[13px] text-text-2">
+          Everything Watchtower knows — stacks, environment variables, products and releases, routes,
+          accounts, certificates and keys — lives in its PostgreSQL database. Backing up your stacks
+          without it restores their data but nothing that deploys them.
+        </p>
+      </div>
+
+      {isLoading || !data ? (
+        <Card>
+          <CardContent className="flex flex-col gap-4">
+            <Skeleton variant="line" className="w-2/3" />
+            <Skeleton variant="line" className="w-1/2" />
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col gap-5">
+            {noPassphrase && (
+              <Banner tone="warn" title="An encryption passphrase is required">
+                The dump carries every database role’s password hash, the data-protection key ring and
+                every certificate’s private key. Set a passphrase under Backups above and this turns on.
+              </Banner>
+            )}
+
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-text">
+                  Include in the backup schedule
+                </span>
+                <span className="mt-0.5 block text-[13px] text-text-2">
+                  Dumps the database on the same schedule as the stacks, to{' '}
+                  <span className="font-mono text-text-3">{data.instanceDirectory}</span> on the backup
+                  storage. Nothing is stopped — the dump runs while Watchtower keeps serving.
+                </span>
+                {isPinned('Watchtower:Backup:IncludeSelf') && (
+                  <span className="mt-1 block">
+                    <PinnedNote path="Watchtower:Backup:IncludeSelf" />
+                  </span>
+                )}
+              </span>
+              <Switch
+                checked={data.includeSelf}
+                onCheckedChange={v => save.mutate({ includeSelf: v })}
+                disabled={isPinned('Watchtower:Backup:IncludeSelf') || save.isPending}
+                aria-label="Include Watchtower's own database in the backup schedule"
+              />
+            </label>
+
+            <Field
+              label="Database container"
+              hint="Leave blank to detect it. Set this only when Watchtower cannot tell which container holds its database — several PostgreSQL containers on one daemon and none named by the connection string's host. A managed or host-installed PostgreSQL cannot be backed up here at all."
+            >
+              {({ id }) => (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id={id}
+                      mono
+                      placeholder="(detected)"
+                      value={containerValue}
+                      onChange={e => setContainer(e.target.value)}
+                      disabled={isPinned('Watchtower:Backup:SelfPostgresContainer')}
+                    />
+                    {containerDirty && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={save.isPending}
+                        onClick={() =>
+                          save.mutate({ selfPostgresContainer: containerValue.trim() })
+                        }
+                      >
+                        Save
+                      </Button>
+                    )}
+                  </div>
+                  {isPinned('Watchtower:Backup:SelfPostgresContainer') && (
+                    <PinnedNote path="Watchtower:Backup:SelfPostgresContainer" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={noPassphrase || run.isPending}
+                loading={run.isPending}
+                onClick={() => run.mutate()}
+                title={noPassphrase ? 'Set an encryption passphrase first.' : undefined}
+              >
+                Back up Watchtower now
+              </Button>
+            </div>
+
+            <div className="border-t border-border pt-5">
+              <h3 className="text-[13px] font-medium text-text">Full backup bundle</h3>
+              <p className="mt-0.5 text-[13px] text-text-2">
+                One file holding a fresh dump of this database, the newest archive of every stack, and
+                the secrets that live outside the database — everything a new Watchtower needs to become
+                this one. Take one before a migration, and keep it somewhere you would keep a password.
+              </p>
+
+              <Banner tone="warn" title="The bundle contains your secrets in plain text" className="mt-3">
+                The key-protection secret, the backup passphrase and your storage credentials are inside
+                it. Anyone who has the file can stand this instance up elsewhere.
+              </Banner>
+
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={noPassphrase || exporting || exportBundle.isPending}
+                  loading={exporting || exportBundle.isPending}
+                  onClick={() => exportBundle.mutate()}
+                  title={noPassphrase ? 'Set an encryption passphrase first.' : undefined}
+                >
+                  {bundle ? 'Build a new bundle' : 'Build bundle'}
+                </Button>
+
+                {exporting ? (
+                  <span className="text-[13px] text-text-2">
+                    Dumping the database and collecting each stack’s newest archive…
+                  </span>
+                ) : bundle ? (
+                  <>
+                    <a
+                      href={BUNDLE_DOWNLOAD_URL}
+                      className="text-[13px] font-medium text-run underline underline-offset-2"
+                    >
+                      Download {bundle.fileName}
+                    </a>
+                    <span className="text-[13px] text-text-3" title={absoluteTitle(bundle.createdAtUtc)}>
+                      {formatBytes(bundle.sizeBytes)} · {bundle.stackCount} stack archive
+                      {bundle.stackCount === 1 ? '' : 's'} · {timeAgo(bundle.createdAtUtc)}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+
+              {!exporting && bundle != null && bundle.missingStackCount > 0 && (
+                <p className="mt-2 text-[13px] text-warn">
+                  {bundle.missingStackCount} stack
+                  {bundle.missingStackCount === 1 ? ' has' : 's have'} no archive on the storage — the
+                  bundle carries {bundle.missingStackCount === 1 ? 'its' : 'their'} definition but not{' '}
+                  {bundle.missingStackCount === 1 ? 'its' : 'their'} data. Back{' '}
+                  {bundle.missingStackCount === 1 ? 'it' : 'them'} up and build again.
+                </p>
+              )}
+
+              {bundle != null && (
+                <p className="mt-2 text-[13px] text-text-3">
+                  The bundle is kept in this container, so it is lost when Watchtower restarts — download
+                  it now, or build a fresh one later.
+                </p>
+              )}
+            </div>
+
+            <div className="border-t border-border pt-5">
+              <h3 className="text-[13px] font-medium text-text">Restore from a bundle</h3>
+              <p className="mt-0.5 text-[13px] text-text-2">
+                Replaces everything this Watchtower knows with what is in a bundle from another
+                instance, then walks you through bringing its stacks back.
+              </p>
+              <Link
+                to="/settings/restore"
+                className="mt-3 inline-block text-[13px] font-medium text-run underline underline-offset-2"
+              >
+                Restore this Watchtower…
+              </Link>
+            </div>
+
+            {events != null && events.length > 0 && (
+              <div>
+                <h3 className="text-[13px] font-medium text-text">Recent runs</h3>
+                <ul className="mt-1 divide-y divide-border">
+                  {events.map(e => (
+                    <InstanceRunRow key={e.id} event={e} />
+                  ))}
+                </ul>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

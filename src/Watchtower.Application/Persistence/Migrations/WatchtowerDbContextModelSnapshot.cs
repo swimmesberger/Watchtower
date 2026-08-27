@@ -339,7 +339,7 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("size_bytes");
 
-                    b.Property<int>("StackId")
+                    b.Property<int?>("StackId")
                         .HasColumnType("integer")
                         .HasColumnName("stack_id");
 
@@ -1998,7 +1998,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("StackId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
                         .HasConstraintName("fk_backup_events_stacks_stack_id");
 
                     b.Navigation("Stack");

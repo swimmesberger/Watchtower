@@ -30,3 +30,15 @@ export const settingsRoute = createRoute({
   beforeLoad: redirectUnless({ module: 'System' }, '/'),
   component: lazyRouteComponent(() => import('./SettingsPage'), 'SettingsPage'),
 })
+
+/**
+ * Restoring this Watchtower from a full backup bundle (ADR-0027). Its own route rather than a card:
+ * it is a multi-step flow that ends by taking the instance down, and it has to survive being the only
+ * thing an operator does on a freshly installed box.
+ */
+export const restoreInstanceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/restore',
+  beforeLoad: redirectUnless({ module: 'System' }, '/'),
+  component: lazyRouteComponent(() => import('./RestoreInstancePage'), 'RestoreInstancePage'),
+})

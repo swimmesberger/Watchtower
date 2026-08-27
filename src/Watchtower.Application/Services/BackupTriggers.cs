@@ -16,6 +16,12 @@ public static class BackupTriggers {
     /// <summary>A restore run, which shares the queue and the event table with backups.</summary>
     public const string Restore = "restore";
 
+    /// <summary>
+    /// A full backup bundle export (ADR-0027 §4), which shares the queue and the event table too — it
+    /// takes a dump and downloads every stack's newest archive.
+    /// </summary>
+    public const string BundleExport = "bundle-export";
+
     /// <summary><c>templates.backupAll</c> fanned a backup out to every tenant of a template.</summary>
     public const string TemplateAll = "template-backup-all";
 

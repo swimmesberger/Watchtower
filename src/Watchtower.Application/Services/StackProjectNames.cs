@@ -33,10 +33,22 @@ public static class StackProjectNames {
     /// <param name="projectName">Resolved compose project name to test.</param>
     /// <param name="excludeStackId">Stack to exclude from the check (the one being updated); null when creating.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="stackName">
+    /// The stack's display name, when the caller has one. A plain stack's backup directory is derived
+    /// from it (<see cref="BackupNaming.StackDirectory"/>), so the one name that has to be refused here
+    /// as well is the one that would land its archives in Watchtower's own backup directory — where
+    /// retention would then prune the instance's dumps and the stack's archives as one set (ADR-0027).
+    /// Tenant stacks are unaffected: their directory is a level deeper, under the product.
+    /// </param>
     /// <returns>An operator-facing error message, or null when the name is free to use.</returns>
     public static async Task<string?> ValidateAsync(
         WatchtowerDbContext db, SelfProjectNameProvider selfProjects,
-        string projectName, int? excludeStackId, CancellationToken ct) {
+        string projectName, int? excludeStackId, CancellationToken ct, string? stackName = null) {
+        if (stackName is not null && BackupNaming.IsReserved(stackName))
+            return $"Stack name '{stackName.Trim()}' is reserved: it is where Watchtower keeps the "
+                   + "backups of its own database, and a stack backing up alongside them would share "
+                   + "their retention. Choose a different stack name.";
+
         if (await selfProjects.IsReservedAsync(projectName, ct))
             return $"Compose project name '{projectName}' is reserved: it is the project Watchtower "
                    + "itself runs under. A stack sharing it would expose Watchtower's own containers "

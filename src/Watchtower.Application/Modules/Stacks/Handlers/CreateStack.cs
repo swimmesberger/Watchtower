@@ -58,7 +58,8 @@ public sealed class CreateStack(
         // visibility. Enforced here because the default name is the lowercased stack name. Watchtower's
         // own project is reserved for the same reason.
         var projectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
-        if (await StackProjectNames.ValidateAsync(db, selfProjects, projectName, excludeStackId: null, ct)
+        if (await StackProjectNames.ValidateAsync(
+                db, selfProjects, projectName, excludeStackId: null, ct, command.Name)
             is { } projectNameError)
             return AppError.Validation(projectNameError);
 

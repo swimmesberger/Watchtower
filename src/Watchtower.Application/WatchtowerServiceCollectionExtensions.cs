@@ -383,7 +383,25 @@ public static class WatchtowerServiceCollectionExtensions {
         // Database-aware dumps (ADR-0017): stateless over the engine's exec API, so a singleton.
         services.AddSingleton<PostgresDumpService>();
         services.AddSingleton<BackupStorageFactory>();
+        services.AddSingleton<BackupRetentionRunner>();
         services.AddSingleton<BackupService>();
+        // Watchtower's own database (ADR-0027): the same dump/archive/storage path a stack's database
+        // takes, pointed at the container Watchtower itself connects to.
+        services.AddSingleton<SelfPostgresLocator>();
+        services.AddSingleton<InstanceBackupService>();
+        // The exportable bundle and the one staged file it produces (ADR-0027 §4). The state is a
+        // singleton because the tar outlives the request that built it and is served by another.
+        services.AddSingleton<BundleExportState>();
+        services.AddSingleton<BackupBundleService>();
+        // Restoring an instance from a bundle (ADR-0027 §5). The staging holds the uploaded bundle and
+        // the marker that outlives the restart the restore itself causes; the completion service reads
+        // that marker on the way back up and says what happened.
+        services.AddSingleton<InstanceRestoreStaging>();
+        services.AddSingleton<InstanceRestoreService>();
+        services.AddSingleton<RestoreCompletionService>();
+        services.AddHostedService(sp => sp.GetRequiredService<RestoreCompletionService>());
+        // Bringing the stacks back afterwards: deploy from git, then restore each one's newest archive.
+        services.AddSingleton<StackRevivalCoordinator>();
         // The two queues are separate by design, so what happens *after* a backup succeeds is its own
         // object: singleton, because the pending chains have to outlive the request that registered
         // them and the backup worker is the thing that releases them (design.md §"Backups across
