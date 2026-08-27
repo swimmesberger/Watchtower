@@ -181,7 +181,7 @@ detected toolchain profile is described in
 | `ci.listRuns` | proxied workflow runs for a repo (status, conclusion, commit, timing) |
 | `ci.listJobs` | jobs + step status for a run (live-ish via polling) |
 | `ci.getJobLogs` | full log text after job completion |
-| `ci.getRunnerStatus` | per-repo runner slots, container ids, backoff/error state |
+| `ci.getRunnerStatus` | per-repo runner slots, the live runner containers, backoff/error state |
 
 PAT CRUD reuses the existing `credentials.*` module — note in the UI that CI needs a
 **fine-grained PAT** with Administration RW + Actions R + Metadata/Contents R (unlike the
@@ -192,6 +192,14 @@ ghcr.io classic-PAT caveat documented on `Credential`).
 New module `src/watchtower-web/src/modules/ci/` (contribution model):
 
 - Repos page: enabled repos, runner slot status, add-repo dialog with repo picker.
+- Runner containers table (on the product's CI tab): one row per live runner — container name
+  and short id, Docker state, uptime, image, and the runner's id at GitHub, linked to the
+  repository's Actions runner settings. A runner still on superseded settings is badged
+  "settings changed" from the spec-hash comparison, so a saved change that has not reached the
+  running runner yet is visible rather than mysterious. Watchtower stores no runner table (the
+  containers are the state), so the rows come off the host's containers and their labels; the
+  list is the orchestrator's last reconcile pass, which is why a just-spawned runner can trail
+  the slot count by one interval.
 - Builds view per repo: run list → job list with step progress (poll while running) →
   log viewer (fetched on completion).
 - Generated RPC client from `rpc-schema.json` as everywhere else.

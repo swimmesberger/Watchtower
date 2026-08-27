@@ -104,6 +104,53 @@ public sealed class CiRunnerContainerSpecTests {
             CiRunnerOrchestrator.ComputeSpecHash(Repo(allowDockerSocket: true), "runner:latest"),
             CiRunnerOrchestrator.ComputeSpecHash(Repo(allowDockerSocket: true), "runner:latest"));
 
+    private static DockerContainerInfo Container(string? specHash, string? runnerId = "12345") {
+        var labels = new Dictionary<string, string>();
+        if (specHash is not null) labels[CiRunnerOrchestrator.SpecHashLabel] = specHash;
+        if (runnerId is not null) labels[CiRunnerOrchestrator.RunnerIdLabel] = runnerId;
+        return new DockerContainerInfo {
+            Id = "abcdef0123456789abcdef0123456789",
+            Names = ["/watchtower-box-widgets-1a2b3c4d"],
+            Image = "runner:latest",
+            State = "running",
+            Status = "Up 3 minutes",
+            Created = 1_700_000_000,
+            Labels = labels,
+        };
+    }
+
+    [Fact]
+    public void Describe_ReadsTheRunnerBackOffTheContainerForTheUi() {
+        var described = CiRunnerOrchestrator.Describe(
+            Container(CiRunnerOrchestrator.ComputeSpecHash(Repo(), "runner:latest")),
+            CiRunnerOrchestrator.ComputeSpecHash(Repo(), "runner:latest"));
+
+        Assert.Equal("abcdef012345", described.Id);
+        Assert.Equal("watchtower-box-widgets-1a2b3c4d", described.Name);
+        Assert.Equal(12345, described.GitHubRunnerId);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1_700_000_000), described.StartedAt);
+        Assert.False(described.Stale);
+    }
+
+    /// <summary>
+    /// The badge the operator reads to know their saved change has not reached this runner yet.
+    /// An unlabelled container — spawned before the label existed — counts as stale too: the
+    /// reconcile loop is going to retire it, so the table has to say so.
+    /// </summary>
+    [Theory]
+    [InlineData("a-hash-from-older-settings")]
+    [InlineData(null)]
+    public void Describe_MarksARunnerSpawnedUnderOtherSettingsAsStale(string? containerHash) {
+        var described = CiRunnerOrchestrator.Describe(
+            Container(containerHash), CiRunnerOrchestrator.ComputeSpecHash(Repo(), "runner:latest"));
+
+        Assert.True(described.Stale);
+    }
+
+    [Fact]
+    public void Describe_LeavesTheGitHubIdNullWhenTheContainerPredatesTheLabel() =>
+        Assert.Null(CiRunnerOrchestrator.Describe(Container(specHash: null, runnerId: null), "hash").GitHubRunnerId);
+
     [Fact]
     public void VolumeInitContainer_ChownsBothCacheVolumesAsRoot() {
         var repo = Repo();

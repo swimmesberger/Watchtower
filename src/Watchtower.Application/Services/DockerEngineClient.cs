@@ -1032,6 +1032,11 @@ public sealed record DockerContainerInfo {
     public string ImageId { get; init; } = string.Empty;
     public required string State { get; init; }
     public required string Status { get; init; }
+    /// <summary>
+    /// Creation time in Unix seconds (the API field is <c>Created</c>, an integer here — unlike the
+    /// RFC3339 string the inspect endpoint returns). 0 when the daemon omitted it.
+    /// </summary>
+    public long Created { get; init; }
     public required Dictionary<string, string> Labels { get; init; }
     /// <summary>
     /// Mounts attached to the container, as returned by GET /containers/json (all states).
