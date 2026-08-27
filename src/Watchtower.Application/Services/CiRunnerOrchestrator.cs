@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -34,6 +36,7 @@ public sealed class CiRunnerOrchestrator(
     internal const string RepoLabel = "watchtower.ci.repo";
     internal const string RunnerIdLabel = "watchtower.ci.runner-id";
     internal const string ProfileHashLabel = "watchtower.ci.profile-hash";
+    internal const string SpecHashLabel = "watchtower.ci.spec-hash";
 
     private readonly SemaphoreSlim _wake = new(0);
     private readonly ConcurrentDictionary<int, CiRepoRunnerStatus> _status = new();
@@ -167,7 +170,7 @@ public sealed class CiRunnerOrchestrator(
         }
 
         var desired = Math.Clamp(repo.MaxConcurrentRunners, 1, 16);
-        if (running.Count >= desired || status.InBackoff(DateTimeOffset.UtcNow)) {
+        if (status.InBackoff(DateTimeOffset.UtcNow)) {
             status.Update(desired, running.Count);
             return;
         }
@@ -179,6 +182,16 @@ public sealed class CiRunnerOrchestrator(
 
         var ci = options.CurrentValue.Ci;
         var image = string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
+
+        // Before topping the slots up: retire runners spawned under settings that have since
+        // changed, so the operator's next build runs on the settings they just saved.
+        running = await RecycleStaleRunnersAsync(repo, running, ComputeSpecHash(repo, image), ct);
+
+        if (running.Count >= desired) {
+            status.Update(desired, running.Count);
+            return;
+        }
+
         await EnsureImageAsync(image, ct);
         await EnsureVolumesReadyAsync(repo, image, status, ct);
 
@@ -190,6 +203,40 @@ public sealed class CiRunnerOrchestrator(
         status.ClearFailure();
     }
 
+    /// <summary>
+    /// Drops runner containers whose <see cref="SpecHashLabel"/> no longer matches the repo's
+    /// current settings, returning the ones that stay. Idleness is established by deregistering the
+    /// runner at GitHub first: GitHub refuses to delete a runner that is executing a job, so a busy
+    /// runner is simply kept and recycled on a later pass, once its job has finished and the
+    /// ephemeral container has exited on its own.
+    /// <para>
+    /// The first refusal ends the pass: a repo whose runners are all working a build would
+    /// otherwise spend one API call per runner per reconcile interval learning the same thing.
+    /// This way a stale-but-busy repo costs a single call every interval, while idle runners are
+    /// still all replaced within one pass.
+    /// </para>
+    /// </summary>
+    private async Task<List<DockerContainerInfo>> RecycleStaleRunnersAsync(
+        CiRepo repo, List<DockerContainerInfo> running, string specHash, CancellationToken ct) {
+        var kept = new List<DockerContainerInfo>(running.Count);
+        var busy = false;
+        foreach (var container in running) {
+            var containerHash = container.Labels.GetValueOrDefault(SpecHashLabel);
+            if (containerHash == specHash || busy) {
+                kept.Add(container);
+                continue;
+            }
+            if (!await TryDeleteRegistrationAsync(repo, container, ct)) {
+                busy = true;
+                kept.Add(container);
+                continue;
+            }
+            await RemoveRunnerContainerAsync(
+                container.Id, $"runner settings changed ({containerHash ?? "unlabelled"} → {specHash})", ct);
+        }
+        return kept;
+    }
+
     private async Task SpawnRunnerAsync(CiRepo repo, string image, CiOptions ci, CancellationToken ct) {
         var instance = ci.ResolveInstanceName();
         var runnerName = $"watchtower-{instance}-{Slug(repo.Name)}-{Guid.NewGuid().ToString("N")[..8]}";
@@ -199,7 +246,8 @@ public sealed class CiRunnerOrchestrator(
 
         var jit = await gitHub.GenerateJitConfigAsync(repo.Owner, repo.Name, runnerName, labels, repo.Credential!.Token, ct);
 
-        var body = BuildRunnerContainerBody(repo, image, jit.EncodedJitConfig, jit.RunnerId);
+        var body = BuildRunnerContainerBody(
+            repo, image, jit.EncodedJitConfig, jit.RunnerId, HostSupplementaryGroups.Current());
         var containerId = await docker.CreateContainerAsync(body, runnerName, ct);
         await docker.StartContainerAsync(containerId, ct);
         logger.LogInformation("Spawned CI runner {Runner} for {Repo}", runnerName, repo.FullName);
@@ -211,8 +259,16 @@ public sealed class CiRunnerOrchestrator(
     /// user from creating <c>_work/_temp</c> when a job arrives (the workspace stays ephemeral by
     /// leaving <c>_work</c> to the runner itself).
     /// </summary>
+    /// <param name="hostGroupIds">
+    /// Watchtower's own supplementary group ids (<see cref="HostSupplementaryGroups"/>), applied only
+    /// to docker-socket runners. The socket is owned by the host's <c>docker</c> group, while the
+    /// runner image gives its non-root <c>runner</c> user a <c>docker</c> group of its own with a
+    /// fixed id of 123 — so without these ids the mounted socket is there but every <c>docker</c>
+    /// call in a job dies with "permission denied while trying to connect to the Docker daemon
+    /// socket". Same mechanism the self-update coordinator uses.
+    /// </param>
     internal static DockerCreateContainerBody BuildRunnerContainerBody(
-        CiRepo repo, string image, string encodedJitConfig, long runnerId) {
+        CiRepo repo, string image, string encodedJitConfig, long runnerId, string[] hostGroupIds) {
         var binds = new List<string> {
             // Warm toolcache shared by all runners of this repo.
             $"{ToolVolumeName(repo)}:{CiWarmerScript.ToolCacheDir}",
@@ -242,9 +298,27 @@ public sealed class CiRunnerOrchestrator(
                 [RepoIdLabel] = repo.Id.ToString(),
                 [RepoLabel] = repo.FullName.ToLowerInvariant(),
                 [RunnerIdLabel] = runnerId.ToString(),
+                [SpecHashLabel] = ComputeSpecHash(repo, image),
             },
-            HostConfig = new DockerCreateHostConfig { Binds = binds.ToArray() },
+            HostConfig = new DockerCreateHostConfig {
+                Binds = binds.ToArray(),
+                GroupAdd = repo.AllowDockerSocket && hostGroupIds.Length > 0 ? hostGroupIds : null,
+            },
         };
+    }
+
+    /// <summary>
+    /// Identifies the repo settings baked into a runner container at spawn time. Runners are
+    /// long-lived while idle (they sit long-polling GitHub until a job arrives), so a settings
+    /// change would otherwise only take effect after the current runner happened to consume one
+    /// more job — an operator who ticks "allow docker socket" would watch the very next build fail
+    /// on the socket they just granted. The hash goes on the container as
+    /// <see cref="SpecHashLabel"/>; a mismatch makes the reconcile loop recycle the runner.
+    /// </summary>
+    internal static string ComputeSpecHash(CiRepo repo, string image) {
+        var material = $"{image}|{repo.AllowDockerSocket}|{repo.ExtraLabels ?? string.Empty}";
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        return Convert.ToHexStringLower(bytes)[..16];
     }
 
     // ── Cache volume initialization ──────────────────────────────────────────
@@ -425,14 +499,19 @@ public sealed class CiRunnerOrchestrator(
         }
     }
 
-    /// <summary>Best-effort deregistration for runners that never took a job (JIT ids are on the container labels).</summary>
-    private async Task TryDeleteRegistrationAsync(CiRepo repo, DockerContainerInfo container, CancellationToken ct) {
+    /// <summary>
+    /// Best-effort deregistration for runners that never took a job (JIT ids are on the container
+    /// labels). Returns true when the runner is known to be gone from GitHub — which doubles as
+    /// proof that it was idle, since GitHub rejects the delete while a job is running.
+    /// </summary>
+    private async Task<bool> TryDeleteRegistrationAsync(CiRepo repo, DockerContainerInfo container, CancellationToken ct) {
         if (repo.Credential is null || !container.Labels.TryGetValue(RunnerIdLabel, out var idText) || !long.TryParse(idText, out var runnerId))
-            return;
+            return false;
         try {
-            await gitHub.TryDeleteRunnerAsync(repo.Owner, repo.Name, runnerId, repo.Credential.Token, ct);
+            return await gitHub.TryDeleteRunnerAsync(repo.Owner, repo.Name, runnerId, repo.Credential.Token, ct);
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             logger.LogDebug(ex, "Could not deregister runner {RunnerId} for {Repo}", runnerId, repo.FullName);
+            return false;
         }
     }
 

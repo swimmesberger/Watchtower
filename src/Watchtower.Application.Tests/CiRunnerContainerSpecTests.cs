@@ -13,12 +13,18 @@ namespace Watchtower.Application.Tests;
 /// </summary>
 public sealed class CiRunnerContainerSpecTests {
 
-    private static CiRepo Repo(bool allowDockerSocket = false) => new() {
+    private static CiRepo Repo(bool allowDockerSocket = false, string? extraLabels = null) => new() {
         Id = 7,
         Owner = "acme",
         Name = "widgets",
         AllowDockerSocket = allowDockerSocket,
+        ExtraLabels = extraLabels,
     };
+
+    private static readonly string[] HostGroups = ["27", "999"];
+
+    private static DockerCreateContainerBody Body(CiRepo repo, string image = "runner:latest") =>
+        CiRunnerOrchestrator.BuildRunnerContainerBody(repo, image, "jit", 42, HostGroups);
 
     [Fact]
     public void ToolCache_LivesOutsideTheRunnerWorkDirectory() {
@@ -28,7 +34,7 @@ public sealed class CiRunnerContainerSpecTests {
 
     [Fact]
     public void RunnerContainer_MountsNothingUnderTheWorkDirectory() {
-        var body = CiRunnerOrchestrator.BuildRunnerContainerBody(Repo(), "runner:latest", "jit", 42);
+        var body = Body(Repo());
 
         Assert.NotNull(body.HostConfig?.Binds);
         foreach (var bind in body.HostConfig!.Binds!) {
@@ -40,7 +46,7 @@ public sealed class CiRunnerContainerSpecTests {
 
     [Fact]
     public void RunnerContainer_PointsTheToolCacheEnvAtTheVolume() {
-        var body = CiRunnerOrchestrator.BuildRunnerContainerBody(Repo(), "runner:latest", "jit", 42);
+        var body = Body(Repo());
 
         Assert.Contains($"RUNNER_TOOL_CACHE={CiWarmerScript.ToolCacheDir}", body.Env!);
         Assert.Contains($"DOTNET_INSTALL_DIR={CiWarmerScript.ToolCacheDir}/dotnet", body.Env!);
@@ -49,12 +55,54 @@ public sealed class CiRunnerContainerSpecTests {
     [Fact]
     public void RunnerContainer_MountsTheDockerSocketOnlyWhenAllowed() {
         const string socketBind = "/var/run/docker.sock:/var/run/docker.sock";
-        var without = CiRunnerOrchestrator.BuildRunnerContainerBody(Repo(), "runner:latest", "jit", 42);
-        var with = CiRunnerOrchestrator.BuildRunnerContainerBody(Repo(allowDockerSocket: true), "runner:latest", "jit", 42);
+        var without = Body(Repo());
+        var with = Body(Repo(allowDockerSocket: true));
 
         Assert.DoesNotContain(socketBind, without.HostConfig!.Binds!);
         Assert.Contains(socketBind, with.HostConfig!.Binds!);
     }
+
+    /// <summary>
+    /// Mounting the socket is only half the grant: the image's <c>runner</c> user is in a
+    /// <c>docker</c> group with a fixed id of 123, never the host's, so without Watchtower's own
+    /// supplementary ids every <c>docker</c> call in a job fails with "permission denied while
+    /// trying to connect to the Docker daemon socket".
+    /// </summary>
+    [Fact]
+    public void RunnerContainer_JoinsTheHostDockerGroupsOnlyWithTheSocket() {
+        Assert.Null(Body(Repo()).HostConfig!.GroupAdd);
+        Assert.Equal(HostGroups, Body(Repo(allowDockerSocket: true)).HostConfig!.GroupAdd);
+    }
+
+    [Fact]
+    public void RunnerContainer_CarriesTheSpecHashOfTheSettingsItWasSpawnedWith() {
+        var repo = Repo();
+        Assert.Equal(
+            CiRunnerOrchestrator.ComputeSpecHash(repo, "runner:latest"),
+            Body(repo).Labels![CiRunnerOrchestrator.SpecHashLabel]);
+    }
+
+    /// <summary>
+    /// The hash is what makes the reconcile loop retire an idle runner after a settings change —
+    /// every setting baked into the container at spawn time has to move it, or the change silently
+    /// waits for the current runner to consume one more job.
+    /// </summary>
+    [Theory]
+    [InlineData("runner:latest", true, null)]
+    [InlineData("custom/runner:1", false, null)]
+    [InlineData("runner:latest", false, "gpu")]
+    public void SpecHash_ChangesWithEverySettingBakedIntoTheContainer(
+        string image, bool allowDockerSocket, string? extraLabels) {
+        var baseline = CiRunnerOrchestrator.ComputeSpecHash(Repo(), "runner:latest");
+
+        Assert.NotEqual(baseline, CiRunnerOrchestrator.ComputeSpecHash(Repo(allowDockerSocket, extraLabels), image));
+    }
+
+    [Fact]
+    public void SpecHash_IsStableForUnchangedSettings() =>
+        Assert.Equal(
+            CiRunnerOrchestrator.ComputeSpecHash(Repo(allowDockerSocket: true), "runner:latest"),
+            CiRunnerOrchestrator.ComputeSpecHash(Repo(allowDockerSocket: true), "runner:latest"));
 
     [Fact]
     public void VolumeInitContainer_ChownsBothCacheVolumesAsRoot() {

@@ -133,7 +133,19 @@ Runner container spec:
   origin box is visible in GitHub's UI and in a future overlapping-scopes setup.
 - Runner labels: `self-hosted` + `watchtower` + `{instance}` + `ExtraLabels`. Existing
   workflows using `runs-on: self-hosted` keep working unchanged.
-- Mounts: cache volumes (below); `/var/run/docker.sock` only when `AllowDockerSocket`.
+- Mounts: cache volumes (below); `/var/run/docker.sock` only when `AllowDockerSocket` — together
+  with `GroupAdd` = Watchtower's own supplementary group ids (`/proc/self/status`, the same
+  mechanism the self-update coordinator uses). The socket belongs to the host's `docker` group,
+  while the runner image gives its non-root `runner` user a `docker` group with a hardcoded id of
+  123; without the host ids the socket is mounted but unusable ("permission denied while trying to
+  connect to the Docker daemon socket").
+- Labels also carry `watchtower.ci.spec-hash`, the hash of the settings baked into the container
+  (image, docker socket, extra labels). Idle runners are long-lived — they sit long-polling GitHub
+  until a job arrives — so a settings change would otherwise only take effect after the current
+  runner consumed one more job. On a mismatch the reconcile loop retires the runner: it deletes the
+  registration at GitHub first, which doubles as the idleness check (GitHub refuses to delete a
+  runner that is executing a job), and only then removes the container. A busy runner is left alone
+  and replaced after it exits on its own.
 
 ### Caching (avoiding the ephemeral-runner slowdown)
 
