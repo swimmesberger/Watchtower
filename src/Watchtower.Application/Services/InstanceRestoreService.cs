@@ -323,7 +323,9 @@ public sealed class InstanceRestoreService(
     /// <summary>
     /// Starts the sibling container that does the replay. Same shape as the self-update coordinator:
     /// Watchtower's own image so it runs the code it was built with, the Docker socket, no network, and
-    /// the process's supplementary groups so it can use the socket at all.
+    /// the process's supplementary groups (<see cref="HostSupplementaryGroups"/>) so it can use the
+    /// socket at all — the third consumer of that rule, after the self-update coordinator and the CI
+    /// runner containers.
     /// </summary>
     private async Task<string> SpawnCoordinatorAsync(
         string imageName, string selfContainerId, string postgresContainerId,
@@ -351,7 +353,7 @@ public sealed class InstanceRestoreService(
             HostConfig = new DockerCreateHostConfig {
                 Binds = ["/var/run/docker.sock:/var/run/docker.sock"],
                 NetworkMode = "none",
-                GroupAdd = SelfUpdateService.GetCurrentGroupIds(),
+                GroupAdd = HostSupplementaryGroups.Current(),
             },
         }, name, ct);
         await docker.StartContainerAsync(coordinatorId, ct);

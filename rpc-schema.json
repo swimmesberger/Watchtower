@@ -2328,6 +2328,55 @@
                       "null"
                     ],
                     "format": "date-time"
+                  },
+                  "runners": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "image": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "gitHubRunnerId": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "image",
+                        "state",
+                        "status",
+                        "startedAt",
+                        "gitHubRunnerId",
+                        "stale"
+                      ]
+                    }
                   }
                 },
                 "required": [
@@ -2336,7 +2385,8 @@
                   "totalSpawned",
                   "lastError",
                   "lastErrorAt",
-                  "backoffUntil"
+                  "backoffUntil",
+                  "runners"
                 ]
               },
               "toolchain": {
@@ -2562,6 +2612,55 @@
                       "null"
                     ],
                     "format": "date-time"
+                  },
+                  "runners": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "image": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "gitHubRunnerId": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "image",
+                        "state",
+                        "status",
+                        "startedAt",
+                        "gitHubRunnerId",
+                        "stale"
+                      ]
+                    }
                   }
                 },
                 "required": [
@@ -2570,7 +2669,8 @@
                   "totalSpawned",
                   "lastError",
                   "lastErrorAt",
-                  "backoffUntil"
+                  "backoffUntil",
+                  "runners"
                 ]
               },
               "toolchain": {
@@ -2796,6 +2896,55 @@
                       "null"
                     ],
                     "format": "date-time"
+                  },
+                  "runners": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "image": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "gitHubRunnerId": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "image",
+                        "state",
+                        "status",
+                        "startedAt",
+                        "gitHubRunnerId",
+                        "stale"
+                      ]
+                    }
                   }
                 },
                 "required": [
@@ -2804,7 +2953,8 @@
                   "totalSpawned",
                   "lastError",
                   "lastErrorAt",
-                  "backoffUntil"
+                  "backoffUntil",
+                  "runners"
                 ]
               },
               "toolchain": {
@@ -3044,6 +3194,55 @@
                           "null"
                         ],
                         "format": "date-time"
+                      },
+                      "runners": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "image": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "startedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            },
+                            "gitHubRunnerId": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "stale": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "image",
+                            "state",
+                            "status",
+                            "startedAt",
+                            "gitHubRunnerId",
+                            "stale"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -3052,7 +3251,8 @@
                       "totalSpawned",
                       "lastError",
                       "lastErrorAt",
-                      "backoffUntil"
+                      "backoffUntil",
+                      "runners"
                     ]
                   },
                   "toolchain": {
@@ -3277,6 +3477,55 @@
                   "null"
                 ],
                 "format": "date-time"
+              },
+              "runners": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "image": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "gitHubRunnerId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "stale": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "image",
+                    "state",
+                    "status",
+                    "startedAt",
+                    "gitHubRunnerId",
+                    "stale"
+                  ]
+                }
               }
             },
             "required": [
@@ -3285,7 +3534,8 @@
               "totalSpawned",
               "lastError",
               "lastErrorAt",
-              "backoffUntil"
+              "backoffUntil",
+              "runners"
             ]
           }
         },
@@ -3407,6 +3657,55 @@
                           "null"
                         ],
                         "format": "date-time"
+                      },
+                      "runners": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "image": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "startedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            },
+                            "gitHubRunnerId": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "stale": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "image",
+                            "state",
+                            "status",
+                            "startedAt",
+                            "gitHubRunnerId",
+                            "stale"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -3415,7 +3714,8 @@
                       "totalSpawned",
                       "lastError",
                       "lastErrorAt",
-                      "backoffUntil"
+                      "backoffUntil",
+                      "runners"
                     ]
                   },
                   "toolchain": {
@@ -3728,6 +4028,55 @@
                         "null"
                       ],
                       "format": "date-time"
+                    },
+                    "runners": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "image": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "startedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "gitHubRunnerId": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "stale": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "image",
+                          "state",
+                          "status",
+                          "startedAt",
+                          "gitHubRunnerId",
+                          "stale"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -3736,7 +4085,8 @@
                     "totalSpawned",
                     "lastError",
                     "lastErrorAt",
-                    "backoffUntil"
+                    "backoffUntil",
+                    "runners"
                   ]
                 },
                 "toolchain": {
@@ -4005,6 +4355,55 @@
                           "null"
                         ],
                         "format": "date-time"
+                      },
+                      "runners": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "image": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "startedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            },
+                            "gitHubRunnerId": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "stale": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "image",
+                            "state",
+                            "status",
+                            "startedAt",
+                            "gitHubRunnerId",
+                            "stale"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -4013,7 +4412,8 @@
                       "totalSpawned",
                       "lastError",
                       "lastErrorAt",
-                      "backoffUntil"
+                      "backoffUntil",
+                      "runners"
                     ]
                   },
                   "toolchain": {
@@ -4318,6 +4718,55 @@
                       "null"
                     ],
                     "format": "date-time"
+                  },
+                  "runners": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "image": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "gitHubRunnerId": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "image",
+                        "state",
+                        "status",
+                        "startedAt",
+                        "gitHubRunnerId",
+                        "stale"
+                      ]
+                    }
                   }
                 },
                 "required": [
@@ -4326,7 +4775,8 @@
                   "totalSpawned",
                   "lastError",
                   "lastErrorAt",
-                  "backoffUntil"
+                  "backoffUntil",
+                  "runners"
                 ]
               },
               "toolchain": {

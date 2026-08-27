@@ -1,4 +1,4 @@
-using System.Formats.Tar;
+﻿using System.Formats.Tar;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -313,9 +313,14 @@ public sealed class PostgresDumpServiceTests {
     /// <summary>Answers each exec start with the next body, so one test can script several execs.</summary>
     private static void AnswerStartsInOrder(DockerClientEstate estate, params byte[][] bodies) {
         var next = 0;
-        estate.LongRunning.Responder = _ => new HttpResponseMessage(HttpStatusCode.OK) {
-            Content = Body(bodies[Math.Min(next++, bodies.Length - 1)]),
-        };
+        // Only the exec starts are scripted — the SQL's archive PUT rides the untimed client too,
+        // and must not eat one of the bodies.
+        estate.LongRunning.Responder = request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/start", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) {
+                    Content = Body(bodies[Math.Min(next++, bodies.Length - 1)]),
+                }
+                : null;
     }
 
     private static byte[] Out(string text) => DockerFrameBuilder.Frame(Stdout, text);
@@ -329,8 +334,9 @@ public sealed class PostgresDumpServiceTests {
 
     /// <summary>
     /// Where the exec carrying <paramref name="fragment"/> in its command sits among the recorded
-    /// requests. Found rather than counted: one exec is two HTTP calls and a file push is a third
-    /// shape, so fixed offsets say more about the transport than about the order under test.
+    /// requests. Found rather than counted: one exec is two HTTP calls, and which client a step rides
+    /// is a transport decision that has already moved once — fixed offsets would say more about that
+    /// than about the order under test.
     /// </summary>
     private static int ExecIndex(DockerClientEstate estate, string fragment) {
         var index = estate.Default.Bodies.FindIndex(
@@ -359,23 +365,23 @@ public sealed class PostgresDumpServiceTests {
             File.Delete(sql);
         }
 
-        // The SQL goes in as a tar at /tmp, streamed from the host file.
-        var put = estate.Default.Requests.FindIndex(r => r.Contains("/archive?path=", StringComparison.Ordinal));
-        Assert.Contains("/containers/db-id/archive?path=%2Ftmp", estate.Default.Requests[put]);
-        await using var reader = new TarReader(new MemoryStream(estate.Default.BodyBytes[put]!));
+        // The SQL goes in as a tar at /tmp, streamed from the host file — over the untimed client,
+        // because a dump is as large as the database it captures.
+        var put = estate.LongRunning.Requests.FindIndex(r => r.Contains("/archive?path=", StringComparison.Ordinal));
+        Assert.True(put >= 0, "no archive PUT was sent");
+        Assert.Contains("/containers/db-id/archive?path=%2Ftmp", estate.LongRunning.Requests[put]);
+        await using var reader = new TarReader(new MemoryStream(estate.LongRunning.BodyBytes[put]!));
         var entry = await reader.GetNextEntryAsync(cancellationToken: Ct);
         Assert.Equal("db.sql", entry!.Name);
         // 0600: the dump carries every role's password hash.
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, entry.Mode);
 
-        // Every session has to go before psql: --clean cannot DROP DATABASE under a live connection, and
-        // the script would then merge the dump into the old database instead of replacing it. It happens
-        // *after* the file is staged rather than before, so the window in which something can reconnect
-        // is as short as it can be — and so the coordinator's replay-a-file-already-there path
-        // (ReplayRemoteAsync, ADR-0027) terminates them exactly once.
+        // Every session has to go before psql: --clean cannot DROP DATABASE under a live connection,
+        // and the script would then merge the dump into the old database instead of replacing it. The
+        // execs are found by what they run rather than counted, so the staging step moving onto the
+        // untimed client (and off this recorder) cannot silently shift what is being asserted.
         var terminateAt = ExecIndex(estate, "pg_terminate_backend");
         var replayAt = ExecIndex(estate, "ON_ERROR_STOP=0");
-        Assert.True(put < terminateAt, "the SQL should be staged before the sessions are closed");
         Assert.True(terminateAt < replayAt, "the sessions should be closed before psql runs");
         Assert.Contains(log, l => l.StartsWith("WARNING: closed 2 open session(s) on 'db'", StringComparison.Ordinal));
 

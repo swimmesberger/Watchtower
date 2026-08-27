@@ -10,6 +10,7 @@ namespace Watchtower.Application.Modules.Ci;
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(CiRepoDto))]
 [JsonSerializable(typeof(CiRunnerStatusDto))]
+[JsonSerializable(typeof(CiRunnerContainerDto))]
 [JsonSerializable(typeof(CiRegistrySyncDto))]
 [JsonSerializable(typeof(CiReleaseSecretsSyncDto))]
 [JsonSerializable(typeof(CiToolchainDto))]

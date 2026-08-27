@@ -39,13 +39,38 @@ public sealed record CiRegistrySyncDto(string Status, DateTimeOffset? SyncedAt, 
 public sealed record CiReleaseSecretsSyncDto(string Status, DateTimeOffset? SyncedAt, string? Error);
 
 /// <summary>Live orchestrator state for one repo's runner slots.</summary>
+/// <param name="Runners">
+/// The individual runner containers behind <paramref name="RunningRunners"/>, as of the last
+/// reconcile pass. Empty until that pass has run — the counts move first, the table follows.
+/// </param>
 public sealed record CiRunnerStatusDto(
     int DesiredRunners,
     int RunningRunners,
     long TotalSpawned,
     string? LastError,
     DateTimeOffset? LastErrorAt,
-    DateTimeOffset? BackoffUntil);
+    DateTimeOffset? BackoffUntil,
+    CiRunnerContainerDto[] Runners);
+
+/// <summary>
+/// One live runner container. Watchtower keeps no runner table in the database (the containers are
+/// the state), so these are read back off the host's containers and their Watchtower labels.
+/// </summary>
+/// <param name="Id">Short container id (12 chars), the form <c>docker</c> commands accept.</param>
+/// <param name="Status">Docker's own status line, e.g. "Up 3 minutes".</param>
+/// <param name="GitHubRunnerId">The runner's id at GitHub; null if the container predates the label.</param>
+/// <param name="Stale">
+/// Spawned under settings that have since changed — the orchestrator retires it once it is idle.
+/// </param>
+public sealed record CiRunnerContainerDto(
+    string Id,
+    string Name,
+    string Image,
+    string State,
+    string Status,
+    DateTimeOffset? StartedAt,
+    long? GitHubRunnerId,
+    bool Stale);
 
 /// <summary>One detected toolchain of a CI repo ("dotnet 10.0 from workflow").</summary>
 public sealed record CiToolchainDto(string Kind, string Version, string Source);
@@ -124,7 +149,9 @@ internal static class CiMapping {
         status.TotalSpawned,
         status.LastError,
         status.LastErrorAt,
-        status.BackoffUntil);
+        status.BackoffUntil,
+        [.. status.Runners.Select(r => new CiRunnerContainerDto(
+            r.Id, r.Name, r.Image, r.State, r.Status, r.StartedAt, r.GitHubRunnerId, r.Stale))]);
 
     /// <summary>
     /// Projects the persisted sync columns into the wire DTO. The orchestrator's hash compare is

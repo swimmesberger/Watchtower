@@ -133,7 +133,19 @@ Runner container spec:
   origin box is visible in GitHub's UI and in a future overlapping-scopes setup.
 - Runner labels: `self-hosted` + `watchtower` + `{instance}` + `ExtraLabels`. Existing
   workflows using `runs-on: self-hosted` keep working unchanged.
-- Mounts: cache volumes (below); `/var/run/docker.sock` only when `AllowDockerSocket`.
+- Mounts: cache volumes (below); `/var/run/docker.sock` only when `AllowDockerSocket` — together
+  with `GroupAdd` = Watchtower's own supplementary group ids (`/proc/self/status`, the same
+  mechanism the self-update coordinator uses). The socket belongs to the host's `docker` group,
+  while the runner image gives its non-root `runner` user a `docker` group with a hardcoded id of
+  123; without the host ids the socket is mounted but unusable ("permission denied while trying to
+  connect to the Docker daemon socket").
+- Labels also carry `watchtower.ci.spec-hash`, the hash of the settings baked into the container
+  (image, docker socket, extra labels). Idle runners are long-lived — they sit long-polling GitHub
+  until a job arrives — so a settings change would otherwise only take effect after the current
+  runner consumed one more job. On a mismatch the reconcile loop retires the runner: it deletes the
+  registration at GitHub first, which doubles as the idleness check (GitHub refuses to delete a
+  runner that is executing a job), and only then removes the container. A busy runner is left alone
+  and replaced after it exits on its own.
 
 ### Caching (avoiding the ephemeral-runner slowdown)
 
@@ -169,7 +181,7 @@ detected toolchain profile is described in
 | `ci.listRuns` | proxied workflow runs for a repo (status, conclusion, commit, timing) |
 | `ci.listJobs` | jobs + step status for a run (live-ish via polling) |
 | `ci.getJobLogs` | full log text after job completion |
-| `ci.getRunnerStatus` | per-repo runner slots, container ids, backoff/error state |
+| `ci.getRunnerStatus` | per-repo runner slots, the live runner containers, backoff/error state |
 
 PAT CRUD reuses the existing `credentials.*` module — note in the UI that CI needs a
 **fine-grained PAT** with Administration RW + Actions R + Metadata/Contents R (unlike the
@@ -180,6 +192,14 @@ ghcr.io classic-PAT caveat documented on `Credential`).
 New module `src/watchtower-web/src/modules/ci/` (contribution model):
 
 - Repos page: enabled repos, runner slot status, add-repo dialog with repo picker.
+- Runner containers table (on the product's CI tab): one row per live runner — container name
+  and short id, Docker state, uptime, image, and the runner's id at GitHub, linked to the
+  repository's Actions runner settings. A runner still on superseded settings is badged
+  "settings changed" from the spec-hash comparison, so a saved change that has not reached the
+  running runner yet is visible rather than mysterious. Watchtower stores no runner table (the
+  containers are the state), so the rows come off the host's containers and their labels; the
+  list is the orchestrator's last reconcile pass, which is why a just-spawned runner can trail
+  the slot count by one interval.
 - Builds view per repo: run list → job list with step progress (poll while running) →
   log viewer (fetched on completion).
 - Generated RPC client from `rpc-schema.json` as everywhere else.

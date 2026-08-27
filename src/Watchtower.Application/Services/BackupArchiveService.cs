@@ -130,13 +130,39 @@ public sealed class BackupArchiveService(DockerEngineClient docker, ILogger<Back
                     $"Clearing the volumes failed (helper exit code {exitCode}). " +
                     "The helper image must provide `sh` and `rm` — the default busybox does.");
 
-            await docker.PutContainerArchiveAsync(containerId, "/", tarStream, ct);
+            await docker.PutContainerArchiveAsync(containerId, "/",
+                (destination, token) => CopyVolumeEntriesAsync(tarStream, volumeNames, destination, token), ct);
         } finally {
             try {
                 await docker.RemoveContainerAsync(containerId, CancellationToken.None);
             } catch (Exception ex) {
                 logger.LogWarning(ex, "Failed to remove restore helper container {ContainerId}", containerId);
             }
+        }
+    }
+
+    /// <summary>
+    /// Copies only the target volumes' entries (rooted <c>backup/{volume}/…</c>, plus the
+    /// <c>backup/</c> root itself) from the archive tar into the request body. The archive can carry
+    /// far more than what is being restored — above all a database dump standing in for a
+    /// multi-gigabyte volume that is deliberately left in place — and pushing those entries too
+    /// would stream the whole archive through the daemon and write it into the helper's layer for
+    /// nothing. That is not only wasted time: it is what used to push a small restore past the
+    /// HTTP client's ceiling.
+    /// </summary>
+    private static async Task CopyVolumeEntriesAsync(
+        Stream tar, IReadOnlyList<string> volumeNames, Stream destination, CancellationToken ct) {
+        var root = MountRoot.TrimStart('/');
+        var prefixes = volumeNames.Select(v => $"{root}/{v}/").ToArray();
+        await using var writer = new TarWriter(destination, TarEntryFormat.Pax, leaveOpen: true);
+        await using var reader = new TarReader(tar, leaveOpen: true);
+        while (await reader.GetNextEntryAsync(cancellationToken: ct) is { } entry) {
+            var name = entry.Name.TrimStart('.', '/');
+            var wanted = name == root || name == $"{root}/"
+                || prefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal)
+                    || name == p[..^1]);
+            if (!wanted) continue;
+            await writer.WriteEntryAsync(entry, ct);
         }
     }
 

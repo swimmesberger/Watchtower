@@ -1687,6 +1687,31 @@ export interface CiRunnerStatus {
   lastError: string | null
   lastErrorAt: string | null
   backoffUntil: string | null
+  /**
+   * The individual containers behind `runningRunners`, as of the orchestrator's last reconcile
+   * pass. Empty until that pass has run — the counts move first, the table follows.
+   */
+  runners: CiRunnerContainer[]
+}
+
+/**
+ * One live runner container. Watchtower keeps no runner table in the database (the containers are
+ * the state), so these are read back off the host's containers and their Watchtower labels.
+ */
+export interface CiRunnerContainer {
+  /** Short container id (12 chars), the form `docker` commands accept. */
+  id: string
+  name: string
+  image: string
+  /** Docker's container state: 'running', 'created' or 'restarting'. */
+  state: string
+  /** Docker's own status line, e.g. "Up 3 minutes". */
+  status: string
+  startedAt: string | null
+  /** The runner's id at GitHub; null if the container predates the label. */
+  gitHubRunnerId: number | null
+  /** Spawned under settings that have since changed — the orchestrator retires it once idle. */
+  stale: boolean
 }
 
 /**
