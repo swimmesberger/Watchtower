@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Boxes, Flame, Github, Hammer, KeyRound, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import { absoluteTitle, timeAgo } from '@/lib/format'
+import { absoluteTitle, formatUptime, timeAgo } from '@/lib/format'
 import type {
   CiLink,
   CiRegistrySync,
   CiReleaseSecretsSync,
   CiRepo,
+  CiRunnerContainer,
   CiToolchainProfile,
   Product,
 } from '@/lib/types'
@@ -15,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -75,6 +77,140 @@ function WarmBadge({ profile }: { profile: CiToolchainProfile }) {
     default:
       return <Badge tone="neutral" size="sm">warm pending</Badge>
   }
+}
+
+/** One runner container as a card, for the DataList's <768px layout. */
+function RunnerCard({ repo, runner }: { repo: CiRepo; runner: CiRunnerContainer }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-mono text-[13px] text-text">{runner.name}</div>
+          <div className="font-mono text-[11px] text-text-3">{runner.id}</div>
+        </div>
+        <RunnerStateBadges runner={runner} />
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-text-2">
+        <span className="tnum" title={absoluteTitle(runner.startedAt)}>
+          {runner.startedAt ? `up ${formatUptime(runner.startedAt)}` : runner.status}
+        </span>
+        <span className="truncate font-mono">{runner.image}</span>
+        <RunnerGitHubLink repo={repo} runner={runner} />
+      </div>
+    </div>
+  )
+}
+
+function RunnerStateBadges({ runner }: { runner: CiRunnerContainer }) {
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+      <Badge tone={runner.state === 'running' ? 'ok' : 'run'} size="sm">
+        {runner.state}
+      </Badge>
+      {runner.stale && (
+        <Badge
+          tone="warn"
+          size="sm"
+          title="Spawned before the current runner settings were saved. It keeps the job it is running and is replaced once idle."
+        >
+          settings changed
+        </Badge>
+      )}
+    </div>
+  )
+}
+
+/** The runner as GitHub knows it — the same id the repository's runner settings list shows. */
+function RunnerGitHubLink({ repo, runner }: { repo: CiRepo; runner: CiRunnerContainer }) {
+  if (runner.gitHubRunnerId == null) return <span className="text-text-3">—</span>
+  return (
+    <a
+      href={`https://github.com/${repo.fullName}/settings/actions/runners/${runner.gitHubRunnerId}`}
+      target="_blank"
+      rel="noreferrer"
+      className="tnum text-brand hover:underline"
+      title={`Runner #${runner.gitHubRunnerId} in ${repo.fullName}'s Actions settings`}
+    >
+      #{runner.gitHubRunnerId}
+    </a>
+  )
+}
+
+/**
+ * The live runner containers behind the slot count. Watchtower keeps no runner table in the
+ * database — the containers *are* the state (docs/ci-runners/design.md) — so this is the only place
+ * they are visible outside `docker ps` on the host. The list is the orchestrator's last reconcile
+ * pass, which is why a runner spawned seconds ago can trail the count above it by one interval.
+ */
+function RunnerContainersCard({ repo }: { repo: CiRepo }) {
+  const runners = repo.runnerStatus?.runners ?? []
+
+  const columns: DataListColumn<CiRunnerContainer>[] = [
+    {
+      key: 'container',
+      header: 'Container',
+      cell: (r) => (
+        <div className="min-w-0">
+          <div className="truncate font-mono text-[13px] text-text">{r.name}</div>
+          <div className="font-mono text-[11px] text-text-3">{r.id}</div>
+        </div>
+      ),
+    },
+    {
+      key: 'state',
+      header: 'State',
+      cell: (r) => <RunnerStateBadges runner={r} />,
+    },
+    {
+      key: 'uptime',
+      header: 'Uptime',
+      cell: (r) => (
+        <span className="tnum text-[13px] text-text-2" title={absoluteTitle(r.startedAt)}>
+          {r.startedAt ? formatUptime(r.startedAt) : r.status}
+        </span>
+      ),
+    },
+    {
+      key: 'image',
+      header: 'Image',
+      cell: (r) => <span className="font-mono text-[12px] text-text-2">{r.image}</span>,
+    },
+    {
+      key: 'github',
+      header: 'GitHub',
+      align: 'right',
+      cell: (r) => (
+        <span className="text-[12px]">
+          <RunnerGitHubLink repo={repo} runner={r} />
+        </span>
+      ),
+    },
+  ]
+
+  return (
+    <Card>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-sm text-text">Runner containers</span>
+          <span className="text-[12px] text-text-3">
+            Ephemeral — each takes one job, exits, and is replaced.
+          </span>
+        </div>
+        <DataList
+          items={runners}
+          getKey={(r) => r.id}
+          columns={columns}
+          renderCard={(r) => <RunnerCard repo={repo} runner={r} />}
+          emptyState={
+            <p className="text-[13px] text-text-3">
+              No runner containers on this host yet — the next reconcile pass starts them.
+            </p>
+          }
+          aria-label="Runner containers"
+        />
+      </CardContent>
+    </Card>
+  )
 }
 
 export function ProductCiTab({ product }: { product: Product }) {
@@ -319,6 +455,12 @@ function CiRepoPanel({ product, ci, repo }: { product: Product; ci: CiLink; repo
           </div>
         </CardContent>
       </Card>
+
+      {/* The containers behind the slot count. Also rendered while CI is off if any are still
+          being torn down, so "disabled" does not look like "already gone". */}
+      {(repo.enabled || (repo.runnerStatus?.runners.length ?? 0) > 0) && (
+        <RunnerContainersCard repo={repo} />
+      )}
 
       {/* Registry sync (docs/ci-runners/design.md, Secrets §1) */}
       <RegistrySyncCard repo={repo} onSelect={(url) => update.mutate({ syncRegistryUrl: url })} />

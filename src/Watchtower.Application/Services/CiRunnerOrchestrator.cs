@@ -134,6 +134,11 @@ public sealed class CiRunnerOrchestrator(
                 logger.LogError(ex, "Reconcile failed for CI repo {Repo}", repo.FullName);
                 RecordFailure(repo.Id, ex.Message);
             }
+            // After the pass, not from the listing that opened it: this one reflects what the pass
+            // itself reaped, retired and spawned, so the operator's next poll shows the runner that
+            // was just created rather than the one that is already gone. Outside the try above so a
+            // failed reconcile still leaves the UI an accurate picture of what is actually there.
+            await SnapshotRunnersAsync(repo, ct);
             try {
                 // Both Actions-config contributors (registry credentials, release configuration). Each
                 // is already isolated inside the service; this catch is the backstop for anything that
@@ -181,7 +186,7 @@ public sealed class CiRunnerOrchestrator(
         }
 
         var ci = options.CurrentValue.Ci;
-        var image = string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
+        var image = ResolveImage(repo, ci);
 
         // Before topping the slots up: retire runners spawned under settings that have since
         // changed, so the operator's next build runs on the settings they just saved.
@@ -236,6 +241,41 @@ public sealed class CiRunnerOrchestrator(
         }
         return kept;
     }
+
+    /// <summary>
+    /// Records the repo's runner containers on its status for the UI's runner table. Read from
+    /// Docker rather than from Watchtower state on purpose — the containers <em>are</em> the state
+    /// (docs/ci-runners/design.md), so a runner started by a previous Watchtower process, or one
+    /// that died in a way the loop has not reaped yet, shows up exactly as it is.
+    /// A snapshot failure is not a reconcile failure: it leaves the previous list in place.
+    /// </summary>
+    private async Task SnapshotRunnersAsync(CiRepo repo, CancellationToken ct) {
+        try {
+            var containers = await docker.ListContainersByLabelsAsync(
+                [$"{ManagedLabel}={ManagedLabelValue}", $"{RepoIdLabel}={repo.Id}"], ct);
+            var specHash = ComputeSpecHash(repo, ResolveImage(repo, options.CurrentValue.Ci));
+            _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus())
+                .UpdateRunners(containers.Where(IsRunning).Select(c => Describe(c, specHash)).ToList());
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogDebug(ex, "Could not snapshot runner containers for {Repo}", repo.FullName);
+        }
+    }
+
+    /// <summary>Projects one runner container onto what the UI shows about it.</summary>
+    internal static CiRunnerContainer Describe(DockerContainerInfo container, string specHash) => new(
+        container.Id[..Math.Min(12, container.Id.Length)],
+        container.Names.FirstOrDefault()?.TrimStart('/') ?? "(unnamed)",
+        container.Image,
+        container.State,
+        container.Status,
+        container.Created > 0 ? DateTimeOffset.FromUnixTimeSeconds(container.Created) : null,
+        long.TryParse(container.Labels.GetValueOrDefault(RunnerIdLabel), out var runnerId) ? runnerId : null,
+        container.Labels.GetValueOrDefault(SpecHashLabel) != specHash);
+
+    private static string ResolveImage(CiRepo repo, CiOptions ci) =>
+        string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
 
     private async Task SpawnRunnerAsync(CiRepo repo, string image, CiOptions ci, CancellationToken ct) {
         var instance = ci.ResolveInstanceName();
@@ -552,6 +592,31 @@ public sealed class CiRunnerOrchestrator(
     }
 }
 
+/// <summary>
+/// One runner container of a repo, as of the last reconcile pass. The orchestrator's own view of
+/// what is on the host — Watchtower keeps no runner table in the database, so this is the only
+/// place the individual containers are visible outside <c>docker ps</c>.
+/// </summary>
+/// <param name="Id">Short container id (12 chars), the form <c>docker</c> commands accept.</param>
+/// <param name="Status">Docker's human-readable status line, e.g. "Up 3 minutes".</param>
+/// <param name="GitHubRunnerId">
+/// The runner's id at GitHub, for finding it under the repository's Actions runner settings. Null
+/// for a container spawned before the id was labelled.
+/// </param>
+/// <param name="Stale">
+/// The container was spawned under settings that have since changed. It keeps whatever job it is
+/// running and is retired once idle — see <see cref="CiRunnerOrchestrator.SpecHashLabel"/>.
+/// </param>
+public sealed record CiRunnerContainer(
+    string Id,
+    string Name,
+    string Image,
+    string State,
+    string Status,
+    DateTimeOffset? StartedAt,
+    long? GitHubRunnerId,
+    bool Stale);
+
 /// <summary>Mutable per-repo runner state surfaced through <c>ci.getRunnerStatus</c>.</summary>
 public sealed class CiRepoRunnerStatus {
     private int _consecutiveFailures;
@@ -565,6 +630,15 @@ public sealed class CiRepoRunnerStatus {
     public DateTimeOffset? BackoffUntil { get; private set; }
     /// <summary>True while a toolcache warmer container for this repo is running.</summary>
     public bool WarmerRunning { get; private set; }
+
+    /// <summary>
+    /// The repo's runner containers as of the last reconcile pass — empty until the first one has
+    /// run. Whole-list replacement rather than mutation, so a reader always sees one consistent
+    /// pass rather than a half-updated table.
+    /// </summary>
+    public IReadOnlyList<CiRunnerContainer> Runners { get; private set; } = [];
+
+    internal void UpdateRunners(IReadOnlyList<CiRunnerContainer> runners) => Runners = runners;
 
     /// <summary>
     /// True once the cache volumes were chowned to the runner user this orchestrator lifetime
