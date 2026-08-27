@@ -376,7 +376,7 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
                 HostConfig = new DockerCreateHostConfig {
                     Binds = ["/var/run/docker.sock:/var/run/docker.sock"],
                     NetworkMode = "none",
-                    GroupAdd = GetCurrentGroupIds(),
+                    GroupAdd = HostSupplementaryGroups.Current(),
                 },
             }, coordinatorName, ct);
 
@@ -409,28 +409,6 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             ApplyStage = stage.ToString().ToLowerInvariant(),
             ApplyError = error,
         }, ct);
-
-    private static string[] GetCurrentGroupIds() {
-        try {
-            foreach (var line in File.ReadLines("/proc/self/status")) {
-                if (!line.StartsWith("Groups:", StringComparison.Ordinal)) continue;
-                return ParseGroupsLine(line);
-            }
-        } catch {
-            // Non-Linux or procfs unavailable — fall through and return empty.
-        }
-        return [];
-    }
-
-    /// <summary>
-    /// The <c>Groups:</c> line separates the label from the ids with a tab and the ids with spaces
-    /// (e.g. <c>"Groups:\t0 100 "</c>). Both must be treated as separators: an id that keeps a
-    /// leading tab is no longer numeric to Docker, which then tries it as a group <em>name</em>
-    /// against the image's <c>/etc/group</c> and fails the container start with
-    /// "unable to find group 0: no matching entries in group file".
-    /// </summary>
-    internal static string[] ParseGroupsLine(string line) =>
-        line["Groups:".Length..].Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
 
     private async Task<DetectedSelfInfo> TryInspectSelfAsync(CancellationToken ct = default) {
         var hostname = Environment.GetEnvironmentVariable("HOSTNAME") ?? "";
