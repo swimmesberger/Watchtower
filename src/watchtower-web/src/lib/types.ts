@@ -1356,6 +1356,12 @@ export interface BackupConfig {
   localBasePath: string
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
+  /** Whether the schedule also dumps Watchtower's own database (ADR-0027). Needs a passphrase. */
+  includeSelf: boolean
+  /** Explicit container for Watchtower's own PostgreSQL, when detection cannot pick one. */
+  selfPostgresContainer: string | null
+  /** Where the instance's own archives are written, e.g. `prod/_watchtower`. Derived, not settable. */
+  instanceDirectory: string
 }
 
 /** `backups.updateConfig` request. Null secret fields keep the stored values; empty string clears. */
@@ -1377,13 +1383,97 @@ export interface UpdateBackupConfigRequest {
   sftpPrivateKeyPassphrase?: string | null
   sftpBasePath?: string | null
   localBasePath?: string | null
+  includeSelf?: boolean | null
+  selfPostgresContainer?: string | null
+}
+
+/** What a backup run covered: one stack, or Watchtower's own database (ADR-0027). */
+export type BackupEventKind = 'stack' | 'instance'
+
+/**
+ * The full backup bundle staged for download (ADR-0027). Fetched from `/api/instance/bundle`, which is
+ * admin-only: the tar carries the key-protection secret, the backup passphrase and the storage
+ * credentials in plain text.
+ */
+export interface BackupBundle {
+  fileName: string
+  sizeBytes: number
+  createdAtUtc: string
+  /** How many stack archives it carries. */
+  stackCount: number
+  /** How many stacks it describes but has no archive for — never backed up, so only the definition returns. */
+  missingStackCount: number
+}
+
+/** One reason a bundle cannot be restored here, or one caveat about doing so (ADR-0027). */
+export interface RestoreFinding {
+  /** A stable key to branch on, e.g. `key-protection-secret`. */
+  code: string
+  /** The operator-facing sentence, which always names what to do about it. */
+  message: string
+}
+
+/** An uploaded bundle and this instance's verdict on restoring it (ADR-0027). */
+export interface RestoreValidation {
+  canRestore: boolean
+  /** Reasons the restore is refused outright. Non-empty means `canRestore` is false. */
+  blocking: RestoreFinding[]
+  /** Things worth knowing that do not stop it. */
+  warnings: RestoreFinding[]
+  /** The instance the bundle came from. */
+  instanceName: string
+  /** The Watchtower build that wrote it. */
+  appVersion: string
+  createdAtUtc: string
+  stackCount: number
+  missingStackCount: number
+  stackNames: string[]
+}
+
+/** How the last instance restore ended. */
+export type RestoreOutcome = 'none' | 'succeeded' | 'failed'
+
+/** What the restore wizard needs to decide what to show (ADR-0027). */
+export interface InstanceRestoreStatus {
+  /** No stacks, no deploys and one account — a Watchtower nobody has used yet. */
+  freshInstance: boolean
+  /** The uploaded bundle, checked against this instance, or null. */
+  staged: RestoreValidation | null
+  lastOutcome: RestoreOutcome
+  lastError: string | null
+  /** Whether a post-restore recovery checklist is still open. */
+  recoveryPending: boolean
+}
+
+/** Where one stack has got to on the post-restore recovery checklist (ADR-0027). */
+export type RevivalStatus = 'pending' | 'deploying' | 'restoring' | 'done' | 'failed' | 'skipped'
+
+/** One stack on the recovery checklist. */
+export interface RecoveryStack {
+  stackId: number
+  name: string
+  status: RevivalStatus
+  detail: string | null
+  deployEventId: number | null
+  backupEventId: number | null
+}
+
+/** The checklist an operator works through after an instance restore (ADR-0027). */
+export interface RecoveryChecklist {
+  restoredAtUtc: string
+  sourceInstance: string
+  dismissed: boolean
+  stacks: RecoveryStack[]
 }
 
 /** One backup run, for the history views. */
 export interface BackupEvent {
   id: number
-  stackId: number
-  stackName: string
+  /** Null for an instance run — it backs up Watchtower itself, so there is no stack. */
+  stackId: number | null
+  /** Null for an instance run; see `kind`. */
+  stackName: string | null
+  kind: BackupEventKind
   triggeredBy: string
   status: 'queued' | 'running' | 'success' | 'failed'
   /** Provider-relative path of the uploaded archive (null until upload, and on failure). */

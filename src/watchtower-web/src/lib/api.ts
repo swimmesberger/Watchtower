@@ -3,6 +3,7 @@
 // Nullable params are built explicitly (`?? null`) because the generated param types require
 // every key to be present.
 import { rpc } from './rpc-client'
+import { apiBase } from './config'
 import type {
   AdoptStackResult,
   HostRegistry,
@@ -13,9 +14,15 @@ import type {
   AuditEventPage,
   AuthConfig,
   AutomationConfig,
+  BackupBundle,
   BackupConfig,
   BackupEvent,
+  BackupEventKind,
   BackupRemoteFile,
+  InstanceRestoreStatus,
+  RecoveryChecklist,
+  RecoveryStack,
+  RestoreValidation,
   BackupRunAccepted,
   BackupPlanPreview,
   BackupQuiesceMode,
@@ -96,6 +103,44 @@ import type {
   VolumeInfo,
   VolumeSize,
 } from './types'
+
+/**
+ * Where a staged full backup bundle is fetched from (ADR-0027). A plain link rather than an RPC call:
+ * it streams a tar of arbitrary size, and the browser's own download handling is what should own it.
+ * Admin-only, and authenticated by the same session cookie every other request carries.
+ */
+export const BUNDLE_DOWNLOAD_URL = `${apiBase}/api/instance/bundle`
+
+/** Where an operator's bundle is uploaded for a restore. Admin-only; see {@link uploadRestoreBundle}. */
+const BUNDLE_UPLOAD_URL = `${apiBase}/api/instance/restore/bundle`
+
+/**
+ * Uploads a bundle and returns this instance's verdict on restoring it (ADR-0027). Nothing is replaced
+ * here — the upload is staged, and `backups.startInstanceRestore` is what acts on it.
+ *
+ * A plain fetch rather than an RPC call: the body is a tar of arbitrary size, streamed straight to disk
+ * on the other end.
+ */
+export async function uploadRestoreBundle(
+  file: File,
+  signal?: AbortSignal,
+): Promise<RestoreValidation> {
+  const response = await fetch(BUNDLE_UPLOAD_URL, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/x-tar' },
+    body: file,
+    signal,
+  })
+  if (!response.ok) {
+    // The endpoint answers a rejected upload with a problem document whose `detail` says why.
+    const problem = await response.json().catch(() => null)
+    throw new Error(
+      problem?.detail ?? problem?.title ?? `The upload failed (HTTP ${response.status}).`,
+    )
+  }
+  return (await response.json()) as RestoreValidation
+}
 
 export const api = {
   registries: {
@@ -476,16 +521,69 @@ export const api = {
         sftpPrivateKeyPassphrase: data.sftpPrivateKeyPassphrase ?? null,
         sftpBasePath: data.sftpBasePath ?? null,
         localBasePath: data.localBasePath ?? null,
+        includeSelf: data.includeSelf ?? null,
+        selfPostgresContainer: data.selfPostgresContainer ?? null,
       })).config as BackupConfig,
     testStorage: async () => (await rpc('backups.testStorage', {})).description as string,
-    events: async (stackId?: number, limit?: number, productId?: number) =>
+    events: async (stackId?: number, limit?: number, productId?: number, kind?: BackupEventKind) =>
       (await rpc('backups.events', {
         stackId: stackId ?? null,
         limit: limit ?? 50,
         // The fleet history: every deployment of one product. Additive — omitting it is the old call.
         productId: productId ?? null,
+        // 'instance' for Watchtower's own runs, 'stack' for the rest; omitted returns both (ADR-0027).
+        kind: kind ?? null,
       })).events as BackupEvent[],
     run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
+
+    /** Backs up Watchtower's own database (ADR-0027). Admin-only; needs an encryption passphrase. */
+    runInstance: async () => (await rpc('backups.runInstance', {})).backup as BackupRunAccepted,
+    /** The instance's own archives present on the storage, newest first. Admin-only. */
+    listInstance: async () =>
+      (await rpc('backups.listInstance', {})) as { files: BackupRemoteFile[]; directory: string },
+
+    /**
+     * Starts building a full backup bundle (ADR-0027): a fresh instance dump plus every stack's newest
+     * archive, staged for download at {@link BUNDLE_DOWNLOAD_URL}. Admin-only, and slow — poll
+     * {@link getBundleStatus}. Returns the tracking event.
+     */
+    exportBundle: async () =>
+      (await rpc('backups.exportBundle', {})).export as BackupRunAccepted,
+    /** The staged bundle, or null when there is none. Admin-only. */
+    getBundleStatus: async () =>
+      (await rpc('backups.getBundleStatus', {})).bundle as BackupBundle | null,
+
+    // ── Restoring this instance from a bundle (ADR-0027) ───────────────────
+    /** Whether this instance looks fresh, what bundle is staged, and how the last restore ended. */
+    getRestoreStatus: async () =>
+      (await rpc('backups.getRestoreStatus', {})) as unknown as InstanceRestoreStatus,
+    /**
+     * Replaces this instance's database with the uploaded bundle's. Returns once the coordinator has
+     * been started — Watchtower stops answering a few seconds later and comes back on the restored
+     * database, where the caller's session no longer exists.
+     */
+    startInstanceRestore: async () =>
+      (await rpc('backups.startInstanceRestore', {})).sourceInstance as string,
+
+    /** The post-restore checklist, or null when there is nothing to recover. */
+    getRecoveryChecklist: async () =>
+      (await rpc('backups.getRecoveryChecklist', {})).checklist as RecoveryChecklist | null,
+    /** Deploys one stack from git, then restores its newest archive. Runs to completion. */
+    reviveStack: async (stackId: number) =>
+      (await rpc('backups.reviveStack', { stackId })).stack as RecoveryStack,
+    /** The same for every stack still pending or failed, one after another. */
+    reviveAll: async () =>
+      (await rpc('backups.reviveAll', {})) as unknown as {
+        revived: number
+        checklist: RecoveryChecklist | null
+      },
+    /** Marks one stack as handled outside Watchtower, so "revive all" leaves it alone. */
+    skipRecoveryStack: async (stackId: number) =>
+      (await rpc('backups.skipRecoveryStack', { stackId })).stack as RecoveryStack,
+    /** Puts the checklist away. What happened stays in the audit trail. */
+    dismissRecovery: async () => {
+      await rpc('backups.dismissRecovery', {})
+    },
     listRemote: async (stackId: number) =>
       (await rpc('backups.listRemote', { stackId })).files as BackupRemoteFile[],
     restore: async (stackId: number, fileName: string) =>

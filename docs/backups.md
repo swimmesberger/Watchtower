@@ -22,21 +22,117 @@ the tar ([ADR-0019](decisions/0019-pause-quiesce-and-parallel-stops.md), see
 
 ## Backing up Watchtower itself
 
-This whole document is about **your stacks**. Watchtower's own records — stacks, routes, realms,
-accounts, credentials, audit trail, metrics history — live in the PostgreSQL it is configured against
-([ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md)), and nothing here touches
-that. Back it up the way you back up any database:
+Everything Watchtower knows — the stacks and their environment variables, templates, products and
+releases, routes, realms, accounts, credentials, certificates and keys, the audit trail and the
+metrics history — lives in the PostgreSQL it is configured against
+([ADR-0024](decisions/0024-postgresql-only-and-state-in-the-database.md)). Backing up your stacks
+without it restores their data but nothing that deploys them.
 
-```bash
-docker compose exec postgres pg_dump -U watchtower -Fc watchtower > watchtower-$(date +%F).dump
+Watchtower backs that database up itself
+([ADR-0027](decisions/0027-full-instance-backup-and-restore.md)). Under **Settings → Watchtower's own
+database**, "Include in the backup schedule" (on by default) adds a `pg_dumpall` of it to the same
+schedule your stacks run on, written to `{instance}/_watchtower/` on the same storage — so one folder
+per instance holds the whole picture. "Back up Watchtower now" runs one immediately.
+
+Two things to know:
+
+- **An encryption passphrase is required.** The dump carries every database role's password hash, the
+  data-protection key ring, the identity signing key and every certificate's private key. Without a
+  passphrase set (see [Encryption](#encryption)) the schedule skips it and the button is disabled.
+- **Nothing is stopped.** The dump is taken while Watchtower keeps serving — it has to be, since
+  Watchtower is what runs it.
+
+This needs your PostgreSQL to be **a container on the same Docker daemon**, which it is in the shipped
+compose file. Watchtower finds it from its own connection string; if you run several database
+containers and it picks wrong (or cannot choose), name the right one in **Database container** or
+`WATCHTOWER__BACKUP__SELFPOSTGRESCONTAINER`. A managed PostgreSQL (RDS, Neon, a host-installed
+server) cannot be dumped this way — back it up with whatever your provider offers.
+
+### The full backup bundle
+
+"Build bundle" (same card, admins only) produces **one file** holding a fresh dump of this database, the
+newest archive of every stack, and the secrets that live outside the database — everything a new
+Watchtower needs to become this one. Take one before migrating to a new host, and keep it wherever you
+keep passwords.
+
+```
+bundle-manifest.json     ← which Watchtower wrote it, against which schema, and every archive's SHA-256
+secrets.json             ← key-protection secret, backup passphrase, storage credentials
+watchtower/watchtower_20260826T033000Z.tar.gz.enc
+stacks/prod/blog/blog_20260826T033000Z.tar.gz.enc
+stacks/prod/shop/globex/shop-globex_20260826T033100Z.tar.gz.enc
 ```
 
-Restore with `pg_restore -U watchtower -d watchtower --clean` into an empty database, then start
-Watchtower — it migrates on startup, so a dump from an older version comes forward on its own.
+It is a plain (uncompressed) tar — its members are already compressed and encrypted — so `tar -tf` lists
+it and `tar -xf` unpacks it anywhere. Each stack archive keeps the path it had on the backup storage, so
+a restore can put it back exactly where the restored database expects to find it.
 
-Take the `watchtower-data` volume with it: the certificates, the ACME account key and the
-data-protection key ring still live there, and a database restored without them signs everyone out and
-reissues every certificate. Neither half is much use alone.
+> **The bundle is the instance.** `secrets.json` holds the key-protection secret, the backup passphrase
+> and your storage credentials in plain text — deliberately, because a bundle that restores into an
+> instance whose certificates and keys are unreadable is not a backup. Treat the file as a credential.
+
+A stack that has never been backed up appears in the manifest with no archive: its *definition* comes
+back with the database, its *data* does not. The card says how many, so you can back those up and build
+again.
+
+The bundle is kept in Watchtower's own container and one is staged at a time, so it is lost on restart —
+download it when it is ready, or build a fresh one later.
+
+### Restoring a whole instance
+
+**Settings → Watchtower's own database → Restore this Watchtower…** takes a bundle and makes this
+Watchtower into the one it came from. Before touching anything it checks the bundle and refuses on:
+
+- a bundle written by a **newer Watchtower** than this one — a database only ever migrates forward, so
+  update this instance first;
+- a **key-protection secret** that does not match. The certificates, ACME account key and signing key in
+  the bundle are encrypted under the source instance's
+  `WATCHTOWER__AUTH__KEYPROTECTIONSECRET`; set that variable to the value in the bundle's
+  `secrets.json` and restart Watchtower before restoring. It cannot be changed while running;
+- an archive that is missing, that does not match its checksum, or that the bundle's own passphrase
+  cannot open.
+
+It warns — but does not stop — when this Watchtower already manages stacks. Restoring replaces its whole
+database; the containers it deployed keep running, unmanaged, until the checklist redeploys them.
+
+The restore itself takes a few seconds: a helper container stops Watchtower, replays the dump, and
+starts it again. It takes a safety dump of the current database first and replays that back if the
+restore's own replay fails, so a failed restore leaves the instance as it was. The page waits for
+Watchtower to come back and sends you to the sign-in form — **sign in with an account from the instance
+the bundle came from**; the accounts this Watchtower had are gone with its database.
+
+Watchtower must be running as a container on the same Docker daemon for this: it is stopped and started
+around the replay. If it is not, restore the dump by hand (below).
+
+#### Bringing the stacks back
+
+After a restore, Settings shows a checklist of every stack in the restored database. Each one is
+**deployed from git and then restored from its newest archive**, in that order — only the deploy creates
+the volumes the restore needs, and a deploy on its own leaves the stack running on empty ones. Do them
+one at a time or press **Revive all**; a stack you are handling yourself can be skipped, and the whole
+checklist dismissed when you are done. What happened stays in the audit trail.
+
+### Restoring it by hand
+
+The archive is an ordinary Watchtower archive: decrypt it with stock OpenSSL as under
+[Restoring a backup](#restoring-a-backup), and `backup/_dumps/watchtower.sql` inside it is a
+`pg_dumpall` script.
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
+  -in watchtower_20260826T033000Z.tar.gz.enc -pass pass:'YOUR PASSPHRASE' \
+  | tar -xzO backup/_dumps/watchtower.sql > watchtower.sql
+docker compose exec -T postgres psql -U watchtower -d postgres < watchtower.sql
+```
+
+Then start Watchtower: it migrates on startup, so a dump from an older version comes forward on its
+own. **Carry `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` across with it.** The certificates, the ACME
+account key and the signing key are encrypted in the database under that secret, and an instance
+restored without it throws on every one of them. It is an environment variable, never stored in the
+database, and it cannot be changed at runtime.
+
+(The `watchtower-data` volume is not part of this. It held the certificates and key ring before
+ADR-0024; it holds nothing Watchtower needs now.)
 
 ## Setting it up
 
@@ -57,6 +153,8 @@ variables — env vars pin their setting read-only in the UI, see
 | Helper image | `WATCHTOWER__BACKUP__HELPERIMAGE` | Image for the never-started helper container (default `busybox:stable`); any pullable image works. |
 | Stop grace | `WATCHTOWER__BACKUP__STOPTIMEOUTSECONDS` | How long a container *stopped* for the snapshot gets to exit on SIGTERM before SIGKILL (`docker stop -t`). Default `5` (the daemon's own default is 10); clamped to 1 … 300. Not in the UI. A service that needs longer belongs on a dump or on `pause`, not on a longer window. |
 | Provider | `WATCHTOWER__BACKUP__PROVIDER` | `sftp` (default) or `local`. |
+| Include Watchtower's own database | `WATCHTOWER__BACKUP__INCLUDESELF` | Adds a dump of Watchtower's own PostgreSQL to the schedule (default on). Needs an encryption passphrase; see [Backing up Watchtower itself](#backing-up-watchtower-itself). |
+| Database container | `WATCHTOWER__BACKUP__SELFPOSTGRESCONTAINER` | Names the container holding Watchtower's own database, when detection cannot pick one. Blank = detect it. |
 
 Then opt each stack in on its **Backups tab**: include it in the schedule, optionally give it a
 **schedule override** (its own cron expression instead of the instance one), and choose whether its

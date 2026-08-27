@@ -70,7 +70,8 @@ public sealed class UpdateStack(WatchtowerDbContext db, SelfProjectNameProvider 
         // own — which would make them share containers (and App API visibility). Checked before
         // anything is mutated.
         var projectName = StackMapping.ResolveProjectName(command.Name, command.ComposeProjectName);
-        if (await StackProjectNames.ValidateAsync(db, selfProjects, projectName, excludeStackId: stack.Id, ct)
+        if (await StackProjectNames.ValidateAsync(
+                db, selfProjects, projectName, excludeStackId: stack.Id, ct, command.Name)
             is { } projectNameError)
             return AppError.Validation(projectNameError);
 

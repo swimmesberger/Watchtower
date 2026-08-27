@@ -108,6 +108,30 @@ public static class WatchtowerSettingPaths {
     public const string BackupEncryptionPassphrase = "Watchtower:Backup:EncryptionPassphrase";
     public const string BackupHelperImage = "Watchtower:Backup:HelperImage";
     public const string BackupProvider = "Watchtower:Backup:Provider";
+    /// <summary>Whether the schedule also dumps Watchtower's own database (ADR-0027).</summary>
+    public const string BackupIncludeSelf = "Watchtower:Backup:IncludeSelf";
+    /// <summary>Explicit container for Watchtower's own PostgreSQL, when detection cannot pick one.</summary>
+    public const string BackupSelfPostgresContainer = "Watchtower:Backup:SelfPostgresContainer";
+    /// <summary>
+    /// The instance self-backup's schedule cursor — the due time of the last window that was enqueued,
+    /// the stackless counterpart of <see cref="Entities.Stack.LastScheduledBackupAt"/>. Written by the
+    /// schedule tick, never offered in the UI.
+    /// </summary>
+    public const string BackupSelfLastScheduledAt = "Watchtower:Backup:SelfLastScheduledAt";
+
+    /// <summary>
+    /// The nonce an in-flight instance restore writes into the database it is about to replace
+    /// (ADR-0027 §5). After the restart its <em>absence</em> is the proof that the replay committed —
+    /// nothing else can remove it, because nothing else knows it. Never offered in the UI.
+    /// </summary>
+    public const string RestorePendingNonce = "Watchtower:Restore:PendingNonce";
+
+    /// <summary>
+    /// The post-restore recovery checklist (ADR-0027 §6), as JSON. A settings row because there is at
+    /// most one, it has to survive the restart the restore itself causes, and a table for it would be a
+    /// schema change carried by every instance that never restores anything.
+    /// </summary>
+    public const string RestoreRecovery = "Watchtower:Restore:Recovery";
     public const string BackupSftpHost = "Watchtower:Backup:Sftp:Host";
     public const string BackupSftpPort = "Watchtower:Backup:Sftp:Port";
     public const string BackupSftpUsername = "Watchtower:Backup:Sftp:Username";

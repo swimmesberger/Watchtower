@@ -84,6 +84,83 @@ public sealed class BackupScheduleJobTests {
         Assert.Equal(Utc(17, 15, 30), await CursorAsync(host, web));
     }
 
+    // ── Watchtower's own database (ADR-0027) ─────────────────────────────────
+
+    private static IReadOnlyList<string> InstanceEnqueued(AuthTestHost host) =>
+        ((RecordingBackupQueue)host.Services.GetRequiredService<BackupQueueService>()).InstanceEnqueued;
+
+    /// <summary>Enabled, with an encryption passphrase — what the self-backup additionally needs.</summary>
+    private static (string, string?)[] WithSelfBackup(params (string, string?)[] more) =>
+        Enabled([("Watchtower:Backup:EncryptionPassphrase", "s3cret"), .. more]);
+
+    [Fact]
+    public async Task TheInstanceRunsOnTheSameWindowAsTheStacksAndKeepsItsOwnCursor() {
+        using var host = Start(WithSelfBackup());
+        var web = await AddStackAsync(host, "web", last: Utc(16, 15, 30));
+
+        Assert.Equal(0, await TickAsync(host, Utc(17, 3, 29)));
+        // Two enqueues for one window: the stack and Watchtower's own database.
+        Assert.Equal(2, await TickAsync(host, Utc(17, 3, 30, 15)));
+        Assert.Equal(1, EnqueuedCount(host, web));
+        Assert.Equal(["schedule"], InstanceEnqueued(host));
+
+        // Same window on the next tick enqueues neither — the instance cursor moved with the stack's.
+        Assert.Equal(0, await TickAsync(host, Utc(17, 3, 31, 15)));
+        Assert.Single(InstanceEnqueued(host));
+
+        Assert.Equal(2, await TickAsync(host, Utc(17, 15, 30, 40)));
+        Assert.Equal(["schedule", "schedule"], InstanceEnqueued(host));
+    }
+
+    [Fact]
+    public async Task TheInstanceWindowRunsWithNoStacksAtAll() {
+        // A fresh instance with nothing deployed still has state worth backing up — the whole point of
+        // ADR-0027 — so the stackless early return must not swallow it.
+        using var host = Start(WithSelfBackup());
+
+        Assert.Equal(1, await TickAsync(host, Utc(17, 3, 30, 15)));
+        Assert.Equal(["schedule"], InstanceEnqueued(host));
+    }
+
+    [Fact]
+    public async Task IncludeSelfOffLeavesTheStacksAlone() {
+        using var host = Start(WithSelfBackup(("Watchtower:Backup:IncludeSelf", "false")));
+        var web = await AddStackAsync(host, "web", last: Utc(16, 15, 30));
+
+        Assert.Equal(1, await TickAsync(host, Utc(17, 3, 30, 15)));
+        Assert.Equal(1, EnqueuedCount(host, web));
+        Assert.Empty(InstanceEnqueued(host));
+    }
+
+    [Fact]
+    public async Task WithoutAPassphraseTheWindowIsSkippedButStillConsumed() {
+        // The dump carries every role's password hash, so it is never written unencrypted. The cursor
+        // still moves: an unconsumed window would re-open on every tick for the rest of the day.
+        using var host = Start(Enabled());
+        Assert.Equal(0, await TickAsync(host, Utc(17, 3, 30, 15)));
+        Assert.Empty(InstanceEnqueued(host));
+
+        // Passphrase appears; the window that was skipped stays skipped rather than firing late.
+        using var configured = host.Restart(WithSelfBackup());
+        Assert.Equal(0, await TickAsync(configured, Utc(17, 3, 31)));
+        Assert.Empty(InstanceEnqueued(configured));
+
+        // The next window runs normally.
+        Assert.Equal(1, await TickAsync(configured, Utc(17, 15, 30, 20)));
+        Assert.Equal(["schedule"], InstanceEnqueued(configured));
+    }
+
+    [Fact]
+    public async Task ARestartDoesNotDoubleFireTheInstanceWindow() {
+        using var host = Start(WithSelfBackup());
+        Assert.Equal(1, await TickAsync(host, Utc(17, 3, 30, 10)));
+
+        // The cursor is a settings row, so it survives the process exactly like a stack's column does.
+        using var restarted = host.Restart(WithSelfBackup());
+        Assert.Equal(0, await TickAsync(restarted, Utc(17, 3, 31)));
+        Assert.Empty(InstanceEnqueued(restarted));
+    }
+
     [Fact]
     public async Task TheProductionQueueGetsAQueuedEventPerWindow() {
         // One window through the real queue (its worker never starts here): the enqueue is the

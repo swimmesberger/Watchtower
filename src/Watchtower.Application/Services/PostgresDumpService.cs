@@ -376,9 +376,6 @@ public sealed class PostgresDumpService {
     public async Task<PostgresReplayResult> ReplayAsync(
         string containerId, PostgresConnection connection, string service, string sqlPath,
         IReadOnlyList<string> expectedDatabases, Action<string> log, CancellationToken ct) {
-        var execEnv = ExecEnv(connection.Password);
-        await TerminateSessionsAsync(containerId, connection, service, log, ct);
-
         // Sanitized, so a service name can never steer the path the file lands on.
         var remotePath = $"/tmp/{BackupNaming.Sanitize(service)}.sql";
         try {
@@ -393,26 +390,85 @@ public sealed class PostgresDumpService {
                     }, token);
             }, ct);
 
-            var replay = await _docker.ExecAsync(
-                containerId,
-                ["psql", "-U", connection.User, "-d", "postgres", "-w", "-v", "ON_ERROR_STOP=0", "-f", remotePath],
-                stdout: null, execEnv, connection.ExecUser, ct);
-
-            // Asked even after a non-zero exit: which databases actually exist is the verdict, and it
-            // is also the most useful thing to put in the failure message.
-            var (listing, present) = await ListDatabasesAsync(containerId, connection, ct);
-            var outcome = PostgresReplayOutcome.Classify(
-                replay.ExitCode, replay.Stderr, expectedDatabases, listing.Success ? present : []);
-            if (outcome.Failure is { } failure)
-                throw new InvalidOperationException($"Replaying the '{service}' dump failed: {failure}");
-            _logger.LogInformation(
-                "Replayed a dump into container {ContainerId}: {DatabaseCount} database(s) present, "
-                + "{DiagnosticCount} psql diagnostic(s)",
-                containerId, present.Count, outcome.ErrorLineCount);
-            return outcome;
+            return await ReplayRemoteAsync(containerId, connection, service, remotePath, expectedDatabases, log, ct);
         } finally {
             await RemoveRemoteFileAsync(containerId, connection, service, remotePath, log);
         }
+    }
+
+    /// <summary>
+    /// Replays a dump that is <em>already inside</em> the container — the second half of
+    /// <see cref="ReplayAsync"/>, and the whole of what the instance-restore coordinator does (ADR-0027
+    /// §5): it is a bare process with the Docker socket and no filesystem in common with the Watchtower
+    /// that staged the SQL, so it can only ever replay a path, never push one.
+    /// </summary>
+    /// <param name="containerId">The database container, already running and ready.</param>
+    /// <param name="connection">What <see cref="PreflightAsync"/> established.</param>
+    /// <param name="service">The compose service, for the run output.</param>
+    /// <param name="remoteSqlPath">Path of the SQL <em>inside</em> the container.</param>
+    /// <param name="expectedDatabases">The databases the dump promises; empty skips that check.</param>
+    /// <param name="log">Receives operator-facing lines, <c>WARNING: </c> prefix included.</param>
+    /// <param name="ct">The run's token.</param>
+    /// <exception cref="InvalidOperationException">psql failed, or a database did not come back.</exception>
+    public async Task<PostgresReplayResult> ReplayRemoteAsync(
+        string containerId, PostgresConnection connection, string service, string remoteSqlPath,
+        IReadOnlyList<string> expectedDatabases, Action<string> log, CancellationToken ct) {
+        // Terminated immediately before the script runs rather than before the file is staged, so the
+        // gap in which something could reconnect and block a DROP DATABASE is as short as it can be.
+        await TerminateSessionsAsync(containerId, connection, service, log, ct);
+
+        var replay = await _docker.ExecAsync(
+            containerId,
+            ["psql", "-U", connection.User, "-d", "postgres", "-w", "-v", "ON_ERROR_STOP=0", "-f", remoteSqlPath],
+            stdout: null, ExecEnv(connection.Password), connection.ExecUser, ct);
+
+        // Asked even after a non-zero exit: which databases actually exist is the verdict, and it
+        // is also the most useful thing to put in the failure message.
+        var (listing, present) = await ListDatabasesAsync(containerId, connection, ct);
+        var outcome = PostgresReplayOutcome.Classify(
+            replay.ExitCode, replay.Stderr, expectedDatabases, listing.Success ? present : []);
+        if (outcome.Failure is { } failure)
+            throw new InvalidOperationException($"Replaying the '{service}' dump failed: {failure}");
+        _logger.LogInformation(
+            "Replayed a dump into container {ContainerId}: {DatabaseCount} database(s) present, "
+            + "{DiagnosticCount} psql diagnostic(s)",
+            containerId, present.Count, outcome.ErrorLineCount);
+        return outcome;
+    }
+
+    /// <summary>
+    /// Dumps straight to a file <em>inside</em> the container, for the safety copy the instance-restore
+    /// coordinator takes before it replaces anything (ADR-0027 §5). The coordinator has nowhere else to
+    /// put it: it shares no filesystem with the database container or with Watchtower.
+    /// </summary>
+    /// <remarks>
+    /// The role and password travel as <c>PGUSER</c>/<c>PGPASSWORD</c> rather than as arguments, so
+    /// nothing derived from configuration is interpolated into the shell command — the only strings in
+    /// it are compile-time constants.
+    /// </remarks>
+    /// <param name="containerId">The database container.</param>
+    /// <param name="connection">What <see cref="PreflightAsync"/> established.</param>
+    /// <param name="remotePath">Where to write, inside the container. Its directory is created.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="InvalidOperationException">The dump could not be taken.</exception>
+    public async Task DumpToContainerFileAsync(
+        string containerId, PostgresConnection connection, string remotePath, CancellationToken ct) {
+        var directory = remotePath[..remotePath.LastIndexOf('/')];
+        string[] env = [
+            $"PGUSER={connection.User}",
+            .. connection.Password is { Length: > 0 } password ? (string[])[$"PGPASSWORD={password}"] : [],
+            $"WT_DUMP_DIR={directory}",
+            $"WT_DUMP_FILE={remotePath}",
+        ];
+        var result = await _docker.ExecAsync(
+            containerId,
+            ["sh", "-c",
+                "mkdir -p \"$WT_DUMP_DIR\" && umask 077 && "
+                + "pg_dumpall --clean --if-exists --no-password > \"$WT_DUMP_FILE\""],
+            stdout: null, env, connection.ExecUser, ct);
+        if (!result.Success)
+            throw new InvalidOperationException(
+                $"pg_dumpall to {remotePath} failed with exit code {result.ExitCode}: {Tail(result.Stderr)}");
     }
 
     /// <summary>

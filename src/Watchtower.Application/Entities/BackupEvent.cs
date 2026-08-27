@@ -19,10 +19,19 @@ public static class BackupStatuses {
     public const string Failed = "failed";
 }
 
-/// <summary>Records the status and outcome of a single stack backup run (ADR-0016).</summary>
+/// <summary>
+/// Records the status and outcome of a single backup run — a stack's (ADR-0016) or the instance's own
+/// (ADR-0027).
+/// </summary>
 public sealed class BackupEvent {
     public int Id { get; set; }
-    public int StackId { get; set; }
+
+    /// <summary>
+    /// The stack this run belongs to, or null for a run that has no stack: the instance self-backup and
+    /// the bundle export back up Watchtower itself (ADR-0027), so there is no stack to point at. The
+    /// history views and the single-flight queue both read this as the run's kind.
+    /// </summary>
+    public int? StackId { get; set; }
     public Stack? Stack { get; set; }
     /// <summary>Who triggered the backup: "manual" or "schedule".</summary>
     public required string TriggeredBy { get; set; }

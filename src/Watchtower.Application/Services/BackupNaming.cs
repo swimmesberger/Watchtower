@@ -39,6 +39,37 @@ public static partial class BackupNaming {
         $"{Sanitize(instanceName)}/{Sanitize(productName)}/{Sanitize(tenantSlug)}";
 
     /// <summary>
+    /// Where the instance's own archives live: <c>{instance}/_watchtower</c>, a sibling of the stack
+    /// directories under the same instance root (ADR-0027). One storage folder per instance therefore
+    /// holds everything needed to rebuild it — Watchtower's database next to the stacks' volumes.
+    /// </summary>
+    /// <remarks>
+    /// The leading underscore is what keeps it out of the stacks' way. <see cref="Sanitize"/> preserves
+    /// underscores, so a stack literally named <c>_watchtower</c> would collide — <see cref="IsReserved"/>
+    /// is where that is refused, at stack-create time, rather than discovered here at backup time.
+    /// </remarks>
+    /// <param name="instanceName">The resolved Watchtower instance name.</param>
+    public static string InstanceDirectory(string instanceName) =>
+        $"{Sanitize(instanceName)}/{InstanceDirectorySegment}";
+
+    /// <summary>The directory segment the instance's own archives live in, under the instance root.</summary>
+    public const string InstanceDirectorySegment = "_watchtower";
+
+    /// <summary>
+    /// The file-name stem of an instance archive, standing where a stack archive carries its compose
+    /// project. <see cref="ParseTimestamp"/> anchors on the timestamp suffix alone, so retention and the
+    /// remote listing treat these exactly like any other archive.
+    /// </summary>
+    public const string InstanceFileStem = "watchtower";
+
+    /// <summary>
+    /// Whether <paramref name="stackName"/> would sanitize onto the instance's own directory — the one
+    /// name a stack may not have, since its archives would then be written among Watchtower's own.
+    /// </summary>
+    public static bool IsReserved(string stackName) =>
+        string.Equals(Sanitize(stackName), InstanceDirectorySegment, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Where <paramref name="stack"/>'s archives live: the directory stamped on the row, or — for a
     /// stack created before the column existed — the value that has always been computed from the live
     /// instance name and the stack's current name.

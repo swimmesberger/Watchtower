@@ -148,6 +148,22 @@
         ]
       }
     },
+    "backups.dismissRecovery": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "dismissed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dismissed"
+        ]
+      }
+    },
     "backups.events": {
       "params": {
         "type": "object",
@@ -169,6 +185,13 @@
               "null"
             ],
             "default": null
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         }
       },
@@ -184,10 +207,16 @@
                   "type": "integer"
                 },
                 "stackId": {
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "stackName": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "triggeredBy": {
                   "type": "string"
@@ -223,6 +252,9 @@
                     "null"
                   ],
                   "format": "date-time"
+                },
+                "kind": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -235,13 +267,86 @@
                 "sizeBytes",
                 "output",
                 "startedAt",
-                "finishedAt"
+                "finishedAt",
+                "kind"
               ]
             }
           }
         },
         "required": [
           "events"
+        ]
+      }
+    },
+    "backups.exportBundle": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "export": {
+            "type": "object",
+            "properties": {
+              "backupEventId": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "backupEventId",
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "export"
+        ]
+      }
+    },
+    "backups.getBundleStatus": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "bundle": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "fileName": {
+                "type": "string"
+              },
+              "sizeBytes": {
+                "type": "integer"
+              },
+              "createdAtUtc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "missingStackCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fileName",
+              "sizeBytes",
+              "createdAtUtc",
+              "stackCount",
+              "missingStackCount"
+            ]
+          }
+        },
+        "required": [
+          "bundle"
         ]
       }
     },
@@ -330,6 +435,18 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "includeSelf": {
+                "type": "boolean"
+              },
+              "selfPostgresContainer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "instanceDirectory": {
+                "type": "string"
               }
             },
             "required": [
@@ -344,7 +461,10 @@
               "provider",
               "sftp",
               "localBasePath",
-              "pinnedPaths"
+              "pinnedPaths",
+              "includeSelf",
+              "selfPostgresContainer",
+              "instanceDirectory"
             ]
           }
         },
@@ -513,6 +633,186 @@
         ]
       }
     },
+    "backups.getRecoveryChecklist": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "checklist": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "restoredAtUtc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "sourceInstance": {
+                "type": "string"
+              },
+              "dismissed": {
+                "type": "boolean"
+              },
+              "stacks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stackId": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "deployEventId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "backupEventId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "stackId",
+                    "name",
+                    "status",
+                    "detail",
+                    "deployEventId",
+                    "backupEventId"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "restoredAtUtc",
+              "sourceInstance",
+              "dismissed",
+              "stacks"
+            ]
+          }
+        },
+        "required": [
+          "checklist"
+        ]
+      }
+    },
+    "backups.getRestoreStatus": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "freshInstance": {
+            "type": "boolean"
+          },
+          "staged": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "canRestore": {
+                "type": "boolean"
+              },
+              "blocking": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/properties/staged/properties/blocking/items"
+                }
+              },
+              "instanceName": {
+                "type": "string"
+              },
+              "appVersion": {
+                "type": "string"
+              },
+              "createdAtUtc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "stackCount": {
+                "type": "integer"
+              },
+              "missingStackCount": {
+                "type": "integer"
+              },
+              "stackNames": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "canRestore",
+              "blocking",
+              "warnings",
+              "instanceName",
+              "appVersion",
+              "createdAtUtc",
+              "stackCount",
+              "missingStackCount",
+              "stackNames"
+            ]
+          },
+          "lastOutcome": {
+            "type": "string"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recoveryPending": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "freshInstance",
+          "staged",
+          "lastOutcome",
+          "lastError",
+          "recoveryPending"
+        ]
+      }
+    },
     "backups.getStackConfig": {
       "params": {
         "type": "object",
@@ -619,6 +919,50 @@
         },
         "required": [
           "config"
+        ]
+      }
+    },
+    "backups.listInstance": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer"
+                },
+                "takenAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "encrypted": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "sizeBytes",
+                "takenAt",
+                "encrypted"
+              ]
+            }
+          },
+          "directory": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "files",
+          "directory"
         ]
       }
     },
@@ -889,6 +1233,151 @@
         ]
       }
     },
+    "backups.reviveAll": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "revived": {
+            "type": "integer"
+          },
+          "checklist": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "restoredAtUtc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "sourceInstance": {
+                "type": "string"
+              },
+              "dismissed": {
+                "type": "boolean"
+              },
+              "stacks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stackId": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "deployEventId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "backupEventId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "stackId",
+                    "name",
+                    "status",
+                    "detail",
+                    "deployEventId",
+                    "backupEventId"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "restoredAtUtc",
+              "sourceInstance",
+              "dismissed",
+              "stacks"
+            ]
+          }
+        },
+        "required": [
+          "revived",
+          "checklist"
+        ]
+      }
+    },
+    "backups.reviveStack": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployEventId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "backupEventId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "stackId",
+              "name",
+              "status",
+              "detail",
+              "deployEventId",
+              "backupEventId"
+            ]
+          }
+        },
+        "required": [
+          "stack"
+        ]
+      }
+    },
     "backups.run": {
       "params": {
         "type": "object",
@@ -900,6 +1389,34 @@
         "required": [
           "stackId"
         ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "backup": {
+            "type": "object",
+            "properties": {
+              "backupEventId": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "backupEventId",
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "backup"
+        ]
+      }
+    },
+    "backups.runInstance": {
+      "params": {
+        "type": "object"
       },
       "result": {
         "type": "object",
@@ -1357,6 +1874,83 @@
         ]
       }
     },
+    "backups.skipRecoveryStack": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stack": {
+            "type": "object",
+            "properties": {
+              "stackId": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployEventId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "backupEventId": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "stackId",
+              "name",
+              "status",
+              "detail",
+              "deployEventId",
+              "backupEventId"
+            ]
+          }
+        },
+        "required": [
+          "stack"
+        ]
+      }
+    },
+    "backups.startInstanceRestore": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "sourceInstance": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceInstance"
+        ]
+      }
+    },
     "backups.testStorage": {
       "params": {
         "type": "object"
@@ -1463,6 +2057,20 @@
               "null"
             ],
             "default": null
+          },
+          "includeSelf": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "selfPostgresContainer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -1556,6 +2164,18 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "includeSelf": {
+                "type": "boolean"
+              },
+              "selfPostgresContainer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "instanceDirectory": {
+                "type": "string"
               }
             },
             "required": [
@@ -1570,7 +2190,10 @@
               "provider",
               "sftp",
               "localBasePath",
-              "pinnedPaths"
+              "pinnedPaths",
+              "includeSelf",
+              "selfPostgresContainer",
+              "instanceDirectory"
             ]
           }
         },

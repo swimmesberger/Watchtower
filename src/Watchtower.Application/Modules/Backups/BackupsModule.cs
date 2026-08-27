@@ -34,7 +34,10 @@ public sealed record BackupConfigDto(
     string Provider,
     BackupSftpConfigDto Sftp,
     string LocalBasePath,
-    string[] PinnedPaths) {
+    string[] PinnedPaths,
+    bool IncludeSelf,
+    string? SelfPostgresContainer,
+    string InstanceDirectory) {
     internal static BackupConfigDto From(BackupOptions backup, EnvironmentSettingPins pins) => new(
         Enabled: backup.Enabled,
         Cron: BackupSchedule.ResolveGlobalExpression(backup),
@@ -53,7 +56,12 @@ public sealed record BackupConfigDto(
             HasPrivateKey: !string.IsNullOrEmpty(backup.Sftp.PrivateKey),
             BasePath: backup.Sftp.BasePath),
         LocalBasePath: backup.Local.BasePath,
-        PinnedPaths: ResolvePinnedPaths(pins));
+        PinnedPaths: ResolvePinnedPaths(pins),
+        IncludeSelf: backup.IncludeSelf,
+        SelfPostgresContainer: backup.SelfPostgresContainer,
+        // Shown, not configured: the operator needs to know where to look on the storage, and the layout
+        // is derived from the instance name rather than settable (ADR-0027).
+        InstanceDirectory: BackupNaming.InstanceDirectory(backup.ResolveInstanceName()));
 
     /// <summary>
     /// The pinned paths, with the legacy <c>Backup:Time</c> env var reported as pinning the schedule
@@ -77,18 +85,44 @@ public sealed record BackupSftpConfigDto(
     bool HasPrivateKey,
     string BasePath);
 
-/// <summary>One backup run for the history views (per stack and instance-wide).</summary>
+/// <summary>One backup run for the history views (per stack, per product, and instance-wide).</summary>
+/// <param name="Id">The event's id.</param>
+/// <param name="StackId">
+/// The stack the run belongs to, or null for a run that backed up Watchtower itself (ADR-0027).
+/// </param>
+/// <param name="StackName">The stack's name, or null when there is no stack — see <paramref name="Kind"/>.</param>
+/// <param name="TriggeredBy">Who or what started the run (see <see cref="BackupTriggers"/>).</param>
+/// <param name="Status">"queued", "running", "success", or "failed".</param>
+/// <param name="RemotePath">Provider-relative path of the archive, once it has one.</param>
+/// <param name="SizeBytes">Size of the uploaded archive.</param>
+/// <param name="Output">The run log.</param>
+/// <param name="StartedAt">When the run started.</param>
+/// <param name="FinishedAt">When it reached a terminal state, or null while it has not.</param>
+/// <param name="Kind">
+/// <c>stack</c> or <c>instance</c>: what this run backed up. Derived from
+/// <paramref name="StackId"/> so the UI can branch on a word rather than on a null.
+/// </param>
 public sealed record BackupEventDto(
     int Id,
-    int StackId,
-    string StackName,
+    int? StackId,
+    string? StackName,
     string TriggeredBy,
     string Status,
     string? RemotePath,
     long? SizeBytes,
     string? Output,
     DateTimeOffset StartedAt,
-    DateTimeOffset? FinishedAt);
+    DateTimeOffset? FinishedAt,
+    string Kind);
+
+/// <summary>The values <see cref="BackupEventDto.Kind"/> takes.</summary>
+public static class BackupEventKinds {
+    /// <summary>A stack's volumes and database dumps (ADR-0016).</summary>
+    public const string Stack = "stack";
+
+    /// <summary>Watchtower's own database (ADR-0027).</summary>
+    public const string Instance = "instance";
+}
 
 /// <summary>
 /// A stack's backup participation: schedule opt-in, the stop-for-snapshot flag, how its stateful
@@ -398,6 +432,81 @@ public sealed record BackupRemoteFileDto(string Name, long SizeBytes, DateTimeOf
 /// <summary>Returned immediately after a run is enqueued; the event tracks progress.</summary>
 public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 
+/// <summary>
+/// The full backup bundle staged for download (ADR-0027 §4). Never carries a path: the file lives in
+/// Watchtower's own container and is only ever reached through <c>GET /api/instance/bundle</c>.
+/// </summary>
+/// <param name="FileName">The name it downloads as.</param>
+/// <param name="SizeBytes">Its size.</param>
+/// <param name="CreatedAtUtc">When the export finished.</param>
+/// <param name="StackCount">How many stack archives it carries.</param>
+/// <param name="MissingStackCount">
+/// How many stacks it describes but has no archive for — a stack that has never been backed up. Its
+/// definition still comes back with the database; only its data is absent.
+/// </param>
+public sealed record BackupBundleDto(
+    string FileName, long SizeBytes, DateTimeOffset CreatedAtUtc, int StackCount, int MissingStackCount);
+
+/// <summary>One stack on the post-restore recovery checklist (ADR-0027 §6).</summary>
+/// <param name="StackId">Its id in the restored database.</param>
+/// <param name="Name">Its name.</param>
+/// <param name="Status">
+/// <c>pending</c>, <c>deploying</c>, <c>restoring</c>, <c>done</c>, <c>failed</c> or <c>skipped</c>.
+/// </param>
+/// <param name="Detail">What last happened to it, in a sentence.</param>
+/// <param name="DeployEventId">The deploy this revival started, for a link to its log.</param>
+/// <param name="BackupEventId">The restore this revival started, for a link to its log.</param>
+public sealed record RecoveryStackDto(
+    int StackId, string Name, string Status, string? Detail, int? DeployEventId, int? BackupEventId) {
+    internal static RecoveryStackDto From(RevivalStack stack) => new(
+        stack.StackId, stack.Name, stack.Status.ToString().ToLowerInvariant(), stack.Detail,
+        stack.DeployEventId, stack.BackupEventId);
+}
+
+/// <summary>The checklist an operator works through after an instance restore (ADR-0027 §6).</summary>
+public sealed record RecoveryChecklistDto(
+    DateTimeOffset RestoredAtUtc,
+    string SourceInstance,
+    bool Dismissed,
+    IReadOnlyList<RecoveryStackDto> Stacks) {
+    internal static RecoveryChecklistDto From(StackRevivalState state) => new(
+        state.RestoredAtUtc, state.SourceInstance, state.Dismissed,
+        [.. state.Stacks.Select(RecoveryStackDto.From)]);
+}
+
+/// <summary>One reason a bundle cannot be restored here, or one caveat about doing so (ADR-0027 §5).</summary>
+/// <param name="Code">A stable key the UI can branch on, e.g. <c>key-protection-secret</c>.</param>
+/// <param name="Message">The operator-facing sentence, which always names what to do about it.</param>
+public sealed record RestoreFindingDto(string Code, string Message) {
+    internal static RestoreFindingDto From(RestoreFinding finding) => new(finding.Code, finding.Message);
+}
+
+/// <summary>
+/// An uploaded bundle and this instance's verdict on it (ADR-0027 §5) — everything the wizard needs to
+/// say what would happen, before anything does.
+/// </summary>
+public sealed record RestoreValidationDto(
+    bool CanRestore,
+    IReadOnlyList<RestoreFindingDto> Blocking,
+    IReadOnlyList<RestoreFindingDto> Warnings,
+    string InstanceName,
+    string AppVersion,
+    DateTimeOffset CreatedAtUtc,
+    int StackCount,
+    int MissingStackCount,
+    IReadOnlyList<string> StackNames) {
+    internal static RestoreValidationDto From(RestoreValidation validation) => new(
+        validation.CanRestore,
+        [.. validation.Blocking.Select(RestoreFindingDto.From)],
+        [.. validation.Warnings.Select(RestoreFindingDto.From)],
+        validation.InstanceName,
+        validation.AppVersion,
+        validation.CreatedAtUtc,
+        validation.StackCount,
+        validation.MissingStackCount,
+        validation.StackNames);
+}
+
 /// <summary>JSON serializer context for Backups module request/response types.</summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -418,6 +527,33 @@ public sealed record BackupRunAcceptedDto(int BackupEventId, string Status);
 [JsonSerializable(typeof(ListBackupEvents.Response), TypeInfoPropertyName = "ListBackupEventsResponse")]
 [JsonSerializable(typeof(RunBackup.Command), TypeInfoPropertyName = "RunBackupCommand")]
 [JsonSerializable(typeof(RunBackup.Response), TypeInfoPropertyName = "RunBackupResponse")]
+[JsonSerializable(typeof(RunInstanceBackup.Command), TypeInfoPropertyName = "RunInstanceBackupCommand")]
+[JsonSerializable(typeof(RunInstanceBackup.Response), TypeInfoPropertyName = "RunInstanceBackupResponse")]
+[JsonSerializable(typeof(ListInstanceBackups.Query), TypeInfoPropertyName = "ListInstanceBackupsQuery")]
+[JsonSerializable(typeof(ListInstanceBackups.Response), TypeInfoPropertyName = "ListInstanceBackupsResponse")]
+[JsonSerializable(typeof(BackupBundleDto))]
+[JsonSerializable(typeof(ExportBackupBundle.Command), TypeInfoPropertyName = "ExportBackupBundleCommand")]
+[JsonSerializable(typeof(ExportBackupBundle.Response), TypeInfoPropertyName = "ExportBackupBundleResponse")]
+[JsonSerializable(typeof(GetBundleStatus.Query), TypeInfoPropertyName = "GetBundleStatusQuery")]
+[JsonSerializable(typeof(GetBundleStatus.Response), TypeInfoPropertyName = "GetBundleStatusResponse")]
+[JsonSerializable(typeof(RestoreFindingDto))]
+[JsonSerializable(typeof(RestoreValidationDto))]
+[JsonSerializable(typeof(GetInstanceRestoreStatus.Query), TypeInfoPropertyName = "GetInstanceRestoreStatusQuery")]
+[JsonSerializable(typeof(GetInstanceRestoreStatus.Response), TypeInfoPropertyName = "GetInstanceRestoreStatusResponse")]
+[JsonSerializable(typeof(StartInstanceRestore.Command), TypeInfoPropertyName = "StartInstanceRestoreCommand")]
+[JsonSerializable(typeof(StartInstanceRestore.Response), TypeInfoPropertyName = "StartInstanceRestoreResponse")]
+[JsonSerializable(typeof(RecoveryStackDto))]
+[JsonSerializable(typeof(RecoveryChecklistDto))]
+[JsonSerializable(typeof(GetRecoveryChecklist.Query), TypeInfoPropertyName = "GetRecoveryChecklistQuery")]
+[JsonSerializable(typeof(GetRecoveryChecklist.Response), TypeInfoPropertyName = "GetRecoveryChecklistResponse")]
+[JsonSerializable(typeof(ReviveStack.Command), TypeInfoPropertyName = "ReviveStackCommand")]
+[JsonSerializable(typeof(ReviveStack.Response), TypeInfoPropertyName = "ReviveStackResponse")]
+[JsonSerializable(typeof(ReviveAllStacks.Command), TypeInfoPropertyName = "ReviveAllStacksCommand")]
+[JsonSerializable(typeof(ReviveAllStacks.Response), TypeInfoPropertyName = "ReviveAllStacksResponse")]
+[JsonSerializable(typeof(SkipRecoveryStack.Command), TypeInfoPropertyName = "SkipRecoveryStackCommand")]
+[JsonSerializable(typeof(SkipRecoveryStack.Response), TypeInfoPropertyName = "SkipRecoveryStackResponse")]
+[JsonSerializable(typeof(DismissRecovery.Command), TypeInfoPropertyName = "DismissRecoveryCommand")]
+[JsonSerializable(typeof(DismissRecovery.Response), TypeInfoPropertyName = "DismissRecoveryResponse")]
 [JsonSerializable(typeof(BackupRemoteFileDto))]
 [JsonSerializable(typeof(ListRemoteBackups.Query), TypeInfoPropertyName = "ListRemoteBackupsQuery")]
 [JsonSerializable(typeof(ListRemoteBackups.Response), TypeInfoPropertyName = "ListRemoteBackupsResponse")]

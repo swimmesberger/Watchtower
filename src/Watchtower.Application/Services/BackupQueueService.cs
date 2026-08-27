@@ -26,13 +26,16 @@ public sealed record BackupEnqueueResult(int BackupEventId, string Status);
 /// </remarks>
 public class BackupQueueService(
     BackupService backupService,
+    InstanceBackupService instanceBackupService,
+    BackupBundleService bundleService,
     BackupChainCoordinator chain,
     IServiceScopeFactory scopeFactory,
     ILogger<BackupQueueService> logger) : BackgroundService {
 
-    private enum JobKind { Backup, Restore }
+    private enum JobKind { Backup, Restore, InstanceBackup, BundleExport }
 
-    private sealed record Job(int EventId, int StackId, JobKind Kind, string? FileName);
+    /// <summary><see cref="Job.StackId"/> is null for the jobs that back up Watchtower itself (ADR-0027).</summary>
+    private sealed record Job(int EventId, int? StackId, JobKind Kind, string? FileName);
 
     private readonly Channel<Job> _channel =
         Channel.CreateUnbounded<Job>(new UnboundedChannelOptions { SingleReader = true });
@@ -40,6 +43,20 @@ public class BackupQueueService(
     private readonly Dictionary<int, int> _queuedBackupByStack = [];
     private readonly HashSet<int> _queuedRestoreStacks = [];
     private int? _runningStackId;
+
+    /// <summary>
+    /// The instance self-backup waiting on the queue, if any — the stackless counterpart of
+    /// <see cref="_queuedBackupByStack"/>, coalescing for the same reason: a second request while one is
+    /// still waiting wants the backup that is about to happen, not two of them.
+    /// </summary>
+    private int? _queuedInstanceEventId;
+
+    /// <summary>
+    /// The bundle export waiting on the queue, if any. Coalesced like the others: an export takes a
+    /// fresh dump and downloads every stack's newest archive, so two of them are minutes of duplicated
+    /// work for one file that only the second would keep.
+    /// </summary>
+    private int? _queuedBundleEventId;
 
     /// <summary>
     /// Enqueues a backup for <paramref name="stackId"/>. Returns the tracking event — a fresh
@@ -89,6 +106,45 @@ public class BackupQueueService(
         }
     }
 
+    /// <summary>
+    /// Enqueues a backup of Watchtower's own database (ADR-0027). Returns the tracking event — a fresh
+    /// stackless <c>queued</c> one, or the already-waiting instance backup (coalesced).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately on the same single-flight queue as the stack runs rather than beside it: they compete
+    /// for the same spool disk, the same storage connection and the same daemon, and the instance dump is
+    /// small and infrequent. The cost is that it waits behind a large stack backup, which is the right way
+    /// round — a queued dump is a delayed dump, whereas two runs racing for the disk is a failed one.
+    /// </remarks>
+    /// <param name="triggeredBy">What to record on the event — see <see cref="BackupTriggers"/>.</param>
+    public virtual BackupEnqueueResult EnqueueInstance(string triggeredBy) {
+        lock (_lock) {
+            if (_queuedInstanceEventId is { } pending) return new BackupEnqueueResult(pending, "queued");
+
+            var eventId = CreateEvent(stackId: null, triggeredBy);
+            _queuedInstanceEventId = eventId;
+            _channel.Writer.TryWrite(new Job(eventId, StackId: null, JobKind.InstanceBackup, FileName: null));
+            return new BackupEnqueueResult(eventId, "queued");
+        }
+    }
+
+    /// <summary>
+    /// Enqueues a full backup bundle export (ADR-0027 §4) — a fresh instance dump plus every stack's
+    /// newest archive, staged on disk for download. Returns the tracking event, coalescing onto an
+    /// export that is already waiting.
+    /// </summary>
+    /// <param name="triggeredBy">What to record on the event — see <see cref="BackupTriggers"/>.</param>
+    public virtual BackupEnqueueResult EnqueueBundleExport(string triggeredBy) {
+        lock (_lock) {
+            if (_queuedBundleEventId is { } pending) return new BackupEnqueueResult(pending, "queued");
+
+            var eventId = CreateEvent(stackId: null, triggeredBy);
+            _queuedBundleEventId = eventId;
+            _channel.Writer.TryWrite(new Job(eventId, StackId: null, JobKind.BundleExport, FileName: null));
+            return new BackupEnqueueResult(eventId, "queued");
+        }
+    }
+
     /// <summary>How often the startup reconcile retries while the daemon is not answering.</summary>
     internal static readonly TimeSpan ReconcileRetryDelay = TimeSpan.FromSeconds(15);
 
@@ -109,16 +165,24 @@ public class BackupQueueService(
                 lock (_lock) {
                     // Only remove the backup mapping if it still points at this event (a newer
                     // request may have been queued for the same stack after this one started).
-                    if (job.Kind == JobKind.Backup
-                        && _queuedBackupByStack.TryGetValue(job.StackId, out var current)
+                    if (job.Kind == JobKind.Backup && job.StackId is { } backupStack
+                        && _queuedBackupByStack.TryGetValue(backupStack, out var current)
                         && current == job.EventId)
-                        _queuedBackupByStack.Remove(job.StackId);
-                    if (job.Kind == JobKind.Restore)
-                        _queuedRestoreStacks.Remove(job.StackId);
+                        _queuedBackupByStack.Remove(backupStack);
+                    if (job.Kind == JobKind.Restore && job.StackId is { } restoreStack)
+                        _queuedRestoreStacks.Remove(restoreStack);
+                    if (job.Kind == JobKind.InstanceBackup && _queuedInstanceEventId == job.EventId)
+                        _queuedInstanceEventId = null;
+                    if (job.Kind == JobKind.BundleExport && _queuedBundleEventId == job.EventId)
+                        _queuedBundleEventId = null;
                     _runningStackId = job.StackId;
                 }
                 try {
-                    if (job.Kind == JobKind.Backup)
+                    if (job.Kind == JobKind.BundleExport)
+                        await bundleService.ExecuteExportAsync(job.EventId, stoppingToken);
+                    else if (job.Kind == JobKind.InstanceBackup)
+                        await instanceBackupService.ExecuteInstanceBackupAsync(job.EventId, stoppingToken);
+                    else if (job.Kind == JobKind.Backup)
                         await backupService.ExecuteBackupAsync(job.EventId, stoppingToken);
                     else
                         await backupService.ExecuteRestoreAsync(job.EventId, job.FileName!, stoppingToken);
@@ -187,7 +251,9 @@ public class BackupQueueService(
         }
     }
 
-    private int CreateEvent(int stackId, string triggeredBy) {
+    /// <param name="stackId">The stack the run belongs to, or null for an instance self-backup.</param>
+    /// <param name="triggeredBy">What to record on the event — see <see cref="BackupTriggers"/>.</param>
+    private int CreateEvent(int? stackId, string triggeredBy) {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var evt = new BackupEvent {

@@ -1,4 +1,4 @@
-using System.Formats.Tar;
+﻿using System.Formats.Tar;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -332,6 +332,19 @@ public sealed class PostgresDumpServiceTests {
         return path;
     }
 
+    /// <summary>
+    /// Where the exec carrying <paramref name="fragment"/> in its command sits among the recorded
+    /// requests. Found rather than counted: one exec is two HTTP calls, and which client a step rides
+    /// is a transport decision that has already moved once — fixed offsets would say more about that
+    /// than about the order under test.
+    /// </summary>
+    private static int ExecIndex(DockerClientEstate estate, string fragment) {
+        var index = estate.Default.Bodies.FindIndex(
+            b => b is not null && b.Contains(fragment, StringComparison.Ordinal));
+        Assert.True(index >= 0, $"no exec was recorded whose command contains '{fragment}'");
+        return index;
+    }
+
     [Fact]
     public async Task TheReplayTerminatesSessions_CopiesTheSql_RunsPsql_AndCleansUp() {
         using var estate = Estate();
@@ -352,14 +365,6 @@ public sealed class PostgresDumpServiceTests {
             File.Delete(sql);
         }
 
-        // Every session has to go first: --clean cannot DROP DATABASE under a live connection, and
-        // psql would then merge the dump into the old database instead of replacing it.
-        using var terminate = JsonDocument.Parse(estate.Default.Bodies[0]!);
-        Assert.Contains(
-            "pg_terminate_backend",
-            terminate.RootElement.GetProperty("Cmd").EnumerateArray().Last().GetString() ?? "");
-        Assert.Contains(log, l => l.StartsWith("WARNING: closed 2 open session(s) on 'db'", StringComparison.Ordinal));
-
         // The SQL goes in as a tar at /tmp, streamed from the host file — over the untimed client,
         // because a dump is as large as the database it captures.
         var put = estate.LongRunning.Requests.FindIndex(r => r.Contains("/archive?path=", StringComparison.Ordinal));
@@ -371,12 +376,16 @@ public sealed class PostgresDumpServiceTests {
         // 0600: the dump carries every role's password hash.
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, entry.Mode);
 
-        // The psql exec is the second exec created (after the session terminate).
-        var psqlCreate = estate.Default.Requests
-            .Select((request, index) => (request, index))
-            .Where(x => x.request.EndsWith("/containers/db-id/exec", StringComparison.Ordinal))
-            .ElementAt(1).index;
-        using var replay = JsonDocument.Parse(estate.Default.Bodies[psqlCreate]!);
+        // Every session has to go before psql: --clean cannot DROP DATABASE under a live connection,
+        // and the script would then merge the dump into the old database instead of replacing it. The
+        // execs are found by what they run rather than counted, so the staging step moving onto the
+        // untimed client (and off this recorder) cannot silently shift what is being asserted.
+        var terminateAt = ExecIndex(estate, "pg_terminate_backend");
+        var replayAt = ExecIndex(estate, "ON_ERROR_STOP=0");
+        Assert.True(terminateAt < replayAt, "the sessions should be closed before psql runs");
+        Assert.Contains(log, l => l.StartsWith("WARNING: closed 2 open session(s) on 'db'", StringComparison.Ordinal));
+
+        using var replay = JsonDocument.Parse(estate.Default.Bodies[replayAt]!);
         Assert.Equal(
             new string?[] { "psql", "-U", "app", "-d", "postgres", "-w", "-v", "ON_ERROR_STOP=0", "-f", "/tmp/db.sql" },
             replay.RootElement.GetProperty("Cmd").EnumerateArray().Select(e => e.GetString()).ToArray());

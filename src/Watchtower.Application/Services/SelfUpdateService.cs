@@ -1,4 +1,4 @@
-using Elarion.Settings;
+﻿using Elarion.Settings;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -515,9 +515,25 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             .FirstOrDefaultAsync(ct);
     }
 
-    private sealed record DetectedSelfInfo {
+    /// <summary>
+    /// Which container and image Watchtower is running as, or empty when it is not containerised.
+    /// </summary>
+    /// <remarks>
+    /// Also what the instance restore needs (ADR-0027 §5): the coordinator it spawns has to be built
+    /// from this image and told which container to stop, and both answers come from the same
+    /// <c>HOSTNAME</c> → inspect this service already does for the self-update.
+    /// </remarks>
+    public sealed record DetectedSelfInfo {
         public string? ContainerId { get; init; }
         public string? ImageName { get; init; }
         public bool IsRunningInContainer { get; init; }
     }
+
+    /// <summary>
+    /// <inheritdoc cref="DetectedSelfInfo" path="/summary"/> Never throws: an undetectable self is
+    /// reported as an empty record, and the caller says what that means for what it was about to do.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    public Task<DetectedSelfInfo> DetectSelfAsync(CancellationToken ct = default) =>
+        TryInspectSelfAsync(ct);
 }
