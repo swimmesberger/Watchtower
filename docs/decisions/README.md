@@ -47,5 +47,6 @@ live here.
 - [ADR-0026: A Product is the deployable unit; stacks reference it, and releases pin its images](0026-products-are-the-deployable-unit.md)
 - [ADR-0027: Watchtower backs itself up, and a bundle restores it somewhere else](0027-full-instance-backup-and-restore.md)
 - [ADR-0028: CI runners carry the host's BuildKit knowledge — a generated default buildkitd config, and a reusable docker-driver workflow](0028-ci-buildkit-defaults.md)
+- [ADR-0029: Zero-downtime deploys — routed services warm up in a new generation, then traffic swaps](0029-blue-green-stack-deploys.md) — *proposed*
 - [ADR-0030: Host device mappings are a per-stack setting, injected through the generated override](0030-stack-device-mappings.md)
 - [ADR-0031: "Map host GPUs" is a per-service intent, resolved by probing the Docker host at deploy time](0031-host-gpu-passthrough-by-intent.md)
