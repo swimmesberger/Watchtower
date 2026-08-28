@@ -160,12 +160,12 @@ public sealed class CiRunnerOrchestrator(
 
     /// <summary>
     /// The default BuildKit configuration every runner of this pass receives, resolved once per
-    /// pass: the daemon's insecure registries, plus the snapshotter — auto-detected from the host
-    /// by default, overridable via <c>Ci:BuildkitSnapshotter</c>
-    /// (<see cref="CiBuildkitConfig.ResolveSnapshotter"/>). Failures degrade — an unreadable
-    /// <c>/info</c> or <c>/proc/filesystems</c> means fewer facts this pass, and an invalid option
-    /// value falls back to detection with a warning (logged once per distinct value, not once per
-    /// pass) — because a worse buildkitd config must never cost a repo its runners.
+    /// pass: the daemon's insecure registries, plus the snapshotter when — and only when — the
+    /// operator explicitly named one via <c>Ci:BuildkitSnapshotter</c>
+    /// (<see cref="CiBuildkitConfig.ResolveSnapshotter"/> explains why there is no detection).
+    /// Failures degrade — an unreadable <c>/info</c> means no registry stanzas this pass, and an
+    /// invalid option value is dropped with a warning (logged once per distinct value, not once
+    /// per pass) — because a worse buildkitd config must never cost a repo its runners.
     /// </summary>
     private async Task<string> ResolveBuildkitConfigAsync(CancellationToken ct) {
         DockerEngineInfo engineInfo = new();
@@ -177,35 +177,26 @@ public sealed class CiRunnerOrchestrator(
             logger.LogDebug(ex, "Could not read the engine info for the runner buildkitd config");
         }
 
-        string procFilesystems;
-        try {
-            procFilesystems = await File.ReadAllTextAsync("/proc/filesystems", ct);
-        } catch (Exception ex) when (ex is not OperationCanceledException) {
-            procFilesystems = string.Empty; // Non-Linux dev host, or a locked-down container.
-        }
-
         var configured = options.CurrentValue.Ci.BuildkitSnapshotter;
         string? snapshotter;
         try {
-            snapshotter = CiBuildkitConfig.ResolveSnapshotter(configured, engineInfo.Driver, procFilesystems);
+            snapshotter = CiBuildkitConfig.ResolveSnapshotter(configured);
         } catch (ArgumentException) {
             if (_warnedInvalidSnapshotter != configured) {
                 logger.LogWarning(
-                    "Falling back to snapshotter auto-detection: invalid Ci:BuildkitSnapshotter value "
-                    + "{Snapshotter} — expected 'auto', 'none', or a BuildKit snapshotter name such as "
-                    + "'overlayfs', 'fuse-overlayfs' or 'native'", configured);
+                    "Ignoring invalid Ci:BuildkitSnapshotter value {Snapshotter} — expected 'none', or a "
+                    + "BuildKit snapshotter name such as 'overlayfs', 'fuse-overlayfs' or 'native'", configured);
                 _warnedInvalidSnapshotter = configured;
             }
-            snapshotter = CiBuildkitConfig.ResolveSnapshotter(
-                CiBuildkitConfig.SnapshotterAuto, engineInfo.Driver, procFilesystems);
+            snapshotter = null;
         }
 
-        // The decision is a host fact operators will want in the log exactly once, not per pass.
-        if (_lastResolvedSnapshotter != (snapshotter ?? "(none)")) {
-            _lastResolvedSnapshotter = snapshotter ?? "(none)";
-            logger.LogInformation(
-                "Runner buildkitd config: snapshotter {Snapshotter} (storage driver {Driver})",
-                _lastResolvedSnapshotter, engineInfo.Driver ?? "(unknown)");
+        // An override is a host fact operators will want in the log exactly once, not per pass.
+        var resolvedLabel = snapshotter ?? "(none)";
+        if (_lastResolvedSnapshotter != resolvedLabel) {
+            if (snapshotter is not null || _lastResolvedSnapshotter is not null)
+                logger.LogInformation("Runner buildkitd config: snapshotter {Snapshotter}", resolvedLabel);
+            _lastResolvedSnapshotter = resolvedLabel;
         }
 
         return CiBuildkitConfig.Build(engineInfo.InsecureRegistries(), snapshotter);

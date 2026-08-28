@@ -182,7 +182,8 @@ Watchtower delivers them itself:
   out-of-daemon BuildKit, so pushing to a local registry needs a `buildkitd-config-inline`
   stanza in every workflow.
 - **The snapshotter.** BuildKit's OCI worker probes `auto` → overlayfs → fuse-overlayfs →
-  `native`. On kernels without overlayfs (Synology DSM's 4.4) it lands on `native`, which
+  `native`, each with a functional check. On Synology DSM's 4.4 kernel both checks fail
+  (no overlayfs; the fuse-overlayfs test mount fails too) and it lands on `native`, which
   has no copy-on-write: every layer materialisation is a full recursive copy of the
   accumulated image tree, and builds run ~10× slower with nothing in the job log saying
   why (the tell is `org.mobyproject.buildkit.worker.snapshotter: native` in the
@@ -197,19 +198,24 @@ so the orchestrator generates one per reconcile pass (`CiBuildkitConfig`):
   daemon itself treats as insecure (`GET /info` → `RegistryConfig.IndexConfigs`) — the
   daemon is the authority on which registries this box reaches without TLS. This deletes
   `buildkitd-config-inline` from consuming workflows.
-- `[worker.oci] snapshotter = …`, **auto-detected from the host by default**. The key
-  fact (confirmed by the DSM probe below): BuildKit's own `auto` chain is
-  overlayfs-or-`native` — it never tries fuse-overlayfs on its own — so a kernel without
-  overlayfs silently gets `native` even where FUSE is fully available. Watchtower
-  therefore emits `fuse-overlayfs` exactly when the kernel lacks overlayfs (per
-  `/proc/filesystems`, kernel-global even from a container; an overlay-family daemon
-  storage driver also counts as proof of overlayfs) but has FUSE, and stays silent
-  everywhere else — where overlayfs exists BuildKit picks it unaided and it beats
-  fuse-overlayfs, and where neither exists `native` is all there is. The instance-wide
-  `Ci:BuildkitSnapshotter` option overrides: `auto` (the default), `none` (emit nothing,
-  leave BuildKit's probe alone), or an explicit snapshotter name. Instance-wide because
-  which snapshotter works is a property of the host kernel, not of any repo; the resolved
-  choice is logged once on change.
+- `[worker.oci] snapshotter = …`, only when the instance-wide `Ci:BuildkitSnapshotter`
+  option explicitly names one. There is deliberately **no default and no detection**
+  (a `/proc/filesystems`-based auto-detection shipped briefly and was reverted): BuildKit's
+  own `auto` already probes overlayfs and then fuse-overlayfs *with a real test mount*
+  ([`main_oci_worker.go`](https://github.com/moby/buildkit/blob/master/cmd/buildkitd/main_oci_worker.go);
+  fuse-overlayfs's `Supported()` mounts read-only multiple lowerdirs) before falling back
+  to `native` — so the `native` outcome on a host means the fuse-overlayfs test mount
+  *genuinely failed there*, and nothing Watchtower can see from the outside beats that
+  evidence. Crucially, an explicitly named snapshotter makes buildkitd **skip** the
+  functional check entirely: it starts cleanly without ever proving a mount works, and a
+  wrong name turns quietly-slow builds into builds that fail at the first layer mount.
+  Hence the knob is expert-only — for an operator who has verified a snapshotter with a
+  real mount (below) on a host whose probe is demonstrably wrong, or who wants one the
+  probe never tries (e.g. `stargz`) — and it only helps when the builder image actually
+  contains that snapshotter's binary (the stock buildx builder image ships none beyond
+  overlayfs/native — see the verification note below). `none`/`auto` both mean "emit
+  nothing"; instance-wide because which snapshotter works is a property of the host
+  kernel, not of any repo; an override is logged once on change.
 
 Delivery is a third per-repo volume, `watchtower-ci-buildx-{repo}`, mounted at
 `/home/runner/_buildx` and exported as `BUILDX_CONFIG` (runner env is inherited by job
@@ -243,24 +249,31 @@ registry sync (Secrets §1) already pushes.
 - Runners on small hosts will not reach GitHub-hosted speeds even once the snapshotter is
   right — `exporting layers` is mostly gzip on however few cores the box has. That is not
   a bug to go hunting for.
-- Verifying fuse-overlayfs viability on a host by hand (what the auto-detection decides
-  from, plus the end-to-end check the detection cannot do):
+- Verifying fuse-overlayfs viability on a host by hand, before ever setting
+  `Ci:BuildkitSnapshotter`. Two traps, both hit while investigating issue #65 on the NAS
+  (2026-08-28): a forced `--oci-worker-snapshotter=fuse-overlayfs` start is **not** a
+  test — an explicit name skips `Supported()`, so buildkitd registers the worker without
+  ever mounting anything, even when the binary is absent — and the standard
+  `moby/buildkit` image **does not contain the fuse-overlayfs binary at all** (upstream
+  installs it only in the `-rootless` variant). The latter is why `Supported()` fails at
+  its `LookPath` step and `auto` can never select fuse-overlayfs under the stock
+  `docker-container` builder — on any host. Testing what the *kernel* can do therefore
+  needs an image that has the binary:
 
   ```bash
-  grep -E 'overlay|fuse' /proc/filesystems
-  ls -l /dev/fuse
-  docker run --rm --privileged moby/buildkit:latest --oci-worker-snapshotter=fuse-overlayfs --debug 2>&1 | head -20
+  docker run --rm --privileged alpine:3.22 sh -c '
+    apk add -q fuse-overlayfs
+    mkdir -p /tmp/l1 /tmp/l2 /tmp/u /tmp/w /tmp/m
+    fuse-overlayfs -o lowerdir=/tmp/l2:/tmp/l1 /tmp/m && echo RO-MULTI-LOWER-OK && umount /tmp/m
+    fuse-overlayfs -o lowerdir=/tmp/l1,upperdir=/tmp/u,workdir=/tmp/w /tmp/m && echo RW-OK'
   ```
 
-  Run on the DSM NAS 2026-08-28: the kernel has FUSE (`nodev fuse`), `/dev/fuse` exists,
-  and buildkitd starts cleanly with a registered fuse-overlayfs worker
-  (`worker.snapshotter: fuse-overlayfs`) — confirming that BuildKit's `native` fallback
-  there is purely its probe never trying fuse-overlayfs, which is exactly the gap the
-  auto-detection fills; the buildx builder container is privileged, so `/dev/fuse`
-  reaches it. fuse-overlayfs is slower than kernel overlayfs but does metadata copy-up
-  instead of `native`'s full-tree copies. (Startup proves the snapshotter initialises;
-  the first real build is the end-to-end confirmation — `Ci:BuildkitSnapshotter=none`
-  is the escape hatch if a host's FUSE turns out broken in practice.)
+  Even a capable kernel is not enough for the container driver: the builder image itself
+  must carry the binary (`setup-buildx-action` with `driver-opts: image=…` pointing at a
+  custom build) — per-repo host knowledge again, and fuse-overlayfs is slower than
+  kernel overlayfs anyway (metadata copy-up instead of `native`'s full-tree copies). In
+  practice, on a host without kernel overlayfs the docker-driver reusable workflow above
+  is the fast path.
 
 ### RPC surface
 

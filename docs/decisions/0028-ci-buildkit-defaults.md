@@ -1,6 +1,8 @@
 # ADR-0028: CI runners carry the host's BuildKit knowledge — a generated default buildkitd config, and a reusable docker-driver workflow
 
-- Status: Accepted (implemented)
+- Status: Accepted (implemented; amended 2026-08-28 — the snapshotter auto-detection this
+  originally shipped was reverted to an explicit-only knob after its premise was corrected,
+  see decision 1 and the consequences)
 - Date: 2026-08-28
 - Related: [docs/ci-runners/design.md](../ci-runners/design.md) §"Container image builds",
   [issue #65](https://github.com/swimmesberger/Watchtower/issues/65) (the evidence and the
@@ -41,19 +43,24 @@ change (a workflow's own `buildkitd-config(-inline)` still wins outright). The f
   daemon treats as insecure, read from `GET /info` — the daemon is the authority on which
   registries this box reaches without TLS, so this needs no new Watchtower state and
   tracks the host automatically.
-- `[worker.oci] snapshotter = …`, **auto-detected by default**. Running the probe on the
-  NAS showed BuildKit's `auto` chain is overlayfs-or-`native` — it never tries
-  fuse-overlayfs on its own, even where FUSE is fully available and an explicitly
-  configured fuse-overlayfs worker starts cleanly. Watchtower closes exactly that gap:
-  it emits `fuse-overlayfs` when the kernel lacks overlayfs but has FUSE (read from
-  `/proc/filesystems`, which is kernel-global even from a container; an overlay-family
-  daemon storage driver also proves overlayfs), and emits nothing everywhere else —
-  where overlayfs exists BuildKit picks it unaided and it beats fuse-overlayfs, and
-  where neither exists `native` is all there is. The new instance-wide
-  `Ci:BuildkitSnapshotter` option overrides: `auto` (default), `none` (never emit — the
-  escape hatch if a host's FUSE is broken in practice), or an explicit name.
-  Instance-wide because a working snapshotter is a property of the host kernel, not of
-  any repo.
+- `[worker.oci] snapshotter = …`, **only when the new instance-wide
+  `Ci:BuildkitSnapshotter` option explicitly names one** (`none`/`auto`/unset all mean
+  "emit nothing"). *Amended:* the first version of this ADR shipped `/proc/filesystems`-
+  based auto-detection here, built on the belief that BuildKit's `auto` chain never tries
+  fuse-overlayfs — buildkitd starting cleanly with a forced fuse-overlayfs worker on the
+  NAS seemed to prove a viable snapshotter the probe had skipped. Both halves of that were
+  wrong: `auto` does call `fuseoverlayfs.Supported()` before falling back to `native`
+  (moby/buildkit `cmd/buildkitd/main_oci_worker.go`), `Supported()` performs a *real*
+  fuse-overlayfs test mount (containerd/fuse-overlayfs-snapshotter `check.go`), and an
+  explicitly named snapshotter *skips* that check — so the clean start proved nothing,
+  while the `native` outcome proved a real mount had failed on that box. A detection
+  heuristic weaker than BuildKit's own mount test can only agree with it or wrongly
+  override it, and a wrong override turns quietly-slow builds into builds that fail at
+  the first layer mount. So the default emits nothing, and the knob is expert-only: for
+  an operator who has verified a snapshotter with a real mount (procedure in the design
+  doc) on a host whose probe is demonstrably wrong, or who needs one the probe never
+  tries (e.g. `stargz`). Instance-wide because a working snapshotter is a property of
+  the host kernel, not of any repo.
 
 Delivery is a third per-repo volume (`watchtower-ci-buildx-{repo}`) mounted at
 `/home/runner/_buildx` and exported as `BUILDX_CONFIG`. A volume, not a file bind, because
@@ -80,12 +87,16 @@ Consuming repos carry one `uses:` line and `secrets: inherit`.
   reusable workflow or simply drop `setup-buildx-action`; the ~10× extraction penalty
   disappears with the `native` snapshotter.
 - The open question from issue #65 — whether fuse-overlayfs can be made to work on DSM —
-  was answered the same day by running the probe on the NAS: buildkitd starts cleanly
-  with a registered fuse-overlayfs worker, so the `native` fallback there is BuildKit's
-  probe never trying fuse-overlayfs at all. That finding is why the snapshotter default
-  became auto-detection rather than a knob the operator must know to set: the DSM host
-  is fixed with **no configuration at all**, and no healthy host changes behaviour
-  (details in the design doc).
+  is answered: **not in the stock setup, on any host.** The standard `moby/buildkit`
+  image, which the buildx `docker-container` driver runs by default, does not contain
+  the fuse-overlayfs binary at all — upstream ships it only in the `-rootless` variant —
+  so `Supported()` fails at its `LookPath` step and `auto` can never select it. Verified
+  on the NAS 2026-08-28: `fuse-overlayfs: not found` inside the image, while the forced
+  worker had registered regardless (which is what briefly looked like viability, see the
+  amendment in decision 1). Whether DSM's kernel could mount fuse-overlayfs is untested
+  and moot for the container driver without a custom builder image; the reusable
+  docker-driver workflow is the fast path on that host, exactly as the issue's
+  Proposal B anticipated.
 - With the docker driver, build cache accumulates in the daemon instead of dying with the
   builder container. `docker builder prune` is the manual relief valve; wiring it into
   Watchtower's maintenance story is recorded as future work in the design doc.
