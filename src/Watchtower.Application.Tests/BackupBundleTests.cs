@@ -109,6 +109,36 @@ public sealed class BackupBundleTests : IDisposable {
     private static T Json<T>(Dictionary<string, byte[]> entries, string name) =>
         JsonSerializer.Deserialize<T>(entries[name], BackupBundle.JsonOptions)!;
 
+    /// <summary>
+    /// The staging root is the machine's shared temp directory, so startup cleanup must not touch
+    /// what another live process just staged — only entries old enough to be a dead process's
+    /// leftovers. This is what used to flake CI: an Api test host booting the real Program wiped
+    /// the bundle a parallel Application test had just staged.
+    /// </summary>
+    [Fact]
+    public void StagingCleanup_ReclaimsOnlyEntriesOldEnoughToBeAbandoned() {
+        var root = Directory.CreateTempSubdirectory("wt-staging-tests").FullName;
+        try {
+            var stale = Directory.CreateDirectory(Path.Combine(root, "stale")).FullName;
+            File.WriteAllText(Path.Combine(stale, "bundle.tar"), "old");
+            Directory.SetLastWriteTimeUtc(stale, DateTime.UtcNow - TimeSpan.FromHours(3));
+            var live = Directory.CreateDirectory(Path.Combine(root, "live")).FullName;
+            File.WriteAllText(Path.Combine(live, "bundle.tar"), "fresh");
+
+            BackupBundleService.ReclaimStaleStagingEntries(root, TimeSpan.FromHours(2));
+
+            Assert.False(Directory.Exists(stale));
+            Assert.True(Directory.Exists(live));
+        } finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void StagingCleanup_ToleratesAMissingRoot() =>
+        BackupBundleService.ReclaimStaleStagingEntries(
+            Path.Combine(Path.GetTempPath(), $"wt-staging-{Guid.NewGuid():N}"), TimeSpan.Zero);
+
     [Fact]
     public async Task CarriesTheInstanceArchiveAndEveryStacksNewestOne() {
         using var host = Start();
