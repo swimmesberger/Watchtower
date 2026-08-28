@@ -107,14 +107,40 @@ public sealed class BackupBundleService(
     private static string StagingDirectory => Path.Combine(Path.GetTempPath(), "watchtower-bundle");
 
     /// <summary>
-    /// Deletes bundles left by a previous process. Called at startup: the state that knew about them
-    /// did not survive, so nothing will ever hand them out — they would just occupy the disk.
+    /// Minimum age before a staged entry counts as abandoned by a dead process. Two hours is far
+    /// beyond any live export-download window, and a leftover surviving until the next startup
+    /// after a quick restart only costs temp-directory disk.
+    /// </summary>
+    internal static readonly TimeSpan StagingReclaimAge = TimeSpan.FromHours(2);
+
+    /// <summary>
+    /// Reclaims bundles left by a previous process. Called at startup: the state that knew about
+    /// them did not survive, so nothing will ever hand them out — they would just occupy the disk.
+    /// Only entries older than <see cref="StagingReclaimAge"/> are deleted: the staging root lives
+    /// in the machine's <em>shared</em> temp directory, so another live Watchtower process — above
+    /// all a parallel test host, which is how this used to flake in CI — may have a bundle staged
+    /// there that its state still hands out, and age is the only thing distinguishing that from a
+    /// dead process's leftovers.
     /// </summary>
     public void CleanStagingDirectory() {
         try {
-            if (Directory.Exists(StagingDirectory)) Directory.Delete(StagingDirectory, recursive: true);
+            ReclaimStaleStagingEntries(StagingDirectory, StagingReclaimAge);
         } catch (Exception ex) {
             logger.LogWarning(ex, "Could not clear the bundle staging directory {Directory}", StagingDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Deletes every per-export directory under <paramref name="root"/> whose last write is older
+    /// than <paramref name="minAge"/>. The directory's write time tracks the bundle being written
+    /// into it, so it is the staging time.
+    /// </summary>
+    internal static void ReclaimStaleStagingEntries(string root, TimeSpan minAge) {
+        if (!Directory.Exists(root)) return;
+        var cutoff = DateTime.UtcNow - minAge;
+        foreach (var entry in Directory.EnumerateDirectories(root)) {
+            if (Directory.GetLastWriteTimeUtc(entry) < cutoff)
+                Directory.Delete(entry, recursive: true);
         }
     }
 
