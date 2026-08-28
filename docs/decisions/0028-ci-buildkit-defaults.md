@@ -87,11 +87,14 @@ Consuming repos carry one `uses:` line and `secrets: inherit`.
   reusable workflow or simply drop `setup-buildx-action`; the ~10× extraction penalty
   disappears with the `native` snapshotter.
 - The open question from issue #65 — whether fuse-overlayfs can be made to work on DSM —
-  leans **no** on the evidence: BuildKit's probe already attempted a real fuse-overlayfs
-  mount in the builder container there and failed (that is what the `native` fallback
-  means), and the startup-only probe that briefly seemed to say otherwise proved nothing
-  (see the amendment in decision 1). The definitive hand-check — an actual mount, whose
-  procedure is in the design doc — remains to be run; unless it passes, the reusable
+  is answered: **not in the stock setup, on any host.** The standard `moby/buildkit`
+  image, which the buildx `docker-container` driver runs by default, does not contain
+  the fuse-overlayfs binary at all — upstream ships it only in the `-rootless` variant —
+  so `Supported()` fails at its `LookPath` step and `auto` can never select it. Verified
+  on the NAS 2026-08-28: `fuse-overlayfs: not found` inside the image, while the forced
+  worker had registered regardless (which is what briefly looked like viability, see the
+  amendment in decision 1). Whether DSM's kernel could mount fuse-overlayfs is untested
+  and moot for the container driver without a custom builder image; the reusable
   docker-driver workflow is the fast path on that host, exactly as the issue's
   Proposal B anticipated.
 - With the docker driver, build cache accumulates in the daemon instead of dying with the
