@@ -398,6 +398,14 @@ export const api = {
      */
     setReleaseSecretsSync: async (productId: number, enabled: boolean) =>
       (await rpc('ci.setReleaseSecretsSync', { productId, enabled })).ci as CiLink,
+    /**
+     * Recycles one runner container (deregister at GitHub, remove, respawn fresh). `busy` back
+     * means the runner is mid-job and was kept — retry with force to kill it, failing that job.
+     */
+    recycleRunner: (repoId: number, containerId: string, force = false) =>
+      rpc('ci.recycleRunner', { repoId, containerId, force }),
+    /** Recycles the repo's whole runner pool; busy runners are kept unless forced. */
+    recycleRunners: (repoId: number, force = false) => rpc('ci.recycleRunners', { repoId, force }),
   },
 
   volumes: {

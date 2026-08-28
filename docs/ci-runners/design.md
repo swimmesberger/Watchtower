@@ -273,6 +273,7 @@ registry sync (Secrets §1) already pushes.
 | `ci.listJobs` | jobs + step status for a run (live-ish via polling) |
 | `ci.getJobLogs` | full log text after job completion |
 | `ci.getRunnerStatus` | per-repo runner slots, the live runner containers, backoff/error state |
+| `ci.recycleRunner` / `ci.recycleRunners` | operator-requested recycle of one runner container / the whole pool: deregister at GitHub, remove, wake the loop to respawn under the current settings. Deregistration doubles as the idleness check (as in the automatic stale recycle), so a runner mid-job is kept and reported busy; `force` removes it anyway, failing that job |
 
 PAT CRUD reuses the existing `credentials.*` module — note in the UI that CI needs a
 **fine-grained PAT** with Administration RW + Actions R + Metadata/Contents R (unlike the
@@ -290,7 +291,9 @@ New module `src/watchtower-web/src/modules/ci/` (contribution model):
   running runner yet is visible rather than mysterious. Watchtower stores no runner table (the
   containers are the state), so the rows come off the host's containers and their labels; the
   list is the orchestrator's last reconcile pass, which is why a just-spawned runner can trail
-  the slot count by one interval.
+  the slot count by one interval. Each row carries a recycle action (plus "Recycle all" on the
+  card) backed by `ci.recycleRunner`/`ci.recycleRunners`; a busy runner answers with a confirm
+  dialog that escalates to `force`.
 - Builds view per repo: run list → job list with step progress (poll while running) →
   log viewer (fetched on completion).
 - Generated RPC client from `rpc-schema.json` as everywhere else.

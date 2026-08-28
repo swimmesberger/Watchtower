@@ -53,7 +53,7 @@ public class GitHubApiClient : IDisposable {
     /// Deletes a registered runner. Best-effort cleanup for runners torn down while idle —
     /// GitHub also purges never-connected/finished JIT runners on its own after a while.
     /// </summary>
-    public async Task<bool> TryDeleteRunnerAsync(string owner, string repo, long runnerId, string token, CancellationToken ct = default) {
+    public virtual async Task<bool> TryDeleteRunnerAsync(string owner, string repo, long runnerId, string token, CancellationToken ct = default) {
         using var request = NewRequest(HttpMethod.Delete, $"repos/{owner}/{repo}/actions/runners/{runnerId}", token);
         var response = await _client.SendAsync(request, ct);
         return response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound;

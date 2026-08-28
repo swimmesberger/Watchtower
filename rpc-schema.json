@@ -4214,6 +4214,74 @@
         ]
       }
     },
+    "ci.recycleRunner": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "repoId": {
+            "type": "integer"
+          },
+          "containerId": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "repoId",
+          "containerId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "recycled": {
+            "type": "boolean"
+          },
+          "busy": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recycled",
+          "busy"
+        ]
+      }
+    },
+    "ci.recycleRunners": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "repoId": {
+            "type": "integer"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "repoId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "recycled": {
+            "type": "integer"
+          },
+          "busy": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recycled",
+          "busy"
+        ]
+      }
+    },
     "ci.removeRepo": {
       "params": {
         "type": "object",

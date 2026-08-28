@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Boxes, Flame, Github, Hammer, KeyRound, Play } from 'lucide-react'
+import { Boxes, Flame, Github, Hammer, KeyRound, Play, RefreshCcw, RotateCcw } from 'lucide-react'
 import { api } from '@/lib/api'
 import { absoluteTitle, formatUptime, timeAgo } from '@/lib/format'
 import type {
@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
@@ -30,6 +31,7 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 
 // ── CI tab — per-product GitHub Actions runners (docs/ci-runners/design.md) ──────
@@ -80,7 +82,17 @@ function WarmBadge({ profile }: { profile: CiToolchainProfile }) {
 }
 
 /** One runner container as a card, for the DataList's <768px layout. */
-function RunnerCard({ repo, runner }: { repo: CiRepo; runner: CiRunnerContainer }) {
+function RunnerCard({
+  repo,
+  runner,
+  onRecycle,
+  recycling,
+}: {
+  repo: CiRepo
+  runner: CiRunnerContainer
+  onRecycle: (runner: CiRunnerContainer) => void
+  recycling: boolean
+}) {
   return (
     <div className="space-y-2">
       <div className="flex items-start justify-between gap-3">
@@ -88,7 +100,18 @@ function RunnerCard({ repo, runner }: { repo: CiRepo; runner: CiRunnerContainer 
           <div className="truncate font-mono text-[13px] text-text">{runner.name}</div>
           <div className="font-mono text-[11px] text-text-3">{runner.id}</div>
         </div>
-        <RunnerStateBadges runner={runner} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <RunnerStateBadges runner={runner} />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Recycle ${runner.name}`}
+            loading={recycling}
+            onClick={() => onRecycle(runner)}
+          >
+            {!recycling && <RotateCcw />}
+          </Button>
+        </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-text-2">
         <span className="tnum" title={absoluteTitle(runner.startedAt)}>
@@ -142,8 +165,57 @@ function RunnerGitHubLink({ repo, runner }: { repo: CiRepo; runner: CiRunnerCont
  * they are visible outside `docker ps` on the host. The list is the orchestrator's last reconcile
  * pass, which is why a runner spawned seconds ago can trail the count above it by one interval.
  */
-function RunnerContainersCard({ repo }: { repo: CiRepo }) {
+function RunnerContainersCard({ productId, repo }: { productId: number; repo: CiRepo }) {
+  const qc = useQueryClient()
   const runners = repo.runnerStatus?.runners ?? []
+  // The busy escalation: a non-forced recycle that GitHub refused parks the runner here until the
+  // operator confirms killing the job it is executing (or dismisses the dialog).
+  const [forceTarget, setForceTarget] = useState<CiRunnerContainer | null>(null)
+  const [confirmForceAll, setConfirmForceAll] = useState(false)
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['product', productId, 'ci'] })
+
+  const recycleOne = useMutation({
+    mutationFn: ({ runner, force }: { runner: CiRunnerContainer; force: boolean }) =>
+      api.ci.recycleRunner(repo.id, runner.id, force),
+    onSuccess: (res, { runner }) => {
+      if (res.recycled) {
+        setForceTarget(null)
+        invalidate()
+        toast.success(`Recycled ${runner.name} — a fresh runner takes its place.`)
+      } else if (res.busy) {
+        setForceTarget(runner)
+      }
+    },
+    onError: (err: Error) => {
+      setForceTarget(null)
+      toast.error('Recycle failed', err.message)
+    },
+  })
+
+  const recycleAll = useMutation({
+    mutationFn: (force: boolean) => api.ci.recycleRunners(repo.id, force),
+    onSuccess: (res, force) => {
+      invalidate()
+      if (res.recycled > 0) {
+        toast.success(`Recycled ${res.recycled} runner(s) — fresh ones take their place.`)
+      }
+      if (res.busy > 0 && !force) {
+        setConfirmForceAll(true)
+      } else {
+        setConfirmForceAll(false)
+        if (res.recycled === 0 && res.busy === 0) {
+          toast.success('No runner containers to recycle.')
+        }
+      }
+    },
+    onError: (err: Error) => {
+      setConfirmForceAll(false)
+      toast.error('Recycle failed', err.message)
+    },
+  })
+
+  const recyclingId = recycleOne.isPending ? recycleOne.variables?.runner.id : null
 
   const columns: DataListColumn<CiRunnerContainer>[] = [
     {
@@ -185,28 +257,87 @@ function RunnerContainersCard({ repo }: { repo: CiRepo }) {
         </span>
       ),
     },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (r) => (
+        <Tooltip label="Recycle — recreate under the current settings">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Recycle ${r.name}`}
+            loading={recyclingId === r.id}
+            onClick={() => recycleOne.mutate({ runner: r, force: false })}
+          >
+            {recyclingId !== r.id && <RotateCcw />}
+          </Button>
+        </Tooltip>
+      ),
+    },
   ]
 
   return (
     <Card>
       <CardContent className="space-y-3">
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <span className="text-sm text-text">Runner containers</span>
-          <span className="text-[12px] text-text-3">
-            Ephemeral — each takes one job, exits, and is replaced.
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className="text-sm text-text">Runner containers</span>
+            <span className="text-[12px] text-text-3">
+              Ephemeral — each takes one job, exits, and is replaced.
+            </span>
+          </div>
+          {runners.length > 0 && (
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={recycleAll.isPending}
+              onClick={() => recycleAll.mutate(false)}
+            >
+              {!recycleAll.isPending && <RefreshCcw />}
+              Recycle all
+            </Button>
+          )}
         </div>
         <DataList
           items={runners}
           getKey={(r) => r.id}
           columns={columns}
-          renderCard={(r) => <RunnerCard repo={repo} runner={r} />}
+          renderCard={(r) => (
+            <RunnerCard
+              repo={repo}
+              runner={r}
+              onRecycle={(runner) => recycleOne.mutate({ runner, force: false })}
+              recycling={recyclingId === r.id}
+            />
+          )}
           emptyState={
             <p className="text-[13px] text-text-3">
               No runner containers on this host yet — the next reconcile pass starts them.
             </p>
           }
           aria-label="Runner containers"
+        />
+
+        <ConfirmDialog
+          open={forceTarget != null}
+          onOpenChange={(open) => !open && setForceTarget(null)}
+          title={`${forceTarget?.name ?? 'Runner'} is executing a job`}
+          description="GitHub won't release a runner mid-job. Kill the container anyway? The running job fails, and a fresh runner takes the slot."
+          confirmLabel="Kill and recycle"
+          tone="danger"
+          loading={recycleOne.isPending}
+          onConfirm={() => forceTarget && recycleOne.mutate({ runner: forceTarget, force: true })}
+        />
+        <ConfirmDialog
+          open={confirmForceAll}
+          onOpenChange={setConfirmForceAll}
+          title="Some runners are executing jobs"
+          description="The idle runners were recycled; the busy ones were kept. Kill the remaining containers anyway? Their running jobs fail, and fresh runners take the slots."
+          confirmLabel="Kill and recycle"
+          tone="danger"
+          loading={recycleAll.isPending}
+          onConfirm={() => recycleAll.mutate(true)}
         />
       </CardContent>
     </Card>
@@ -459,7 +590,7 @@ function CiRepoPanel({ product, ci, repo }: { product: Product; ci: CiLink; repo
       {/* The containers behind the slot count. Also rendered while CI is off if any are still
           being torn down, so "disabled" does not look like "already gone". */}
       {(repo.enabled || (repo.runnerStatus?.runners.length ?? 0) > 0) && (
-        <RunnerContainersCard repo={repo} />
+        <RunnerContainersCard productId={product.id} repo={repo} />
       )}
 
       {/* Registry sync (docs/ci-runners/design.md, Secrets §1) */}

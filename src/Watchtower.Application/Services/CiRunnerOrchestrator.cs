@@ -655,6 +655,54 @@ public sealed class CiRunnerOrchestrator(
     }
 
     /// <summary>
+    /// Operator-requested recycle (<c>ci.recycleRunner</c>/<c>ci.recycleRunners</c>): deregister at
+    /// GitHub, remove the container, and wake the loop so a fresh runner is spawned under the
+    /// current settings — the manual counterpart to <see cref="RecycleStaleRunnersAsync"/>, without
+    /// the spec-hash gate. Deregistration doubles as the idleness check here too: a runner GitHub
+    /// refuses to release is executing a job and is kept (counted as busy) unless
+    /// <paramref name="force"/> is set, which removes the container anyway and fails that job.
+    /// A container that cannot be confirmed idle (no credential, missing runner-id label) is
+    /// treated as busy for the same reason the loop does — force is the escape hatch.
+    /// </summary>
+    /// <param name="containerId">
+    /// Short (12+ chars) id of one runner container of <paramref name="repo"/>, or null to recycle
+    /// the whole pool. Resolved against the repo's own labelled containers only, so an id of some
+    /// unrelated container on the host cannot be targeted through this path.
+    /// </param>
+    public async Task<CiRecycleOutcome> RecycleRunnersAsync(
+        CiRepo repo, string? containerId, bool force, CancellationToken ct) {
+        var containers = await docker.ListContainersByLabelsAsync(
+            [$"{ManagedLabel}={ManagedLabelValue}", $"{RepoIdLabel}={repo.Id}"], ct);
+
+        IReadOnlyList<DockerContainerInfo> targets = containers;
+        if (containerId is not null) {
+            var match = containers.FirstOrDefault(c =>
+                c.Id.StartsWith(containerId, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+                return new CiRecycleOutcome(Recycled: 0, Busy: 0, Found: false);
+            targets = [match];
+        }
+
+        int recycled = 0, busy = 0;
+        foreach (var container in targets) {
+            ct.ThrowIfCancellationRequested();
+            // An exited container has no job to protect — only a live one can be busy.
+            var idle = await TryDeleteRegistrationAsync(repo, container, ct) || !IsRunning(container);
+            if (!idle && !force) {
+                busy++;
+                continue;
+            }
+            await RemoveRunnerContainerAsync(
+                container.Id, idle ? "operator recycle" : "operator recycle (forced)", ct);
+            recycled++;
+        }
+
+        if (recycled > 0)
+            RequestReconcile();
+        return new CiRecycleOutcome(recycled, busy, Found: true);
+    }
+
+    /// <summary>
     /// Best-effort deregistration for runners that never took a job (JIT ids are on the container
     /// labels). Returns true when the runner is known to be gone from GitHub — which doubles as
     /// proof that it was idle, since GitHub rejects the delete while a job is running.
@@ -706,6 +754,19 @@ public sealed class CiRunnerOrchestrator(
         return new string(chars).Trim('-');
     }
 }
+
+/// <summary>
+/// What an operator-requested recycle did (<see cref="CiRunnerOrchestrator.RecycleRunnersAsync"/>).
+/// </summary>
+/// <param name="Recycled">Containers removed; the reconcile loop replaces each of them.</param>
+/// <param name="Busy">
+/// Containers kept because GitHub would not release their runner — each is executing a job.
+/// </param>
+/// <param name="Found">
+/// False only when a specific container id was asked for and no runner container of the repo
+/// matches it (already reaped, or never this repo's to begin with).
+/// </param>
+public sealed record CiRecycleOutcome(int Recycled, int Busy, bool Found);
 
 /// <summary>
 /// One runner container of a repo, as of the last reconcile pass. The orchestrator's own view of
