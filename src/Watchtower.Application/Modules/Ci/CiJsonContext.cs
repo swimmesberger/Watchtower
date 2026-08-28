@@ -39,4 +39,8 @@ namespace Watchtower.Application.Modules.Ci;
 [JsonSerializable(typeof(EnableForStack.Response), TypeInfoPropertyName = "EnableForStackResponse")]
 [JsonSerializable(typeof(SetReleaseSecretsSync.Command), TypeInfoPropertyName = "SetReleaseSecretsSyncCommand")]
 [JsonSerializable(typeof(SetReleaseSecretsSync.Response), TypeInfoPropertyName = "SetReleaseSecretsSyncResponse")]
+[JsonSerializable(typeof(RecycleRunner.Command), TypeInfoPropertyName = "RecycleRunnerCommand")]
+[JsonSerializable(typeof(RecycleRunner.Response), TypeInfoPropertyName = "RecycleRunnerResponse")]
+[JsonSerializable(typeof(RecycleRunners.Command), TypeInfoPropertyName = "RecycleRunnersCommand")]
+[JsonSerializable(typeof(RecycleRunners.Response), TypeInfoPropertyName = "RecycleRunnersResponse")]
 public sealed partial class CiJsonContext : JsonSerializerContext;
