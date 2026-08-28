@@ -1,0 +1,86 @@
+using Watchtower.Application.Entities;
+using Watchtower.Application.Services;
+using Xunit;
+
+namespace Watchtower.Application.Tests;
+
+/// <summary>
+/// Covers <see cref="DeviceMappingPlan"/> — placing a stack's stored device mappings (ADR-0030) onto
+/// the services the engine resolved. Pure policy, like <see cref="ImagePinPlan"/>: the tolerance cases
+/// are the point, because a leftover row must warn rather than fail a deploy.
+/// </summary>
+public sealed class DeviceMappingPlanTests {
+    private static readonly IReadOnlyList<EnvInjectionService> Services =
+        [new EnvInjectionService("web"), new EnvInjectionService("transcoder")];
+
+    private static StackDeviceMapping Row(
+        string service, string host, string? container = null, string? permissions = null) =>
+        new() { Service = service, HostPath = host, ContainerPath = container ?? host, Permissions = permissions };
+
+    [Fact]
+    public void Create_ReturnsEmptyForNoMappings() =>
+        Assert.Same(DeviceMappingPlan.Empty, DeviceMappingPlan.Create(Services, []));
+
+    /// <summary>
+    /// Services in ordinal name order, each service's devices ordered by container then host path —
+    /// deterministic, so a rendered override is diffable between deploys.
+    /// </summary>
+    [Fact]
+    public void Create_OrdersServicesAndDevicesDeterministically() {
+        var plan = DeviceMappingPlan.Create(Services, [
+            Row("web", "/dev/fuse"),
+            Row("transcoder", "/dev/ttyUSB0", "/dev/ttyUSB1", "rw"),
+            Row("transcoder", "/dev/dri/renderD128"),
+        ]);
+
+        Assert.Empty(plan.Warnings);
+        Assert.Equal(["transcoder", "web"], plan.Services.Select(s => s.ServiceName));
+        Assert.Equal(
+            [new ServiceDevice("/dev/dri/renderD128", "/dev/dri/renderD128", null),
+             new ServiceDevice("/dev/ttyUSB0", "/dev/ttyUSB1", "rw")],
+            plan.Services[0].Devices);
+        Assert.Equal([new ServiceDevice("/dev/fuse", "/dev/fuse", null)], plan.Services[1].Devices);
+    }
+
+    /// <summary>
+    /// A mapping for a service the resolved project does not contain warns and is skipped — services
+    /// come and go with the repository, and failing the deploy over a leftover row would take a fleet
+    /// down (the <see cref="ImagePinPlan"/> tolerance rule).
+    /// </summary>
+    [Fact]
+    public void Create_WarnsAndSkipsAMappingForAnUnknownService() {
+        var plan = DeviceMappingPlan.Create(Services, [
+            Row("removed-service", "/dev/dri/renderD128"),
+            Row("web", "/dev/fuse"),
+        ]);
+
+        var placed = Assert.Single(plan.Services);
+        Assert.Equal("web", placed.ServiceName);
+        Assert.Equal([new ServiceDevice("/dev/fuse", "/dev/fuse", null)], placed.Devices);
+        var warning = Assert.Single(plan.Warnings);
+        Assert.Contains("'removed-service'", warning, StringComparison.Ordinal);
+        Assert.Contains("not applied", warning, StringComparison.Ordinal);
+    }
+
+    /// <summary>Nothing placeable still reports why — an all-stale plan is warnings, not silence.</summary>
+    [Fact]
+    public void Create_ReturnsWarningsOnlyWhenNothingIsPlaceable() {
+        var plan = DeviceMappingPlan.Create(Services, [Row("gone", "/dev/fuse")]);
+
+        Assert.Empty(plan.Services);
+        Assert.Single(plan.Warnings);
+    }
+
+    /// <summary>Exact duplicate rows collapse silently — they cannot disagree about anything.</summary>
+    [Fact]
+    public void Create_CollapsesExactDuplicates() {
+        var plan = DeviceMappingPlan.Create(Services, [
+            Row("web", "/dev/fuse", permissions: "rw"),
+            Row("web", "/dev/fuse", permissions: "rw"),
+        ]);
+
+        var placed = Assert.Single(plan.Services);
+        Assert.Equal([new ServiceDevice("/dev/fuse", "/dev/fuse", "rw")], placed.Devices);
+        Assert.Empty(plan.Warnings);
+    }
+}

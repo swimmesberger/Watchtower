@@ -496,6 +496,25 @@ export interface StackEnvVarInput {
   value: string
 }
 
+/** One host device mapped into a compose service of a stack (ADR-0030). */
+export interface StackDeviceMapping {
+  id: number
+  service: string
+  hostPath: string
+  containerPath: string
+  /** Cgroup permissions (subset of "rwm"); absent for Docker's default. */
+  permissions?: string | null
+}
+
+/** One entry in a batch-replace request for stack device mappings. */
+export interface StackDeviceMappingInput {
+  service: string
+  hostPath: string
+  /** Defaults to hostPath when omitted/blank. */
+  containerPath?: string | null
+  permissions?: string | null
+}
+
 /** One env var a container is actually running with (from Docker inspect). */
 export interface ContainerEnvVar {
   key: string

@@ -10922,6 +10922,60 @@
         ]
       }
     },
+    "stacks.getDevices": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "hostPath": {
+                  "type": "string"
+                },
+                "containerPath": {
+                  "type": "string"
+                },
+                "permissions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "service",
+                "hostPath",
+                "containerPath",
+                "permissions"
+              ]
+            }
+          }
+        },
+        "required": [
+          "devices"
+        ]
+      }
+    },
     "stacks.getEnv": {
       "params": {
         "type": "object",
@@ -11235,6 +11289,93 @@
           "enabled",
           "token",
           "injectedVarNames"
+        ]
+      }
+    },
+    "stacks.setDevices": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "service": {
+                  "type": "string"
+                },
+                "hostPath": {
+                  "type": "string"
+                },
+                "containerPath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "permissions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "service",
+                "hostPath"
+              ]
+            }
+          }
+        },
+        "required": [
+          "stackId",
+          "devices"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "hostPath": {
+                  "type": "string"
+                },
+                "containerPath": {
+                  "type": "string"
+                },
+                "permissions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "service",
+                "hostPath",
+                "containerPath",
+                "permissions"
+              ]
+            }
+          }
+        },
+        "required": [
+          "devices"
         ]
       }
     },

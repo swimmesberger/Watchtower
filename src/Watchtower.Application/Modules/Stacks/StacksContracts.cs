@@ -94,6 +94,18 @@ public sealed record StackEnvVarDto(int Id, string Key, string Value);
 /// <summary>One entry in a batch-replace request for stack environment variables.</summary>
 public sealed record StackEnvVarInput(string Key, string Value);
 
+/// <summary>One host device mapped into a compose service of a stack (ADR-0030).</summary>
+public sealed record StackDeviceMappingDto(
+    int Id, string Service, string HostPath, string ContainerPath, string? Permissions);
+
+/// <summary>One entry in a batch-replace request for stack device mappings.</summary>
+/// <param name="Service">The compose service name.</param>
+/// <param name="HostPath">Absolute device path on the host.</param>
+/// <param name="ContainerPath">Absolute device path in the container; null/blank defaults to <paramref name="HostPath"/>.</param>
+/// <param name="Permissions">Cgroup permissions (subset of <c>rwm</c>); null/blank for the Docker default.</param>
+public sealed record StackDeviceMappingInput(
+    string Service, string HostPath, string? ContainerPath = null, string? Permissions = null);
+
 /// <summary>Returned immediately after a deploy is accepted.</summary>
 public sealed record DeployAcceptedDto(int DeployEventId, string Status);
 

@@ -433,6 +433,24 @@ public sealed class StackBackupServiceOverrideConfiguration : IEntityTypeConfigu
 }
 
 [EntityConfiguration]
+public sealed class StackDeviceMappingConfiguration : IEntityTypeConfiguration<StackDeviceMapping> {
+    public void Configure(EntityTypeBuilder<StackDeviceMapping> b) {
+        b.ToTable("stack_device_mappings");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Service).IsRequired();
+        b.Property(x => x.HostPath).IsRequired();
+        b.Property(x => x.ContainerPath).IsRequired();
+        // One row per (stack, service, host device): the set handler replaces the stack's whole set
+        // atomically, and the same host device mapped twice into one service is never meaningful.
+        b.HasIndex(x => new { x.StackId, x.Service, x.HostPath }).IsUnique();
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnvVar> {
     public void Configure(EntityTypeBuilder<StackEnvVar> b) {
         b.ToTable("stack_env_vars");

@@ -85,15 +85,26 @@ internal static class ComposeOverrideFile {
     /// The image-pinning plan, or null in <c>Git</c> mode — where this method renders precisely what it
     /// rendered before ADR-0026's release stage, byte for byte.
     /// </param>
+    /// <param name="devicePlan">
+    /// The device-mapping plan (ADR-0030), or null for a stack with none — where this method again
+    /// renders exactly its pre-device output. Each device becomes a <c>devices:</c> list entry in
+    /// Compose's <c>host:container[:permissions]</c> string form. Compose merges <c>devices:</c> by
+    /// container path, so entries here append to whatever the repository declares and replace only an
+    /// entry with the same container path — the per-host-wins rule ADR-0030 decides on.
+    /// </param>
     /// <returns>The file body, or null when there is nothing to write.</returns>
-    public static string? Render(EnvInjectionPlan plan, ImagePinPlan? imagePlan = null) {
+    public static string? Render(
+        EnvInjectionPlan plan, ImagePinPlan? imagePlan = null, DeviceMappingPlan? devicePlan = null) {
         var pins = imagePlan?.Services ?? [];
-        if (plan.Services.Count == 0 && pins.Count == 0) return null;
+        var deviceServices = devicePlan?.Services ?? [];
+        if (plan.Services.Count == 0 && pins.Count == 0 && deviceServices.Count == 0) return null;
 
         var variablesByService = plan.Services.ToDictionary(s => s.ServiceName, StringComparer.Ordinal);
         var pinsByService = pins.ToDictionary(p => p.ServiceName, StringComparer.Ordinal);
+        var devicesByService = deviceServices.ToDictionary(d => d.ServiceName, StringComparer.Ordinal);
         var names = variablesByService.Keys
             .Union(pinsByService.Keys, StringComparer.Ordinal)
+            .Union(devicesByService.Keys, StringComparer.Ordinal)
             .OrderBy(n => n, StringComparer.Ordinal);
 
         // '\n' rather than AppendLine: the file is handed to a Compose CLI that may well be running in a
@@ -105,14 +116,29 @@ internal static class ComposeOverrideFile {
             body.Append("  ").Append(QuoteKey(name)).Append(":\n");
             if (pinsByService.TryGetValue(name, out var pin))
                 body.Append("    image: ").Append(QuoteValue(pin.Image)).Append('\n');
-            if (!variablesByService.TryGetValue(name, out var service)) continue;
-            body.Append("    environment:\n");
-            foreach (var variable in service.Variables)
-                body.Append("      ").Append(QuoteKey(variable.Key)).Append(": ")
-                    .Append(QuoteValue(variable.Value)).Append('\n');
+            if (variablesByService.TryGetValue(name, out var service)) {
+                body.Append("    environment:\n");
+                foreach (var variable in service.Variables)
+                    body.Append("      ").Append(QuoteKey(variable.Key)).Append(": ")
+                        .Append(QuoteValue(variable.Value)).Append('\n');
+            }
+            if (devicesByService.TryGetValue(name, out var devices)) {
+                body.Append("    devices:\n");
+                foreach (var device in devices.Devices)
+                    body.Append("      - ").Append(QuoteValue(DeviceText(device))).Append('\n');
+            }
         }
         return body.ToString();
     }
+
+    /// <summary>
+    /// A device as Compose's string form spells it: <c>host:container</c>, with <c>:permissions</c>
+    /// only when the operator chose some — so the runtime default stays the runtime's to define.
+    /// </summary>
+    private static string DeviceText(ServiceDevice device) =>
+        device.Permissions is { } permissions
+            ? $"{device.HostPath}:{device.ContainerPath}:{permissions}"
+            : $"{device.HostPath}:{device.ContainerPath}";
 
     /// <summary>Reads one label out of the map (or the <c>KEY=VALUE</c> list) Compose emitted.</summary>
     /// <remarks>

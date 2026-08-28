@@ -531,7 +531,15 @@ public class DeployQueueService : IHostedService, IDisposable {
                     WriteHeader($"[Watchtower] {warning}");
             }
 
-            if (ComposeOverrideFile.Render(plan, imagePlan) is { } overrideContent) {
+            // 4d. Device mappings (ADR-0030): host devices configured per stack in the UI, rendered
+            //     into the same generated override — host-specific values the repository's compose
+            //     file must not carry. Empty for a stack with no rows, which keeps the override
+            //     byte-identical to its pre-device form.
+            var devicePlan = DeviceMappingPlan.Create(services, GetDeviceMappings(stackId));
+            foreach (var warning in devicePlan.Warnings)
+                WriteHeader($"[Watchtower] {warning}");
+
+            if (ComposeOverrideFile.Render(plan, imagePlan, devicePlan) is { } overrideContent) {
                 overrideFilePath = Path.Combine(
                     Path.GetTempPath(), $"watchtower-override-{Guid.NewGuid():N}.yml");
                 await File.WriteAllTextAsync(overrideFilePath, overrideContent, ct);
@@ -546,6 +554,14 @@ public class DeployQueueService : IHostedService, IDisposable {
                     WriteHeader(
                         $"[Watchtower] Injecting {string.Join(", ", service.Variables.Select(v => v.Key))} "
                         + $"into service '{service.ServiceName}'");
+                // One line per device: mapping a host device into a container is an operator-level
+                // grant, so "why does this container see the GPU" must be answerable from the log.
+                foreach (var mapped in devicePlan.Services)
+                    foreach (var device in mapped.Devices)
+                        WriteHeader(
+                            $"[Watchtower] Mapping device {device.HostPath} into service "
+                            + $"'{mapped.ServiceName}' at {device.ContainerPath}"
+                            + (device.Permissions is { } permissions ? $" ({permissions})" : ""));
             }
 
             // 5. Pull updated images.
@@ -927,6 +943,14 @@ public class DeployQueueService : IHostedService, IDisposable {
         using var scope = _scopeFactory.CreateScope();
         var appApi = scope.ServiceProvider.GetRequiredService<AppApiService>();
         return await appApi.EnsureTokenAsync(stackId, ct);
+    }
+
+    private List<StackDeviceMapping> GetDeviceMappings(int stackId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return db.StackDeviceMappings.AsNoTracking()
+            .Where(m => m.StackId == stackId)
+            .ToList();
     }
 
     private List<(string Key, string Value)> GetEnvVars(int stackId) {

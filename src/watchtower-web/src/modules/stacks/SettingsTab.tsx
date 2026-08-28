@@ -6,6 +6,12 @@ import { apiBase } from '@/lib/config'
 import { usesReleases } from '@/lib/release'
 import type { AutoDeployMode, Stack, StackEnvVarInput, UpdateStackRequest } from '@/lib/types'
 import { EnvVarEditor } from '@/components/env-var-editor'
+import {
+  DeviceMappingEditor,
+  blankDeviceRow,
+  isDeviceRowBlank,
+  type DeviceMappingRow,
+} from '@/components/device-mapping-editor'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -40,6 +46,11 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     queryFn: () => api.stacks.getEnv(stackId),
   })
 
+  const devicesQuery = useQuery({
+    queryKey: ['stacks', stackId, 'devices'],
+    queryFn: () => api.stacks.getDevices(stackId),
+  })
+
   // Only to decide whether the product is linkable; the branch hint below is derived from the stack
   // DTO alone, because it is the only source that cannot disagree with what the backend compares.
   const { caps } = useRouteContext({ from: '__root__' })
@@ -69,16 +80,46 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     { key: '', value: '' },
   ]
 
+  // Same draft-or-fallback shape as the env editor, for the same cold-cache reason.
+  const [deviceDraft, setDeviceDraft] = useState<DeviceMappingRow[] | null>(null)
+  const deviceRows: DeviceMappingRow[] = deviceDraft ?? [
+    ...(devicesQuery.data ?? []).map((d) => ({
+      service: d.service,
+      hostPath: d.hostPath,
+      // Stored resolved (the backend defaults it to the host path); shown blank when they agree so
+      // the common case reads as "same as host" rather than as a deliberate second path.
+      containerPath: d.containerPath === d.hostPath ? '' : d.containerPath,
+      permissions: d.permissions ?? '',
+    })),
+    blankDeviceRow,
+  ]
+
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
 
   const update = useMutation({
-    mutationFn: (data: UpdateStackRequest) => api.stacks.update(stackId, data),
+    mutationFn: async (data: UpdateStackRequest) => {
+      const updated = await api.stacks.update(stackId, data)
+      // Devices ride the same Save, but only when the user actually edited them — sending the
+      // fallback rows while the query is unresolved would silently wipe the stored mappings.
+      if (deviceDraft)
+        await api.stacks.setDevices(
+          stackId,
+          deviceDraft.filter((r) => !isDeviceRowBlank(r)).map((r) => ({
+            service: r.service.trim(),
+            hostPath: r.hostPath.trim(),
+            containerPath: r.containerPath.trim() || null,
+            permissions: r.permissions.trim() || null,
+          })),
+        )
+      return updated
+    },
     onSuccess: (updated) => {
       qc.setQueryData(['stacks', stackId], updated)
       qc.invalidateQueries({ queryKey: ['stacks', stackId, 'env'] })
+      qc.invalidateQueries({ queryKey: ['stacks', stackId, 'devices'] })
       qc.invalidateQueries({ queryKey: ['stacks'] })
       toast.success('Settings saved.')
     },
@@ -377,6 +418,37 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           </Banner>
         )}
         {envQuery.isSuccess && <EnvVarEditor value={envRows} onChange={setEnvDraft} />}
+      </section>
+
+      {/* Device mappings (ADR-0030) */}
+      <section>
+        <SectionHeader
+          title="Device mappings"
+          description="Host devices mapped into this stack's containers on deploy — e.g. /dev/dri/renderD128 for GPU transcoding. Host-specific by design, so they live here instead of the compose file."
+        />
+        {devicesQuery.isPending && (
+          <p className="rounded-md border border-border px-3 py-2.5 text-sm text-text-3">
+            Loading device mappings…
+          </p>
+        )}
+        {devicesQuery.isError && (
+          // No editor on error, for the env editor's reason: editing on top of unseen mappings
+          // would replace them on save.
+          <Banner tone="warn" title="Couldn’t load device mappings">
+            {devicesQuery.error.message} — saving will leave the stored mappings unchanged.
+          </Banner>
+        )}
+        {devicesQuery.isSuccess && (
+          <>
+            <DeviceMappingEditor value={deviceRows} onChange={setDeviceDraft} />
+            <p className="mt-2 text-[13px] text-text-2">
+              Access is some combination of <span className="font-mono">r</span>ead,{' '}
+              <span className="font-mono">w</span>rite and <span className="font-mono">m</span>knod;
+              blank means all three. A mapping for a service the compose file doesn’t define is
+              skipped with a warning in the deploy log.
+            </p>
+          </>
+        )}
       </section>
 
       {/* Save */}
