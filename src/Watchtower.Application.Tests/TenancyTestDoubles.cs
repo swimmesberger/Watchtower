@@ -30,9 +30,10 @@ internal sealed class QueuedOnlyDeployQueueService : DeployQueueService {
         DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
         CaddyManager caddy,
+        HostGpuProbe gpuProbe,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<DeployQueueService> logger)
-        : base(scopeFactory, git, compose, docker, broadcaster, caddy, options, logger) =>
+        : base(scopeFactory, git, compose, docker, broadcaster, caddy, gpuProbe, options, logger) =>
         _scopeFactory = scopeFactory;
 
     /// <summary>Every enqueue this queue was asked for, in order.</summary>

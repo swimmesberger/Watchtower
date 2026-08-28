@@ -116,8 +116,9 @@ internal sealed class RecordingDeployQueue : DeployQueueService {
     private RecordingDeployQueue(
         IServiceScopeFactory scopeFactory, GitCloneService git, ComposeCliService compose,
         DockerEngineClient docker, DeployOutputBroadcaster broadcaster, IProxyProvider proxy,
+        HostGpuProbe gpuProbe,
         Microsoft.Extensions.Options.IOptionsMonitor<Config.WatchtowerOptions> options)
-        : base(scopeFactory, git, compose, docker, broadcaster, proxy, options,
+        : base(scopeFactory, git, compose, docker, broadcaster, proxy, gpuProbe, options,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<DeployQueueService>.Instance) =>
         _scopeFactory = scopeFactory;
 
@@ -136,6 +137,7 @@ internal sealed class RecordingDeployQueue : DeployQueueService {
             services.GetRequiredService<DockerEngineClient>(),
             services.GetRequiredService<DeployOutputBroadcaster>(),
             services.GetRequiredService<CaddyManager>(),
+            services.GetRequiredService<HostGpuProbe>(),
             services.GetRequiredService<
                 Microsoft.Extensions.Options.IOptionsMonitor<Config.WatchtowerOptions>>());
 

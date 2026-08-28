@@ -83,6 +83,9 @@ import type {
   TemplateEnvVar,
   TemplateGrant,
   UpdateTemplateRequest,
+  HostGpus,
+  StackDeviceMappingInput,
+  StackDevices,
   StackEnvVar,
   StackEnvVarInput,
   StackMetricsResult,
@@ -325,6 +328,20 @@ export const api = {
     getEnv: async (id: number) => (await rpc('stacks.getEnv', { stackId: id })).envVars as StackEnvVar[],
     setEnv: async (id: number, vars: StackEnvVarInput[]) =>
       (await rpc('stacks.setEnv', { stackId: id, vars })).envVars as StackEnvVar[],
+    getDevices: async (id: number) =>
+      (await rpc('stacks.getDevices', { stackId: id })) as StackDevices,
+    setDevices: async (id: number, devices: StackDeviceMappingInput[], gpuServices: string[]) =>
+      (await rpc('stacks.setDevices', {
+        stackId: id,
+        devices: devices.map((d) => ({
+          service: d.service,
+          hostPath: d.hostPath,
+          containerPath: d.containerPath ?? null,
+          permissions: d.permissions ?? null,
+        })),
+        gpuServices,
+      })) as StackDevices,
+    hostGpus: async () => (await rpc('stacks.hostGpus', {})) as HostGpus,
     checkUpdates: async (id: number) => (await rpc('stacks.checkUpdates', { id })).stack as Stack,
 
     /**

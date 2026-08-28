@@ -136,6 +136,7 @@ public sealed class DeployConcurrencyGateTests {
             host.Services.GetRequiredService<DockerEngineClient>(),
             host.Services.GetRequiredService<DeployOutputBroadcaster>(),
             host.Services.GetRequiredService<CaddyManager>(),
+            host.Services.GetRequiredService<HostGpuProbe>(),
             host.Services.GetRequiredService<IOptionsMonitor<WatchtowerOptions>>(),
             NullLogger<DeployQueueService>.Instance);
 

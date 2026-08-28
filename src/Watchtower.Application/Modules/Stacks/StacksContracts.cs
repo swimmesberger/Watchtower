@@ -94,6 +94,31 @@ public sealed record StackEnvVarDto(int Id, string Key, string Value);
 /// <summary>One entry in a batch-replace request for stack environment variables.</summary>
 public sealed record StackEnvVarInput(string Key, string Value);
 
+/// <summary>One host device mapped into a compose service of a stack (ADR-0030).</summary>
+public sealed record StackDeviceMappingDto(
+    int Id, string Service, string HostPath, string ContainerPath, string? Permissions);
+
+/// <summary>One entry in a batch-replace request for stack device mappings.</summary>
+/// <param name="Service">The compose service name.</param>
+/// <param name="HostPath">Absolute device path on the host.</param>
+/// <param name="ContainerPath">Absolute device path in the container; null/blank defaults to <paramref name="HostPath"/>.</param>
+/// <param name="Permissions">Cgroup permissions (subset of <c>rwm</c>); null/blank for the Docker default.</param>
+public sealed record StackDeviceMappingInput(
+    string Service, string HostPath, string? ContainerPath = null, string? Permissions = null);
+
+/// <summary>One GPU render node the Docker host exposes, as the probe saw it (ADR-0031).</summary>
+/// <param name="Name">Node name, e.g. <c>renderD128</c>.</param>
+/// <param name="Path">Host device path, e.g. <c>/dev/dri/renderD128</c>.</param>
+/// <param name="Vendor"><c>intel</c>, <c>amd</c>, <c>nvidia</c> or <c>unknown</c>.</param>
+/// <param name="Driver">The bound kernel driver, e.g. <c>i915</c>.</param>
+/// <param name="PciAddress">PCI address, e.g. <c>0000:00:02.0</c>.</param>
+/// <param name="Mappable">
+/// Whether "map host GPU(s)" would map this node — false for NVIDIA, which needs the container
+/// toolkit rather than a device mapping.
+/// </param>
+public sealed record HostGpuDto(
+    string Name, string Path, string Vendor, string Driver, string PciAddress, bool Mappable);
+
 /// <summary>Returned immediately after a deploy is accepted.</summary>
 public sealed record DeployAcceptedDto(int DeployEventId, string Status);
 

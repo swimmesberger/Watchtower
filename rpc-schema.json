@@ -10922,6 +10922,67 @@
         ]
       }
     },
+    "stacks.getDevices": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "hostPath": {
+                  "type": "string"
+                },
+                "containerPath": {
+                  "type": "string"
+                },
+                "permissions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "service",
+                "hostPath",
+                "containerPath",
+                "permissions"
+              ]
+            }
+          },
+          "gpuServices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "devices",
+          "gpuServices"
+        ]
+      }
+    },
     "stacks.getEnv": {
       "params": {
         "type": "object",
@@ -10962,6 +11023,60 @@
         },
         "required": [
           "envVars"
+        ]
+      }
+    },
+    "stacks.hostGpus": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "vendor": {
+                  "type": "string"
+                },
+                "driver": {
+                  "type": "string"
+                },
+                "pciAddress": {
+                  "type": "string"
+                },
+                "mappable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "vendor",
+                "driver",
+                "pciAddress",
+                "mappable"
+              ]
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "gpus",
+          "error"
         ]
       }
     },
@@ -11235,6 +11350,110 @@
           "enabled",
           "token",
           "injectedVarNames"
+        ]
+      }
+    },
+    "stacks.setDevices": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "service": {
+                  "type": "string"
+                },
+                "hostPath": {
+                  "type": "string"
+                },
+                "containerPath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "permissions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "service",
+                "hostPath"
+              ]
+            }
+          },
+          "gpuServices": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "default": null
+          }
+        },
+        "required": [
+          "stackId",
+          "devices"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "hostPath": {
+                  "type": "string"
+                },
+                "containerPath": {
+                  "type": "string"
+                },
+                "permissions": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "service",
+                "hostPath",
+                "containerPath",
+                "permissions"
+              ]
+            }
+          },
+          "gpuServices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "devices",
+          "gpuServices"
         ]
       }
     },

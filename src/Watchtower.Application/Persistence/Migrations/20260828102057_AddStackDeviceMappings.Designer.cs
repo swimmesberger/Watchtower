@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Watchtower.Application.Persistence;
@@ -11,9 +12,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260828102057_AddStackDeviceMappings")]
+    partial class AddStackDeviceMappings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1660,34 +1663,6 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("stack_env_vars", (string)null);
                 });
 
-            modelBuilder.Entity("Watchtower.Application.Entities.StackGpuMapping", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Service")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("service");
-
-                    b.Property<int>("StackId")
-                        .HasColumnType("integer")
-                        .HasColumnName("stack_id");
-
-                    b.HasKey("Id")
-                        .HasName("pk_stack_gpu_mappings");
-
-                    b.HasIndex("StackId", "Service")
-                        .IsUnique()
-                        .HasDatabaseName("ix_stack_gpu_mappings_stack_id_service");
-
-                    b.ToTable("stack_gpu_mappings", (string)null);
-                });
-
             modelBuilder.Entity("Watchtower.Application.Entities.StackTemplate", b =>
                 {
                     b.Property<int>("Id")
@@ -2339,18 +2314,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_stack_env_vars_stacks_stack_id");
-
-                    b.Navigation("Stack");
-                });
-
-            modelBuilder.Entity("Watchtower.Application.Entities.StackGpuMapping", b =>
-                {
-                    b.HasOne("Watchtower.Application.Entities.Stack", "Stack")
-                        .WithMany()
-                        .HasForeignKey("StackId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_stack_gpu_mappings_stacks_stack_id");
 
                     b.Navigation("Stack");
                 });
