@@ -1229,11 +1229,8 @@ internal sealed partial class DockerJsonContext : JsonSerializerContext;
 
 // ── Engine info DTOs ─────────────────────────────────────────────────────────
 
-/// <summary>Subset of GET /info — the storage driver and the registry configuration.</summary>
+/// <summary>Subset of GET /info — only the registry configuration is read.</summary>
 public sealed record DockerEngineInfo {
-    /// <summary>The daemon's storage driver name (e.g. <c>overlay2</c>, <c>btrfs</c>).</summary>
-    public string? Driver { get; init; }
-
     public DockerRegistryConfig? RegistryConfig { get; init; }
 
     /// <summary>

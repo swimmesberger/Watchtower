@@ -85,54 +85,30 @@ public sealed class CiBuildkitConfigTests {
 
     // ── Snapshotter resolution ───────────────────────────────────────────────
 
-    /// <summary>/proc/filesystems as DSM reports it: FUSE present, overlayfs absent.</summary>
-    private const string DsmFilesystems = "\tfuseblk\nnodev\tfuse\nnodev\tfusectl\n\text4\n\tbtrfs\n";
-
-    /// <summary>A typical modern host: overlayfs in the kernel.</summary>
-    private const string ModernFilesystems = "nodev\toverlay\nnodev\tfuse\n\text4\n";
-
     /// <summary>
-    /// The issue-#65 host: BuildKit's own probe would land on native, but FUSE is available —
-    /// this is the one case detection must speak up in.
+    /// The default emits nothing — BuildKit's own probe (overlayfs, then fuse-overlayfs with a
+    /// real test mount, then native) is already better evidence than anything Watchtower could
+    /// detect from the outside, and an emitted name would make buildkitd skip that check.
     /// </summary>
     [Theory]
     [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
     [InlineData("auto")]
     [InlineData(" Auto ")]
-    public void ResolveSnapshotter_DefaultsToFuseOverlayfsWhereTheKernelLacksOverlayfsButHasFuse(string? configured) =>
-        Assert.Equal("fuse-overlayfs", CiBuildkitConfig.ResolveSnapshotter(configured, "btrfs", DsmFilesystems));
+    [InlineData("none")]
+    [InlineData("NONE")]
+    public void ResolveSnapshotter_EmitsNothingUnlessExplicitlyNamed(string? configured) =>
+        Assert.Null(CiBuildkitConfig.ResolveSnapshotter(configured));
 
-    [Fact]
-    public void ResolveSnapshotter_StaysSilentWhereTheKernelHasOverlayfs() =>
-        Assert.Null(CiBuildkitConfig.ResolveSnapshotter(null, "btrfs", ModernFilesystems));
-
-    /// <summary>
-    /// An overlay-family storage driver proves kernel overlayfs even when /proc/filesystems is
-    /// unreadable (Watchtower on a non-Linux dev host talking to a remote engine).
-    /// </summary>
-    [Fact]
-    public void ResolveSnapshotter_TrustsAnOverlayStorageDriverWithoutProcFilesystems() =>
-        Assert.Null(CiBuildkitConfig.ResolveSnapshotter(null, "overlay2", string.Empty));
-
-    /// <summary>Neither overlayfs nor FUSE: native is all there is, so say nothing.</summary>
-    [Fact]
-    public void ResolveSnapshotter_StaysSilentWhereNothingBetterExists() =>
-        Assert.Null(CiBuildkitConfig.ResolveSnapshotter(null, "vfs", "\text4\n\tfuseblk\n"));
-
-    [Fact]
-    public void ResolveSnapshotter_NoneDisablesDetection() =>
-        Assert.Null(CiBuildkitConfig.ResolveSnapshotter("none", "btrfs", DsmFilesystems));
-
-    [Fact]
-    public void ResolveSnapshotter_AnExplicitNameWinsOverDetection() =>
-        Assert.Equal("stargz", CiBuildkitConfig.ResolveSnapshotter("stargz", "overlay2", ModernFilesystems));
+    [Theory]
+    [InlineData("fuse-overlayfs", "fuse-overlayfs")]
+    [InlineData(" stargz ", "stargz")]
+    [InlineData("native", "native")]
+    public void ResolveSnapshotter_WritesAnExplicitNameAsIs(string configured, string expected) =>
+        Assert.Equal(expected, CiBuildkitConfig.ResolveSnapshotter(configured));
 
     [Fact]
     public void ResolveSnapshotter_RefusesAnInvalidExplicitName() =>
-        Assert.Throws<ArgumentException>(() => CiBuildkitConfig.ResolveSnapshotter("no\"quotes", "btrfs", DsmFilesystems));
-
-    /// <summary>`fuseblk`/`fusectl` alone are not FUSE support — the token must be exactly `fuse`.</summary>
-    [Fact]
-    public void ResolveSnapshotter_DoesNotMistakeFuseblkForFuse() =>
-        Assert.Null(CiBuildkitConfig.ResolveSnapshotter(null, "btrfs", "\tfuseblk\nnodev\tfusectl\n\tbtrfs\n"));
+        Assert.Throws<ArgumentException>(() => CiBuildkitConfig.ResolveSnapshotter("no\"quotes"));
 }

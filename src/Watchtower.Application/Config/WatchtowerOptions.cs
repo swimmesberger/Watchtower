@@ -474,13 +474,14 @@ public sealed record CiOptions {
 
     /// <summary>
     /// BuildKit OCI-worker snapshotter written into the default buildkitd config every runner
-    /// receives (<c>[worker.oci] snapshotter</c>). Unset or <c>auto</c> (the default) lets
-    /// Watchtower detect the host: BuildKit's own probe never tries fuse-overlayfs, so a kernel
-    /// without overlayfs (e.g. Synology DSM) silently gets the copy-less <c>native</c>
-    /// snapshotter — Watchtower emits <c>fuse-overlayfs</c> exactly there, and stays silent on
-    /// hosts where overlayfs works. <c>none</c> emits nothing (BuildKit's probe is left alone);
-    /// any other value is written as-is. Instance-wide on purpose: which snapshotter works is a
-    /// property of this host's kernel, not of any repo.
+    /// receives (<c>[worker.oci] snapshotter</c>). Unset (the default, like <c>none</c>/<c>auto</c>)
+    /// emits nothing: BuildKit's own probe already tries overlayfs and then fuse-overlayfs with a
+    /// real test mount before falling back to <c>native</c>, and an explicit value here makes it
+    /// SKIP that functional check — a wrong name turns quietly-slow builds into failing ones at
+    /// the first layer mount. Set a name only after verifying the snapshotter with an actual mount
+    /// on this host (see docs/ci-runners/design.md), or for one the probe never tries (e.g.
+    /// <c>stargz</c>). Instance-wide on purpose: which snapshotter works is a property of this
+    /// host's kernel, not of any repo.
     /// </summary>
     public string? BuildkitSnapshotter { get; init; }
 

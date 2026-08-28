@@ -40,64 +40,37 @@ public static partial class CiBuildkitConfig {
     /// <summary>Sentinel option value: never emit a snapshotter, leave BuildKit's own probe alone.</summary>
     public const string SnapshotterNone = "none";
 
-    /// <summary>Option value (and the unset default) for host detection.</summary>
+    /// <summary>Accepted synonym for <see cref="SnapshotterNone"/>: BuildKit's own probe IS the auto.</summary>
     public const string SnapshotterAuto = "auto";
 
     /// <summary>
-    /// Resolves the snapshotter to write into the config, from the operator's
-    /// <c>Ci:BuildkitSnapshotter</c> option and two host facts. Null means "emit nothing".
-    /// <para>
-    /// The default (<paramref name="configured"/> unset or <see cref="SnapshotterAuto"/>) detects:
-    /// BuildKit's own <c>auto</c> chain is overlayfs-or-<c>native</c> — it never tries
-    /// fuse-overlayfs on its own — so a kernel without overlayfs silently gets the copy-less
-    /// <c>native</c> snapshotter even where FUSE is fully available (issue #65, Synology DSM).
-    /// Watchtower therefore emits <c>fuse-overlayfs</c> exactly when the kernel lacks overlayfs
-    /// but has FUSE, and stays silent everywhere else: when overlayfs exists BuildKit picks it
-    /// unaided (and it beats fuse-overlayfs), and when neither exists <c>native</c> is all there
-    /// is. <see cref="SnapshotterNone"/> disables detection; an explicit name wins outright.
-    /// </para>
+    /// Resolves the snapshotter to write into the config from the operator's
+    /// <c>Ci:BuildkitSnapshotter</c> option. Null means "emit nothing" — the default, and
+    /// deliberately so: BuildKit's own <c>auto</c> already probes overlayfs and then
+    /// fuse-overlayfs <em>with a real test mount</em> before falling back to <c>native</c>
+    /// (moby/buildkit <c>cmd/buildkitd/main_oci_worker.go</c>; the fuse-overlayfs
+    /// <c>Supported()</c> mounts read-only multiple lowerdirs), so nothing Watchtower could
+    /// detect from the outside beats that evidence — it could only agree, or wrongly override.
+    /// An explicit name is written as-is and makes buildkitd <em>skip</em> that functional check
+    /// entirely: buildkitd then starts cleanly without ever proving a mount works, and a wrong
+    /// name turns quietly-slow builds into failing ones at the first layer mount. That is why an
+    /// explicit value stays opt-in, for an operator who has verified the snapshotter with a real
+    /// mount on a host whose probe is demonstrably wrong (or who needs one the probe never tries,
+    /// e.g. <c>stargz</c>). <see cref="SnapshotterNone"/> and <see cref="SnapshotterAuto"/> both
+    /// resolve to emit-nothing.
     /// </summary>
     /// <param name="configured">The raw option value; whitespace and case are forgiven.</param>
-    /// <param name="storageDriver">
-    /// The daemon's storage driver. An overlay-family driver proves the kernel has overlayfs even
-    /// when <paramref name="procFilesystems"/> is unavailable (e.g. Watchtower on a non-Linux dev
-    /// host talking to a remote engine).
-    /// </param>
-    /// <param name="procFilesystems">
-    /// Content of <c>/proc/filesystems</c> as seen by Watchtower — kernel-global, so a
-    /// containerised Watchtower still reads the host kernel's list. Empty when unreadable, which
-    /// degrades to emitting nothing (today's behaviour, never worse).
-    /// </param>
     /// <exception cref="ArgumentException">An explicit name that cannot be a snapshotter.</exception>
-    public static string? ResolveSnapshotter(string? configured, string? storageDriver, string procFilesystems) {
+    public static string? ResolveSnapshotter(string? configured) {
         var value = configured?.Trim();
-        if (!string.IsNullOrEmpty(value) && !value.Equals(SnapshotterAuto, StringComparison.OrdinalIgnoreCase)) {
-            if (value.Equals(SnapshotterNone, StringComparison.OrdinalIgnoreCase))
-                return null;
-            if (!IsValidSnapshotter(value))
-                throw new ArgumentException($"'{value}' is not a valid BuildKit snapshotter name.", nameof(configured));
-            return value;
-        }
-
-        if (storageDriver?.StartsWith("overlay", StringComparison.OrdinalIgnoreCase) == true)
+        if (string.IsNullOrEmpty(value)
+            || value.Equals(SnapshotterAuto, StringComparison.OrdinalIgnoreCase)
+            || value.Equals(SnapshotterNone, StringComparison.OrdinalIgnoreCase))
             return null;
-        var filesystems = ListFilesystems(procFilesystems);
-        if (filesystems.Contains("overlay"))
-            return null;
-        return filesystems.Contains("fuse") ? "fuse-overlayfs" : null;
+        if (!IsValidSnapshotter(value))
+            throw new ArgumentException($"'{value}' is not a valid BuildKit snapshotter name.", nameof(configured));
+        return value;
     }
-
-    /// <summary>
-    /// Filesystem names from <c>/proc/filesystems</c> — one per line, the name is the last
-    /// tab-separated token (<c>nodev\tfuse</c>). Exact tokens, so <c>fuseblk</c>/<c>fusectl</c>
-    /// do not count as FUSE support.
-    /// </summary>
-    private static HashSet<string> ListFilesystems(string procFilesystems) =>
-        procFilesystems
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(line => line[(line.LastIndexOf('\t') + 1)..].Trim())
-            .Where(name => name.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>
     /// Builds the TOML content. Always returns a file (a header-only one when there is nothing to
