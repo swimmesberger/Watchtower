@@ -40,6 +40,8 @@ public sealed class CiRunnerOrchestrator(
 
     private readonly SemaphoreSlim _wake = new(0);
     private readonly ConcurrentDictionary<int, CiRepoRunnerStatus> _status = new();
+    private string? _warnedInvalidSnapshotter;
+    private string? _lastResolvedSnapshotter;
 
     /// <summary>Snapshot of per-repo runner state for <c>ci.getRunnerStatus</c>/<c>ci.listRepos</c>.</summary>
     public IReadOnlyDictionary<int, CiRepoRunnerStatus> Status => _status;
@@ -105,6 +107,9 @@ public sealed class CiRunnerOrchestrator(
             .ToLookup(c => c.Labels[RepoIdLabel]);
 
         var knownIds = new HashSet<string>(repos.Select(r => r.Id.ToString()));
+        // Resolved once per pass and only when a repo exists to receive it — most installs have
+        // no CI repos and should not pay a GET /info every interval.
+        var buildkitConfig = repos.Count > 0 ? await ResolveBuildkitConfigAsync(ct) : string.Empty;
 
         // Orphans: containers whose repo was deleted from the DB.
         foreach (var group in byRepoId.Where(g => !knownIds.Contains(g.Key)))
@@ -119,7 +124,7 @@ public sealed class CiRunnerOrchestrator(
         foreach (var repo in repos) {
             ct.ThrowIfCancellationRequested();
             try {
-                await ReconcileWarmerAsync(repo, warmersByRepoId[repo.Id.ToString()].ToList(), ct);
+                await ReconcileWarmerAsync(repo, warmersByRepoId[repo.Id.ToString()].ToList(), buildkitConfig, ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 throw;
             } catch (Exception ex) {
@@ -127,7 +132,7 @@ public sealed class CiRunnerOrchestrator(
                 logger.LogWarning(ex, "Toolcache warm reconcile failed for CI repo {Repo}", repo.FullName);
             }
             try {
-                await ReconcileRepoAsync(repo, byRepoId[repo.Id.ToString()].ToList(), ct);
+                await ReconcileRepoAsync(repo, byRepoId[repo.Id.ToString()].ToList(), buildkitConfig, ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 throw;
             } catch (Exception ex) {
@@ -153,7 +158,61 @@ public sealed class CiRunnerOrchestrator(
         }
     }
 
-    private async Task ReconcileRepoAsync(CiRepo repo, IReadOnlyList<DockerContainerInfo> containers, CancellationToken ct) {
+    /// <summary>
+    /// The default BuildKit configuration every runner of this pass receives, resolved once per
+    /// pass: the daemon's insecure registries, plus the snapshotter — auto-detected from the host
+    /// by default, overridable via <c>Ci:BuildkitSnapshotter</c>
+    /// (<see cref="CiBuildkitConfig.ResolveSnapshotter"/>). Failures degrade — an unreadable
+    /// <c>/info</c> or <c>/proc/filesystems</c> means fewer facts this pass, and an invalid option
+    /// value falls back to detection with a warning (logged once per distinct value, not once per
+    /// pass) — because a worse buildkitd config must never cost a repo its runners.
+    /// </summary>
+    private async Task<string> ResolveBuildkitConfigAsync(CancellationToken ct) {
+        DockerEngineInfo engineInfo = new();
+        try {
+            engineInfo = await docker.GetEngineInfoAsync(ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogDebug(ex, "Could not read the engine info for the runner buildkitd config");
+        }
+
+        string procFilesystems;
+        try {
+            procFilesystems = await File.ReadAllTextAsync("/proc/filesystems", ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            procFilesystems = string.Empty; // Non-Linux dev host, or a locked-down container.
+        }
+
+        var configured = options.CurrentValue.Ci.BuildkitSnapshotter;
+        string? snapshotter;
+        try {
+            snapshotter = CiBuildkitConfig.ResolveSnapshotter(configured, engineInfo.Driver, procFilesystems);
+        } catch (ArgumentException) {
+            if (_warnedInvalidSnapshotter != configured) {
+                logger.LogWarning(
+                    "Falling back to snapshotter auto-detection: invalid Ci:BuildkitSnapshotter value "
+                    + "{Snapshotter} — expected 'auto', 'none', or a BuildKit snapshotter name such as "
+                    + "'overlayfs', 'fuse-overlayfs' or 'native'", configured);
+                _warnedInvalidSnapshotter = configured;
+            }
+            snapshotter = CiBuildkitConfig.ResolveSnapshotter(
+                CiBuildkitConfig.SnapshotterAuto, engineInfo.Driver, procFilesystems);
+        }
+
+        // The decision is a host fact operators will want in the log exactly once, not per pass.
+        if (_lastResolvedSnapshotter != (snapshotter ?? "(none)")) {
+            _lastResolvedSnapshotter = snapshotter ?? "(none)";
+            logger.LogInformation(
+                "Runner buildkitd config: snapshotter {Snapshotter} (storage driver {Driver})",
+                _lastResolvedSnapshotter, engineInfo.Driver ?? "(unknown)");
+        }
+
+        return CiBuildkitConfig.Build(engineInfo.InsecureRegistries(), snapshotter);
+    }
+
+    private async Task ReconcileRepoAsync(
+        CiRepo repo, IReadOnlyList<DockerContainerInfo> containers, string buildkitConfig, CancellationToken ct) {
         var status = _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus());
 
         // Exited ephemeral runners are normal after a completed job — reap them. A non-zero exit
@@ -192,13 +251,17 @@ public sealed class CiRunnerOrchestrator(
         // changed, so the operator's next build runs on the settings they just saved.
         running = await RecycleStaleRunnersAsync(repo, running, ComputeSpecHash(repo, image), ct);
 
+        // Volumes converge every pass, not only when a slot is spawned: a changed buildkitd
+        // config (registry added, snapshotter set) must reach the buildx volume even while every
+        // runner slot is occupied — the file is read at job time, no respawn involved. Costs a
+        // stamp compare per pass; the init container only runs on a change.
+        await EnsureImageAsync(image, ct);
+        await EnsureVolumesReadyAsync(repo, image, status, buildkitConfig, ct);
+
         if (running.Count >= desired) {
             status.Update(desired, running.Count);
             return;
         }
-
-        await EnsureImageAsync(image, ct);
-        await EnsureVolumesReadyAsync(repo, image, status, ct);
 
         for (var i = running.Count; i < desired; i++) {
             await SpawnRunnerAsync(repo, image, ci, ct);
@@ -314,6 +377,12 @@ public sealed class CiRunnerOrchestrator(
             $"{ToolVolumeName(repo)}:{CiWarmerScript.ToolCacheDir}",
             // Package caches (NuGet/npm/Go modules) survive across jobs via the env vars below.
             $"{PkgVolumeName(repo)}:{PkgCacheDir}",
+            // buildx state dir carrying the Watchtower-generated buildkitd.default.toml (written by
+            // the volume-init container), which `docker buildx create` picks up whenever the
+            // workflow passes no config of its own. A volume rather than a file bind on purpose:
+            // dockerd would create the bind's parents root-owned (the _work trap again), while the
+            // volume root is chowned by the same init that writes the file.
+            $"{BuildxVolumeName(repo)}:{BuildxConfigDir}",
         };
         if (repo.AllowDockerSocket)
             binds.Add("/var/run/docker.sock:/var/run/docker.sock");
@@ -325,13 +394,15 @@ public sealed class CiRunnerOrchestrator(
             // Runner-process env is inherited by job steps. RUNNER_TOOL_CACHE points setup-* actions
             // at the warmed toolcache volume; DOTNET_INSTALL_DIR points setup-dotnet (which does not
             // use RUNNER_TOOL_CACHE) at the warmed SDK dir so it skips the download; the
-            // package-manager caches land on the pkg volume instead of the ephemeral workspace.
+            // package-manager caches land on the pkg volume instead of the ephemeral workspace;
+            // BUILDX_CONFIG points buildx at the volume holding the default buildkitd config.
             Env = [
                 $"RUNNER_TOOL_CACHE={CiWarmerScript.ToolCacheDir}",
                 $"DOTNET_INSTALL_DIR={CiWarmerScript.ToolCacheDir}/dotnet",
                 $"NUGET_PACKAGES={PkgCacheDir}/nuget",
                 $"npm_config_cache={PkgCacheDir}/npm",
                 $"GOMODCACHE={PkgCacheDir}/gomod",
+                $"BUILDX_CONFIG={BuildxConfigDir}",
             ],
             Labels = new Dictionary<string, string> {
                 [ManagedLabel] = ManagedLabelValue,
@@ -356,32 +427,48 @@ public sealed class CiRunnerOrchestrator(
     /// <see cref="SpecHashLabel"/>; a mismatch makes the reconcile loop recycle the runner.
     /// </summary>
     internal static string ComputeSpecHash(CiRepo repo, string image) {
-        var material = $"{image}|{repo.AllowDockerSocket}|{repo.ExtraLabels ?? string.Empty}";
+        // The leading "2|" is a container-shape version: bumped when Watchtower itself changes what
+        // every runner is spawned with (the BUILDX_CONFIG volume + env, added for the default
+        // buildkitd config), so idle runners from before the change are recycled once instead of
+        // running without it until they happen to consume a job.
+        var material = $"2|{image}|{repo.AllowDockerSocket}|{repo.ExtraLabels ?? string.Empty}";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         return Convert.ToHexStringLower(bytes)[..16];
     }
 
     // ── Cache volume initialization ──────────────────────────────────────────
 
-    /// <summary>Where the volume-init container mounts the two cache volumes.</summary>
+    /// <summary>Where the volume-init container mounts the cache and buildx volumes.</summary>
     internal const string VolumeInitMountRoot = "/watchtower-volume-init";
 
+    /// <summary>Env var the volume-init container reads the buildkitd config content from.</summary>
+    internal const string BuildkitConfigEnvVar = "WATCHTOWER_BUILDKITD_CONFIG";
+
+    /// <summary>The default-config file name buildx probes inside <c>$BUILDX_CONFIG</c>.</summary>
+    internal const string BuildkitConfigFileName = "buildkitd.default.toml";
+
     /// <summary>
-    /// Makes the repo's cache volumes writable for the runner user before anything mounts them:
-    /// a fresh named volume is root-owned, and both the runner and the warmer run as the image's
-    /// non-root <c>runner</c> user. A one-shot root container chowns the two volume roots (contents
-    /// are created by the runner user afterwards, so non-recursive is enough). Runs once per repo
-    /// per orchestrator lifetime — the chown is idempotent, so re-running after a restart is fine.
+    /// Prepares the repo's volumes before anything mounts them: chowns the roots to the runner user
+    /// (a fresh named volume is root-owned, and both the runner and the warmer run as the image's
+    /// non-root <c>runner</c> user; contents are created by that user afterwards, so non-recursive
+    /// is enough) and writes the current default buildkitd config into the buildx volume. Re-runs
+    /// whenever the config content changes — the stamp on the status carries what was last written —
+    /// so a registry added at runtime or an edited snapshotter reaches jobs within one pass; the
+    /// whole init is idempotent, so re-running after a restart is fine.
     /// </summary>
-    private async Task EnsureVolumesReadyAsync(CiRepo repo, string image, CiRepoRunnerStatus status, CancellationToken ct) {
-        if (status.VolumesReady)
+    private async Task EnsureVolumesReadyAsync(
+        CiRepo repo, string image, CiRepoRunnerStatus status, string buildkitConfig, CancellationToken ct) {
+        var stamp = CiBuildkitConfig.Stamp(buildkitConfig);
+        if (status.VolumesReadyStamp == stamp)
             return;
 
         var name = $"watchtower-ci-volinit-{Slug(repo.Name)}-{Guid.NewGuid().ToString("N")[..8]}";
-        var containerId = await docker.CreateContainerAsync(BuildVolumeInitContainerBody(repo, image), name, ct);
+        var containerId = await docker.CreateContainerAsync(
+            BuildVolumeInitContainerBody(repo, image, buildkitConfig), name, ct);
         try {
             await docker.StartContainerAsync(containerId, ct);
-            // The chown is instant; the timeout only guards the loop against a wedged daemon.
+            // The chown and the one-file write are instant; the timeout only guards the loop
+            // against a wedged daemon.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromMinutes(2));
             var exitCode = await docker.WaitContainerAsync(containerId, timeout.Token);
@@ -392,14 +479,28 @@ public sealed class CiRunnerOrchestrator(
         } finally {
             await RemoveRunnerContainerAsync(containerId, "volume init finished", ct);
         }
-        status.MarkVolumesReady();
+        status.MarkVolumesReady(stamp);
     }
 
-    /// <summary>The one-shot root container that chowns the cache volume roots to the runner user.</summary>
-    internal static DockerCreateContainerBody BuildVolumeInitContainerBody(CiRepo repo, string image) => new() {
+    /// <summary>
+    /// The one-shot root container that chowns the volume roots to the runner user and writes the
+    /// default buildkitd config into the buildx volume. The config travels as an env var and is
+    /// written with <c>printf '%s'</c>, so its content never touches shell syntax; it is generated
+    /// from validated inputs anyway (<see cref="CiBuildkitConfig"/>). The file itself is chowned
+    /// too so a later runner could replace it — buildx also writes its builder state next to it.
+    /// </summary>
+    internal static DockerCreateContainerBody BuildVolumeInitContainerBody(
+        CiRepo repo, string image, string buildkitConfig) => new() {
         Image = image,
         User = "root",
-        Cmd = ["chown", "runner:runner", $"{VolumeInitMountRoot}/tool", $"{VolumeInitMountRoot}/pkg"],
+        Cmd = [
+            "/bin/bash", "-c",
+            $"set -eu\n"
+            + $"printf '%s' \"${BuildkitConfigEnvVar}\" > {VolumeInitMountRoot}/buildx/{BuildkitConfigFileName}\n"
+            + $"chown runner:runner {VolumeInitMountRoot}/tool {VolumeInitMountRoot}/pkg "
+            + $"{VolumeInitMountRoot}/buildx {VolumeInitMountRoot}/buildx/{BuildkitConfigFileName}",
+        ],
+        Env = [$"{BuildkitConfigEnvVar}={buildkitConfig}"],
         Labels = new Dictionary<string, string> {
             [ManagedLabel] = VolumeInitLabelValue,
             [RepoIdLabel] = repo.Id.ToString(),
@@ -409,6 +510,7 @@ public sealed class CiRunnerOrchestrator(
             Binds = [
                 $"{ToolVolumeName(repo)}:{VolumeInitMountRoot}/tool",
                 $"{PkgVolumeName(repo)}:{VolumeInitMountRoot}/pkg",
+                $"{BuildxVolumeName(repo)}:{VolumeInitMountRoot}/buildx",
             ],
             NetworkMode = "none",
         },
@@ -426,6 +528,18 @@ public sealed class CiRunnerOrchestrator(
     internal static string PkgVolumeName(CiRepo repo) => $"watchtower-ci-pkg-{Slug(repo.FullName)}";
 
     /// <summary>
+    /// Where the per-repo buildx volume is mounted in runners, exported as <c>BUILDX_CONFIG</c>.
+    /// Holds the Watchtower-generated <see cref="BuildkitConfigFileName"/> plus whatever builder
+    /// state buildx keeps for itself. Not under <c>/home/runner/_work</c> (see the class remarks)
+    /// and not under <c>~/.docker</c> — a mount there would leave the runner user's own config
+    /// directory root-owned and break the next <c>docker login</c> in a job.
+    /// </summary>
+    internal const string BuildxConfigDir = "/home/runner/_buildx";
+
+    /// <summary>Per-repo buildx volume (default buildkitd config + buildx state).</summary>
+    internal static string BuildxVolumeName(CiRepo repo) => $"watchtower-ci-buildx-{Slug(repo.FullName)}";
+
+    /// <summary>
     /// Converges the repo's toolcache volume on its detected toolchain profile: reaps finished
     /// warmer containers (persisting success/failure on the repo), then spawns a one-shot warmer
     /// when the current profile hash differs from the last successfully warmed one. Warmers get the
@@ -433,7 +547,8 @@ public sealed class CiRunnerOrchestrator(
     /// public SDK releases. Failures are surfaced on the repo and retried with a fixed backoff;
     /// they never block runners (a cold cache just means jobs download their own tools).
     /// </summary>
-    private async Task ReconcileWarmerAsync(CiRepo repo, IReadOnlyList<DockerContainerInfo> warmers, CancellationToken ct) {
+    private async Task ReconcileWarmerAsync(
+        CiRepo repo, IReadOnlyList<DockerContainerInfo> warmers, string buildkitConfig, CancellationToken ct) {
         var status = _status.GetOrAdd(repo.Id, _ => new CiRepoRunnerStatus());
 
         foreach (var dead in warmers.Where(c => !IsRunning(c))) {
@@ -472,7 +587,7 @@ public sealed class CiRunnerOrchestrator(
         var image = string.IsNullOrWhiteSpace(repo.RunnerImage) ? ci.RunnerImage : repo.RunnerImage;
         await EnsureImageAsync(image, ct);
         // The warmer runs as the image's non-root runner user too, so it needs the chown as well.
-        await EnsureVolumesReadyAsync(repo, image, status, ct);
+        await EnsureVolumesReadyAsync(repo, image, status, buildkitConfig, ct);
 
         var name = $"watchtower-ci-warm-{Slug(repo.Name)}-{Guid.NewGuid().ToString("N")[..8]}";
         var body = new DockerCreateContainerBody {
@@ -641,12 +756,14 @@ public sealed class CiRepoRunnerStatus {
     internal void UpdateRunners(IReadOnlyList<CiRunnerContainer> runners) => Runners = runners;
 
     /// <summary>
-    /// True once the cache volumes were chowned to the runner user this orchestrator lifetime
-    /// (in-memory: a restart re-runs the idempotent chown once).
+    /// Content stamp (<see cref="CiBuildkitConfig.Stamp"/>) of the buildkitd config last written by
+    /// a successful volume init — which also chowned the cache volumes to the runner user. Null
+    /// until the first init this orchestrator lifetime; a mismatch (registry list or snapshotter
+    /// changed) re-runs the idempotent init. In-memory: a restart re-runs it once.
     /// </summary>
-    internal bool VolumesReady { get; private set; }
+    internal string? VolumesReadyStamp { get; private set; }
 
-    internal void MarkVolumesReady() => VolumesReady = true;
+    internal void MarkVolumesReady(string stamp) => VolumesReadyStamp = stamp;
 
     /// <summary>
     /// Earliest next Actions-config sync attempt after a failure (in-memory: a restart simply retries

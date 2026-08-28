@@ -171,6 +171,97 @@ the existing Volumes module; GC/pruning is future work. Pre-warming the toolcach
 detected toolchain profile is described in
 [Stack-linked CI](#stack-linked-ci-toolchain-detection--cache-pre-warming).
 
+### Container image builds (BuildKit defaults; issue #65)
+
+A job that builds an image with `docker/setup-buildx-action` gets the `docker-container`
+driver: a BuildKit daemon in its own container, which reads **none** of the host daemon's
+configuration. Two host facts then leak into every consuming repo's workflow YAML unless
+Watchtower delivers them itself:
+
+- **Plain-HTTP registries.** The daemon's `insecure-registries` setting doesn't reach the
+  out-of-daemon BuildKit, so pushing to a local registry needs a `buildkitd-config-inline`
+  stanza in every workflow.
+- **The snapshotter.** BuildKit's OCI worker probes `auto` → overlayfs → fuse-overlayfs →
+  `native`. On kernels without overlayfs (Synology DSM's 4.4) it lands on `native`, which
+  has no copy-on-write: every layer materialisation is a full recursive copy of the
+  accumulated image tree, and builds run ~10× slower with nothing in the job log saying
+  why (the tell is `org.mobyproject.buildkit.worker.snapshotter: native` in the
+  `Set up Docker Buildx` output; the symptom is cache-*hit* steps spending minutes in
+  `extracting`).
+
+**Mechanism — a default buildkitd config shipped into every runner.** buildx reads
+`$BUILDX_CONFIG/buildkitd.default.toml` whenever the workflow passes no config of its own,
+so the orchestrator generates one per reconcile pass (`CiBuildkitConfig`):
+
+- `[registry."…"] http/insecure = true` stanzas for exactly the registries the host
+  daemon itself treats as insecure (`GET /info` → `RegistryConfig.IndexConfigs`) — the
+  daemon is the authority on which registries this box reaches without TLS. This deletes
+  `buildkitd-config-inline` from consuming workflows.
+- `[worker.oci] snapshotter = …`, **auto-detected from the host by default**. The key
+  fact (confirmed by the DSM probe below): BuildKit's own `auto` chain is
+  overlayfs-or-`native` — it never tries fuse-overlayfs on its own — so a kernel without
+  overlayfs silently gets `native` even where FUSE is fully available. Watchtower
+  therefore emits `fuse-overlayfs` exactly when the kernel lacks overlayfs (per
+  `/proc/filesystems`, kernel-global even from a container; an overlay-family daemon
+  storage driver also counts as proof of overlayfs) but has FUSE, and stays silent
+  everywhere else — where overlayfs exists BuildKit picks it unaided and it beats
+  fuse-overlayfs, and where neither exists `native` is all there is. The instance-wide
+  `Ci:BuildkitSnapshotter` option overrides: `auto` (the default), `none` (emit nothing,
+  leave BuildKit's probe alone), or an explicit snapshotter name. Instance-wide because
+  which snapshotter works is a property of the host kernel, not of any repo; the resolved
+  choice is logged once on change.
+
+Delivery is a third per-repo volume, `watchtower-ci-buildx-{repo}`, mounted at
+`/home/runner/_buildx` and exported as `BUILDX_CONFIG` (runner env is inherited by job
+steps). A volume rather than a file bind because of the standing trap: dockerd creates
+missing bind parents as root, and a mount under `~/.docker` would leave that directory
+root-owned and break the next `docker login` in a job. The existing volume-init container
+writes the file (content passed as env, written with `printf '%s'`) and chowns all three
+volume roots; it re-runs whenever the generated content changes — the last-written stamp
+lives on the repo's in-memory status — so a registry added at runtime reaches jobs within
+one pass. A workflow that passes its own `buildkitd-config(-inline)` still wins outright;
+the default only fills the unconfigured case.
+
+**The fast path on hosts without a working OCI snapshotter.** Where neither overlayfs nor
+fuse-overlayfs can work, the `docker-container` driver is simply the wrong tool: the
+daemon's own builder (`driver: docker`, i.e. *no* setup-buildx step) uses the host's
+storage driver — real CoW even on btrfs — keeps its build cache on the host between runs,
+and inherits `insecure-registries` natively. That choice is encoded once in the reusable
+workflow [`build-push-image.yml`](../../.github/workflows/build-push-image.yml)
+(`uses: swimmesberger/Watchtower/.github/workflows/build-push-image.yml@main`), together
+with its consequences: `provenance: false` (the docker driver can't do attestations) and
+no registry cache import/export (the daemon's cache persists anyway). Consuming repos
+carry one `uses:` line, `secrets: inherit`, and no host knowledge — the
+`REGISTRY`/`REGISTRY_USERNAME`/`REGISTRY_PASSWORD` values it reads are the ones the
+registry sync (Secrets §1) already pushes.
+
+**Operational notes.**
+
+- With the docker driver, the daemon's build cache is no longer discarded with the builder
+  container. `docker builder prune` is the relief valve when it grows; wiring it into
+  Watchtower's maintenance/pruning story is future work.
+- Runners on small hosts will not reach GitHub-hosted speeds even once the snapshotter is
+  right — `exporting layers` is mostly gzip on however few cores the box has. That is not
+  a bug to go hunting for.
+- Verifying fuse-overlayfs viability on a host by hand (what the auto-detection decides
+  from, plus the end-to-end check the detection cannot do):
+
+  ```bash
+  grep -E 'overlay|fuse' /proc/filesystems
+  ls -l /dev/fuse
+  docker run --rm --privileged moby/buildkit:latest --oci-worker-snapshotter=fuse-overlayfs --debug 2>&1 | head -20
+  ```
+
+  Run on the DSM NAS 2026-08-28: the kernel has FUSE (`nodev fuse`), `/dev/fuse` exists,
+  and buildkitd starts cleanly with a registered fuse-overlayfs worker
+  (`worker.snapshotter: fuse-overlayfs`) — confirming that BuildKit's `native` fallback
+  there is purely its probe never trying fuse-overlayfs, which is exactly the gap the
+  auto-detection fills; the buildx builder container is privileged, so `/dev/fuse`
+  reaches it. fuse-overlayfs is slower than kernel overlayfs but does metadata copy-up
+  instead of `native`'s full-tree copies. (Startup proves the snapshotter initialises;
+  the first real build is the end-to-end confirmation — `Ci:BuildkitSnapshotter=none`
+  is the escape hatch if a host's FUSE turns out broken in practice.)
+
 ### RPC surface
 
 | Method | Notes |

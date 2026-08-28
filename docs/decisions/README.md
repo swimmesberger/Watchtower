@@ -45,3 +45,5 @@ live here.
 - [ADR-0024: PostgreSQL is the only database, and the proxy/auth plane keeps its state in it](0024-postgresql-only-and-state-in-the-database.md)
 - [ADR-0025: Stacks can be stopped and started as a whole, and the stop is a persisted desired state](0025-stack-desired-state.md)
 - [ADR-0026: A Product is the deployable unit; stacks reference it, and releases pin its images](0026-products-are-the-deployable-unit.md)
+- [ADR-0027: Watchtower backs itself up, and a bundle restores it somewhere else](0027-full-instance-backup-and-restore.md)
+- [ADR-0028: CI runners carry the host's BuildKit knowledge — a generated default buildkitd config, and a reusable docker-driver workflow](0028-ci-buildkit-defaults.md)

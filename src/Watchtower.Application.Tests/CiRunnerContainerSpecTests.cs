@@ -152,9 +152,31 @@ public sealed class CiRunnerContainerSpecTests {
         Assert.Null(CiRunnerOrchestrator.Describe(Container(specHash: null, runnerId: null), "hash").GitHubRunnerId);
 
     [Fact]
-    public void VolumeInitContainer_ChownsBothCacheVolumesAsRoot() {
+    public void RunnerContainer_MountsTheBuildxVolumeAndPointsBuildxAtIt() {
         var repo = Repo();
-        var body = CiRunnerOrchestrator.BuildVolumeInitContainerBody(repo, "runner:latest");
+        var body = Body(repo);
+
+        Assert.Contains($"{CiRunnerOrchestrator.BuildxVolumeName(repo)}:{CiRunnerOrchestrator.BuildxConfigDir}",
+            body.HostConfig!.Binds!);
+        Assert.Contains($"BUILDX_CONFIG={CiRunnerOrchestrator.BuildxConfigDir}", body.Env!);
+    }
+
+    /// <summary>
+    /// The buildx dir must not live under the runner user's own <c>~/.docker</c>: dockerd creates
+    /// missing mountpoint parents as root, and a root-owned <c>~/.docker</c> breaks the next
+    /// <c>docker login</c> in a job — the same trap as <c>_work</c>.
+    /// </summary>
+    [Fact]
+    public void BuildxConfigDir_LivesOutsideDockerConfigAndTheWorkDirectory() {
+        Assert.False(CiRunnerOrchestrator.BuildxConfigDir.StartsWith("/home/runner/_work", StringComparison.Ordinal));
+        Assert.False(CiRunnerOrchestrator.BuildxConfigDir.StartsWith("/home/runner/.docker", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void VolumeInitContainer_ChownsAllVolumesAsRootAndWritesTheBuildkitConfig() {
+        var repo = Repo();
+        const string toml = "# generated config";
+        var body = CiRunnerOrchestrator.BuildVolumeInitContainerBody(repo, "runner:latest", toml);
 
         Assert.Equal("root", body.User);
         Assert.Equal(CiRunnerOrchestrator.VolumeInitLabelValue, body.Labels![CiRunnerOrchestrator.ManagedLabel]);
@@ -163,7 +185,21 @@ public sealed class CiRunnerContainerSpecTests {
             body.HostConfig.Binds!);
         Assert.Contains($"{CiRunnerOrchestrator.PkgVolumeName(repo)}:{CiRunnerOrchestrator.VolumeInitMountRoot}/pkg",
             body.HostConfig.Binds!);
-        Assert.Equal("chown", body.Cmd![0]);
-        Assert.Equal("runner:runner", body.Cmd![1]);
+        Assert.Contains($"{CiRunnerOrchestrator.BuildxVolumeName(repo)}:{CiRunnerOrchestrator.VolumeInitMountRoot}/buildx",
+            body.HostConfig.Binds!);
+
+        // The config content travels as env — never spliced into the script — and the script both
+        // writes the file and chowns every volume root to the runner user.
+        Assert.Contains($"{CiRunnerOrchestrator.BuildkitConfigEnvVar}={toml}", body.Env!);
+        Assert.Equal("/bin/bash", body.Cmd![0]);
+        var script = body.Cmd![2];
+        Assert.DoesNotContain(toml, script);
+        Assert.Contains(
+            $"\"${CiRunnerOrchestrator.BuildkitConfigEnvVar}\" > "
+            + $"{CiRunnerOrchestrator.VolumeInitMountRoot}/buildx/{CiRunnerOrchestrator.BuildkitConfigFileName}",
+            script);
+        Assert.Contains("chown runner:runner", script);
+        foreach (var suffix in new[] { "/tool", "/pkg", "/buildx" })
+            Assert.Contains($"{CiRunnerOrchestrator.VolumeInitMountRoot}{suffix}", script);
     }
 }

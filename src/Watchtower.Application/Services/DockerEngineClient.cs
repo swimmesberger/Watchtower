@@ -1012,6 +1012,15 @@ public sealed class DockerEngineClient : IDisposable {
         return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerImageInfo, ct)
             ?? throw new InvalidOperationException($"Null response inspecting image {imageName}");
     }
+
+    /// <summary>Engine facts from <c>GET /info</c> — storage driver and registry configuration.</summary>
+    public async Task<DockerEngineInfo> GetEngineInfoAsync(CancellationToken ct = default) {
+        var response = await _client.GetAsync($"{_apiBase}/info", ct);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync(json, DockerJsonContext.Default.DockerEngineInfo, ct)
+            ?? new DockerEngineInfo();
+    }
 }
 
 /// <summary>
@@ -1211,9 +1220,47 @@ public sealed record DockerDeletedImage {
 [JsonSerializable(typeof(DockerCpuUsage))]
 [JsonSerializable(typeof(DockerMemoryStats))]
 [JsonSerializable(typeof(DockerMemoryStatsDetail))]
+[JsonSerializable(typeof(DockerEngineInfo))]
+[JsonSerializable(typeof(DockerRegistryConfig))]
+[JsonSerializable(typeof(DockerIndexConfig))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 internal sealed partial class DockerJsonContext : JsonSerializerContext;
+
+// ── Engine info DTOs ─────────────────────────────────────────────────────────
+
+/// <summary>Subset of GET /info — the storage driver and the registry configuration.</summary>
+public sealed record DockerEngineInfo {
+    /// <summary>The daemon's storage driver name (e.g. <c>overlay2</c>, <c>btrfs</c>).</summary>
+    public string? Driver { get; init; }
+
+    public DockerRegistryConfig? RegistryConfig { get; init; }
+
+    /// <summary>
+    /// Registries the daemon itself treats as insecure (its <c>insecure-registries</c> setting) —
+    /// the registries a plain <c>docker push</c> on this host reaches over HTTP / without
+    /// certificate verification, which is exactly the set an out-of-daemon BuildKit needs
+    /// <c>[registry."…"]</c> stanzas for, because BuildKit does not read the daemon's
+    /// configuration. CIDR entries (which surface under <c>InsecureRegistryCIDRs</c>, not as index
+    /// configs) are not included; only named registries are. Sorted for stable output.
+    /// </summary>
+    public IReadOnlyList<string> InsecureRegistries() =>
+        (RegistryConfig?.IndexConfigs ?? [])
+        .Where(kv => kv.Value.Secure == false && !kv.Key.Contains('/'))
+        .Select(kv => kv.Key)
+        .OrderBy(k => k, StringComparer.Ordinal)
+        .ToList();
+}
+
+/// <summary>The daemon's registry view: index configs keyed by registry host[:port].</summary>
+public sealed record DockerRegistryConfig {
+    public Dictionary<string, DockerIndexConfig>? IndexConfigs { get; init; }
+}
+
+/// <summary>One registry index entry; <c>Secure = false</c> marks an insecure-registries entry.</summary>
+public sealed record DockerIndexConfig {
+    public bool? Secure { get; init; }
+}
 
 // ── Volumes DTOs ─────────────────────────────────────────────────────────────
 
