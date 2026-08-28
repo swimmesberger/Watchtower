@@ -232,6 +232,7 @@ internal sealed class TerminalDeployQueue(IServiceProvider services, string stat
         services.GetRequiredService<DockerEngineClient>(),
         services.GetRequiredService<DeployOutputBroadcaster>(),
         services.GetRequiredService<CaddyManager>(),
+        services.GetRequiredService<HostGpuProbe>(),
         services.GetRequiredService<IOptionsMonitor<WatchtowerOptions>>(),
         NullLogger<DeployQueueService>.Instance) {
     private readonly List<int> _enqueued = [];

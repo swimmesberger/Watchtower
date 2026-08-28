@@ -57,6 +57,7 @@ public class DeployQueueService : IHostedService, IDisposable {
     private readonly DockerEngineClient _docker;
     private readonly DeployOutputBroadcaster _broadcaster;
     private readonly IProxyProvider _proxy;
+    private readonly HostGpuProbe _gpuProbe;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<DeployQueueService> _logger;
 
@@ -79,6 +80,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         DockerEngineClient docker,
         DeployOutputBroadcaster broadcaster,
         IProxyProvider proxy,
+        HostGpuProbe gpuProbe,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<DeployQueueService> logger) {
         _scopeFactory = scopeFactory;
@@ -87,6 +89,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         _docker = docker;
         _broadcaster = broadcaster;
         _proxy = proxy;
+        _gpuProbe = gpuProbe;
         _options = options;
         _logger = logger;
         _maxConcurrentDeploys = options.CurrentValue.ResolveMaxConcurrentDeploys();
@@ -535,9 +538,22 @@ public class DeployQueueService : IHostedService, IDisposable {
             //     into the same generated override — host-specific values the repository's compose
             //     file must not carry. Empty for a stack with no rows, which keeps the override
             //     byte-identical to its pre-device form.
-            var devicePlan = DeviceMappingPlan.Create(services, GetDeviceMappings(stackId));
+            // 4e. GPU intents (ADR-0031) resolve against a live probe of the host's render nodes —
+            //     only when the stack has any, so a probe hiccup can never slow a GPU-less fleet,
+            //     and a failed probe degrades to "no GPUs found" rather than a failed deploy.
+            var gpuMappings = GetGpuMappings(stackId);
+            var gpuCatalog = HostGpuCatalog.Empty;
+            if (gpuMappings.Count > 0) {
+                gpuCatalog = await _gpuProbe.GetAsync(ct);
+                if (gpuCatalog.Error is { } probeError)
+                    WriteHeader($"[Watchtower] Warning: {probeError} GPU passthrough maps nothing this deploy.");
+            }
+            var devicePlan = DeviceMappingPlan.Create(
+                services, GetDeviceMappings(stackId), gpuMappings, gpuCatalog.Gpus);
             foreach (var warning in devicePlan.Warnings)
                 WriteHeader($"[Watchtower] {warning}");
+            foreach (var note in devicePlan.Notes)
+                WriteHeader($"[Watchtower] {note}");
 
             if (ComposeOverrideFile.Render(plan, imagePlan, devicePlan) is { } overrideContent) {
                 overrideFilePath = Path.Combine(
@@ -556,12 +572,17 @@ public class DeployQueueService : IHostedService, IDisposable {
                         + $"into service '{service.ServiceName}'");
                 // One line per device: mapping a host device into a container is an operator-level
                 // grant, so "why does this container see the GPU" must be answerable from the log.
-                foreach (var mapped in devicePlan.Services)
+                foreach (var mapped in devicePlan.Services) {
                     foreach (var device in mapped.Devices)
                         WriteHeader(
                             $"[Watchtower] Mapping device {device.HostPath} into service "
                             + $"'{mapped.ServiceName}' at {device.ContainerPath}"
                             + (device.Permissions is { } permissions ? $" ({permissions})" : ""));
+                    if (mapped.GroupIds.Count > 0)
+                        WriteHeader(
+                            $"[Watchtower] Adding supplementary group(s) {string.Join(", ", mapped.GroupIds)} "
+                            + $"to service '{mapped.ServiceName}' for device access");
+                }
             }
 
             // 5. Pull updated images.
@@ -943,6 +964,14 @@ public class DeployQueueService : IHostedService, IDisposable {
         using var scope = _scopeFactory.CreateScope();
         var appApi = scope.ServiceProvider.GetRequiredService<AppApiService>();
         return await appApi.EnsureTokenAsync(stackId, ct);
+    }
+
+    private List<StackGpuMapping> GetGpuMappings(int stackId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return db.StackGpuMappings.AsNoTracking()
+            .Where(m => m.StackId == stackId)
+            .ToList();
     }
 
     private List<StackDeviceMapping> GetDeviceMappings(int stackId) {

@@ -61,6 +61,8 @@ public static class WatchtowerServiceCollectionExtensions {
 
         // Stateless infrastructure (no DB) — singletons.
         services.AddSingleton<DockerEngineClient>();
+        // Host GPU discovery for device passthrough (ADR-0031); caches, so a singleton.
+        services.AddSingleton<HostGpuProbe>();
         services.AddSingleton<ComposeCliService>();
         services.AddSingleton<GitCloneService>();
         services.AddSingleton<DeployOutputBroadcaster>();

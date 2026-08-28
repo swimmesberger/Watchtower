@@ -451,6 +451,21 @@ public sealed class StackDeviceMappingConfiguration : IEntityTypeConfiguration<S
 }
 
 [EntityConfiguration]
+public sealed class StackGpuMappingConfiguration : IEntityTypeConfiguration<StackGpuMapping> {
+    public void Configure(EntityTypeBuilder<StackGpuMapping> b) {
+        b.ToTable("stack_gpu_mappings");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Service).IsRequired();
+        // The row *is* the intent, so one per (stack, service) — a second would mean nothing.
+        b.HasIndex(x => new { x.StackId, x.Service }).IsUnique();
+        b.HasOne(x => x.Stack)
+            .WithMany()
+            .HasForeignKey(x => x.StackId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
 public sealed class StackEnvVarConfiguration : IEntityTypeConfiguration<StackEnvVar> {
     public void Configure(EntityTypeBuilder<StackEnvVar> b) {
         b.ToTable("stack_env_vars");

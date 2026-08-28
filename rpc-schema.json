@@ -10969,10 +10969,17 @@
                 "permissions"
               ]
             }
+          },
+          "gpuServices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
-          "devices"
+          "devices",
+          "gpuServices"
         ]
       }
     },
@@ -11016,6 +11023,60 @@
         },
         "required": [
           "envVars"
+        ]
+      }
+    },
+    "stacks.hostGpus": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "gpus": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "vendor": {
+                  "type": "string"
+                },
+                "driver": {
+                  "type": "string"
+                },
+                "pciAddress": {
+                  "type": "string"
+                },
+                "mappable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "vendor",
+                "driver",
+                "pciAddress",
+                "mappable"
+              ]
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "gpus",
+          "error"
         ]
       }
     },
@@ -11330,6 +11391,16 @@
                 "hostPath"
               ]
             }
+          },
+          "gpuServices": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "default": null
           }
         },
         "required": [
@@ -11372,10 +11443,17 @@
                 "permissions"
               ]
             }
+          },
+          "gpuServices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
-          "devices"
+          "devices",
+          "gpuServices"
         ]
       }
     },

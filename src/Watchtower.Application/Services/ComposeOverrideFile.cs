@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -123,9 +124,20 @@ internal static class ComposeOverrideFile {
                         .Append(QuoteValue(variable.Value)).Append('\n');
             }
             if (devicesByService.TryGetValue(name, out var devices)) {
-                body.Append("    devices:\n");
-                foreach (var device in devices.Devices)
-                    body.Append("      - ").Append(QuoteValue(DeviceText(device))).Append('\n');
+                if (devices.Devices.Count > 0) {
+                    body.Append("    devices:\n");
+                    foreach (var device in devices.Devices)
+                        body.Append("      - ").Append(QuoteValue(DeviceText(device))).Append('\n');
+                }
+                // Compose appends group_add across files, so the repository's own groups survive.
+                // GIDs render as quoted strings: an unquoted number is looked up as a group *name*
+                // inside the container by some runtimes, and the probed GID rarely has one there.
+                if (devices.GroupIds.Count > 0) {
+                    body.Append("    group_add:\n");
+                    foreach (var groupId in devices.GroupIds)
+                        body.Append("      - ").Append(QuoteValue(groupId.ToString(CultureInfo.InvariantCulture)))
+                            .Append('\n');
+                }
             }
         }
         return body.ToString();

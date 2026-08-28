@@ -8,6 +8,7 @@ import type { AutoDeployMode, Stack, StackEnvVarInput, UpdateStackRequest } from
 import { EnvVarEditor } from '@/components/env-var-editor'
 import {
   DeviceMappingEditor,
+  GpuServiceEditor,
   blankDeviceRow,
   isDeviceRowBlank,
   type DeviceMappingRow,
@@ -51,6 +52,13 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     queryFn: () => api.stacks.getDevices(stackId),
   })
 
+  // Host-wide, not per stack — what "map host GPU(s)" would resolve to on this Docker host.
+  const hostGpusQuery = useQuery({
+    queryKey: ['host', 'gpus'],
+    queryFn: () => api.stacks.hostGpus(),
+    staleTime: 60_000,
+  })
+
   // Only to decide whether the product is linkable; the branch hint below is derived from the stack
   // DTO alone, because it is the only source that cannot disagree with what the backend compares.
   const { caps } = useRouteContext({ from: '__root__' })
@@ -83,7 +91,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
   // Same draft-or-fallback shape as the env editor, for the same cold-cache reason.
   const [deviceDraft, setDeviceDraft] = useState<DeviceMappingRow[] | null>(null)
   const deviceRows: DeviceMappingRow[] = deviceDraft ?? [
-    ...(devicesQuery.data ?? []).map((d) => ({
+    ...(devicesQuery.data?.devices ?? []).map((d) => ({
       service: d.service,
       hostPath: d.hostPath,
       // Stored resolved (the backend defaults it to the host path); shown blank when they agree so
@@ -94,6 +102,9 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     blankDeviceRow,
   ]
 
+  const [gpuDraft, setGpuDraft] = useState<string[] | null>(null)
+  const gpuRows: string[] = gpuDraft ?? [...(devicesQuery.data?.gpuServices ?? []), '']
+
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
@@ -103,17 +114,23 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     mutationFn: async (data: UpdateStackRequest) => {
       const updated = await api.stacks.update(stackId, data)
       // Devices ride the same Save, but only when the user actually edited them — sending the
-      // fallback rows while the query is unresolved would silently wipe the stored mappings.
-      if (deviceDraft)
-        await api.stacks.setDevices(
-          stackId,
-          deviceDraft.filter((r) => !isDeviceRowBlank(r)).map((r) => ({
-            service: r.service.trim(),
-            hostPath: r.hostPath.trim(),
-            containerPath: r.containerPath.trim() || null,
-            permissions: r.permissions.trim() || null,
-          })),
-        )
+      // fallback rows while the query is unresolved would silently wipe the stored mappings. One
+      // RPC replaces both lists, so the unedited one is re-sent from the loaded data (present
+      // whenever a draft exists: the editors only render after the query resolved).
+      if ((deviceDraft || gpuDraft) && devicesQuery.data) {
+        const devices = deviceDraft
+          ? deviceDraft.filter((r) => !isDeviceRowBlank(r)).map((r) => ({
+              service: r.service.trim(),
+              hostPath: r.hostPath.trim(),
+              containerPath: r.containerPath.trim() || null,
+              permissions: r.permissions.trim() || null,
+            }))
+          : devicesQuery.data.devices
+        const gpuServices = gpuDraft
+          ? gpuDraft.map((s) => s.trim()).filter((s) => s !== '')
+          : devicesQuery.data.gpuServices
+        await api.stacks.setDevices(stackId, devices, gpuServices)
+      }
       return updated
     },
     onSuccess: (updated) => {
@@ -440,6 +457,39 @@ export function SettingsTab({ stack }: { stack: Stack }) {
         )}
         {devicesQuery.isSuccess && (
           <>
+            {/* GPU passthrough (ADR-0031): a host-neutral intent — the deploy probes the host and
+                maps whatever mappable render nodes exist, plus their owning groups. */}
+            <p className="mb-1.5 text-sm font-medium text-text">GPU passthrough</p>
+            <GpuServiceEditor value={gpuRows} onChange={setGpuDraft} />
+            <p className="mt-2 text-[13px] text-text-2">
+              {hostGpusQuery.data?.error != null ? (
+                <>Couldn’t inspect this host’s GPUs: {hostGpusQuery.data.error}</>
+              ) : hostGpusQuery.data ? (
+                hostGpusQuery.data.gpus.length === 0 ? (
+                  <>
+                    No GPU render node detected on this Docker host — listed services deploy fine
+                    and simply get no GPU here.
+                  </>
+                ) : (
+                  <>
+                    Detected:{' '}
+                    {hostGpusQuery.data.gpus.map((g, i) => (
+                      <span key={g.path}>
+                        {i > 0 && ', '}
+                        <span className="font-mono">{g.name}</span> — {g.vendor} ({g.driver},{' '}
+                        {g.pciAddress}){g.mappable ? '' : ' — needs the NVIDIA toolkit, not mapped'}
+                      </span>
+                    ))}
+                    . Each listed service gets every mappable GPU, and the required group is added
+                    automatically.
+                  </>
+                )
+              ) : (
+                <>Checking this host for GPUs…</>
+              )}
+            </p>
+
+            <p className="mb-1.5 mt-5 text-sm font-medium text-text">Specific devices</p>
             <DeviceMappingEditor value={deviceRows} onChange={setDeviceDraft} />
             <p className="mt-2 text-[13px] text-text-2">
               Access is some combination of <span className="font-mono">r</span>ead,{' '}

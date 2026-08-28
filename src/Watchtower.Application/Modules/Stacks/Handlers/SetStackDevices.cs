@@ -8,12 +8,13 @@ using Watchtower.Application.Services;
 namespace Watchtower.Application.Modules.Stacks.Handlers;
 
 /// <summary>
-/// Atomically replaces all host device mappings of a stack (ADR-0030) — the <c>devices:</c> entries
-/// the deploy renders into the generated compose override, kept in Watchtower because the values are
-/// host-specific and must not live in the product's repository. Pass an empty list to clear them.
-/// A mapping may name a service the current compose file does not contain — services come and go
-/// with the repository — so the deploy warns rather than this handler refusing; validation here is
-/// limited to what can never be right.
+/// Atomically replaces all host device mappings of a stack — the literal <c>devices:</c> entries the
+/// deploy renders into the generated compose override (ADR-0030) and the per-service "map host
+/// GPU(s)" intents that resolve against the host probe at deploy time (ADR-0031). Both are kept in
+/// Watchtower because the values are host-specific and must not live in the product's repository.
+/// Pass empty lists to clear them. A mapping may name a service the current compose file does not
+/// contain — services come and go with the repository — so the deploy warns rather than this handler
+/// refusing; validation here is limited to what can never be right.
 /// </summary>
 /// <remarks>
 /// Audited: mapping a host device into a container is an operator-level grant of host access, unlike
@@ -22,8 +23,14 @@ namespace Watchtower.Application.Modules.Stacks.Handlers;
 [Handler("stacks.setDevices")]
 public sealed partial class SetStackDevices(WatchtowerDbContext db, AuditLog audit, ICurrentUser currentUser)
     : IHandler<SetStackDevices.Command, Result<SetStackDevices.Response>> {
-    public sealed record Command(int StackId, IReadOnlyList<StackDeviceMappingInput> Devices);
-    public sealed record Response(IReadOnlyList<StackDeviceMappingDto> Devices);
+    /// <param name="Devices">The literal path mappings; replaces the stored set.</param>
+    /// <param name="GpuServices">Service names to receive the host's GPUs; replaces the stored set. Null reads as empty.</param>
+    public sealed record Command(
+        int StackId,
+        IReadOnlyList<StackDeviceMappingInput> Devices,
+        IReadOnlyList<string>? GpuServices = null);
+    public sealed record Response(
+        IReadOnlyList<StackDeviceMappingDto> Devices, IReadOnlyList<string> GpuServices);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var stack = await db.Stacks.FirstOrDefaultAsync(s => s.Id == command.StackId, ct);
@@ -65,20 +72,35 @@ public sealed partial class SetStackDevices(WatchtowerDbContext db, AuditLog aud
             });
         }
 
+        var gpuServices = new List<string>();
+        var gpuSeen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var input in command.GpuServices ?? []) {
+            var service = input.Trim();
+            if (service.Length is 0 or > 128 || !ServiceNameRegex().IsMatch(service))
+                return AppError.Validation(
+                    $"'{input}' is not a valid compose service name (letters, digits, '.', '_', '-'; at most 128 characters).");
+            if (!gpuSeen.Add(service))
+                return AppError.Validation($"Service '{service}' is listed twice for GPU passthrough.");
+            gpuServices.Add(service);
+        }
+
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         await db.StackDeviceMappings.Where(m => m.StackId == stack.Id).ExecuteDeleteAsync(ct);
         db.StackDeviceMappings.AddRange(mappings);
+        await db.StackGpuMappings.Where(m => m.StackId == stack.Id).ExecuteDeleteAsync(ct);
+        db.StackGpuMappings.AddRange(gpuServices.Select(s => new StackGpuMapping { StackId = stack.Id, Service = s }));
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
 
         await audit.RecordAsync(StackLifecycle.AuditCategory, "stack.devices.update", stack.Name,
-            mappings.Count == 0
+            mappings.Count == 0 && gpuServices.Count == 0
                 ? "device mappings cleared"
                 : "device mappings replaced: "
                     + string.Join(", ", mappings.Select(m =>
-                        $"{m.Service} ← {m.HostPath}"
-                        + (m.ContainerPath == m.HostPath ? "" : $" at {m.ContainerPath}")
-                        + (m.Permissions is { } p ? $" ({p})" : ""))),
+                            $"{m.Service} ← {m.HostPath}"
+                            + (m.ContainerPath == m.HostPath ? "" : $" at {m.ContainerPath}")
+                            + (m.Permissions is { } p ? $" ({p})" : ""))
+                        .Concat(gpuServices.Select(s => $"{s} ← host GPUs"))),
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
         var saved = await db.StackDeviceMappings.AsNoTracking()
@@ -86,7 +108,12 @@ public sealed partial class SetStackDevices(WatchtowerDbContext db, AuditLog aud
             .OrderBy(m => m.Service).ThenBy(m => m.HostPath)
             .Select(m => new StackDeviceMappingDto(m.Id, m.Service, m.HostPath, m.ContainerPath, m.Permissions))
             .ToListAsync(ct);
-        return new Response(saved);
+        var savedGpus = await db.StackGpuMappings.AsNoTracking()
+            .Where(m => m.StackId == stack.Id)
+            .OrderBy(m => m.Service)
+            .Select(m => m.Service)
+            .ToListAsync(ct);
+        return new Response(saved, savedGpus);
     }
 
     /// <summary>

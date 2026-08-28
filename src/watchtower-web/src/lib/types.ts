@@ -515,6 +515,34 @@ export interface StackDeviceMappingInput {
   permissions?: string | null
 }
 
+/** A stack's device configuration: literal mappings plus GPU-passthrough intents (ADR-0031). */
+export interface StackDevices {
+  devices: StackDeviceMapping[]
+  /** Services with the "map host GPU(s)" intent. */
+  gpuServices: string[]
+}
+
+/** One GPU render node the Docker host exposes (ADR-0031). */
+export interface HostGpu {
+  /** Node name, e.g. "renderD128". */
+  name: string
+  /** Host device path, e.g. "/dev/dri/renderD128". */
+  path: string
+  /** "intel" | "amd" | "nvidia" | "unknown". */
+  vendor: string
+  /** Bound kernel driver, e.g. "i915". */
+  driver: string
+  pciAddress: string
+  /** False for NVIDIA, which needs the container toolkit rather than a device mapping. */
+  mappable: boolean
+}
+
+export interface HostGpus {
+  gpus: HostGpu[]
+  /** Why the probe could not run, or absent when it did. */
+  error?: string | null
+}
+
 /** One env var a container is actually running with (from Docker inspect). */
 export interface ContainerEnvVar {
   key: string

@@ -557,6 +557,7 @@ public sealed class ReleaseDeployTests {
             host.Services.GetRequiredService<DockerEngineClient>(),
             host.Services.GetRequiredService<DeployOutputBroadcaster>(),
             host.Services.GetRequiredService<CaddyManager>(),
+            host.Services.GetRequiredService<HostGpuProbe>(),
             host.Services.GetRequiredService<IOptionsMonitor<WatchtowerOptions>>(),
             NullLogger<DeployQueueService>.Instance);
 

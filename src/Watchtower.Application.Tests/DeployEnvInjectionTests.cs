@@ -268,6 +268,7 @@ public sealed class DeployEnvInjectionTests {
                    host.Services.GetRequiredService<DockerEngineClient>(),
                    host.Services.GetRequiredService<DeployOutputBroadcaster>(),
                    host.Services.GetRequiredService<CaddyManager>(),
+                   host.Services.GetRequiredService<HostGpuProbe>(),
                    host.Services.GetRequiredService<IOptionsMonitor<WatchtowerOptions>>(),
                    NullLogger<DeployQueueService>.Instance)) {
             await queue.ExecuteDeployAsync(stackId, eventId, DeployTriggers.Manual, removeVolumes: null, ct);

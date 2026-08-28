@@ -154,3 +154,67 @@ export function DeviceMappingEditor({ value, onChange, className }: DeviceMappin
 export function isDeviceRowBlank(row: DeviceMappingRow): boolean {
   return isBlank(row)
 }
+
+export interface GpuServiceEditorProps {
+  /** DRAFT rows including the trailing blank row — same contract as DeviceMappingEditor. */
+  value: string[]
+  onChange: (rows: string[]) => void
+  className?: string
+}
+
+/**
+ * Controlled editor for the services that receive the host's GPUs (ADR-0031). One column of
+ * compose service names; the actual devices are resolved by probing the host on every deploy, so
+ * there is nothing else to configure. To persist, drop blank rows.
+ */
+export function GpuServiceEditor({ value, onChange, className }: GpuServiceEditorProps) {
+  function updateRow(i: number, val: string) {
+    const next = value.map((r, idx) => (idx === i ? val : r))
+    if (next.at(-1)?.trim() !== '') next.push('')
+    onChange(next)
+  }
+
+  function removeRow(i: number) {
+    const next = value.filter((_, idx) => idx !== i)
+    if (next.length === 0 || next.at(-1)?.trim() !== '') next.push('')
+    onChange(next)
+  }
+
+  return (
+    <div className={cn('overflow-hidden rounded-md border border-border', className)}>
+      {value.map((row, i) => {
+        const isBlankTrailer = i === value.length - 1
+        return (
+          <div
+            key={i}
+            className="flex items-center border-b border-border last:border-b-0 md:grid md:grid-cols-[1fr_2.5rem]"
+          >
+            <input
+              value={row}
+              onChange={(e) => updateRow(i, e.target.value)}
+              placeholder="service receiving host GPUs"
+              spellCheck={false}
+              autoComplete="off"
+              aria-label={`GPU service ${i + 1}`}
+              className={cn(cellClass, 'md:border-r-0')}
+            />
+            <div className="flex items-center justify-end p-1 md:justify-center md:p-0">
+              {!isBlankTrailer ? (
+                <button
+                  type="button"
+                  onClick={() => removeRow(i)}
+                  aria-label={`Remove GPU passthrough for ${row || `service ${i + 1}`}`}
+                  className="rounded p-1.5 text-danger transition-colors hover:bg-danger-bg"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              ) : (
+                <Plus className="size-3.5 text-text-3" aria-hidden />
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
