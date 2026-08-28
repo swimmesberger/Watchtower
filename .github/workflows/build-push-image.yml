@@ -1,0 +1,97 @@
+# Reusable build-and-push for repositories whose Actions jobs run on Watchtower-managed
+# runners (docs/ci-runners/design.md §"Container image builds").
+#
+# Why this exists: it encodes the host knowledge a workflow would otherwise have to carry
+# itself. It deliberately does NOT set up a buildx `docker-container` builder — the build
+# runs on the daemon's default builder (`docker` driver), which uses the host's storage
+# driver (real copy-on-write even where BuildKit's OCI worker would fall back to the
+# copy-less `native` snapshotter, e.g. Synology DSM), keeps its build cache on the host
+# between runs, and inherits the daemon's insecure-registries configuration. The trade-offs
+# are encoded too: `provenance: false` because the docker driver cannot produce
+# attestations, and no registry cache import/export because the daemon's cache persists.
+#
+# Requirements (all provisioned by Watchtower when the repo's CI is enabled and a sync
+# registry is selected): a runner with the Docker socket allowed, the `REGISTRY` Actions
+# variable, and the `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` secrets.
+#
+# Usage in a consuming repo:
+#
+#   jobs:
+#     image:
+#       uses: swimmesberger/Watchtower/.github/workflows/build-push-image.yml@main
+#       with:
+#         image: muxbox
+#       secrets: inherit
+
+name: Build & push image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image name without the registry prefix (e.g. `muxbox`).
+        required: true
+        type: string
+      context:
+        description: Build context path.
+        type: string
+        default: .
+      file:
+        description: Dockerfile path; defaults to `<context>/Dockerfile`.
+        type: string
+        default: ""
+      build-args:
+        description: Newline-separated `NAME=value` build arguments.
+        type: string
+        default: ""
+      push:
+        description: Push the image after building.
+        type: boolean
+        default: true
+      tags:
+        description: >-
+          docker/metadata-action tag rules. The default tags `latest` on the default
+          branch, every commit by short SHA, and git tags by name.
+        type: string
+        default: |
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=sha
+          type=ref,event=tag
+    outputs:
+      image:
+        description: First fully-qualified image reference that was built.
+        value: ${{ jobs.build.outputs.image }}
+
+jobs:
+  build:
+    runs-on: [self-hosted, watchtower]
+    outputs:
+      image: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # `vars.REGISTRY` and the two secrets are the values Watchtower syncs into this
+      # repository's Actions config; `secrets: inherit` in the caller makes them visible here.
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ vars.REGISTRY }}/${{ inputs.image }}
+          tags: ${{ inputs.tags }}
+
+      # No setup-buildx-action on purpose — see the header. The default builder is the
+      # daemon itself, so the layer cache lives on the host and survives the ephemeral runner.
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          build-args: ${{ inputs.build-args }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false

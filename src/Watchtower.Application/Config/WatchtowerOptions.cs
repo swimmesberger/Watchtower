@@ -472,6 +472,18 @@ public sealed record CiOptions {
     /// <summary>Reconcile loop interval in seconds. Clamped to 5–300.</summary>
     public int ReconcileIntervalSeconds { get; init; } = 15;
 
+    /// <summary>
+    /// BuildKit OCI-worker snapshotter written into the default buildkitd config every runner
+    /// receives (<c>[worker.oci] snapshotter</c>). Unset or <c>auto</c> (the default) lets
+    /// Watchtower detect the host: BuildKit's own probe never tries fuse-overlayfs, so a kernel
+    /// without overlayfs (e.g. Synology DSM) silently gets the copy-less <c>native</c>
+    /// snapshotter — Watchtower emits <c>fuse-overlayfs</c> exactly there, and stays silent on
+    /// hosts where overlayfs works. <c>none</c> emits nothing (BuildKit's probe is left alone);
+    /// any other value is written as-is. Instance-wide on purpose: which snapshotter works is a
+    /// property of this host's kernel, not of any repo.
+    /// </summary>
+    public string? BuildkitSnapshotter { get; init; }
+
     /// <summary>Resolved instance name: explicit setting or machine hostname.</summary>
     public string ResolveInstanceName() =>
         string.IsNullOrWhiteSpace(InstanceName) ? Environment.MachineName.ToLowerInvariant() : InstanceName.Trim();
