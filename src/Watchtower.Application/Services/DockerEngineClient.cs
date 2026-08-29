@@ -1222,6 +1222,8 @@ public sealed record DockerDeletedImage {
 [JsonSerializable(typeof(DockerMemoryStatsDetail))]
 [JsonSerializable(typeof(DockerEngineInfo))]
 [JsonSerializable(typeof(DockerRegistryConfig))]
+[JsonSerializable(typeof(DockerRuntimeInfo))]
+[JsonSerializable(typeof(Dictionary<string, DockerRuntimeInfo>))]
 [JsonSerializable(typeof(DockerIndexConfig))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
@@ -1229,9 +1231,27 @@ internal sealed partial class DockerJsonContext : JsonSerializerContext;
 
 // ── Engine info DTOs ─────────────────────────────────────────────────────────
 
-/// <summary>Subset of GET /info — only the registry configuration is read.</summary>
+/// <summary>Subset of GET /info — the registry configuration and the installed runtimes.</summary>
 public sealed record DockerEngineInfo {
     public DockerRegistryConfig? RegistryConfig { get; init; }
+
+    /// <summary>
+    /// Container runtimes the daemon has configured, keyed by name. The NVIDIA container toolkit
+    /// registers itself here as <c>nvidia</c>, which is the only signal available from outside the
+    /// host that tells us a GPU reservation will resolve rather than fail the deploy.
+    /// </summary>
+    public Dictionary<string, DockerRuntimeInfo>? Runtimes { get; init; }
+
+    /// <summary>
+    /// Whether this daemon can satisfy an NVIDIA GPU reservation (ADR-0032).
+    /// </summary>
+    /// <remarks>
+    /// A card without the toolkit is worse than no card: Compose fails the whole deploy with
+    /// "could not select device driver nvidia with capabilities", so the reservation is only
+    /// emitted when the daemon says it can honour it.
+    /// </remarks>
+    public bool HasNvidiaRuntime =>
+        Runtimes?.Keys.Any(k => k.Contains("nvidia", StringComparison.OrdinalIgnoreCase)) == true;
 
     /// <summary>
     /// Registries the daemon itself treats as insecure (its <c>insecure-registries</c> setting) —
@@ -1257,6 +1277,11 @@ public sealed record DockerRegistryConfig {
 /// <summary>One registry index entry; <c>Secure = false</c> marks an insecure-registries entry.</summary>
 public sealed record DockerIndexConfig {
     public bool? Secure { get; init; }
+}
+
+/// <summary>One configured container runtime; only its presence is read.</summary>
+public sealed record DockerRuntimeInfo {
+    public string? Path { get; init; }
 }
 
 // ── Volumes DTOs ─────────────────────────────────────────────────────────────

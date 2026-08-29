@@ -179,4 +179,70 @@ public sealed class DeviceMappingPlanTests {
         Assert.Equal([new ServiceDevice("/dev/fuse", "/dev/fuse", "rw")], placed.Devices);
         Assert.Empty(plan.Warnings);
     }
+
+    // ── NVIDIA: the same intent, resolved through the toolkit instead (ADR-0032) ──────────────
+
+    private static HostGpuCatalog NvidiaHost(bool runtime = true) =>
+        HostGpuCatalog.Empty with { NvidiaPresent = true, NvidiaRuntimeAvailable = runtime };
+
+    /// <summary>
+    /// The common shape: a headless NVIDIA box exposes no render node at all, so the intent has to
+    /// resolve to a reservation with no device paths behind it.
+    /// </summary>
+    [Fact]
+    public void Create_ResolvesAGpuIntentToAnNvidiaReservationWithNoDeviceNodes() {
+        var plan = DeviceMappingPlan.Create(
+            Services, [], [new StackGpuMapping { Service = "transcoder" }], [], NvidiaHost());
+
+        var placed = Assert.Single(plan.Services);
+        Assert.True(placed.NvidiaGpus);
+        Assert.Empty(placed.Devices);
+        Assert.Empty(placed.GroupIds);
+        Assert.Empty(plan.Warnings);
+        Assert.Contains(plan.Notes, n => n.Contains("container toolkit"));
+    }
+
+    /// <summary>
+    /// A card without the toolkit must reserve nothing: Compose fails the entire deploy with
+    /// "could not select device driver", so the safe direction is to say so and map nothing.
+    /// </summary>
+    [Fact]
+    public void Create_WithoutTheToolkitReservesNothingAndSaysWhy() {
+        var plan = DeviceMappingPlan.Create(
+            Services, [], [new StackGpuMapping { Service = "transcoder" }], [], NvidiaHost(runtime: false));
+
+        Assert.DoesNotContain(plan.Services, s => s.NvidiaGpus);
+        Assert.Empty(plan.Warnings);
+        Assert.Contains(plan.Notes, n => n.Contains("no 'nvidia' runtime"));
+    }
+
+    /// <summary>An NVIDIA host is not a GPU-less host, even though it has no mappable render node.</summary>
+    [Fact]
+    public void Create_DoesNotCallAnNvidiaHostGpuless() {
+        var plan = DeviceMappingPlan.Create(
+            Services, [], [new StackGpuMapping { Service = "transcoder" }], [], NvidiaHost());
+
+        Assert.DoesNotContain(plan.Notes, n => n.Contains("No mappable host GPU"));
+    }
+
+    /// <summary>A mixed host gets both mechanisms: render nodes by path, the NVIDIA card reserved.</summary>
+    [Fact]
+    public void Create_CombinesRenderNodesAndAnNvidiaReservation() {
+        var plan = DeviceMappingPlan.Create(
+            Services, [], [new StackGpuMapping { Service = "transcoder" }], [IntelGpu], NvidiaHost());
+
+        var placed = Assert.Single(plan.Services);
+        Assert.True(placed.NvidiaGpus);
+        Assert.Equal([new ServiceDevice("/dev/dri/renderD128", "/dev/dri/renderD128", null)], placed.Devices);
+        Assert.Equal([105], placed.GroupIds);
+    }
+
+    /// <summary>No intent, no reservation — an NVIDIA host must not push GPUs at every service.</summary>
+    [Fact]
+    public void Create_ReservesNothingForAServiceThatDidNotAskForAGpu() {
+        var plan = DeviceMappingPlan.Create(Services, [], [], [], NvidiaHost());
+
+        Assert.DoesNotContain(plan.Services, s => s.NvidiaGpus);
+        Assert.Empty(plan.Notes);
+    }
 }

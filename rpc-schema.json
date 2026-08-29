@@ -11072,11 +11072,27 @@
               "string",
               "null"
             ]
+          },
+          "nvidia": {
+            "type": "object",
+            "properties": {
+              "present": {
+                "type": "boolean"
+              },
+              "runtimeAvailable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "present",
+              "runtimeAvailable"
+            ]
           }
         },
         "required": [
           "gpus",
-          "error"
+          "error",
+          "nvidia"
         ]
       }
     },

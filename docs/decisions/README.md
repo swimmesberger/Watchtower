@@ -50,3 +50,4 @@ live here.
 - [ADR-0029: Zero-downtime deploys — routed services warm up in a new generation, then traffic swaps](0029-blue-green-stack-deploys.md) — *proposed*
 - [ADR-0030: Host device mappings are a per-stack setting, injected through the generated override](0030-stack-device-mappings.md)
 - [ADR-0031: "Map host GPUs" is a per-service intent, resolved by probing the Docker host at deploy time](0031-host-gpu-passthrough-by-intent.md)
+- [ADR-0032: NVIDIA GPUs resolve the same intent through the container toolkit](0032-nvidia-gpu-passthrough.md)

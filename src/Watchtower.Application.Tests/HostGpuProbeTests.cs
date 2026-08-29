@@ -54,4 +54,51 @@ public sealed class HostGpuProbeTests {
         Assert.Equal(
             mappable,
             new HostGpu("renderD128", "/dev/dri/renderD128", vendorId, driver, "0000:00:02.0", 105).IsMappable);
+
+    /// <summary>
+    /// The NVIDIA marker rides the same output as the render nodes, because NVIDIA is usually not
+    /// among them: the control node exists whenever the kernel driver is loaded, while a DRM node
+    /// only appears when nvidia-drm is — which on a headless host it often is not (ADR-0032).
+    /// </summary>
+    [Fact]
+    public void Parse_DetectsNvidiaFromTheControlNodeWithoutADrmNode() {
+        var lines = new[] { "gpu|renderD128|0x8086|i915|0000:00:02.0|105", "nvidia|present" };
+
+        Assert.True(HostGpuProbe.ParseNvidiaPresent(lines));
+        // The marker is not a render node and must not be parsed as one.
+        Assert.Single(HostGpuProbe.ParseProbeOutput(lines));
+    }
+
+    [Fact]
+    public void Parse_ReportsNoNvidiaWhenTheMarkerIsAbsent() {
+        Assert.False(HostGpuProbe.ParseNvidiaPresent(["gpu|renderD128|0x8086|i915|0000:00:02.0|105"]));
+        Assert.False(HostGpuProbe.ParseNvidiaPresent([]));
+    }
+
+    /// <summary>
+    /// A card is only usable when the toolkit can hand it over; the driver alone is not enough,
+    /// and emitting a reservation without it fails the whole deploy.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, true)]
+    public void NvidiaUsable_RequiresBothTheCardAndTheToolkit(bool present, bool runtime, bool usable) {
+        var catalog = HostGpuCatalog.Empty with { NvidiaPresent = present, NvidiaRuntimeAvailable = runtime };
+
+        Assert.Equal(usable, catalog.NvidiaUsable);
+    }
+
+    /// <summary>The toolkit registers itself as a daemon runtime; that is the only signal we get.</summary>
+    [Fact]
+    public void EngineInfo_ReadsTheNvidiaRuntime() {
+        Assert.True(new DockerEngineInfo {
+            Runtimes = new() { ["runc"] = new DockerRuntimeInfo(), ["nvidia"] = new DockerRuntimeInfo() },
+        }.HasNvidiaRuntime);
+        Assert.False(new DockerEngineInfo {
+            Runtimes = new() { ["runc"] = new DockerRuntimeInfo() },
+        }.HasNvidiaRuntime);
+        Assert.False(new DockerEngineInfo().HasNvidiaRuntime);
+    }
 }

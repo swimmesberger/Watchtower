@@ -36,6 +36,27 @@ public sealed record HostGpu(
 /// </param>
 public sealed record HostGpuCatalog(IReadOnlyList<HostGpu> Gpus, string? Error) {
     public static readonly HostGpuCatalog Empty = new([], null);
+
+    /// <summary>
+    /// Whether the host has an NVIDIA card at all, from <c>/dev/nvidiactl</c> rather than from the
+    /// DRM listing (ADR-0032).
+    /// </summary>
+    /// <remarks>
+    /// NVIDIA is only visible in <see cref="Gpus"/> when <c>nvidia-drm</c> happens to be loaded,
+    /// which is common on desktops and not guaranteed on the headless boxes that actually hold the
+    /// cards. Keying the diagnostics on the DRM listing therefore stayed silent on exactly the
+    /// hosts where the operator most needs to be told which route to take.
+    /// </remarks>
+    public bool NvidiaPresent { get; init; }
+
+    /// <summary>
+    /// Whether the daemon has the NVIDIA container toolkit configured, i.e. whether a GPU
+    /// reservation would resolve. Emitting one without it fails the whole deploy, so it gates.
+    /// </summary>
+    public bool NvidiaRuntimeAvailable { get; init; }
+
+    /// <summary>An NVIDIA card the toolkit can actually hand to a container.</summary>
+    public bool NvidiaUsable => NvidiaPresent && NvidiaRuntimeAvailable;
 }
 
 /// <summary>
@@ -76,6 +97,10 @@ public sealed class HostGpuProbe(
           gid="$(stat -c %g "$node" 2>/dev/null)"
           echo "gpu|$name|$vendor|$driver|${pci##*/}|$gid"
         done
+        # NVIDIA lives outside DRM: the control node exists whenever the kernel driver is loaded,
+        # including on the headless hosts where nvidia-drm is not.
+        [ -e /hostdev/nvidiactl ] && echo "nvidia|present"
+        exit 0
         """;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -129,7 +154,10 @@ public sealed class HostGpuProbe(
                 logger.LogWarning("GPU probe helper exited with code {ExitCode}", exitCode);
                 return new HostGpuCatalog([], $"The GPU probe helper exited with code {exitCode}.");
             }
-            return new HostGpuCatalog(ParseProbeOutput(lines), null);
+            return new HostGpuCatalog(ParseProbeOutput(lines), null) {
+                NvidiaPresent = ParseNvidiaPresent(lines),
+                NvidiaRuntimeAvailable = await HasNvidiaRuntimeAsync(ct),
+            };
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
@@ -144,6 +172,25 @@ public sealed class HostGpuProbe(
                     logger.LogWarning(ex, "Failed to remove GPU probe container {ContainerId}", containerId);
                 }
             }
+        }
+    }
+
+    /// <summary>Whether the probe saw an NVIDIA control node. Pure, for the tests' sake.</summary>
+    public static bool ParseNvidiaPresent(IReadOnlyList<string> lines) =>
+        lines.Any(l => l.Trim() == "nvidia|present");
+
+    /// <summary>
+    /// Asks the daemon whether the NVIDIA container toolkit is configured. A failure here is not a
+    /// probe failure: it only means the reservation is withheld, which is the safe direction.
+    /// </summary>
+    private async Task<bool> HasNvidiaRuntimeAsync(CancellationToken ct) {
+        try {
+            return (await docker.GetEngineInfoAsync(ct)).HasNvidiaRuntime;
+        } catch (OperationCanceledException) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogDebug(ex, "Could not read the daemon's runtimes; assuming no NVIDIA toolkit");
+            return false;
         }
     }
 
