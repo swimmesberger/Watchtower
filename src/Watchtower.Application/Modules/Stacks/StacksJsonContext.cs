@@ -35,6 +35,8 @@ namespace Watchtower.Application.Modules.Stacks;
 [JsonSerializable(typeof(StackDeviceMappingDto))]
 [JsonSerializable(typeof(StackDeviceMappingInput))]
 [JsonSerializable(typeof(HostGpuDto))]
+[JsonSerializable(typeof(ListStackServices.Query), TypeInfoPropertyName = "ListStackServicesQuery")]
+[JsonSerializable(typeof(ListStackServices.Response), TypeInfoPropertyName = "ListStackServicesResponse")]
 [JsonSerializable(typeof(GetHostGpus.Query), TypeInfoPropertyName = "GetHostGpusQuery")]
 [JsonSerializable(typeof(GetHostGpus.Response), TypeInfoPropertyName = "GetHostGpusResponse")]
 [JsonSerializable(typeof(GetStackDevices.Query), TypeInfoPropertyName = "GetStackDevicesQuery")]

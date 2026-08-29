@@ -11304,6 +11304,33 @@
         ]
       }
     },
+    "stacks.services": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "services": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "services"
+        ]
+      }
+    },
     "stacks.setAppApi": {
       "params": {
         "type": "object",

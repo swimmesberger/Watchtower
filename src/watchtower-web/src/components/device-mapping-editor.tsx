@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 
 /** One draft row; all fields plain strings so the inputs stay controlled. */
@@ -31,6 +33,8 @@ export interface DeviceMappingEditorProps {
    * the array and passes it straight back. Start with `[blankDeviceRow]`.
    */
   value: DeviceMappingRow[]
+  /** The stack's known compose services, offered as suggestions on the service column. */
+  services?: string[]
   onChange: (rows: DeviceMappingRow[]) => void
   className?: string
 }
@@ -46,7 +50,13 @@ const cellClass =
  *
  * To persist, drop fully blank rows: `value.filter(r => !isRowBlank(r))` via the parent.
  */
-export function DeviceMappingEditor({ value, onChange, className }: DeviceMappingEditorProps) {
+export function DeviceMappingEditor({
+  value,
+  services = [],
+  onChange,
+  className,
+}: DeviceMappingEditorProps) {
+  const serviceListId = 'device-services'
   function updateRow(i: number, field: keyof DeviceMappingRow, val: string) {
     const next = value.map((r, idx) => (idx === i ? { ...r, [field]: val } : r))
     const last = next.at(-1)
@@ -65,6 +75,13 @@ export function DeviceMappingEditor({ value, onChange, className }: DeviceMappin
 
   return (
     <div className={cn('overflow-hidden rounded-md border border-border', className)}>
+      {services.length > 0 && (
+        <datalist id={serviceListId}>
+          {services.map((service) => (
+            <option key={service} value={service} />
+          ))}
+        </datalist>
+      )}
       {/* Header (desktop only) */}
       <div
         className={cn(
@@ -96,6 +113,7 @@ export function DeviceMappingEditor({ value, onChange, className }: DeviceMappin
                 value={row.service}
                 onChange={(e) => updateRow(i, 'service', e.target.value)}
                 placeholder="service"
+                list={services.length > 0 ? serviceListId : undefined}
                 spellCheck={false}
                 autoComplete="off"
                 aria-label={`Service for device ${i + 1}`}
@@ -156,65 +174,96 @@ export function isDeviceRowBlank(row: DeviceMappingRow): boolean {
 }
 
 export interface GpuServiceEditorProps {
-  /** DRAFT rows including the trailing blank row — same contract as DeviceMappingEditor. */
+  /**
+   * Services the stack is known to have, from its deployed containers. Empty for a stack that has
+   * never been deployed (or whose containers are gone), which is why the "other service" row below
+   * always exists — the setting has to be configurable before the first deploy.
+   */
+  services: string[]
+  /** The selected service names. */
   value: string[]
-  onChange: (rows: string[]) => void
+  onChange: (next: string[]) => void
   className?: string
 }
 
 /**
- * Controlled editor for the services that receive the host's GPUs (ADR-0031). One column of
- * compose service names; the actual devices are resolved by probing the host on every deploy, so
- * there is nothing else to configure. To persist, drop blank rows.
+ * Controlled picker for the services that receive the host's GPUs (ADR-0031). A toggle per known
+ * service rather than a typed name: Watchtower knows the stack's services, and the devices
+ * themselves are not a choice — the deploy probes the host and maps whatever mappable GPUs it
+ * finds, so "which services" is the only question this control can ask.
+ *
+ * A selected service the engine does not currently report still gets a row, marked as such: it may
+ * be profile-gated or simply not deployed yet, and silently dropping it would erase a stored
+ * setting the operator cannot see.
  */
-export function GpuServiceEditor({ value, onChange, className }: GpuServiceEditorProps) {
-  function updateRow(i: number, val: string) {
-    const next = value.map((r, idx) => (idx === i ? val : r))
-    if (next.at(-1)?.trim() !== '') next.push('')
-    onChange(next)
+export function GpuServiceEditor({ value, services, onChange, className }: GpuServiceEditorProps) {
+  const [extra, setExtra] = useState('')
+  const selected = new Set(value)
+  const known = new Set(services)
+  const rows = [...services, ...value.filter((s) => !known.has(s)).sort()]
+
+  function toggle(service: string, on: boolean) {
+    onChange(on ? [...value, service] : value.filter((s) => s !== service))
   }
 
-  function removeRow(i: number) {
-    const next = value.filter((_, idx) => idx !== i)
-    if (next.length === 0 || next.at(-1)?.trim() !== '') next.push('')
-    onChange(next)
+  function addExtra() {
+    const service = extra.trim()
+    if (service === '' || selected.has(service)) {
+      setExtra('')
+      return
+    }
+    onChange([...value, service])
+    setExtra('')
   }
 
   return (
     <div className={cn('overflow-hidden rounded-md border border-border', className)}>
-      {value.map((row, i) => {
-        const isBlankTrailer = i === value.length - 1
-        return (
-          <div
-            key={i}
-            className="flex items-center border-b border-border last:border-b-0 md:grid md:grid-cols-[1fr_2.5rem]"
-          >
-            <input
-              value={row}
-              onChange={(e) => updateRow(i, e.target.value)}
-              placeholder="service receiving host GPUs"
-              spellCheck={false}
-              autoComplete="off"
-              aria-label={`GPU service ${i + 1}`}
-              className={cn(cellClass, 'md:border-r-0')}
-            />
-            <div className="flex items-center justify-end p-1 md:justify-center md:p-0">
-              {!isBlankTrailer ? (
-                <button
-                  type="button"
-                  onClick={() => removeRow(i)}
-                  aria-label={`Remove GPU passthrough for ${row || `service ${i + 1}`}`}
-                  className="rounded p-1.5 text-danger transition-colors hover:bg-danger-bg"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              ) : (
-                <Plus className="size-3.5 text-text-3" aria-hidden />
-              )}
-            </div>
-          </div>
-        )
-      })}
+      {rows.map((service) => (
+        <label
+          key={service}
+          className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5 last:border-b-0"
+        >
+          <span className="min-w-0 truncate font-mono text-[13px] text-text">
+            {service}
+            {!known.has(service) && (
+              <span className="ml-2 font-sans text-[12px] text-text-3">not deployed</span>
+            )}
+          </span>
+          <Switch
+            checked={selected.has(service)}
+            onCheckedChange={(on) => toggle(service, on)}
+            aria-label={`Map host GPUs into ${service}`}
+          />
+        </label>
+      ))}
+
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <input
+          value={extra}
+          onChange={(e) => setExtra(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              // The editor lives inside the Settings form; Enter here means "add", not "save".
+              e.preventDefault()
+              addExtra()
+            }
+          }}
+          placeholder={rows.length === 0 ? 'service name' : 'another service…'}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label="Add a service for GPU passthrough"
+          className="w-full rounded bg-surface-2 px-3 py-1.5 font-mono text-[13px] text-text outline-none placeholder:text-text-3 focus-visible:shadow-[var(--sh-focus)]"
+        />
+        <button
+          type="button"
+          onClick={addExtra}
+          disabled={extra.trim() === ''}
+          className="shrink-0 rounded p-1.5 text-text-3 transition-colors hover:text-text disabled:opacity-40"
+          aria-label="Add service"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
     </div>
   )
 }

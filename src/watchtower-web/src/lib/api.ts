@@ -342,6 +342,9 @@ export const api = {
         gpuServices,
       })) as StackDevices,
     hostGpus: async () => (await rpc('stacks.hostGpus', {})) as HostGpus,
+    services: async (id: number) =>
+      (await rpc('stacks.services', { stackId: id })).services as string[],
+
     checkUpdates: async (id: number) => (await rpc('stacks.checkUpdates', { id })).stack as Stack,
 
     /**

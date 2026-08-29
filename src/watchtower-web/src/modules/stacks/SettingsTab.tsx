@@ -52,6 +52,13 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     queryFn: () => api.stacks.getDevices(stackId),
   })
 
+  // The stack's own compose services, so both device editors offer them instead of asking for a
+  // name from memory. Empty for a never-deployed stack, which both editors handle.
+  const servicesQuery = useQuery({
+    queryKey: ['stacks', stackId, 'services'],
+    queryFn: () => api.stacks.services(stackId),
+  })
+
   // Host-wide, not per stack — what "map host GPU(s)" would resolve to on this Docker host.
   const hostGpusQuery = useQuery({
     queryKey: ['host', 'gpus'],
@@ -103,7 +110,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
   ]
 
   const [gpuDraft, setGpuDraft] = useState<string[] | null>(null)
-  const gpuRows: string[] = gpuDraft ?? [...(devicesQuery.data?.gpuServices ?? []), '']
+  const gpuRows: string[] = gpuDraft ?? (devicesQuery.data?.gpuServices ?? [])
 
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -459,8 +466,17 @@ export function SettingsTab({ stack }: { stack: Stack }) {
           <>
             {/* GPU passthrough (ADR-0031): a host-neutral intent — the deploy probes the host and
                 maps whatever mappable render nodes exist, plus their owning groups. */}
-            <p className="mb-1.5 text-sm font-medium text-text">GPU passthrough</p>
-            <GpuServiceEditor value={gpuRows} onChange={setGpuDraft} />
+            <p className="text-sm font-medium text-text">GPU passthrough</p>
+            <p className="mb-1.5 text-[13px] text-text-2">
+              Turn this on for the services that should see the host&rsquo;s GPUs. The devices
+              themselves aren&rsquo;t a choice — every deploy probes this host and maps what it
+              finds.
+            </p>
+            <GpuServiceEditor
+              value={gpuRows}
+              services={servicesQuery.data ?? []}
+              onChange={setGpuDraft}
+            />
             <p className="mt-2 text-[13px] text-text-2">
               {hostGpusQuery.data?.error != null ? (
                 <>Couldn’t inspect this host’s GPUs: {hostGpusQuery.data.error}</>
@@ -489,8 +505,15 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               )}
             </p>
 
-            <p className="mb-1.5 mt-5 text-sm font-medium text-text">Specific devices</p>
-            <DeviceMappingEditor value={deviceRows} onChange={setDeviceDraft} />
+            <p className="mt-5 text-sm font-medium text-text">Specific devices</p>
+            <p className="mb-1.5 text-[13px] text-text-2">
+              Any other host device, by path — serial adapters, TPUs, /dev/fuse.
+            </p>
+            <DeviceMappingEditor
+              value={deviceRows}
+              services={servicesQuery.data ?? []}
+              onChange={setDeviceDraft}
+            />
             <p className="mt-2 text-[13px] text-text-2">
               Access is some combination of <span className="font-mono">r</span>ead,{' '}
               <span className="font-mono">w</span>rite and <span className="font-mono">m</span>knod;
