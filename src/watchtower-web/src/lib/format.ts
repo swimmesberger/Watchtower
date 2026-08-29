@@ -5,7 +5,9 @@ import { useEffect, useState } from 'react'
 
 /** Compact relative time, e.g. "12s ago", "4m ago", "3h ago", "2d ago". */
 export function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  // Clamped at zero: server and browser clocks routinely differ by a second or two, and a timestamp
+  // that lands just ahead of the browser must read "0s ago" rather than "-1s ago".
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
   if (seconds < 60) return `${seconds}s ago`
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes}m ago`

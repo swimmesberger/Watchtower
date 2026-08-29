@@ -352,6 +352,7 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
             _logger.LogInformation("Pulling image {Image} before self-update", imageName);
             await _docker.PullImageAsync(imageName, username, token, ct);
+            await VerifyPullLandedAsync(imageName, ct);
             _logger.LogInformation("Pull complete; spawning coordinator to recreate container {Id}", containerId[..12]);
 
             // Move to "restarting" and clear the stale check result so after the restart the UI
@@ -402,6 +403,32 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             await SetStageAsync(SelfUpdateApplyStage.Error, ex.Message, CancellationToken.None);
             await RecordAuditAsync("self-update.apply", imageName, null, success: false, error: ex.Message, actor: actor);
         }
+    }
+
+    /// <summary>
+    /// Confirms the pull actually moved the local tag onto the image the last check found.
+    /// </summary>
+    /// <remarks>
+    /// A pull that reports success but changes nothing locally — a registry serving a manifest for
+    /// another architecture, a tag that moved back between the check and the apply — otherwise
+    /// spawns a coordinator that faithfully recreates the container on the image it was already
+    /// running. Everything reports success, the restart happens, and the next check finds the same
+    /// old digest, so "Update available" comes straight back with nothing anywhere explaining it.
+    /// Failing here turns that silent loop into a visible apply error naming both digests.
+    /// Skipped when either digest is unknown: a missing digest is not evidence of a failed pull.
+    /// </remarks>
+    private async Task VerifyPullLandedAsync(string imageName, CancellationToken ct) {
+        // Read before the "restarting" transition below clears it.
+        var expected = (await LoadRuntimeAsync(ct)).LatestImageId;
+        if (string.IsNullOrWhiteSpace(expected)) return;
+
+        var local = await TryGetLocalDigestAsync(imageName, ct);
+        if (local is null || local == expected) return;
+
+        throw new InvalidOperationException(
+            $"The pull of '{imageName}' reported success, but the image still resolves locally to " +
+            $"{local} instead of the expected {expected}. Nothing was updated, so the container was " +
+            "left running as it is.");
     }
 
     private Task SetStageAsync(SelfUpdateApplyStage stage, string? error = null, CancellationToken ct = default) =>

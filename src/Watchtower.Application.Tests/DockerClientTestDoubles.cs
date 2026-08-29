@@ -7,15 +7,23 @@ namespace Watchtower.Application.Tests;
 /// <summary>
 /// Records the paths it is asked for and answers each with a body the Docker DTOs can parse.
 /// With <c>hang: true</c> it stands in for a daemon that accepted the request and then went quiet —
-/// the shape the client-side ceilings exist for.
+/// the shape the client-side ceilings exist for. <paramref name="hangWhen"/> narrows that to the
+/// requests it matches, which is what a test needs once more than one call shares the untimed
+/// client: the self-update pull and the coordinator wait both go through it, and hanging the pull
+/// means the apply never reaches the watch the test is actually about.
 /// </summary>
 internal sealed class RecordingHandler(
-    bool hang = false, Action? onCancelled = null, TimeSpan? delay = null) : HttpMessageHandler {
+    bool hang = false,
+    Action? onCancelled = null,
+    TimeSpan? delay = null,
+    Func<HttpRequestMessage, bool>? hangWhen = null) : HttpMessageHandler {
     public List<string> Requests { get; } = [];
     /// <summary>What each request carried, decoded as UTF-8; parallel to <see cref="Requests"/>.</summary>
     public List<string?> Bodies { get; } = [];
     /// <summary>The same bodies unmangled, for the requests that send tar rather than JSON.</summary>
     public List<byte[]?> BodyBytes { get; } = [];
+    /// <summary>The last <c>X-Registry-Auth</c> header seen, still base64-encoded; null when none was sent.</summary>
+    public string? RegistryAuth { get; private set; }
     public bool Disposed { get; private set; }
 
     /// <summary>
@@ -29,13 +37,16 @@ internal sealed class RecordingHandler(
         HttpRequestMessage request, CancellationToken cancellationToken) {
         var path = request.RequestUri!.AbsolutePath;
         Requests.Add(request.RequestUri!.PathAndQuery);
+        RegistryAuth = request.Headers.TryGetValues("X-Registry-Auth", out var auth)
+            ? auth.FirstOrDefault()
+            : null;
         // Reading the content here is also what runs a push-stream body's writer callback.
         var bytes = request.Content is null ? null : await request.Content.ReadAsByteArrayAsync(cancellationToken);
         BodyBytes.Add(bytes);
         Bodies.Add(bytes is null ? null : Encoding.UTF8.GetString(bytes));
         // A daemon that answers, but not instantly — enough for a ceiling to expire around it.
         if (delay is { } pause) await Task.Delay(pause, cancellationToken);
-        if (hang) {
+        if (hang && (hangWhen?.Invoke(request) ?? true)) {
             try {
                 await Task.Delay(Timeout.Infinite, cancellationToken);
             } catch (OperationCanceledException) {
@@ -182,13 +193,20 @@ internal sealed class DockerClientEstate : IDisposable {
     /// <param name="hangLongRunning">Makes the untimed client's daemon never answer.</param>
     /// <param name="onLongRunningCancelled">Runs when a hanging long-running call is cancelled.</param>
     /// <param name="defaultDelay">Makes every call on the default client take this long to answer.</param>
+    /// <param name="hangLongRunningWhen">
+    /// Narrows <paramref name="hangLongRunning"/> to the requests it matches; without it every call
+    /// on the untimed client hangs, including ones a test needs to get past to reach the one it is
+    /// about.
+    /// </param>
     public static DockerClientEstate Create(
         TimeSpan pruneTimeout,
         bool hangLongRunning = false,
         Action? onLongRunningCancelled = null,
-        TimeSpan? defaultDelay = null) {
+        TimeSpan? defaultDelay = null,
+        Func<HttpRequestMessage, bool>? hangLongRunningWhen = null) {
         var defaultHandler = new RecordingHandler(delay: defaultDelay);
-        var longRunningHandler = new RecordingHandler(hangLongRunning, onLongRunningCancelled);
+        var longRunningHandler = new RecordingHandler(
+            hangLongRunning, onLongRunningCancelled, hangWhen: hangLongRunningWhen);
         var baseAddress = new Uri("http://docker");
         var defaultClient = new HttpClient(defaultHandler, disposeHandler: false) { BaseAddress = baseAddress };
         var longRunningClient = new HttpClient(longRunningHandler, disposeHandler: false) {

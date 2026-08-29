@@ -110,9 +110,13 @@ public sealed class SelfUpdateReconcileCeilingTests {
     [Fact]
     public async Task AWedgedCoordinatorReleasesTheApplyGate() {
         using var host = AuthTestHost.Start(WithSystemJson);
-        // Spawning is fine; it is the watch afterwards that never resolves.
+        // Pulling and spawning are fine; it is the watch afterwards that never resolves. The hang is
+        // pinned to the wait alone because the pull shares the untimed client — hanging that instead
+        // would stall the apply before it ever reached the watch this test is about.
         using var estate = DockerClientEstate.Create(
-            pruneTimeout: TimeSpan.FromMinutes(30), hangLongRunning: true);
+            pruneTimeout: TimeSpan.FromMinutes(30),
+            hangLongRunning: true,
+            hangLongRunningWhen: r => r.RequestUri!.AbsolutePath.EndsWith("/wait"));
         using var service = NewService(
             host, estate,
             startupReconcileTimeout: TimeSpan.FromSeconds(30),
