@@ -549,7 +549,7 @@ public class DeployQueueService : IHostedService, IDisposable {
                     WriteHeader($"[Watchtower] Warning: {probeError} GPU passthrough maps nothing this deploy.");
             }
             var devicePlan = DeviceMappingPlan.Create(
-                services, GetDeviceMappings(stackId), gpuMappings, gpuCatalog.Gpus);
+                services, GetDeviceMappings(stackId), gpuMappings, gpuCatalog.Gpus, gpuCatalog);
             foreach (var warning in devicePlan.Warnings)
                 WriteHeader($"[Watchtower] {warning}");
             foreach (var note in devicePlan.Notes)
@@ -582,6 +582,10 @@ public class DeployQueueService : IHostedService, IDisposable {
                         WriteHeader(
                             $"[Watchtower] Adding supplementary group(s) {string.Join(", ", mapped.GroupIds)} "
                             + $"to service '{mapped.ServiceName}' for device access");
+                    if (mapped.NvidiaGpus)
+                        WriteHeader(
+                            "[Watchtower] Reserving the host's NVIDIA GPU(s) for service "
+                            + $"'{mapped.ServiceName}' through the container toolkit");
                 }
             }
 

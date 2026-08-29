@@ -138,6 +138,20 @@ internal static class ComposeOverrideFile {
                         body.Append("      - ").Append(QuoteValue(groupId.ToString(CultureInfo.InvariantCulture)))
                             .Append('\n');
                 }
+                // NVIDIA is a reservation, not a device mapping (ADR-0032). Compose honours
+                // deploy.resources.reservations.devices outside Swarm - unlike most of deploy:,
+                // which it ignores without one, so this block is not the dead letter it looks like.
+                // "video" must be in the capability list or NVENC fails while CUDA works: the
+                // toolkit only injects the encoder libraries when it is asked for them.
+                if (devices.NvidiaGpus) {
+                    body.Append("    deploy:\n")
+                        .Append("      resources:\n")
+                        .Append("        reservations:\n")
+                        .Append("          devices:\n")
+                        .Append("            - driver: nvidia\n")
+                        .Append("              count: all\n")
+                        .Append("              capabilities: [gpu, video]\n");
+                }
             }
         }
         return body.ToString();

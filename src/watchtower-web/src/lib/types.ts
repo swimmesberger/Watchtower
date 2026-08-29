@@ -537,7 +537,16 @@ export interface HostGpu {
   mappable: boolean
 }
 
+/** The NVIDIA route, which the render-node listing usually cannot show (ADR-0032). */
+export interface HostNvidia {
+  /** An NVIDIA kernel driver is loaded on the host. */
+  present: boolean
+  /** The daemon has the container toolkit, so a GPU reservation resolves rather than failing. */
+  runtimeAvailable: boolean
+}
+
 export interface HostGpus {
+  nvidia: HostNvidia
   gpus: HostGpu[]
   /** Why the probe could not run, or absent when it did. */
   error?: string | null

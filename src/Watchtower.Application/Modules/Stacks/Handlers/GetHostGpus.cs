@@ -15,14 +15,19 @@ public sealed class GetHostGpus(HostGpuProbe probe)
     public sealed record Query;
     /// <param name="Gpus">The render nodes found; empty on a GPU-less host.</param>
     /// <param name="Error">Why the probe could not run, or null when it did.</param>
-    public sealed record Response(IReadOnlyList<HostGpuDto> Gpus, string? Error);
+    /// <param name="Nvidia">
+    /// The NVIDIA route's state, which the render-node listing cannot express: a card is usually
+    /// absent from <paramref name="Gpus"/> and is reserved through the toolkit instead (ADR-0032).
+    /// </param>
+    public sealed record Response(IReadOnlyList<HostGpuDto> Gpus, string? Error, HostNvidiaDto Nvidia);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var catalog = await probe.GetAsync(ct);
         return new Response(
             [.. catalog.Gpus.Select(g => new HostGpuDto(
                 g.Name, g.Path, VendorLabel(g.VendorId), g.Driver, g.PciAddress, g.IsMappable))],
-            catalog.Error);
+            catalog.Error,
+            new HostNvidiaDto(catalog.NvidiaPresent, catalog.NvidiaRuntimeAvailable));
     }
 
     /// <summary>The label the UI prints; the raw id stays server-side.</summary>

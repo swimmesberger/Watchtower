@@ -481,10 +481,10 @@ export function SettingsTab({ stack }: { stack: Stack }) {
               {hostGpusQuery.data?.error != null ? (
                 <>Couldn’t inspect this host’s GPUs: {hostGpusQuery.data.error}</>
               ) : hostGpusQuery.data ? (
-                hostGpusQuery.data.gpus.length === 0 ? (
+                hostGpusQuery.data.gpus.length === 0 && !hostGpusQuery.data.nvidia.present ? (
                   <>
-                    No GPU render node detected on this Docker host — listed services deploy fine
-                    and simply get no GPU here.
+                    No GPU detected on this Docker host — listed services deploy fine and simply get
+                    no GPU here.
                   </>
                 ) : (
                   <>
@@ -493,9 +493,20 @@ export function SettingsTab({ stack }: { stack: Stack }) {
                       <span key={g.path}>
                         {i > 0 && ', '}
                         <span className="font-mono">{g.name}</span> — {g.vendor} ({g.driver},{' '}
-                        {g.pciAddress}){g.mappable ? '' : ' — needs the NVIDIA toolkit, not mapped'}
+                        {g.pciAddress}){g.mappable ? '' : ' — reserved through the NVIDIA toolkit'}
                       </span>
                     ))}
+                    {/* NVIDIA is usually absent from the render-node listing above: its DRM node
+                        only exists when nvidia-drm is loaded, which headless hosts often skip. */}
+                    {hostGpusQuery.data.nvidia.present && (
+                      <>
+                        {hostGpusQuery.data.gpus.length > 0 && ', '}
+                        <span className="font-mono">NVIDIA</span>
+                        {hostGpusQuery.data.nvidia.runtimeAvailable
+                          ? ' — reserved through the container toolkit'
+                          : ' — no “nvidia” runtime on this daemon, so nothing is reserved; install the NVIDIA container toolkit'}
+                      </>
+                    )}
                     . Each listed service gets every mappable GPU, and the required group is added
                     automatically.
                   </>

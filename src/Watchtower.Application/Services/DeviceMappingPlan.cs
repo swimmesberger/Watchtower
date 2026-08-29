@@ -18,6 +18,13 @@ public sealed record ServiceDeviceMappings(string ServiceName, IReadOnlyList<Ser
     /// mappings, where Watchtower does not know the node's group.
     /// </summary>
     public IReadOnlyList<int> GroupIds { get; init; } = [];
+
+    /// <summary>
+    /// Whether this service should receive the host's NVIDIA GPUs (ADR-0032). Runtime-neutral: it
+    /// says the service wants the vendor's GPUs, not how a runtime grants them — Compose spells it
+    /// as a device reservation, Kubernetes as an <c>nvidia.com/gpu</c> resource.
+    /// </summary>
+    public bool NvidiaGpus { get; init; }
 }
 
 /// <summary>
@@ -77,7 +84,8 @@ public sealed record DeviceMappingPlan(
         IReadOnlyList<EnvInjectionService> services,
         IReadOnlyList<StackDeviceMapping> mappings,
         IReadOnlyList<StackGpuMapping>? gpuMappings = null,
-        IReadOnlyList<HostGpu>? hostGpus = null) {
+        IReadOnlyList<HostGpu>? hostGpus = null,
+        HostGpuCatalog? hostGpuCatalog = null) {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(mappings);
         var gpuServices = (gpuMappings ?? [])
@@ -116,8 +124,8 @@ public sealed record DeviceMappingPlan(
                     + "of this stack's services — nothing was mapped.");
                 continue;
             }
-            if (mappable.Count == 0) gpulessServices.Add(service);
-            else gpusByService[service] = mappable;
+            if (mappable.Count == 0 && !(hostGpuCatalog?.NvidiaUsable ?? false)) gpulessServices.Add(service);
+            else if (mappable.Count > 0) gpusByService[service] = mappable;
         }
         if (gpulessServices.Count > 0)
             notes.Add(
@@ -125,14 +133,32 @@ public sealed record DeviceMappingPlan(
                 + string.Join(", ", gpulessServices.Select(s => $"'{s}'"))
                 + " get(s) no GPU devices on this host.");
         // Only worth a line when someone actually asked for a GPU on this host.
-        if (gpuServices.Any(known.Contains))
+        var wanted = gpuServices.Any(known.Contains);
+        if (wanted && (hostGpuCatalog?.NvidiaPresent ?? false)) {
+            notes.Add(hostGpuCatalog!.NvidiaRuntimeAvailable
+                ? "NVIDIA GPU(s) reserved through the container toolkit rather than mapped by device "
+                  + "path — a device node alone does not carry the user-space driver (ADR-0032)."
+                : "An NVIDIA GPU is present but this Docker daemon has no 'nvidia' runtime, so no "
+                  + "reservation was made — install the NVIDIA container toolkit on the host and "
+                  + "redeploy. Mapping the device nodes instead would not work (ADR-0032).");
+        }
+        // A DRM node from an NVIDIA card is never mapped by path; say so only when it is the whole
+        // story, i.e. when the toolkit route did not already explain itself above.
+        if (wanted && !(hostGpuCatalog?.NvidiaPresent ?? false))
             foreach (var skipped in (hostGpus ?? []).Where(g => !g.IsMappable).OrderBy(g => g.Name, StringComparer.Ordinal))
                 notes.Add(
                     $"NVIDIA GPU '{skipped.Name}' needs the NVIDIA container toolkit and is not mapped "
                     + "by device path (ADR-0031).");
 
+        // A service can be placed for NVIDIA alone: the reservation carries no device paths, so the
+        // path/render-node keys are not the whole set any more.
+        var nvidiaServices = (hostGpuCatalog?.NvidiaUsable ?? false)
+            ? gpuServices.Where(known.Contains)
+            : [];
         var placed = new List<ServiceDeviceMappings>();
-        foreach (var name in pathsByService.Keys.Union(gpusByService.Keys, StringComparer.Ordinal)
+        foreach (var name in pathsByService.Keys
+                     .Union(gpusByService.Keys, StringComparer.Ordinal)
+                     .Union(nvidiaServices, StringComparer.Ordinal)
                      .OrderBy(n => n, StringComparer.Ordinal)) {
             var devices = new List<ServiceDevice>(pathsByService.GetValueOrDefault(name) ?? []);
             var groupIds = new List<int>();
@@ -149,6 +175,9 @@ public sealed record DeviceMappingPlan(
                     .OrderBy(d => d.ContainerPath, StringComparer.Ordinal)
                     .ThenBy(d => d.HostPath, StringComparer.Ordinal)]) {
                 GroupIds = [.. groupIds.Distinct().Order()],
+                // Only where the operator asked for a GPU, and only when the toolkit can honour it.
+                NvidiaGpus = gpuServices.Contains(name, StringComparer.Ordinal)
+                             && (hostGpuCatalog?.NvidiaUsable ?? false),
             });
         }
 

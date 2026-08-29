@@ -119,6 +119,15 @@ public sealed record StackDeviceMappingInput(
 public sealed record HostGpuDto(
     string Name, string Path, string Vendor, string Driver, string PciAddress, bool Mappable);
 
+/// <summary>
+/// What the host offers an NVIDIA-wanting service (ADR-0032). Separate from <see cref="HostGpuDto"/>
+/// because NVIDIA is reserved through the container toolkit rather than mapped as a device node, and
+/// it is frequently invisible in the DRM listing that produces those.
+/// </summary>
+/// <param name="Present">An NVIDIA kernel driver is loaded on the host.</param>
+/// <param name="RuntimeAvailable">The daemon has the container toolkit, so a reservation resolves.</param>
+public sealed record HostNvidiaDto(bool Present, bool RuntimeAvailable);
+
 /// <summary>Returned immediately after a deploy is accepted.</summary>
 public sealed record DeployAcceptedDto(int DeployEventId, string Status);
 
