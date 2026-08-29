@@ -791,39 +791,95 @@ public sealed class DockerEngineClient : IDisposable {
     /// <summary>
     /// Pulls <paramref name="imageName"/> from the registry, optionally authenticating
     /// with <paramref name="username"/> and <paramref name="token"/>.
-    /// Blocks until the pull stream is fully drained (i.e., the pull is complete).
+    /// Returns once the pull is complete, and throws when it did not succeed.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Goes through the untimed client: how long a pull takes is a property of the image and the
+    /// link, not of Watchtower, and the default 100-second ceiling abandons a perfectly healthy pull
+    /// of a large image partway through — <see cref="HttpCompletionOption.ResponseHeadersRead"/> does
+    /// not help, because the ceiling keeps running while the body is read.
+    /// </para>
+    /// <para>
+    /// The daemon answers 200 as soon as it has accepted the request and reports failures inside the
+    /// progress stream, so the body is parsed rather than drained. Draining it turns "unauthorized"
+    /// or "manifest unknown" into a silent success — and the self-update then recreates the container
+    /// on the image it was already running, leaving the update badge up with nothing saying why.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="HttpRequestException">The daemon rejected the request outright.</exception>
+    /// <exception cref="InvalidOperationException">The reference is unusable, or the pull reported a failure.</exception>
     public async Task PullImageAsync(string imageName, string? username = null, string? token = null, CancellationToken ct = default) {
-        // Parse the image reference into fromImage + tag for the query string.
-        var lastColon = imageName.LastIndexOf(':');
-        var lastSlash = imageName.LastIndexOf('/');
-        string fromImage, tag;
-        if (lastColon > lastSlash) {
-            fromImage = imageName[..lastColon];
-            tag = imageName[(lastColon + 1)..];
-        } else {
-            fromImage = imageName;
-            tag = "latest";
-        }
+        // The same parser the registry HEAD uses — see ImageRef. A second, subtly different split is
+        // how a registry port or an @sha256 reference silently becomes the wrong pull.
+        if (!ImageRef.TryParse(imageName, out var image))
+            throw new InvalidOperationException($"'{imageName}' is not a valid image reference.");
 
-        var url = $"{_apiBase}/images/create?fromImage={Uri.EscapeDataString(fromImage)}&tag={Uri.EscapeDataString(tag)}";
+        // Docker Hub is addressed by repository alone; every other registry keeps its host.
+        var fromImage = image.IsDockerHub ? image.Repository : $"{image.Registry}/{image.Repository}";
+        var url = $"{_apiBase}/images/create"
+            + $"?fromImage={Uri.EscapeDataString(fromImage)}&tag={Uri.EscapeDataString(image.Reference)}";
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
 
-        if (username is not null && token is not null) {
-            // The X-Registry-Auth header carries a base64-encoded JSON auth object.
-            var lastAt = fromImage.LastIndexOf('/');
-            var serverAddress = lastAt > 0 ? fromImage[..lastAt] : "https://index.docker.io/v1/";
-            var authJson = $"{{\"username\":\"{username}\",\"password\":\"{token}\",\"serveraddress\":\"{serverAddress}\"}}";
-            request.Headers.Add("X-Registry-Auth", Convert.ToBase64String(Encoding.UTF8.GetBytes(authJson)));
-        }
+        if (username is not null && token is not null)
+            request.Headers.Add("X-Registry-Auth", BuildRegistryAuth(image, username, token));
 
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
+        using var response = await _longRunningClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessWithBodyAsync(response, ct);
 
-        // Drain the streaming progress response so we wait for the pull to complete.
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        var buffer = new byte[4096];
-        while (await stream.ReadAsync(buffer, ct) > 0) { /* drain */ }
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (await reader.ReadLineAsync(ct) is { } line) {
+            if (ExtractPullError(line) is { } error)
+                throw new InvalidOperationException($"Pulling '{imageName}' failed: {error}");
+        }
+    }
+
+    /// <summary>
+    /// The base64-encoded JSON auth object for <c>X-Registry-Auth</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>serveraddress</c> is the registry <em>host</em>, which is what the daemon matches the
+    /// credential against. Deriving it by cutting at the last slash instead yields
+    /// <c>ghcr.io/acme</c> for <c>ghcr.io/acme/api</c> — no registry by that name, so the credential
+    /// is ignored and a private pull falls back to anonymous and fails. The object is serialized
+    /// rather than interpolated so a token containing a quote or a backslash cannot break the JSON.
+    /// </remarks>
+    private static string BuildRegistryAuth(ImageRef image, string username, string token) {
+        // Docker's canonical name for Hub in this field is the v1 index URL, not "docker.io".
+        var serverAddress = image.IsDockerHub ? "https://index.docker.io/v1/" : image.Registry;
+        var auth = new System.Text.Json.Nodes.JsonObject {
+            ["username"] = username,
+            ["password"] = token,
+            ["serveraddress"] = serverAddress,
+        };
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(auth.ToJsonString()));
+    }
+
+    /// <summary>
+    /// The failure message carried by one frame of the pull's progress stream, or null when the
+    /// frame reports ordinary progress. A frame that is not a JSON object is read as progress: the
+    /// pull's outcome is what this looks for, and an unreadable frame is not evidence of failure.
+    /// </summary>
+    internal static string? ExtractPullError(string frame) {
+        if (string.IsNullOrWhiteSpace(frame)) return null;
+        try {
+            using var doc = JsonDocument.Parse(frame);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+
+            // errorDetail carries the daemon's fuller message; "error" is the one-line summary.
+            if (doc.RootElement.TryGetProperty("errorDetail", out var detail)
+                && detail.ValueKind == JsonValueKind.Object
+                && detail.TryGetProperty("message", out var message)
+                && message.GetString() is { Length: > 0 } text)
+                return text;
+
+            return doc.RootElement.TryGetProperty("error", out var error)
+                ? error.GetString() is { Length: > 0 } summary ? summary : null
+                : null;
+        } catch (JsonException) {
+            return null;
+        }
     }
 
     /// <summary>
