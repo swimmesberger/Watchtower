@@ -246,6 +246,13 @@ registry sync (Secrets §1) already pushes.
 - With the docker driver, the daemon's build cache is no longer discarded with the builder
   container. `docker builder prune` is the relief valve when it grows; wiring it into
   Watchtower's maintenance/pruning story is future work.
+- A `FROM` on the plain-HTTP registry fails under the docker driver with "server gave
+  HTTP response to HTTPS client" even when `insecure-registries` is configured: the
+  daemon-embedded BuildKit's `FROM`-metadata resolver ignores that setting (observed on
+  Synology's moby 24.0.2; the classic pull/push paths honor it fine). BuildKit does
+  resolve a locally-present image without touching the network, so the reusable
+  workflow's `pre-pull` input — a `docker pull` through the daemon's insecure-aware,
+  authenticated path before the build — is the fix for private base images.
 - Runners on small hosts will not reach GitHub-hosted speeds even once the snapshotter is
   right — `exporting layers` is mostly gzip on however few cores the box has. That is not
   a bug to go hunting for.
