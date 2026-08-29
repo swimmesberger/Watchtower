@@ -48,6 +48,15 @@ on:
         description: Push the image after building.
         type: boolean
         default: true
+      pre-pull:
+        description: >-
+          Whitespace-separated images to `docker pull` before building. Needed for a
+          `FROM` that lives on the plain-HTTP local registry: this daemon's builder
+          resolves FROM metadata over HTTPS regardless of `insecure-registries`
+          (observed on Synology's moby), but it prefers a locally-present image — and
+          `docker pull` goes through the daemon's insecure-aware, authenticated path.
+        type: string
+        default: ""
       tags:
         description: >-
           docker/metadata-action tag rules. The default tags `latest` on the default
@@ -77,6 +86,16 @@ jobs:
           registry: ${{ vars.REGISTRY }}
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # After the login on purpose: the pulls may need the registry credentials.
+      - name: Pre-pull base images
+        if: inputs.pre-pull != ''
+        env:
+          PRE_PULL: ${{ inputs.pre-pull }}
+        run: |
+          for image in $PRE_PULL; do
+            docker pull "$image"
+          done
 
       - id: meta
         uses: docker/metadata-action@v6
