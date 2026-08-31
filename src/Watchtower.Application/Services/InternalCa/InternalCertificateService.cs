@@ -47,22 +47,36 @@ public sealed class InternalCertificateService(
     /// </summary>
     public async Task EnsureAsync(CancellationToken ct = default) {
         try {
-            await EnsureCoreAsync(IsLeafWantedAsync, ct);
+            await EnsureCoreAsync(PortRouteIdsAsync, ct);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception ex) {
             logger.LogError(ex, "Could not issue the internal LAN certificate; retrying on the next pass.");
             // The routes are what an operator is looking at, so the failure is put where they will see it
-            // — best-effort, and after the log, which is the record.
-            await RecordPortRoutesAsync(RouteStatus.Error, $"No LAN certificate: {ex.Message}", null, ct);
+            // — best-effort, and after the log, which is the record. This is the one path that pays for a
+            // second read of the ids: whatever failed above may have failed before or after resolving
+            // them, and a rare error is the wrong place to optimise.
+            try {
+                await RecordPortRoutesAsync(
+                    await PortRouteIdsAsync(ct), RouteStatus.Error, $"No LAN certificate: {ex.Message}",
+                    null, ct);
+            } catch (Exception nested) when (nested is not OperationCanceledException) {
+                logger.LogDebug(nested, "Could not record the LAN certificate failure on the port routes.");
+            }
         }
     }
 
     /// <summary>
-    /// The decision itself, with the "is a leaf wanted" question passed in — which is what lets it be
-    /// exercised without the routing state the production predicate reads.
+    /// The decision itself, with the port-bound routes passed in — which is what lets it be exercised
+    /// without the route table the production lookup reads.
     /// </summary>
-    internal async Task EnsureCoreAsync(Func<CancellationToken, ValueTask<bool>> wanted, CancellationToken ct) {
+    /// <param name="portRoutes">
+    /// The ids of the routes that want a LAN certificate. One read answers both questions this method has
+    /// about them — whether a leaf is wanted at all, and which rows its outcome is written to — because
+    /// they are the same question, and this runs on a five-minute cadence on every instance.
+    /// </param>
+    internal async Task EnsureCoreAsync(
+        Func<CancellationToken, ValueTask<IReadOnlyList<int>>> portRoutes, CancellationToken ct) {
         var proxy = options.CurrentValue.Proxy;
         // The same gate the certificate manager applies: these certificates are served by the in-process
         // proxy's listeners, and under any other provider there is nothing to serve them.
@@ -75,7 +89,11 @@ public sealed class InternalCertificateService(
             _lastRefusal = null;
             return;
         }
-        if (!await wanted(ct)) {
+        // Read once, before the gate below it and after the provider gate above it: under another
+        // provider nothing here runs at all, and past this line the same list answers "is a leaf wanted?"
+        // and "whose rows does the outcome go on?".
+        var routeIds = await portRoutes(ct);
+        if (routeIds.Count == 0) {
             _lastRefusal = null;
             return;
         }
@@ -87,8 +105,8 @@ public sealed class InternalCertificateService(
                 logger.LogWarning(
                     "Not issuing a LAN certificate: Proxy:Yarp:LanNames could not be read — {Reason}", reason);
             await RecordPortRoutesAsync(
-                RouteStatus.Error, $"No LAN certificate: the configured LAN names could not be read — {reason}",
-                null, ct);
+                routeIds, RouteStatus.Error,
+                $"No LAN certificate: the configured LAN names could not be read — {reason}", null, ct);
             return;
         }
         if (dnsNames.Count == 0 && ips.Count == 0) {
@@ -97,7 +115,7 @@ public sealed class InternalCertificateService(
                     "Not issuing a LAN certificate: no LAN names are configured. Set the addresses this "
                     + "deployment is reached on under Settings → Reverse proxy.");
             await RecordPortRoutesAsync(
-                RouteStatus.Error,
+                routeIds, RouteStatus.Error,
                 "No LAN certificate: no LAN names are configured. Set the addresses this deployment is "
                 + "reached on under Settings → Reverse proxy.", null, ct);
             return;
@@ -115,7 +133,8 @@ public sealed class InternalCertificateService(
             // Nothing to reissue — but a route created a moment ago is covered by the leaf that is
             // already held, and has to be told so. ReissueReason answers "none held" without an entry, so
             // reaching here means there is one.
-            if (entry is not null) await RecordPortRoutesAsync(RouteStatus.Active, null, entry.NotAfter, ct);
+            if (entry is not null)
+                await RecordPortRoutesAsync(routeIds, RouteStatus.Active, null, entry.NotAfter, ct);
             return;
         }
 
@@ -128,21 +147,29 @@ public sealed class InternalCertificateService(
             string.Join(", ", dnsNames.Concat(ips.Select(ip => ip.ToString()))), why,
             leaf.Certificate.NotAfter.ToUniversalTime());
         await RecordPortRoutesAsync(
-            RouteStatus.Active, null, leaf.Certificate.NotAfter.ToUniversalTime(), ct);
+            routeIds, RouteStatus.Active, null, leaf.Certificate.NotAfter.ToUniversalTime(), ct);
     }
 
     /// <summary>
     /// Puts the outcome on the port routes' rows. One outcome for all of them, because one leaf serves
     /// all of them — a port route's status is a statement about the LAN certificate and nothing else.
     /// </summary>
-    private async Task RecordPortRoutesAsync(
-        RouteStatus status, string? detail, DateTimeOffset? notAfter, CancellationToken ct) {
-        var ids = await PortRouteIdsAsync(ct);
-        if (ids.Count == 0) return;
-        await routeStatus.RecordPortRoutesAsync(ids, status, detail, notAfter, ct);
-    }
+    private Task RecordPortRoutesAsync(
+        IReadOnlyList<int> ids, RouteStatus status, string? detail, DateTimeOffset? notAfter,
+        CancellationToken ct) =>
+        ids.Count == 0 ? Task.CompletedTask : routeStatus.RecordPortRoutesAsync(ids, status, detail, notAfter, ct);
 
-    private async Task<List<int>> PortRouteIdsAsync(CancellationToken ct) {
+    /// <summary>
+    /// The routes that want a LAN certificate: one port-bound route is enough, and one leaf covers
+    /// however many there are (ADR-0033).
+    /// </summary>
+    /// <remarks>
+    /// The rows rather than the listener state. What a route <em>asks</em> for is what should be issued:
+    /// reading the listeners instead would mean a deployment whose ports are not published on its
+    /// container — the ordinary state of a route the operator has just created — never got the
+    /// certificate that would make it work once they publish them.
+    /// </remarks>
+    private async ValueTask<IReadOnlyList<int>> PortRouteIdsAsync(CancellationToken ct) {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.Routes.AsNoTracking()
@@ -167,22 +194,6 @@ public sealed class InternalCertificateService(
     }
 
     private string? _lastRefusal;
-
-    /// <summary>
-    /// Whether anything currently needs a LAN certificate: one port-bound route is enough, and one leaf
-    /// covers however many there are (ADR-0033).
-    /// </summary>
-    /// <remarks>
-    /// A row count rather than the listener state. What a route <em>asks</em> for is what should be
-    /// issued: gating on the listeners would mean a deployment whose ports are not published on its
-    /// container — the ordinary state of a route the operator has just created — never got the
-    /// certificate that would make it work once they publish them.
-    /// </remarks>
-    private async ValueTask<bool> IsLeafWantedAsync(CancellationToken ct) {
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        return await db.Routes.AsNoTracking().AnyAsync(r => r.Binding == RouteBinding.Port, ct);
-    }
 
     /// <summary>
     /// Why the held leaf has to be replaced, or null when it still says everything it should. Pure, and

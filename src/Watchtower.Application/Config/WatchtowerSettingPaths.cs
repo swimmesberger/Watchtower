@@ -89,9 +89,12 @@ public static class WatchtowerSettingPaths {
     /// Internal marker: the listen ports of the port-bound routes (ADR-0033), written by
     /// <see cref="Services.Yarp.YarpProxyProvider.ApplyAsync"/> from the projected route table and read
     /// back by <see cref="Services.Yarp.ProxyIngressKestrelConfiguration"/> to emit one Kestrel endpoint
-    /// per port. Not a user setting — never offered in the UI, never listed among the proxy card's paths,
-    /// and deliberately not env-pinnable: an environment variable would pin the value, so the routes an
-    /// operator creates or deletes afterwards would never gain or lose their listener.
+    /// per port. Not a user setting — never offered in the UI and never listed among the proxy card's
+    /// paths, so it is never offered as a pin either. Setting
+    /// <c>WATCHTOWER__PROXY__YARP__PORTROUTEPORTS</c> in the environment <em>would</em> take effect, since
+    /// environment configuration layers above the settings store (ADR-0014) — and it would break the
+    /// feature: the pinned value would become the permanent set of listeners, and every port route created
+    /// or deleted afterwards would silently never gain or lose one. Do not pin it.
     /// </summary>
     public const string ProxyYarpPortRoutePorts = "Watchtower:Proxy:Yarp:PortRoutePorts";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";

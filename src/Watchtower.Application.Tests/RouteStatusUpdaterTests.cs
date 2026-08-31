@@ -106,8 +106,83 @@ public sealed class RouteStatusUpdaterTests {
         await Updater(host).MarkPendingAsync([], Ct);
     }
 
+    // ── Port-bound routes (ADR-0033) ──────────────────────────────────────────
+
+    /// <summary>
+    /// A port route is settled by row rather than by hostname, because it has none — and the whole set at
+    /// once, because one LAN certificate covers all of them and they cannot succeed separately.
+    /// </summary>
+    [Fact]
+    public async Task RecordPortRoutes_SettlesTheWholeSetByRow() {
+        using var host = AuthTestHost.Start();
+        var stackId = await host.AddStackAsync("media");
+        var first = await host.AddPortRouteAsync(stackId, 9001);
+        var second = await host.AddPortRouteAsync(stackId, 9002, serviceName: "jellyfin");
+        var notAfter = DateTimeOffset.UtcNow.AddDays(365);
+
+        await Updater(host).RecordPortRoutesAsync(
+            [first, second], RouteStatus.Active, null, notAfter, Ct);
+
+        foreach (var id in new[] { first, second }) {
+            var route = await LoadByIdAsync(host, id);
+            Assert.Equal(RouteStatus.Active, route.Status);
+            Assert.Null(route.StatusDetail);
+            Assert.Equal(notAfter.ToUnixTimeSeconds(), route.CertNotAfter!.Value.ToUnixTimeSeconds());
+        }
+    }
+
+    /// <summary>
+    /// The property the compare-in-the-<c>WHERE</c> exists for, and the only reason it is there: the
+    /// internal certificate pass runs every five minutes on every instance and settles the same rows every
+    /// time. A rewrite would churn the concurrency token under whatever an operator is editing on the
+    /// Routes page, for values that did not move.
+    /// </summary>
+    [Fact]
+    public async Task RecordPortRoutes_WritesNothingWhenTheRowAlreadySaysIt() {
+        using var host = AuthTestHost.Start();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+        var notAfter = DateTimeOffset.UtcNow.AddDays(365);
+
+        await Updater(host).RecordPortRoutesAsync([routeId], RouteStatus.Active, null, notAfter, Ct);
+        var settled = (await LoadByIdAsync(host, routeId)).Xmin;
+
+        // The next pass, and the one after it. Identical inputs, so identical rows — and an untouched
+        // concurrency token is the only thing that can tell "wrote the same values" from "did not write".
+        await Updater(host).RecordPortRoutesAsync([routeId], RouteStatus.Active, null, notAfter, Ct);
+        await Updater(host).RecordPortRoutesAsync([routeId], RouteStatus.Active, null, notAfter, Ct);
+        Assert.Equal(settled, (await LoadByIdAsync(host, routeId)).Xmin);
+
+        // …and a value that really did move is still written.
+        await Updater(host).RecordPortRoutesAsync(
+            [routeId], RouteStatus.Error, "the LAN names went away", null, Ct);
+        var failed = await LoadByIdAsync(host, routeId);
+        Assert.NotEqual(settled, failed.Xmin);
+        Assert.Equal(RouteStatus.Error, failed.Status);
+        // Left alone on a failure, exactly as RecordFailedAsync leaves a domain route's: a renewal that
+        // failed does not un-issue the certificate still being served.
+        Assert.Equal(notAfter.ToUnixTimeSeconds(), failed.CertNotAfter!.Value.ToUnixTimeSeconds());
+    }
+
+    [Fact]
+    public async Task RecordPortRoutes_RefusesAStatusAPortRouteCannotReach() {
+        using var host = AuthTestHost.Start();
+
+        // AwaitingDns is a statement about a hostname, and a port route has none.
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => Updater(host).RecordPortRoutesAsync([1], RouteStatus.AwaitingDns, null, null, Ct));
+        // An empty set is a no-op rather than an empty IN ().
+        await Updater(host).RecordPortRoutesAsync([], RouteStatus.Active, null, null, Ct);
+    }
+
     private static RouteStatusUpdater Updater(AuthTestHost host) =>
         host.Services.GetRequiredService<RouteStatusUpdater>();
+
+    private static async Task<Route> LoadByIdAsync(AuthTestHost host, int routeId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
+    }
 
     private static async Task<Route> LoadAsync(AuthTestHost host, string domain) {
         await using var scope = host.Services.CreateAsyncScope();

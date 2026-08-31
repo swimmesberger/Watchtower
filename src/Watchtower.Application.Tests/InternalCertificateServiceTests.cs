@@ -23,7 +23,9 @@ public sealed class InternalCertificateServiceTests {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private const string Host = InternalCaNames.SharedLeafHost;
 
-    private static readonly ValueTask<bool> Wanted = ValueTask.FromResult(true);
+    /// <summary>A non-empty port-route list, which is what "something wants a leaf" means.</summary>
+    private static readonly ValueTask<IReadOnlyList<int>> Wanted =
+        ValueTask.FromResult<IReadOnlyList<int>>([9999]);
 
     [Fact]
     public async Task TheFirstPass_IssuesALeafFromTheInternalCa() {
@@ -315,7 +317,11 @@ public sealed class InternalCertificateServiceTests {
         ("Watchtower:Proxy:Yarp:LanNames", lanNames),
     ];
 
-    /// <summary>One pass with the stage-2 predicate stubbed to "yes, something wants a leaf".</summary>
+    /// <summary>
+    /// One pass with the port-route lookup stubbed. The id names no row on purpose: these tests are
+    /// about issuance, and a status write that matches nothing is the honest way to say the route table
+    /// is not what is under test here.
+    /// </summary>
     private static Task EnsureAsync(AuthTestHost host) =>
         host.Services.GetRequiredService<InternalCertificateService>().EnsureCoreAsync(_ => Wanted, Ct);
 
