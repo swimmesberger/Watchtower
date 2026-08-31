@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Extensions.Configuration;
 
 namespace Watchtower.Application.Services.Yarp;
 
@@ -37,6 +38,32 @@ public static class PortRouteListeners {
         if (name is null || !name.StartsWith(EndpointNamePrefix, StringComparison.OrdinalIgnoreCase))
             return false;
         return TryParsePort(name.AsSpan(EndpointNamePrefix.Length), out port);
+    }
+
+    /// <summary>
+    /// The ports the projected Kestrel section gives a port route a listener on — read back out of the
+    /// section rather than out of the setting it was derived from, so a port the projection <em>dropped</em>
+    /// (one colliding with the management or ingress ports) is absent here too.
+    /// </summary>
+    /// <remarks>
+    /// The single definition of that set, because two of them would eventually disagree and both consumers
+    /// act on it at a moment where disagreeing is a fault: the TLS hook decides whether a listener being
+    /// created is a port route's, and the listener state publishes what the dispatcher then routes by.
+    /// Deliberately <em>not</em> read from <see cref="YarpListenerState"/> by the TLS hook — the state is
+    /// republished from a reload callback of this same section, and the order in which the two callbacks
+    /// run is not something either of them gets to assume.
+    /// </remarks>
+    /// <param name="kestrelSection">The projected section; keys relative to <c>Kestrel</c>.</param>
+    public static IReadOnlySet<int> BoundPorts(IConfiguration kestrelSection) {
+        ArgumentNullException.ThrowIfNull(kestrelSection);
+        var ports = new HashSet<int>();
+        foreach (var endpoint in kestrelSection.GetSection("Endpoints").GetChildren()) {
+            if (!IsPortEndpointName(endpoint.Key)) continue;
+            // The URL rather than the name: what Kestrel binds is what this has to describe, even though
+            // the projection writes the two from one number.
+            if (ListenerUrl.PortOf(endpoint["Url"]) is { } port) ports.Add(port);
+        }
+        return ports;
     }
 
     /// <summary>

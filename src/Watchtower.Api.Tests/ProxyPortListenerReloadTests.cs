@@ -23,22 +23,23 @@ namespace Watchtower.Api.Tests;
 
 /// <summary>
 /// The mechanism port-bound routes rest on (ADR-0033), proven against a real Kestrel on real sockets: a
-/// listener whose Kestrel endpoint name did not exist when the process started, made TLS by the HTTPS
-/// <em>defaults</em> rather than by a callback registered against its name, presenting Watchtower's own
-/// LAN certificate because of the port the connection arrived on.
+/// listener whose Kestrel endpoint name did not exist when the process started, claimed from Kestrel's
+/// <em>endpoint defaults</em> by its port and made TLS there, presenting Watchtower's own LAN
+/// certificate.
 /// </summary>
 /// <remarks>
 /// Every assertion here stands in for a thing that cannot be checked any other way. That a config-defined
-/// <c>https://</c> endpoint with no <c>Certificate</c> section binds at all is a property of Kestrel's
-/// configuration loader; that the selector can see which listener a connection arrived on is a property of
-/// <c>ConnectionContext.LocalEndPoint</c>; that the chain a client receives is the one we assembled rather
-/// than one <c>SslStream</c> built out of the machine's trust store is a property of
-/// <c>OnAuthenticate</c>. The alternative to this test is finding out on an operator's NAS.
+/// <c>https://</c> endpoint with no <c>Certificate</c> section binds at all once the endpoint defaults
+/// have made it TLS is a property of Kestrel's configuration loader; that ALPN still negotiates h2 on it
+/// is a property of the callback path. The rest are the ones the first attempt at this got wrong:
+/// <em>other</em> HTTPS endpoints — an operator's own certificate, the default certificate, none at all —
+/// have to behave exactly as they did before port routes existed, and the only way to know that is to
+/// stand them up next to a live port route and dial them.
 /// <para>
 /// One limit worth stating: the internal chain is two certificates deep, so what reaches the wire is the
-/// leaf either way and <c>OnAuthenticate</c>'s contribution — handing <c>SslStream</c> the chain we
-/// already assembled instead of making it build one per handshake out of the machine's trust store — is
-/// not separately observable here. The assertions are on the outcome.
+/// leaf either way, and supplying a whole <c>SslStreamCertificateContext</c> rather than a bare leaf —
+/// which is what keeps <c>SslStream</c> from rebuilding a chain per handshake out of the machine's trust
+/// store — is not separately observable here. The assertions are on the outcome.
 /// </para>
 /// <para>
 /// Ports are taken by opening and closing a <see cref="TcpListener"/> on 0, exactly as
@@ -93,29 +94,126 @@ public sealed class ProxyPortListenerReloadTests {
         Assert.Equal(SslApplicationProtocol.Http2, handshake.Protocol);
 
         // (c) The named TLS ingress endpoint is untouched by any of it. It makes its listener TLS in its
-        // own callback, so the HTTPS defaults the port routes installed never reach it — which is what
-        // keeps the routed domains being served by the SNI store rather than by the LAN certificate.
+        // own callback, exactly as the port listeners do — which is what keeps the routed domains being
+        // served by the SNI store rather than by the LAN certificate.
         var named = await Handshake(httpsPort, "proxy.test.invalid");
         Assert.Equal("CN=proxy.test.invalid", named.Subject);
 
         // (d) The route is deleted. The listener goes with it, and the two that were always there stay.
+        // Retried: adding and removing an endpoint makes the loader rebind, and a listener being rebuilt
+        // refuses a connection or two on the way through.
         settings.Publish(("Watchtower:Proxy:Enabled", "true"));
         Assert.True(await Eventually(async () => !await Accepts(routePort)));
-        Assert.True(await Accepts(managementPort));
-        Assert.True(await Accepts(httpsPort));
+        Assert.True(await Eventually(() => Accepts(managementPort)));
+        Assert.True(await Eventually(() => Accepts(httpsPort)));
 
         await app.StopAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>
-    /// The cost of putting a certificate selector on the HTTPS defaults: it is consulted for every
-    /// <c>https://</c> endpoint, including one an operator configured themselves. The failure that buys
-    /// has to be per connection — one refused handshake on that endpoint — and not a host that will not
-    /// start, which is what a missing certificate used to mean.
+    /// An endpoint of the operator's own, with a certificate of its own, while a port route is active.
+    /// It keeps serving that certificate — which is the property the mechanism was chosen for.
+    /// </summary>
+    /// <remarks>
+    /// The rejected alternative was a <c>ServerCertificateSelector</c> on the HTTPS <em>defaults</em>.
+    /// That is applied to every HTTPS listener in the process, and Kestrel discards a configured
+    /// <c>ServerCertificate</c> when a selector is present — so this endpoint would have stopped serving
+    /// at the next rebind, silently, on a deployment whose only change was adding a port route. Claiming
+    /// individual listeners by port cannot reach a port no route owns.
+    /// </remarks>
+    [Fact]
+    public async Task AnOperatorsHttpsEndpoint_KeepsItsOwnCertificate() {
+        var (managementPort, routePort, ownPort) = (FreePort(), FreePort(), FreePort());
+        using var ca = InternalCa.Issue("nas.lan", IPAddress.Loopback);
+        using var own = TestCertificates.Create("own.test.invalid");
+        using var files = new CertificateFiles(own);
+
+        var settings = new ReloadableSettings(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", Text(routePort)));
+        var app = Host(
+            settings,
+            managementPort,
+            [
+                ("Watchtower:Proxy:Yarp:HttpPort", "0"),
+                ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
+                ("Kestrel:Endpoints:Own:Url", $"https://127.0.0.1:{Text(ownPort)}"),
+                ("Kestrel:Endpoints:Own:Certificate:Path", files.CertificatePath),
+                ("Kestrel:Endpoints:Own:Certificate:KeyPath", files.KeyPath),
+            ],
+            ca.Context,
+            sni: null);
+        await using var _ = app;
+        await app.StartAsync(TestContext.Current.CancellationToken);
+
+        var theirs = await Eventually(() => Handshake(ownPort, "own.test.invalid"));
+        Assert.Equal("CN=own.test.invalid", theirs.Subject);
+
+        // …and the port route is serving its own material at the same time, from the same process.
+        var ours = await Eventually(() => Handshake(routePort, "nas.lan"));
+        Assert.Equal($"CN={InternalCaNames.SharedLeafHost}", ours.Subject);
+        Assert.True(ChainsTo(ours.Certificate, ca.Root));
+
+        await app.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
+    /// The same property one level down: an endpoint with no <c>Certificate</c> section of its own, being
+    /// served by <c>Kestrel:Certificates:Default</c>. A selector on the HTTPS defaults would have skipped
+    /// that fallback entirely — <c>HasServerCertificateOrSelector</c> is true once one is installed — so
+    /// this endpoint would have stopped serving too.
     /// </summary>
     [Fact]
-    public async Task AnHttpsEndpointOnAnUnknownPort_FailsItsOwnHandshakeAndNothingElse() {
-        var (managementPort, routePort, strangePort) = (FreePort(), FreePort(), FreePort());
+    public async Task AnHttpsEndpointOnTheDefaultCertificate_KeepsServing() {
+        var (managementPort, routePort, fallbackPort) = (FreePort(), FreePort(), FreePort());
+        using var ca = InternalCa.Issue("nas.lan", IPAddress.Loopback);
+        using var fallback = TestCertificates.Create("default.test.invalid");
+        using var files = new CertificateFiles(fallback);
+
+        var settings = new ReloadableSettings(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", Text(routePort)));
+        var app = Host(
+            settings,
+            managementPort,
+            [
+                ("Watchtower:Proxy:Yarp:HttpPort", "0"),
+                ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
+                ("Kestrel:Endpoints:Fallback:Url", $"https://127.0.0.1:{Text(fallbackPort)}"),
+                ("Kestrel:Certificates:Default:Path", files.CertificatePath),
+                ("Kestrel:Certificates:Default:KeyPath", files.KeyPath),
+            ],
+            ca.Context,
+            sni: null);
+        await using var _ = app;
+        await app.StartAsync(TestContext.Current.CancellationToken);
+
+        var theirs = await Eventually(() => Handshake(fallbackPort, "default.test.invalid"));
+        Assert.Equal("CN=default.test.invalid", theirs.Subject);
+
+        var ours = await Eventually(() => Handshake(routePort, "nas.lan"));
+        Assert.Equal($"CN={InternalCaNames.SharedLeafHost}", ours.Subject);
+
+        await app.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
+    /// An <c>https://</c> endpoint with no certificate configured anywhere, while a port route is active:
+    /// whatever Kestrel would have done with it before port routes existed, it still does. It is never
+    /// handed the LAN leaf, because our hook claims a listener only when a route owns its port.
+    /// </summary>
+    /// <remarks>
+    /// What Kestrel does here is the machine's business, not ours, which is why the assertion is on the
+    /// invariance rather than on an outcome. On a developer machine with the ASP.NET Core development
+    /// certificate installed the endpoint binds and serves <c>CN=localhost</c>; on a container that has
+    /// none, the host fails to start with "no server certificate was specified" — the behaviour that was
+    /// always there, and the one worth stating in the ADR. The rejected mechanism changed it into a third
+    /// thing: a host that starts and then refuses every handshake on a listener the operator believes is
+    /// configured.
+    /// </remarks>
+    [Fact]
+    public async Task AnHttpsEndpointWithNoCertificateOfItsOwn_IsNeverGivenTheLanLeaf() {
+        var (managementPort, routePort, barePort) = (FreePort(), FreePort(), FreePort());
         using var ca = InternalCa.Issue("nas.lan", IPAddress.Loopback);
 
         var settings = new ReloadableSettings(
@@ -127,27 +225,29 @@ public sealed class ProxyPortListenerReloadTests {
             [
                 ("Watchtower:Proxy:Yarp:HttpPort", "0"),
                 ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
-                // An endpoint of the operator's own, with no certificate of its own either. It passes
-                // through the projection untouched, which is the point.
-                ("Kestrel:Endpoints:Extra:Url", $"https://127.0.0.1:{Text(strangePort)}"),
+                ("Kestrel:Endpoints:Bare:Url", $"https://127.0.0.1:{Text(barePort)}"),
             ],
             ca.Context,
             sni: null);
         await using var _ = app;
 
-        // The host starts. Before the selector existed this configuration was a startup failure.
-        await app.StartAsync(TestContext.Current.CancellationToken);
+        try {
+            await app.StartAsync(TestContext.Current.CancellationToken);
+        } catch (InvalidOperationException ex) {
+            // The no-development-certificate machine: unchanged from before the feature, and there is
+            // nothing further to observe.
+            Assert.Contains("certificate", ex.Message, StringComparison.OrdinalIgnoreCase);
+            return;
+        }
 
-        Assert.True(await Eventually(() => Accepts(routePort)));
-        Assert.True(await Accepts(strangePort));
+        // The machine has a development certificate, so the endpoint binds — on whatever Kestrel picked,
+        // which is emphatically not ours.
+        var bare = await Eventually(() => Handshake(barePort, "localhost"));
+        Assert.NotEqual($"CN={InternalCaNames.SharedLeafHost}", bare.Subject);
+        Assert.False(ChainsTo(bare.Certificate, ca.Root));
 
-        // The stranger's port answers the TCP connection and then refuses the handshake — the selector
-        // holds nothing for a port no route is bound to.
-        await Assert.ThrowsAnyAsync<Exception>(() => Handshake(strangePort, "whatever.invalid"));
-
-        // …and the port route is serving throughout, which is the half that matters.
-        var handshake = await Eventually(() => Handshake(routePort, "nas.lan"));
-        Assert.True(ChainsTo(handshake.Certificate, ca.Root));
+        var ours = await Eventually(() => Handshake(routePort, "nas.lan"));
+        Assert.Equal($"CN={InternalCaNames.SharedLeafHost}", ours.Subject);
 
         await app.StopAsync(TestContext.Current.CancellationToken);
     }
@@ -160,8 +260,8 @@ public sealed class ProxyPortListenerReloadTests {
     /// <see cref="ProxyListenerStateInitializer.Register"/> is called before the server is started, as it
     /// is in the host, and that ordering is load-bearing rather than cosmetic: both it and Kestrel's
     /// loader hang off the projected section's reload token, and whichever subscribed first runs first.
-    /// Registering here means the port set the selector reads is already current when the listener
-    /// Kestrel is about to bind starts accepting.
+    /// Registering here means the port set is already current when Kestrel creates the listener that
+    /// reads it.
     /// </remarks>
     private static WebApplication Host(
         ReloadableSettings settings,
@@ -185,8 +285,7 @@ public sealed class ProxyPortListenerReloadTests {
         builder.WebHost.ConfigureKestrel((_, kestrel) => {
             ProxyHttpsEndpoint.ConfigurePortRouteTls(
                 kestrel,
-                section,
-                () => kestrel.ApplicationServices.GetRequiredService<YarpListenerState>().PortRoutePorts,
+                () => PortRouteListeners.BoundPorts(section),
                 () => lanCertificate,
                 () => NullLogger.Instance);
 
@@ -296,6 +395,35 @@ public sealed class ProxyPortListenerReloadTests {
         public void Dispose() {
             Root.Dispose();
             _leaf.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A generated chain on disk in the PEM pair form <c>Kestrel:Certificates:*</c> reads. Written to a
+    /// scratch directory rather than checked in, for the reason <see cref="TestCertificates"/> states.
+    /// </summary>
+    private sealed class CertificateFiles : IDisposable {
+        private readonly string _directory;
+
+        public CertificateFiles(TestChain chain) {
+            ArgumentNullException.ThrowIfNull(chain);
+            _directory = Path.Combine(Path.GetTempPath(), $"wt-cert-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(_directory);
+            CertificatePath = Path.Combine(_directory, "cert.pem");
+            KeyPath = Path.Combine(_directory, "key.pem");
+            File.WriteAllText(CertificatePath, chain.PemChain);
+            File.WriteAllText(KeyPath, chain.KeyPem);
+        }
+
+        public string CertificatePath { get; }
+        public string KeyPath { get; }
+
+        public void Dispose() {
+            try {
+                Directory.Delete(_directory, recursive: true);
+            } catch (IOException) {
+                // A scratch directory that outlives the run is not worth failing a test over.
+            }
         }
     }
 

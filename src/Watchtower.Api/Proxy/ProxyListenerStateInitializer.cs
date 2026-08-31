@@ -80,37 +80,22 @@ internal static class ProxyListenerStateInitializer {
         // endpoint otherwise, which is the single-listener shape this had before the endpoints were split.
         var dialablePort = httpPort ?? managementPort;
 
-        // The port-bound routes' listeners (ADR-0033). Read back out of the projected section rather than
-        // out of the setting the projection derived them from, so a port the projection dropped — one that
-        // collided with the management or ingress ports — is absent here too: what this publishes has to be
-        // the endpoints Kestrel was actually asked for.
-        var portRoutePorts = PortRouteEndpoints(kestrelSection);
+        // The port-bound routes' listeners (ADR-0033), from the one definition of that set — the same one
+        // the TLS hook reads as it creates each listener, so what is served on a port and what is routed
+        // by it cannot come to different conclusions about which ports are port routes'.
+        var portRoutePorts = PortRouteListeners.BoundPorts(kestrelSection);
 
         return new YarpListenerSnapshot {
             HttpsBound = httpsPort is not null,
             // Port routes are ingress like the two named endpoints: their listeners are published to the
             // network and must never fall through to the management plane.
             IngressPorts = new[] { httpPort, httpsPort }.OfType<int>().Concat(portRoutePorts).ToHashSet(),
-            PortRoutePorts = portRoutePorts.ToHashSet(),
+            PortRoutePorts = portRoutePorts,
             ManagementPort = managementPort,
             LocalHttpAddress = dialablePort is { } port
                 ? string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{port}")
                 : null,
         };
-    }
-
-    /// <summary>
-    /// The ports of the <c>ProxyPort{n}</c> endpoints in the projected section. The port is taken from the
-    /// endpoint's URL rather than from its name, so what is published is the port Kestrel binds even if the
-    /// two could ever disagree.
-    /// </summary>
-    private static List<int> PortRouteEndpoints(IConfiguration kestrelSection) {
-        var ports = new List<int>();
-        foreach (var endpoint in kestrelSection.GetSection("Endpoints").GetChildren()) {
-            if (!PortRouteListeners.IsPortEndpointName(endpoint.Key)) continue;
-            if (ListenerUrl.PortOf(endpoint["Url"]) is { } port) ports.Add(port);
-        }
-        return ports;
     }
 
     /// <summary>The port of the first plain-HTTP URL in a semicolon-separated hosting URL list.</summary>
