@@ -63,6 +63,24 @@ public sealed class InternalCertificateServiceTests {
         Assert.Equal(first, Store(host).SelectCertificate(Host)!.Thumbprint);
     }
 
+    /// <summary>
+    /// The address form that has no place in a certificate. A scope id survives neither the SAN
+    /// encoding nor a read-back, so if the configured value kept one, every pass would compare a scoped
+    /// address against an unscoped one, conclude the names had changed, and reissue forever.
+    /// </summary>
+    [Fact]
+    public async Task AScopedIpv6Address_SettlesAfterOnePass() {
+        using var host = LanHost("fe80::1%3, nas.lan");
+        await EnsureAsync(host);
+        var first = Store(host).SelectCertificate(Host)!.Thumbprint;
+
+        await EnsureAsync(host);
+        await EnsureAsync(host);
+
+        Assert.Equal(first, Store(host).SelectCertificate(Host)!.Thumbprint);
+        Assert.Contains("fe80::1", await NamesAsync(host));
+    }
+
     [Fact]
     public async Task AChangedLanName_IsReissued() {
         using var host = LanHost("nas.lan");

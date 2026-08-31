@@ -63,23 +63,30 @@ public sealed class InternalCertificateService(
         if (!InternalCaNames.TryParseLanNames(
                 proxy.Yarp.LanNames, out var dnsNames, out var ips, out var reason)) {
             // Refused at the point it was typed, so this is a value that arrived through the environment.
-            logger.LogWarning(
-                "Not issuing a LAN certificate: Proxy:Yarp:LanNames could not be read — {Reason}", reason);
+            if (FirstTime($"unreadable:{reason}"))
+                logger.LogWarning(
+                    "Not issuing a LAN certificate: Proxy:Yarp:LanNames could not be read — {Reason}", reason);
             return;
         }
         if (dnsNames.Count == 0 && ips.Count == 0) {
-            logger.LogWarning(
-                "Not issuing a LAN certificate: no LAN names are configured. Set the addresses this "
-                + "deployment is reached on under Settings → Reverse proxy.");
+            if (FirstTime("unconfigured"))
+                logger.LogWarning(
+                    "Not issuing a LAN certificate: no LAN names are configured. Set the addresses this "
+                    + "deployment is reached on under Settings → Reverse proxy.");
             return;
         }
+        _lastRefusal = null;
 
-        using var root = await caStore.LoadOrCreateAsync(ct);
         var current = store.SelectCertificate(InternalCaNames.SharedLeafHost);
         var entry = store.Find(InternalCaNames.SharedLeafHost);
-        var why = ReissueReason(current, entry, root.Certificate, dnsNames, ips, time.GetUtcNow());
+        // The public half only, and only when something is held: deciding that a certificate is still
+        // fine must not cost a key decryption on every pass, and the issuer check reads a key identifier
+        // rather than a key. The load-or-create below is what a reissue pays for.
+        using var issuer = current is null ? null : await caStore.ReadCertificateAsync(ct);
+        var why = ReissueReason(current, entry, issuer, dnsNames, ips, time.GetUtcNow());
         if (why is null) return;
 
+        using var root = await caStore.LoadOrCreateAsync(ct);
         using var leaf = InternalCaIssuer.IssueLeaf(root.Certificate, dnsNames, ips, time.GetUtcNow());
         await store.InstallInternalAsync(InternalCaNames.SharedLeafHost, leaf.PemChain, leaf.Key, ct);
         logger.LogInformation(
@@ -88,6 +95,23 @@ public sealed class InternalCertificateService(
             string.Join(", ", dnsNames.Concat(ips.Select(ip => ip.ToString()))), why,
             leaf.Certificate.NotAfter.ToUniversalTime());
     }
+
+    /// <summary>
+    /// Whether a refusal is worth a log line: the first time it happens, and again whenever the reason
+    /// changes. This runs on a background cadence, so an operator who has not configured LAN names would
+    /// otherwise get the same warning every five minutes for the life of the process.
+    /// </summary>
+    /// <remarks>
+    /// A plain field rather than a lock: the cost of two passes racing is one duplicated warning, which
+    /// is precisely the thing this is not worth synchronising for.
+    /// </remarks>
+    private bool FirstTime(string refusal) {
+        if (string.Equals(_lastRefusal, refusal, StringComparison.Ordinal)) return false;
+        _lastRefusal = refusal;
+        return true;
+    }
+
+    private string? _lastRefusal;
 
     /// <summary>
     /// Whether anything currently needs a LAN certificate.
@@ -102,10 +126,14 @@ public sealed class InternalCertificateService(
     /// Why the held leaf has to be replaced, or null when it still says everything it should. Pure, and
     /// stated as a sentence because it is what the issuance log line reports.
     /// </summary>
+    /// <param name="root">
+    /// The CA the leaf should have been signed by, or null when there is no CA row — which a held leaf
+    /// outlives only when somebody deleted it, and is exactly the case that must not be served on.
+    /// </param>
     internal static string? ReissueReason(
         X509Certificate2? current,
         CertificateEntry? entry,
-        X509Certificate2 root,
+        X509Certificate2? root,
         IReadOnlyList<string> dnsNames,
         IReadOnlyList<IPAddress> ips,
         DateTimeOffset now) {
@@ -114,7 +142,7 @@ public sealed class InternalCertificateService(
         // Not "was it signed by a CA with this subject": every generated root carries the same subject,
         // so only the key identifier tells one from another — which is what a hand-replaced CA row
         // changes.
-        if (!IssuedBy(current, root)) return "the internal CA changed";
+        if (root is null || !IssuedBy(current, root)) return "the internal CA changed";
         if (CertificateRenewalPolicy.IsRenewalDue(now, entry.NotBefore, entry.NotAfter)) return "renewal due";
         return null;
     }
@@ -127,10 +155,13 @@ public sealed class InternalCertificateService(
         X509Certificate2 leaf, IReadOnlyList<string> dnsNames, IReadOnlyList<IPAddress> ips) {
         if (SubjectAltNames(leaf) is not { } san) return false;
         var heldNames = new HashSet<string>(san.EnumerateDnsNames(), StringComparer.OrdinalIgnoreCase);
-        var heldIps = new HashSet<string>(
-            san.EnumerateIPAddresses().Select(ip => ip.ToString()), StringComparer.OrdinalIgnoreCase);
-        return heldNames.SetEquals(dnsNames)
-            && heldIps.SetEquals(ips.Select(ip => ip.ToString()));
+        // Compared as address bytes, which is the only form both sides certainly agree on: an address
+        // read back out of a certificate has no scope id and no textual spelling of its own, so
+        // comparing the two ToString() results would be comparing a certificate against a habit.
+        var heldIps = new HashSet<string>(san.EnumerateIPAddresses().Select(Key), StringComparer.Ordinal);
+        return heldNames.SetEquals(dnsNames) && heldIps.SetEquals(ips.Select(Key));
+
+        static string Key(IPAddress ip) => Convert.ToHexString(ip.GetAddressBytes());
     }
 
     /// <summary>Whether the leaf's authority key identifier names <paramref name="root"/>'s key.</summary>

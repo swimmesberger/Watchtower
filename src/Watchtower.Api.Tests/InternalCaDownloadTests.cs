@@ -66,6 +66,10 @@ public sealed class InternalCaDownloadTests {
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/pkix-cert", response.Content.Headers.ContentType?.MediaType);
+        // Its own extension: the import dialogs that want DER decide what a file is by its name, and
+        // refuse binary offered as .crt.
+        Assert.Contains(
+            InternalCaNames.DownloadFileNameDer, response.Content.Headers.ContentDisposition?.FileName ?? "");
         var der = await response.Content.ReadAsByteArrayAsync(Ct);
         using var certificate = X509CertificateLoader.LoadCertificate(der);
         Assert.Equal(thumbprint, certificate.Thumbprint);

@@ -132,6 +132,25 @@ public sealed class InternalCaStore(
         }
     }
 
+    /// <summary>
+    /// The root's certificate alone, or null when no CA exists yet — and, unlike
+    /// <see cref="LoadOrCreateAsync"/>, it never creates one.
+    /// </summary>
+    /// <remarks>
+    /// For the question asked on every pass: "was the certificate we hold signed by the CA we have?",
+    /// which is answered from a key identifier and needs no key. Reading one text column beats a
+    /// decryption and a PKCS#8 import on a loop that mostly concludes there is nothing to do.
+    /// </remarks>
+    public async Task<X509Certificate2?> ReadCertificateAsync(CancellationToken ct = default) {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var pem = await db.InternalCas.AsNoTracking()
+            .Where(c => c.Name == InternalCaNames.CaRowName)
+            .Select(c => c.CertificatePem)
+            .FirstOrDefaultAsync(ct);
+        return pem is null ? null : X509Certificate2.CreateFromPem(pem);
+    }
+
     private async Task<InternalCaRow?> ReadAsync(CancellationToken ct) {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();

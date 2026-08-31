@@ -1,7 +1,9 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.InternalCa;
 using Xunit;
@@ -171,18 +173,57 @@ public sealed class InternalCaIssuerTests {
             () => InternalCaIssuer.IssueLeaf(root.Certificate, [], [], DateTimeOffset.UtcNow));
     }
 
+    /// <summary>
+    /// Two instances starting together. The insert is unconditional and the unique index decides, so
+    /// what has to come out of it is one root — an operator can only have imported one, and a second
+    /// would make half the leaves untrusted on every client.
+    /// </summary>
+    [Fact]
+    public async Task TwoInstancesCreatingTheCaAtOnce_EndUpWithOne() {
+        using var first = AuthTestHost.Start();
+        using var second = first.Restart();
+
+        var roots = await Task.WhenAll(
+            Ca(first).LoadOrCreateAsync(Ct), Ca(second).LoadOrCreateAsync(Ct));
+        using var mine = roots[0];
+        using var theirs = roots[1];
+
+        Assert.Equal(mine.Thumbprint, theirs.Thumbprint);
+        await using var scope = first.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = Assert.Single(await db.InternalCas.AsNoTracking().ToListAsync(Ct));
+        Assert.Equal(mine.Thumbprint, row.Thumbprint);
+        // And the loser signs with the winner's key, not merely with its certificate.
+        Assert.True(theirs.Certificate.HasPrivateKey);
+    }
+
     // ── The LAN-name parser ──────────────────────────────────────────────────
 
     [Fact]
     public void LanNames_ReadHostNamesAndAddressesApart() {
         Assert.True(InternalCaNames.TryParseLanNames(
-            "nas.lan, 192.168.1.10\nNAS.home.arpa\r\nfd00::1; nas.lan",
+            "nas.lan, 192.168.1.10\nNAS.home.arpa\r\nfd00::1,nas.lan",
             out var dnsNames, out var ips, out var reason));
 
         Assert.Null(reason);
         // Lowercased and deduplicated, in the order they were written.
         Assert.Equal(new[] { "nas.lan", "nas.home.arpa" }, dnsNames.ToArray());
         Assert.Equal(new[] { "192.168.1.10", "fd00::1" }, ips.Select(ip => ip.ToString()).ToArray());
+    }
+
+    /// <summary>
+    /// A scope id is a fact about the machine that typed it, not about the address, and a certificate
+    /// has nowhere to put one. Dropping it here is what keeps "what was configured" and "what was
+    /// issued" comparable — otherwise the two never match and the leaf is reissued on every pass.
+    /// </summary>
+    [Fact]
+    public void AnIpv6ScopeId_IsDropped() {
+        Assert.True(InternalCaNames.TryParseLanNames(
+            "fe80::1%3, 192.168.1.10", out _, out var ips, out var reason));
+
+        Assert.Null(reason);
+        Assert.Equal(new[] { "fe80::1", "192.168.1.10" }, ips.Select(ip => ip.ToString()).ToArray());
+        Assert.All(ips, ip => Assert.DoesNotContain('%', ip.ToString()));
     }
 
     [Theory]

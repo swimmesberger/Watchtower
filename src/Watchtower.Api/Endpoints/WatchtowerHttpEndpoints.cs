@@ -281,8 +281,10 @@ public static class WatchtowerHttpEndpoints {
                     InternalCaNames.DownloadFileName);
 
             using var certificate = X509Certificate2.CreateFromPem(pem);
+            // Under its own extension: an import dialog that asked for DER decides what it is looking
+            // at by the file name, and refuses binary arriving as .crt.
             return Results.File(
-                certificate.RawData, "application/pkix-cert", InternalCaNames.DownloadFileName);
+                certificate.RawData, "application/pkix-cert", InternalCaNames.DownloadFileNameDer);
         });
 
     /// <summary>Streams container logs as Server-Sent Events. Query: tail (default 100), follow (default true).</summary>

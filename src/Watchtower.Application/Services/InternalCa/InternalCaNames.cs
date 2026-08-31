@@ -29,8 +29,14 @@ public static class InternalCaNames {
     /// </summary>
     public const string DownloadPath = "/api/proxy/internal-ca.crt";
 
-    /// <summary>The file name the download is offered under.</summary>
+    /// <summary>The file name the PEM download is offered under.</summary>
     public const string DownloadFileName = "watchtower-internal-ca.crt";
+
+    /// <summary>
+    /// The file name the DER download is offered under. A different extension because the import
+    /// dialogs that want DER key off it — a <c>.crt</c> holding binary is what they refuse.
+    /// </summary>
+    public const string DownloadFileNameDer = "watchtower-internal-ca.cer";
 
     /// <summary>
     /// Reads the configured LAN names into the two kinds of subject alternative name a leaf can carry.
@@ -43,6 +49,11 @@ public static class InternalCaNames {
     /// Entries are separated by commas or newlines, deduplicated, and kept in the order they were
     /// written. A junk entry fails the whole parse rather than being dropped: silently issuing for four
     /// of five names would surface as one device that cannot reach the service, weeks later.
+    /// </para>
+    /// <para>
+    /// Addresses come back in the form a certificate can hold — an IPv6 scope id (<c>fe80::1%3</c>) is
+    /// dropped, because the encoding has nowhere to put one and everything downstream compares what was
+    /// configured against what was issued.
     /// </para>
     /// </remarks>
     /// <param name="reason">Why the parse failed, naming the offending entry; null on success.</param>
@@ -61,10 +72,17 @@ public static class InternalCaNames {
         reason = null;
 
         foreach (var entry in (raw ?? "").Split(
-                     [',', '\n', '\r', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+                     [',', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
             // An IP first: 192.168.1.10 would also satisfy the DNS-name grammar, and reading it as a
             // host name would put it in the wrong kind of SAN — where no client looks for it.
             if (IPAddress.TryParse(entry, out var ip)) {
+                // Rebuilt from the address bytes, which drops any IPv6 scope id (`fe80::1%3`). A
+                // certificate cannot carry one — the SAN builder encodes the 16 address bytes and
+                // nothing else — so keeping it here would make the held certificate look like it named
+                // something different from the configuration on every single pass, and reissue forever.
+                // Unconditional rather than guarded on the address family, because reading ScopeId off
+                // an IPv4 address throws and reconstructing one costs a four-byte copy.
+                ip = new IPAddress(ip.GetAddressBytes());
                 if (seenAddresses.Add(ip.ToString())) addresses.Add(ip);
                 continue;
             }
