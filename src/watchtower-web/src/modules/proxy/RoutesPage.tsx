@@ -298,12 +298,21 @@ export function RoutesPage() {
   const supportsPortRoutes = status?.provider === 'yarp'
   // The LAN names the internal CA issues for. Needed for two things at once: the addresses the table
   // renders for port routes, and whether creating one is possible at all.
-  const { data: proxyConfig } = useQuery({
-    queryKey: ['proxy-config'],
+  // The key is the Settings page's, deliberately: saving the proxy card invalidates ['proxy'], and a
+  // key of this page's own would leave the "no LAN names" banner up — and the submit button disabled —
+  // for a staleTime after the operator went and configured exactly what it asked them to.
+  const proxyConfigQuery = useQuery({
+    queryKey: ['proxy', 'config'],
     queryFn: api.proxy.getConfig,
     enabled: supportsPortRoutes,
   })
+  const proxyConfig = proxyConfigQuery.data
   const lanNames = useMemo(() => parseLanNames(proxyConfig?.yarp.lanNames), [proxyConfig])
+  // "None configured" is a claim about an answer, not about the absence of one: while the query is in
+  // flight or after it failed there are no names either, and telling the operator to go set them —
+  // then refusing the submit — would be sending them after something that may already be there.
+  const lanNamesKnown = proxyConfig != null
+  const lanNamesUnavailable = proxyConfigQuery.isError
 
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
   // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
@@ -464,7 +473,9 @@ export function RoutesPage() {
       const stackId = Number(form.stackId)
       const containerPort = Number(form.containerPort)
       const listenPort = Number(form.listenPort)
-      if (lanNames.length === 0)
+      // Only when the settings actually said so; where they could not be read the server's own refusal
+      // is the honest answer, rather than a guess made from a query that failed.
+      if (lanNamesKnown && lanNames.length === 0)
         return toast.error('Set the LAN names under Settings → Reverse proxy first.')
       if (!stackId) return toast.error('Choose a stack.')
       if (!form.serviceName.trim()) return toast.error('Enter a service name.')
@@ -862,7 +873,23 @@ export function RoutesPage() {
                 </Field>
               )}
 
-              {isPortForm && lanNames.length === 0 && (
+              {isPortForm && lanNamesUnavailable && (
+                <Banner
+                  tone="danger"
+                  title="Couldn’t read the proxy settings"
+                  action={
+                    <Button variant="link" onClick={() => proxyConfigQuery.refetch()}>
+                      Retry
+                    </Button>
+                  }
+                >
+                  The LAN names a port route's certificate is issued for could not be read, so this form
+                  cannot tell whether any are configured.{' '}
+                  {(proxyConfigQuery.error as Error)?.message ?? 'An unexpected error occurred.'}
+                </Banner>
+              )}
+
+              {isPortForm && lanNamesKnown && lanNames.length === 0 && (
                 <Banner tone="warn" title="No LAN names configured">
                   A port route's certificate is issued for the names and IPs you type in the browser, so
                   there has to be at least one. Add them under Settings → Reverse proxy (“LAN names”),
@@ -1141,11 +1168,13 @@ export function RoutesPage() {
                   Cancel
                 </Button>
                 {/* Disabled rather than refused on submit: with no LAN name there is no certificate the
-                    route could be served with, and the server refuses it for the same reason. */}
+                    route could be served with, and the server refuses it for the same reason. Only
+                    once the settings have actually answered — a query still loading is not a
+                    deployment with nothing configured, and the server is the backstop either way. */}
                 <Button
                   type="submit"
                   loading={create.isPending}
-                  disabled={isPortForm && lanNames.length === 0}
+                  disabled={isPortForm && lanNamesKnown && lanNames.length === 0}
                 >
                   Create route
                 </Button>

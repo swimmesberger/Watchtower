@@ -740,6 +740,16 @@ function ProxyCard() {
     staleTime: 60_000,
   })
 
+  // Whether Watchtower's own CA exists yet, which is what decides whether there is a root to offer.
+  // Not the same question as "are LAN names configured": the root is minted the first time a port
+  // route needs a leaf, so between setting the names and creating one the download endpoint 404s.
+  const { data: internalCa } = useQuery({
+    queryKey: ['proxy', 'internal-ca'],
+    queryFn: api.proxy.getInternalCa,
+    enabled: data?.provider === 'yarp',
+    staleTime: 60_000,
+  })
+
   const [draft, setDraft] = useState<ProxyDraft | null>(null)
   const form = draft ?? (data ? toProxyDraft(data) : null)
   const dirty = draft != null && data != null && JSON.stringify(draft) !== JSON.stringify(toProxyDraft(data))
@@ -1036,10 +1046,10 @@ function ProxyCard() {
                       {pinnedPath('Watchtower:Proxy:Yarp:LanNames') && (
                         <PinnedNote path="Watchtower:Proxy:Yarp:LanNames" />
                       )}
-                      {/* Only once the CA exists, which is the moment there is something to import.
-                          Offering the download before then would invite an operator to trust a root
-                          nothing is signed by. */}
-                      {data?.yarp.lanNames.trim() !== '' && (
+                      {/* Only once the CA exists, which is the moment there is something to download:
+                          the root is minted on the first port route's behalf, and the endpoint 404s
+                          until then. */}
+                      {internalCa?.present === true && (
                         <p className="mt-1.5 text-[13px] text-text-2">
                           <a
                             href={INTERNAL_CA_DOWNLOAD_URL}
