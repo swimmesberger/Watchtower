@@ -212,6 +212,24 @@ public sealed class UpdateProxyConfigYarpValidationTests {
             "RoutesVersion", System.Text.Json.JsonSerializer.Serialize(result.Value.Config));
     }
 
+    /// <summary>
+    /// The port-route listen ports are the same kind of key (ADR-0033): derived from the route rows by
+    /// <c>YarpProxyProvider.ApplyAsync</c>, never typed. An environment pin on it would freeze the set of
+    /// listeners, so every port route created or deleted afterwards would silently never gain or lose one.
+    /// </summary>
+    [Fact]
+    public async Task ThePortRoutePortsAreNotPartOfTheProxyCard() {
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, GetProxyConfig.ProxyPaths);
+
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { Provider = ProxyProviderNames.Yarp });
+
+        Assert.True(result.IsSuccess);
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, result.Value.Config.PinnedPaths);
+        Assert.DoesNotContain(
+            "PortRoutePorts", System.Text.Json.JsonSerializer.Serialize(result.Value.Config));
+    }
+
     [Fact]
     public async Task SavingTheInProcessProvider_RecordsTheCaAndTheSecretUpdate() {
         using var host = AuthTestHost.Start();

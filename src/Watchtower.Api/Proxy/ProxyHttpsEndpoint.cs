@@ -161,9 +161,14 @@ internal static class ProxyHttpsEndpoint {
     /// </para>
     /// <para>
     /// The whole thing is skipped while the projected section names no port-route endpoint. Installing a
-    /// selector suppresses Kestrel's default-certificate fallback for <em>every</em> HTTPS listener,
-    /// including the development certificate behind an <c>https://</c> hosting URL, and a deployment
-    /// with no port routes has no reason to pay that.
+    /// selector suppresses Kestrel's default-certificate fallback for every HTTPS listener <em>created
+    /// while it is in place</em>, including the development certificate behind an <c>https://</c> hosting
+    /// URL, and a deployment with no port routes has no reason to pay that.
+    /// </para>
+    /// <para>
+    /// <c>ConfigureHttpsDefaults</c> <em>replaces</em> whatever was there rather than adding to it, so
+    /// this must stay the only caller in the host. Nothing else in Watchtower configures HTTPS defaults;
+    /// anything that starts to has to compose with this rather than call it again.
     /// </para>
     /// </remarks>
     /// <param name="kestrelSection">The projected section — read to answer "are there port routes at all?".</param>
