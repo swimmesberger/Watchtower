@@ -54,11 +54,12 @@ internal static class ProxyListenerStateInitializer {
 
         logger.LogInformation(
             "In-process proxy listeners: HTTPS {HttpsBound}, local HTTP {LocalHttpAddress}, "
-            + "management port {ManagementPort}, ingress ports {IngressPorts}.",
+            + "management port {ManagementPort}, ingress ports {IngressPorts}, port routes {PortRoutePorts}.",
             snapshot.HttpsBound ? "configured" : "off",
             snapshot.LocalHttpAddress ?? "none",
             snapshot.ManagementPort?.ToString(CultureInfo.InvariantCulture) ?? "none",
-            snapshot.IngressPorts.Count == 0 ? "none" : string.Join(", ", snapshot.IngressPorts.Order()));
+            snapshot.IngressPorts.Count == 0 ? "none" : string.Join(", ", snapshot.IngressPorts.Order()),
+            snapshot.PortRoutePorts.Count == 0 ? "none" : string.Join(", ", snapshot.PortRoutePorts.Order()));
     }
 
     /// <summary>
@@ -79,14 +80,37 @@ internal static class ProxyListenerStateInitializer {
         // endpoint otherwise, which is the single-listener shape this had before the endpoints were split.
         var dialablePort = httpPort ?? managementPort;
 
+        // The port-bound routes' listeners (ADR-0033). Read back out of the projected section rather than
+        // out of the setting the projection derived them from, so a port the projection dropped — one that
+        // collided with the management or ingress ports — is absent here too: what this publishes has to be
+        // the endpoints Kestrel was actually asked for.
+        var portRoutePorts = PortRouteEndpoints(kestrelSection);
+
         return new YarpListenerSnapshot {
             HttpsBound = httpsPort is not null,
-            IngressPorts = new[] { httpPort, httpsPort }.OfType<int>().ToHashSet(),
+            // Port routes are ingress like the two named endpoints: their listeners are published to the
+            // network and must never fall through to the management plane.
+            IngressPorts = new[] { httpPort, httpsPort }.OfType<int>().Concat(portRoutePorts).ToHashSet(),
+            PortRoutePorts = portRoutePorts.ToHashSet(),
             ManagementPort = managementPort,
             LocalHttpAddress = dialablePort is { } port
                 ? string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{port}")
                 : null,
         };
+    }
+
+    /// <summary>
+    /// The ports of the <c>ProxyPort{n}</c> endpoints in the projected section. The port is taken from the
+    /// endpoint's URL rather than from its name, so what is published is the port Kestrel binds even if the
+    /// two could ever disagree.
+    /// </summary>
+    private static List<int> PortRouteEndpoints(IConfiguration kestrelSection) {
+        var ports = new List<int>();
+        foreach (var endpoint in kestrelSection.GetSection("Endpoints").GetChildren()) {
+            if (!PortRouteListeners.IsPortEndpointName(endpoint.Key)) continue;
+            if (ListenerUrl.PortOf(endpoint["Url"]) is { } port) ports.Add(port);
+        }
+        return ports;
     }
 
     /// <summary>The port of the first plain-HTTP URL in a semicolon-separated hosting URL list.</summary>

@@ -1,8 +1,13 @@
+using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Security;
 using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Api.Proxy;
@@ -78,6 +83,15 @@ internal static class ProxyHttpsEndpoint {
         builder.WebHost.UseKestrelHttpsConfiguration();
 
         builder.WebHost.ConfigureKestrel((_, kestrel) => {
+            ConfigurePortRouteTls(
+                kestrel,
+                kestrelSection,
+                () => kestrel.ApplicationServices.GetRequiredService<YarpListenerState>().PortRoutePorts,
+                () => kestrel.ApplicationServices.GetRequiredService<CertificateStore>()
+                    .SelectContext(InternalCaNames.SharedLeafHost),
+                () => kestrel.ApplicationServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger(typeof(ProxyHttpsEndpoint)));
+
             var loader = kestrel.Configure(kestrelSection, reloadOnChange: true);
             loader.Endpoint(EndpointName, endpoint => {
                 var services = kestrel.ApplicationServices;
@@ -116,6 +130,88 @@ internal static class ProxyHttpsEndpoint {
             });
         });
     }
+
+    /// <summary>
+    /// The TLS half of the port-bound routes (ADR-0033), attached to Kestrel's <em>HTTPS defaults</em>
+    /// rather than to a named endpoint.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The endpoint names are <c>ProxyPort{n}</c> and they come and go with the routes, so there is no
+    /// fixed set of names a callback could be registered against — and registering one late, against a
+    /// loader that is concurrently reloading, is a race. The https defaults are the way out: a config
+    /// endpoint with an <c>https://</c> URL and no <c>Certificate</c> section is bound as long as the
+    /// defaults carry a certificate <em>or a selector</em>, so one selector serves every listener that
+    /// ever appears. The named <see cref="EndpointName"/> endpoint above is untouched by this — its
+    /// callback makes the listener TLS itself, and Kestrel leaves an endpoint that is already TLS alone.
+    /// </para>
+    /// <para>
+    /// Both halves are needed and they say different things. The <em>selector</em> is what satisfies
+    /// Kestrel that the endpoint can be bound at all, and it answers with a bare leaf, which would leave
+    /// <c>SslStream</c> assembling a chain out of the machine's trust store. <c>OnAuthenticate</c> then
+    /// replaces that with the whole <see cref="SslStreamCertificateContext"/> the certificate store
+    /// holds, which is the same material the SNI callback above serves.
+    /// </para>
+    /// <para>
+    /// The scope is the connection's <em>local port</em>, read per connection from the listener state:
+    /// a client reaching a bare LAN address sends no usable SNI, so the port is the only thing that can
+    /// identify which listener — and therefore which route — a connection arrived on. A port the state
+    /// does not name gets no certificate, which fails that one handshake; it is not a startup failure,
+    /// and an operator's own <c>https://</c> endpoint is the case that reaches it.
+    /// </para>
+    /// <para>
+    /// The whole thing is skipped while the projected section names no port-route endpoint. Installing a
+    /// selector suppresses Kestrel's default-certificate fallback for <em>every</em> HTTPS listener,
+    /// including the development certificate behind an <c>https://</c> hosting URL, and a deployment
+    /// with no port routes has no reason to pay that.
+    /// </para>
+    /// </remarks>
+    /// <param name="kestrelSection">The projected section — read to answer "are there port routes at all?".</param>
+    /// <param name="boundPorts">The ports carrying a port route's listener, re-read per connection.</param>
+    /// <param name="certificate">The shared LAN leaf and its chain, or null while none is held.</param>
+    /// <param name="logger">Resolved late: the container does not exist when Kestrel is configured.</param>
+    internal static void ConfigurePortRouteTls(
+        KestrelServerOptions kestrel,
+        IConfiguration kestrelSection,
+        Func<IReadOnlySet<int>> boundPorts,
+        Func<SslStreamCertificateContext?> certificate,
+        Func<ILogger> logger) {
+        // One line per port, not per connection: a listener with no certificate is a standing condition,
+        // and a scanner must not be able to fill the log by dialling it.
+        var refused = new ConcurrentDictionary<int, byte>();
+
+        kestrel.ConfigureHttpsDefaults(https => {
+            if (!HasPortRouteEndpoint(kestrelSection)) return;
+            https.ServerCertificateSelector = (connection, _) => Material(connection)?.TargetCertificate;
+            https.OnAuthenticate = (connection, ssl) => {
+                if (Material(connection) is not { } context) return;
+                // The context, and only the context: SslStream picks between these three, and leaving two
+                // of them set would make which material is served a matter of that precedence.
+                ssl.ServerCertificate = null;
+                ssl.ServerCertificateSelectionCallback = null;
+                ssl.ServerCertificateContext = context;
+                // The ALPN list is deliberately left as Kestrel built it a moment ago: it is derived from
+                // the endpoint's own HttpProtocols (h2 and HTTP/1.1 by default, which is what a browser
+                // wants from a listener fronting an arbitrary web application), and overriding it here
+                // would advertise a protocol the endpoint is not configured to speak.
+            };
+        });
+
+        SslStreamCertificateContext? Material(ConnectionContext? connection) {
+            if (connection?.LocalEndPoint is not IPEndPoint local) return null;
+            var context = boundPorts().Contains(local.Port) ? certificate() : null;
+            if (context is null && refused.TryAdd(local.Port, 0))
+                logger().LogWarning(
+                    "No LAN certificate is held for connections on port {Port}; handshakes there will "
+                    + "fail until a port route and its LAN names are configured.", local.Port);
+            return context;
+        }
+    }
+
+    /// <summary>Whether the projected section currently declares any port route's listener.</summary>
+    private static bool HasPortRouteEndpoint(IConfiguration kestrelSection) =>
+        kestrelSection.GetSection("Endpoints").GetChildren()
+            .Any(endpoint => PortRouteListeners.IsPortEndpointName(endpoint.Key));
 
     /// <summary>
     /// Renders an SNI name for a log message. It is attacker-controlled and arrives before anything has
