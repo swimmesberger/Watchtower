@@ -1,9 +1,13 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
 
 namespace Watchtower.Application.Services.InternalCa;
@@ -31,6 +35,8 @@ namespace Watchtower.Application.Services.InternalCa;
 public sealed class InternalCertificateService(
     CertificateStore store,
     InternalCaStore caStore,
+    IServiceScopeFactory scopeFactory,
+    RouteStatusUpdater routeStatus,
     IOptionsMonitor<WatchtowerOptions> options,
     TimeProvider time,
     ILogger<InternalCertificateService> logger) {
@@ -46,6 +52,9 @@ public sealed class InternalCertificateService(
             throw;
         } catch (Exception ex) {
             logger.LogError(ex, "Could not issue the internal LAN certificate; retrying on the next pass.");
+            // The routes are what an operator is looking at, so the failure is put where they will see it
+            // — best-effort, and after the log, which is the record.
+            await RecordPortRoutesAsync(RouteStatus.Error, $"No LAN certificate: {ex.Message}", null, ct);
         }
     }
 
@@ -57,8 +66,19 @@ public sealed class InternalCertificateService(
         var proxy = options.CurrentValue.Proxy;
         // The same gate the certificate manager applies: these certificates are served by the in-process
         // proxy's listeners, and under any other provider there is nothing to serve them.
-        if (!proxy.Enabled || proxy.ResolveProvider() != ProxyProviderKind.Yarp) return;
-        if (!await wanted(ct)) return;
+        //
+        // Both early returns clear the suppression, which is the point of clearing it here rather than
+        // only on the way past the refusals below: an operator who switches the provider away and back,
+        // or deletes their last port route and makes another, is starting again, and the refusal they hit
+        // the first time is worth saying again rather than being swallowed as "already logged".
+        if (!proxy.Enabled || proxy.ResolveProvider() != ProxyProviderKind.Yarp) {
+            _lastRefusal = null;
+            return;
+        }
+        if (!await wanted(ct)) {
+            _lastRefusal = null;
+            return;
+        }
 
         if (!InternalCaNames.TryParseLanNames(
                 proxy.Yarp.LanNames, out var dnsNames, out var ips, out var reason)) {
@@ -66,6 +86,9 @@ public sealed class InternalCertificateService(
             if (FirstTime($"unreadable:{reason}"))
                 logger.LogWarning(
                     "Not issuing a LAN certificate: Proxy:Yarp:LanNames could not be read — {Reason}", reason);
+            await RecordPortRoutesAsync(
+                RouteStatus.Error, $"No LAN certificate: the configured LAN names could not be read — {reason}",
+                null, ct);
             return;
         }
         if (dnsNames.Count == 0 && ips.Count == 0) {
@@ -73,6 +96,10 @@ public sealed class InternalCertificateService(
                 logger.LogWarning(
                     "Not issuing a LAN certificate: no LAN names are configured. Set the addresses this "
                     + "deployment is reached on under Settings → Reverse proxy.");
+            await RecordPortRoutesAsync(
+                RouteStatus.Error,
+                "No LAN certificate: set the addresses this deployment is reached on under "
+                + "Settings → Reverse proxy.", null, ct);
             return;
         }
         _lastRefusal = null;
@@ -84,7 +111,13 @@ public sealed class InternalCertificateService(
         // rather than a key. The load-or-create below is what a reissue pays for.
         using var issuer = current is null ? null : await caStore.ReadCertificateAsync(ct);
         var why = ReissueReason(current, entry, issuer, dnsNames, ips, time.GetUtcNow());
-        if (why is null) return;
+        if (why is null) {
+            // Nothing to reissue — but a route created a moment ago is covered by the leaf that is
+            // already held, and has to be told so. ReissueReason answers "none held" without an entry, so
+            // reaching here means there is one.
+            if (entry is not null) await RecordPortRoutesAsync(RouteStatus.Active, null, entry.NotAfter, ct);
+            return;
+        }
 
         using var root = await caStore.LoadOrCreateAsync(ct);
         using var leaf = InternalCaIssuer.IssueLeaf(root.Certificate, dnsNames, ips, time.GetUtcNow());
@@ -94,6 +127,28 @@ public sealed class InternalCertificateService(
             + "{NotAfter:u}.",
             string.Join(", ", dnsNames.Concat(ips.Select(ip => ip.ToString()))), why,
             leaf.Certificate.NotAfter.ToUniversalTime());
+        await RecordPortRoutesAsync(
+            RouteStatus.Active, null, leaf.Certificate.NotAfter.ToUniversalTime(), ct);
+    }
+
+    /// <summary>
+    /// Puts the outcome on the port routes' rows. One outcome for all of them, because one leaf serves
+    /// all of them — a port route's status is a statement about the LAN certificate and nothing else.
+    /// </summary>
+    private async Task RecordPortRoutesAsync(
+        RouteStatus status, string? detail, DateTimeOffset? notAfter, CancellationToken ct) {
+        var ids = await PortRouteIdsAsync(ct);
+        if (ids.Count == 0) return;
+        await routeStatus.RecordPortRoutesAsync(ids, status, detail, notAfter, ct);
+    }
+
+    private async Task<List<int>> PortRouteIdsAsync(CancellationToken ct) {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Routes.AsNoTracking()
+            .Where(r => r.Binding == RouteBinding.Port)
+            .Select(r => r.Id)
+            .ToListAsync(ct);
     }
 
     /// <summary>
@@ -114,13 +169,20 @@ public sealed class InternalCertificateService(
     private string? _lastRefusal;
 
     /// <summary>
-    /// Whether anything currently needs a LAN certificate.
+    /// Whether anything currently needs a LAN certificate: one port-bound route is enough, and one leaf
+    /// covers however many there are (ADR-0033).
     /// </summary>
     /// <remarks>
-    /// Nothing does yet: port routes are what want one, and they do not exist in this stage. Stage 2
-    /// wires this to port routes.
+    /// A row count rather than the listener state. What a route <em>asks</em> for is what should be
+    /// issued: gating on the listeners would mean a deployment whose ports are not published on its
+    /// container — the ordinary state of a route the operator has just created — never got the
+    /// certificate that would make it work once they publish them.
     /// </remarks>
-    private static ValueTask<bool> IsLeafWantedAsync(CancellationToken ct) => ValueTask.FromResult(false);
+    private async ValueTask<bool> IsLeafWantedAsync(CancellationToken ct) {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Routes.AsNoTracking().AnyAsync(r => r.Binding == RouteBinding.Port, ct);
+    }
 
     /// <summary>
     /// Why the held leaf has to be replaced, or null when it still says everything it should. Pure, and

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Services.Acme;
@@ -90,6 +91,7 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     private readonly IRoleLease _issuerLease;
     private readonly YarpListenerState _listener;
     private readonly RouteStatusUpdater _routeStatus;
+    private readonly InternalCertificateService _internalCerts;
     private readonly IAcmeTransportFactory _transport;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly TimeProvider _time;
@@ -140,6 +142,7 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
         [FromKeyedServices(IssuerRole)] IRoleLease issuerLease,
         YarpListenerState listener,
         RouteStatusUpdater routeStatus,
+        InternalCertificateService internalCerts,
         IAcmeTransportFactory transport,
         IOptionsMonitor<WatchtowerOptions> options,
         TimeProvider time,
@@ -151,6 +154,7 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
         _issuerLease = issuerLease;
         _listener = listener;
         _routeStatus = routeStatus;
+        _internalCerts = internalCerts;
         _transport = transport;
         _options = options;
         _time = time;
@@ -346,6 +350,14 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     public async Task ReconcileAsync(CancellationToken ct) {
         DrainRetiredSessions();
         if (!IsActive) return;
+
+        // Watchtower's own CA (ADR-0033), on the same five-minute cadence and deliberately outside every
+        // gate below it. Not the issuer lease: that protects a rate-limited remote resource, while
+        // issuing here is local, free and resolved by a unique index when two instances race — and the
+        // instance an operator is talking to must be able to make the port route they just created work.
+        // Not HttpsBound either: a deployment serving nothing but port routes runs with the HTTPS ingress
+        // port off, and gating on it would mean exactly that deployment never got a certificate.
+        await _internalCerts.EnsureAsync(ct);
 
         var desired = _desired;
         var issuer = ObserveIssuerLease();

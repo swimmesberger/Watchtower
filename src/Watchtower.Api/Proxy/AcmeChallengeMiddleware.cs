@@ -1,5 +1,6 @@
 using System.Text;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Api.Proxy;
 
@@ -23,13 +24,24 @@ namespace Watchtower.Api.Proxy;
 /// turn into database load.
 /// </para>
 /// </remarks>
-public sealed class AcmeChallengeMiddleware(RequestDelegate next, AcmeHttpChallengeStore store) {
+public sealed class AcmeChallengeMiddleware(
+    RequestDelegate next, AcmeHttpChallengeStore store, YarpListenerState listener) {
     /// <summary>The well-known prefix from RFC 8555 §8.3; the one remaining segment is the token.</summary>
     private static readonly PathString ChallengePrefix = new("/.well-known/acme-challenge");
 
     public async Task InvokeAsync(HttpContext context) {
         ArgumentNullException.ThrowIfNull(context);
         if (!context.Request.Path.StartsWithSegments(ChallengePrefix, out var remaining)) {
+            await next(context);
+            return;
+        }
+
+        // Not on a port route's own listener (ADR-0033). "Every host the process serves" is what makes
+        // this middleware correct on the shared ingress ports, where a CA may arrive for any domain; a
+        // port route's listener serves exactly one upstream, over TLS, on a LAN address no CA validates.
+        // Answering here would hold a path an upstream is entitled to serve itself, and would do it for
+        // a challenge that could never have been aimed at this address.
+        if (listener.PortRoutePorts.Contains(context.Connection.LocalPort)) {
             await next(context);
             return;
         }

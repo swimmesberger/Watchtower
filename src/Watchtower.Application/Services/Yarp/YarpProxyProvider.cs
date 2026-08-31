@@ -1,3 +1,4 @@
+using Elarion.Settings;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -5,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Services.Yarp;
 
@@ -42,6 +44,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
     private readonly ProxyRouteTable _table;
     private readonly YarpListenerState _listener;
     private readonly IProxyCertificateManager _certs;
+    private readonly InternalCertificateService _internalCerts;
     private readonly RouteStatusUpdater _routeStatus;
     private readonly ProxyChangeSignal _signal;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
@@ -63,6 +66,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
         ProxyRouteTable table,
         YarpListenerState listener,
         IProxyCertificateManager certs,
+        InternalCertificateService internalCerts,
         RouteStatusUpdater routeStatus,
         ProxyChangeSignal signal,
         IOptionsMonitor<WatchtowerOptions> options,
@@ -72,6 +76,7 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
         _table = table;
         _listener = listener;
         _certs = certs;
+        _internalCerts = internalCerts;
         _routeStatus = routeStatus;
         _signal = signal;
         _options = options;
@@ -248,17 +253,65 @@ public class YarpProxyProvider : IHostedService, IProxyProvider, IDisposable {
             // projection marks them Local; the dispatch middleware hands those to Watchtower's own
             // pipeline instead of forwarding them.
             var sites = ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);
+            // The port-bound routes (ADR-0033) are the same table read the other way: no hostname, one
+            // dedicated listener each.
+            var portSites = ProxySiteProjection.ProjectPortRoutes(routes);
 
-            var snapshot = ProxyRouteTable.From(sites);
+            var snapshot = ProxyRouteTable.From(sites, portSites);
             _table.Replace(snapshot);
             _certs.SetDesiredHosts(snapshot.TlsHosts);
             // Every served host has a row now, Watchtower's own included, so every one of them reports a
             // certificate status on the Routes page.
             await _routeStatus.MarkPendingAsync(
                 snapshot.Rows.Where(r => r.RouteId is not null && r.Tls).Select(r => r.Host), ct);
+
+            // The listeners follow from here and from nowhere else. Route CRUD, a stack delete cascading
+            // its routes away and the cross-instance signal all arrive at this one method, so writing the
+            // setting here is what makes "the rows say so" and "a socket is bound" the same statement.
+            await WritePortRoutePortsAsync(scope.ServiceProvider, snapshot.PortRoutePorts, ct);
+
+            // Last, and after the setting: a route that has just gained a listener needs the certificate
+            // that listener presents, and the instance the operator is talking to is the one that has to
+            // make their new route work. Cheap and idempotent when nothing moved.
+            await _internalCerts.EnsureAsync(ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to project the route table for the in-process proxy; will be retried on the next change.");
         }
+    }
+
+    /// <summary>
+    /// Publishes the port-route listen ports into the setting the Kestrel projection reads (ADR-0033),
+    /// unless it already says exactly that.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Compare first, always. Every instance runs this on every projection — on startup, on each route
+    /// change and on each cross-instance signal — and an unconditional write would be a settings write per
+    /// pass per instance, each of them bumping the store's own change token for a value nobody moved.
+    /// </para>
+    /// <para>
+    /// The comparison is between two <see cref="PortRouteListeners.Format"/> renderings rather than
+    /// between two sets, so "the same ports written in another order" is not a change either. This is not
+    /// <see cref="WatchtowerSettingPaths.ProxyRoutesVersion"/>, so writing it wakes no watcher and cannot
+    /// loop; what it does wake is the configuration reload, which is the point.
+    /// </para>
+    /// </remarks>
+    private async Task WritePortRoutePortsAsync(
+        IServiceProvider services, IReadOnlyCollection<int> ports, CancellationToken ct) {
+        var settings = services.GetRequiredService<ISettingsManager>();
+        var wanted = PortRouteListeners.Format(ports);
+        var stored = await settings.GetStringAsync(
+            WatchtowerSettingPaths.ProxyYarpPortRoutePorts, SettingsScope.Global, ct);
+        // Re-rendered rather than compared raw: a value an operator or an older build left in another
+        // spelling would otherwise be rewritten on every pass forever.
+        if (string.Equals(PortRouteListeners.Format(PortRouteListeners.Parse(stored)), wanted, StringComparison.Ordinal))
+            return;
+
+        await settings.SetStringAsync(
+            WatchtowerSettingPaths.ProxyYarpPortRoutePorts, wanted, SettingsScope.Global,
+            expectedVersion: null, ct);
+        _logger.LogInformation(
+            "Port route listeners are now {Ports}.", wanted.Length == 0 ? "none" : wanted);
     }
 
     /// <inheritdoc />

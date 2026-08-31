@@ -42,6 +42,7 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
     private readonly ProxyIngressNetworks _networks;
+    private readonly RouteStatusUpdater _routeStatus;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<CaddyManager> _logger;
     private readonly HttpClient _admin;
@@ -59,11 +60,13 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         ProxyIngressNetworks networks,
+        RouteStatusUpdater routeStatus,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<CaddyManager> logger) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _networks = networks;
+        _routeStatus = routeStatus;
         _options = options;
         _logger = logger;
         // Proxy and Auth settings are both read live: the settings store re-binds them at runtime, and
@@ -321,6 +324,16 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
         var routes = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
             .ToListAsync(ct);
+
+        // A port route (ADR-0033) asks for a TLS listener on Watchtower's own host, and Caddy is a
+        // sibling container with no way to lend it one. The projection already leaves them out, so
+        // without this they would sit at Pending forever with no reason given — the same problem, and
+        // the same answer, as a Watchtower route under the Cloudflare provider.
+        var portRoutes = routes.Where(r => r.Binding == RouteBinding.Port).Select(r => r.Id).ToList();
+        if (portRoutes.Count > 0)
+            await _routeStatus.RecordPortRoutesAsync(
+                portRoutes, RouteStatus.Error, ProxySiteProjection.PortRouteUnsupported, notAfter: null, ct);
+
         // Watchtower's own hostnames are rows in that table like any other (ADR-0023); the projection
         // points them at `watchtower:8080` on the control network, which is where Caddy already sends the
         // forward-auth and callback traffic of every protected site.

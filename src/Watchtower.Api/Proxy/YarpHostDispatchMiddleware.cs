@@ -46,6 +46,11 @@ namespace Watchtower.Api.Proxy;
 /// management endpoint whatever they are.
 /// </para>
 /// <para>
+/// <b>Port-bound routes</b> (ADR-0033) are dispatched by the local port before any of that, because
+/// their listener <em>is</em> the address: see <see cref="ForwardPortRouteAsync"/> for what that path
+/// deliberately does not do.
+/// </para>
+/// <para>
 /// <b>When the provider is inactive</b> — disabled, or Caddy/Cloudflare selected — the route table is
 /// <see cref="ProxyRouteTableSnapshot.Empty"/> and every request costs one failed dictionary lookup before
 /// falling through. That is why it is registered unconditionally rather than behind the option: the
@@ -146,9 +151,29 @@ public sealed class YarpHostDispatchMiddleware(
         // reverse-proxy settings), and deciding "is this ingress?" against one snapshot and "is there
         // ingress at all?" against another is how a request gets judged by a state that never existed.
         var listeners = listener.Current;
-        var isIngress = IsIngress(listeners, context.Connection.LocalPort);
+        var localPort = context.Connection.LocalPort;
+        var isIngress = IsIngress(listeners, localPort);
+        var routes = table.Current;
 
-        if (!table.Current.TryGet(host, out var row)) {
+        // A port-bound route (ADR-0033), decided by the listener and by nothing else. Ahead of the host
+        // lookup because on this listener the Host header decides nothing: a client reaching a bare LAN
+        // address writes whatever it likes there, and letting it name a routed domain would turn one
+        // service's dedicated port into a way into another's.
+        if (routes.TryGetByPort(localPort, out var portRow)) {
+            await ForwardPortRouteAsync(context, portRow);
+            return;
+        }
+
+        // The listener is a port route's and the table no longer has the route: a deletion a moment ago,
+        // with the socket not yet unbound. The same nothing an unrouted host gets on ingress, and for the
+        // stronger version of the same reason — falling through here would let the Host header pick a
+        // route on a listener whose own route is gone.
+        if (listeners.PortRoutePorts.Contains(localPort)) {
+            NotFound(context);
+            return;
+        }
+
+        if (!routes.TryGet(host, out var row)) {
             // On ingress, a host nobody routed is a stranger: a scanner on the public IP, or a domain
             // someone pointed here. It gets nothing — not Watchtower's login page, and certainly not the
             // whole management SPA when authentication is off. This is the invariant Caddy used to hold by
@@ -294,6 +319,62 @@ public sealed class YarpHostDispatchMiddleware(
         // body that would describe the internal topology to the visitor. Only over an untouched 200,
         // though: the forwarder sets a more specific status for the failures it can name (504 on a timeout,
         // 502 with a reason of its own), and overwriting that would flatten a diagnosis into a default.
+        if (!context.Response.HasStarted && context.Response.StatusCode == StatusCodes.Status200OK)
+            context.Response.StatusCode = StatusCodes.Status502BadGateway;
+    }
+
+    /// <summary>
+    /// Serves a request that arrived on a port-bound route's own listener (ADR-0033): strip, lift the
+    /// body cap, forward. Every step the host path takes that this one does not is a decision the check
+    /// constraint makes for it.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><b>No access check.</b> <c>ck_routes_binding</c> stores a port route as
+    /// <see cref="AccessMode.Public"/> or not at all, because the forward-auth flow sends a visitor to a
+    /// login page and back to the address they came from — and there is no hostname here to come back
+    /// to.</item>
+    /// <item><b>No <c>/.watchtower/*</c>.</b> Those paths exist so an anonymous visitor can be handed a
+    /// session on a protected app's own domain. Nothing redirects anyone here, so the prefix is not
+    /// reserved on this listener and an upstream that happens to use it keeps it.</item>
+    /// <item><b>No HTTPS upgrade.</b> The listener is TLS only — there is no plain-HTTP leg to redirect
+    /// from, and the redirect is rebuilt out of a hostname this route has not got.</item>
+    /// </list>
+    /// The strip is <em>not</em> one of them: nothing a client sent under an identity header's name may
+    /// reach an upstream, on any listener.
+    /// </remarks>
+    private async Task ForwardPortRouteAsync(HttpContext context, ProxyPortRouteSnapshot row) {
+        var request = context.Request;
+
+        foreach (var name in IdentityForwarding.StripHeaderNames) request.Headers.Remove(name);
+        request.Headers.Remove(ForwardedMethodHeader);
+        request.Headers.Remove(ForwardedUriHeader);
+
+        // Kestrel's 30 MB default is a limit on requests to Watchtower; the upstream is the one entitled
+        // to an opinion about the size of its own uploads.
+        var sizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is { IsReadOnly: false }) sizeFeature.MaxRequestBodySize = null;
+
+        // The host is echoed from the request rather than taken from the route, because the route has
+        // none: whatever the client dialled is what an application building absolute URLs has to hear
+        // back. The scheme is https unconditionally — this listener terminates TLS and does nothing else.
+        // No identity headers: there is no identity, and passing an empty list says so rather than
+        // leaving it to be inferred.
+        var error = await forwarder.SendAsync(
+            context,
+            $"http://{row.UpstreamHost}:{row.UpstreamPort}",
+            client.Invoker,
+            ProxyForwardHttpClient.RequestConfig,
+            new WatchtowerForwarderTransformer(
+                request.Host.Host, "https", context.Connection.RemoteIpAddress?.ToString(),
+                identityHeaders: []));
+
+        if (error == ForwarderError.None) return;
+
+        logger.LogWarning(
+            "Forwarding port {Port} to {Upstream}:{UpstreamPort} failed: {Error}.",
+            row.Port, row.UpstreamHost, row.UpstreamPort, error);
+
         if (!context.Response.HasStarted && context.Response.StatusCode == StatusCodes.Status200OK)
             context.Response.StatusCode = StatusCodes.Status502BadGateway;
     }

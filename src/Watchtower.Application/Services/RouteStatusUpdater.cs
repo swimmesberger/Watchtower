@@ -53,6 +53,65 @@ public sealed class RouteStatusUpdater(IServiceScopeFactory scopeFactory, ILogge
     }
 
     /// <summary>
+    /// Records the outcome for port-bound routes (ADR-0033), which are addressed by row rather than by
+    /// hostname — so the only thing that can identify them here is their id.
+    /// </summary>
+    /// <remarks>
+    /// One write for the whole set, because their outcome <em>is</em> one outcome: a single LAN
+    /// certificate covers every port route at once, so they cannot succeed and fail separately. A blank
+    /// <paramref name="detail"/> with a <paramref name="notAfter"/> is the success form.
+    /// </remarks>
+    /// <param name="routeIds">The rows to write. An empty set is a no-op, not an empty <c>IN ()</c>.</param>
+    /// <param name="status"><see cref="RouteStatus.Active"/> or <see cref="RouteStatus.Error"/>.</param>
+    /// <param name="detail">The reason, for an error; null clears whatever was there.</param>
+    /// <param name="notAfter">The certificate's expiry on success; null leaves the column alone.</param>
+    public async Task RecordPortRoutesAsync(
+        IEnumerable<int> routeIds,
+        RouteStatus status,
+        string? detail,
+        DateTimeOffset? notAfter,
+        CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(routeIds);
+        if (status is not (RouteStatus.Active or RouteStatus.Error))
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status,
+                "A port route settles at Active or Error; it never waits for DNS, having no domain.");
+        var ids = routeIds.Distinct().ToList();
+        if (ids.Count == 0) return;
+        var capped = detail is { Length: > MaxDetailLength } ? detail[..MaxDetailLength] : detail;
+
+        try {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            // Two shapes rather than one with a conditional: on a failure the expiry column is left
+            // exactly as it was, because a renewal that failed does not un-issue the certificate still
+            // being served — the same rule RecordFailedAsync states for domain routes.
+            //
+            // Each carries "unless it already says this". The internal certificate pass runs on a
+            // five-minute cadence on every instance and settles the same rows every time; rewriting them
+            // would churn the concurrency token under whatever the operator is editing on the Routes page,
+            // for a value that did not move.
+            if (notAfter is { } expiry) {
+                await db.Routes
+                    .Where(r => ids.Contains(r.Id)
+                        && (r.Status != status || r.StatusDetail != capped || r.CertNotAfter != expiry))
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, status)
+                        .SetProperty(r => r.StatusDetail, capped)
+                        .SetProperty(r => r.CertNotAfter, (DateTimeOffset?)expiry), ct);
+            } else {
+                await db.Routes
+                    .Where(r => ids.Contains(r.Id) && (r.Status != status || r.StatusDetail != capped))
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, status)
+                        .SetProperty(r => r.StatusDetail, capped), ct);
+            }
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            logger.LogDebug(ex, "Failed to record the {Status} status for {Count} port route(s).", status, ids.Count);
+        }
+    }
+
+    /// <summary>
     /// Marks freshly created routes as waiting for a certificate, so a new route does not sit at a
     /// bare "Pending" with no explanation until the order completes.
     /// </summary>

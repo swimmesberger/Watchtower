@@ -23,25 +23,51 @@ public sealed record ProxyRouteSnapshot(
     bool Local);
 
 /// <summary>
-/// An immutable routing table: host ⇒ upstream, plus the set of hosts that want a certificate.
-/// Built once per reconcile and swapped in wholesale, so a request never observes a half-applied
-/// route change and lookups need no locking.
+/// One row of the port-bound half of the routing table (ADR-0033): everything the request path needs
+/// about a connection that arrived on <paramref name="Port"/>. Deliberately far smaller than
+/// <see cref="ProxyRouteSnapshot"/> — a port route is Public by construction and Watchtower is never its
+/// upstream, so there is no access mode, no identity headers and no local flag to carry.
+/// </summary>
+public sealed record ProxyPortRouteSnapshot(int Port, int RouteId, string UpstreamHost, int UpstreamPort);
+
+/// <summary>
+/// An immutable routing table: host ⇒ upstream and port ⇒ upstream, plus the set of hosts that want a
+/// certificate. Built once per reconcile and swapped in wholesale, so a request never observes a
+/// half-applied route change and lookups need no locking.
 /// </summary>
 public sealed class ProxyRouteTableSnapshot {
     /// <summary>The table of a proxy that serves nothing — the disabled and torn-down state.</summary>
     public static readonly ProxyRouteTableSnapshot Empty =
-        new(FrozenDictionary<string, ProxyRouteSnapshot>.Empty, []);
+        new(FrozenDictionary<string, ProxyRouteSnapshot>.Empty, [], FrozenDictionary<int, ProxyPortRouteSnapshot>.Empty);
 
     private readonly FrozenDictionary<string, ProxyRouteSnapshot> _byHost;
+    private readonly FrozenDictionary<int, ProxyPortRouteSnapshot> _byPort;
 
     internal ProxyRouteTableSnapshot(
-        FrozenDictionary<string, ProxyRouteSnapshot> byHost, IReadOnlyList<string> tlsHosts) {
+        FrozenDictionary<string, ProxyRouteSnapshot> byHost,
+        IReadOnlyList<string> tlsHosts,
+        FrozenDictionary<int, ProxyPortRouteSnapshot> byPort) {
         _byHost = byHost;
+        _byPort = byPort;
         TlsHosts = tlsHosts;
     }
 
     /// <summary>How many distinct hosts this table serves.</summary>
     public int Count => _byHost.Count;
+
+    /// <summary>The ports this table serves a route on — the set the listener projection is derived from.</summary>
+    public IReadOnlyCollection<int> PortRoutePorts => _byPort.Keys;
+
+    /// <summary>Every port-bound row in the table.</summary>
+    public IEnumerable<ProxyPortRouteSnapshot> PortRows => _byPort.Values;
+
+    /// <summary>
+    /// Looks up the route a connection's local port belongs to. Asked <em>before</em> the host lookup on
+    /// every request: a client dialling a bare LAN address sends whatever <c>Host</c> it likes, and on a
+    /// port route that header decides nothing.
+    /// </summary>
+    public bool TryGetByPort(int port, [NotNullWhen(true)] out ProxyPortRouteSnapshot? row) =>
+        _byPort.TryGetValue(port, out row);
 
     /// <summary>
     /// The distinct hosts that need a certificate, lowercased. Watchtower's own hosts are included —
@@ -92,12 +118,19 @@ public sealed class ProxyRouteTable {
     public void Replace(ProxyRouteTableSnapshot next) => _current = next;
 
     /// <summary>
-    /// Projects the provider-independent site list onto a routing table. Pure, so the routing rules
-    /// are testable without a database. Hosts are lowercased; on a duplicate domain the first site
-    /// wins — a defensive rule rather than a load-bearing one, since the unique index on
-    /// <c>routes.domain</c> means the projection cannot produce two sites for one hostname.
+    /// Projects the provider-independent site lists onto a routing table. Pure, so the routing rules
+    /// are testable without a database. Hosts are lowercased; on a duplicate domain — or a duplicate
+    /// port — the first site wins, a defensive rule rather than a load-bearing one, since the filtered
+    /// unique indexes on <c>routes.domain</c> and <c>routes.listen_port</c> mean the projection cannot
+    /// produce two sites for one address.
     /// </summary>
-    public static ProxyRouteTableSnapshot From(IReadOnlyList<ProxySite> sites) {
+    /// <param name="portSites">
+    /// The port-bound routes (ADR-0033). Their hosts never enter <see cref="ProxyRouteTableSnapshot.TlsHosts"/>:
+    /// they have no hostname, and their certificate comes from the internal CA rather than from the ACME
+    /// desired set this feeds.
+    /// </param>
+    public static ProxyRouteTableSnapshot From(
+        IReadOnlyList<ProxySite> sites, IReadOnlyList<ProxyPortSite>? portSites = null) {
         var byHost = new Dictionary<string, ProxyRouteSnapshot>(StringComparer.OrdinalIgnoreCase);
         var tlsHosts = new List<string>();
         foreach (var site in sites) {
@@ -116,6 +149,15 @@ public sealed class ProxyRouteTable {
                 site.Local);
             if (site.Tls) tlsHosts.Add(host);
         }
-        return new ProxyRouteTableSnapshot(byHost.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase), tlsHosts);
+
+        var byPort = new Dictionary<int, ProxyPortRouteSnapshot>();
+        foreach (var site in portSites ?? []) {
+            if (byPort.ContainsKey(site.ListenPort)) continue;
+            byPort[site.ListenPort] = new ProxyPortRouteSnapshot(
+                site.ListenPort, site.RouteId, site.UpstreamHost, site.UpstreamPort);
+        }
+
+        return new ProxyRouteTableSnapshot(
+            byHost.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase), tlsHosts, byPort.ToFrozenDictionary());
     }
 }
