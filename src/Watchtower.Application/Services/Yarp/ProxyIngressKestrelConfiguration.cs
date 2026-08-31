@@ -201,6 +201,14 @@ public static class ProxyIngressKestrelConfiguration {
             // the management plane (which would stop being reachable) and the ingress ports (where the
             // route would be shadowed by the host dispatcher's own listener). Create-time validation
             // refuses these, so reaching here means the ports moved underneath an existing route.
+            //
+            // These drops are load-bearing twice over, and neither reason may be simplified away.
+            // Dispatch: YarpHostDispatchMiddleware decides "is this a port route's listener?" from the
+            // endpoints projected here, so a port left in would let one route capture the management or
+            // ingress listener wholesale. TLS: ProxyHttpsEndpoint's endpoint-defaults hook keys on the
+            // port alone, so a port-route port equal to a *plain-HTTP* endpoint's would convert that
+            // listener to TLS. Today the duplicate bind fails the host first, which hides both — but the
+            // reasoning has to outlive that accident.
             if (port == managementPort) {
                 warnings?.Warn(
                     $"Port route listener {port} is the management port; it is not bound. Move the route "

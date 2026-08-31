@@ -80,10 +80,15 @@ internal static class ProxyHttpsEndpoint {
         builder.WebHost.UseKestrelHttpsConfiguration();
 
         builder.WebHost.ConfigureKestrel((_, kestrel) => {
+            // Resolved once and then held, so a handshake costs the same dictionary lookup it costs on the
+            // named endpoint below — which captures the store in its own callback. Not eagerly: the
+            // container does not exist when Kestrel is configured. A race here resolves the same singleton
+            // twice and keeps one of them, which is not worth a lock.
+            CertificateStore? store = null;
             ConfigurePortRouteTls(
                 kestrel,
                 () => PortRouteListeners.BoundPorts(kestrelSection),
-                () => kestrel.ApplicationServices.GetRequiredService<CertificateStore>()
+                () => (store ??= kestrel.ApplicationServices.GetRequiredService<CertificateStore>())
                     .SelectContext(InternalCaNames.SharedLeafHost),
                 () => kestrel.ApplicationServices.GetRequiredService<ILoggerFactory>()
                     .CreateLogger(typeof(ProxyHttpsEndpoint)));

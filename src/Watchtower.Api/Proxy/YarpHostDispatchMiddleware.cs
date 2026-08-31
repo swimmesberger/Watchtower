@@ -63,6 +63,7 @@ public sealed class YarpHostDispatchMiddleware(
     IHttpForwarder forwarder,
     ProxyForwardHttpClient client,
     YarpListenerState listener,
+    ProxyIngressSection section,
     IOptionsMonitor<WatchtowerOptions> options,
     ILogger<YarpHostDispatchMiddleware> logger) {
     /// <summary>
@@ -132,6 +133,41 @@ public sealed class YarpHostDispatchMiddleware(
             : listeners.IngressPorts.Contains(localPort);
     }
 
+    /// <summary>
+    /// Whether this connection arrived on a listener a port-bound route owns (ADR-0033) — the question
+    /// the whole port branch hangs off, answered from two readings of the same fact plus a tie-break.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="YarpListenerSnapshot.PortRoutePorts"/> is the cached reading and answers almost every
+    /// request. It is <em>post-projection</em> truth, which is what makes it the right first question:
+    /// the route table is built from the rows, while <see cref="ProxyIngressKestrelConfiguration"/>
+    /// refuses to bind a port route whose port collides with the management or ingress ports. A route on
+    /// the ingress HTTPS port is reachable — <c>Yarp:HttpsPort</c> can move by environment underneath a
+    /// route create-time validation already accepted — and treating it as a port route would forward
+    /// every request on 443 to that one upstream, past the host lookup, past the ingress/management split
+    /// and past the access check.
+    /// </para>
+    /// <para>
+    /// But that reading can <em>lag</em>. It is republished from a reload callback on the projected
+    /// section, and so is Kestrel's own rebind; nothing orders the two, so there is a window where the
+    /// socket is bound and the snapshot has not caught up. On a deployment whose only listeners are port
+    /// routes the stale snapshot carries no ingress ports at all, which would make
+    /// <see cref="IsIngress"/> false and drop the request through to Watchtower's own SPA — on a port
+    /// published to the LAN. So where the snapshot and the route table disagree, and only there, the
+    /// projected section settles it: it is the exact data Kestrel used to create the listener, and it is
+    /// enumerated on a path that a converged instance never takes.
+    /// </para>
+    /// <para>
+    /// The two compose the right way round. A collision-dropped port is absent from the section as well
+    /// as from the snapshot, so the tie-break refuses it a second time rather than reinstating it.
+    /// </para>
+    /// </remarks>
+    private bool IsPortRouteListener(
+        YarpListenerSnapshot listeners, ProxyRouteTableSnapshot routes, int localPort) =>
+        listeners.PortRoutePorts.Contains(localPort)
+        || (routes.TryGetByPort(localPort, out _) && section.BoundPortRoutePorts().Contains(localPort));
+
     public async Task InvokeAsync(HttpContext context) {
         ArgumentNullException.ThrowIfNull(context);
         var request = context.Request;
@@ -159,16 +195,7 @@ public sealed class YarpHostDispatchMiddleware(
         // lookup because on this listener the Host header decides nothing: a client reaching a bare LAN
         // address writes whatever it likes there, and letting it name a routed domain would turn one
         // service's dedicated port into a way into another's.
-        //
-        // Both halves of the condition are load-bearing, and the order matters. The listener state is
-        // asked first because it is the *post-projection* truth: the route table is built from the rows,
-        // while ProxyIngressKestrelConfiguration refuses to bind a port route whose port collides with the
-        // management or ingress ports. A route on the ingress HTTPS port is reachable — Yarp:HttpsPort is
-        // an environment-pinnable setting, so it can move underneath a route that create-time validation
-        // already accepted — and without this guard every request arriving on 443 would be forwarded to
-        // that one upstream: no host lookup, no ingress/management split, no access check, and every
-        // visitor's session cookie handed to a service that has no business seeing it.
-        if (listeners.PortRoutePorts.Contains(localPort)) {
+        if (IsPortRouteListener(listeners, routes, localPort)) {
             if (routes.TryGetByPort(localPort, out var portRow)) {
                 await ForwardPortRouteAsync(context, portRow);
                 return;

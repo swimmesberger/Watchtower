@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -295,6 +296,7 @@ public sealed class YarpDispatchTests {
             _ => Task.FromException(new InvalidOperationException("The request must not fall through.")),
             table, forwarder, client,
             new YarpListenerState(),
+            EmptySection(),
             new StaticOptionsMonitor(new WatchtowerOptions()),
             NullLogger<YarpHostDispatchMiddleware>.Instance);
 
@@ -749,8 +751,73 @@ public sealed class YarpDispatchTests {
         Assert.Single(factory.Forwarder.Forwarded);
     }
 
+    /// <summary>
+    /// The window between Kestrel binding a port route's listener and the listener state catching up. The
+    /// two are republished from reload callbacks on the same section with no ordering between them, so a
+    /// request really can arrive while the snapshot is stale — and on a deployment whose only listeners
+    /// are port routes, a stale snapshot carries no ingress ports at all, which used to make the request
+    /// fall through to Watchtower's own SPA on a port published to the LAN.
+    /// </summary>
+    /// <remarks>
+    /// The staleness is injected rather than raced for: the whole point is that the ordering is not
+    /// something a test can reliably provoke, which is also why the fix does not depend on it. What is
+    /// asserted is the disagreement itself — table and section say "port route", snapshot says nothing —
+    /// resolving towards the section, which is the data Kestrel used to create the listener.
+    /// </remarks>
+    [Fact]
+    public async Task WhileTheListenerStateIsStale_APortRouteStillForwards() {
+        using var factory = PortRoutesOnlyEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        // The reading an instant before the state catches up: nothing bound, nothing ingress.
+        factory.Services.GetRequiredService<YarpListenerState>().Publish(
+            new YarpListenerSnapshot { ManagementPort = WatchtowerApiFactory.ManagementPort });
+
+        var response = await client.GetAsync("https://nas.lan/web/", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(RecordingHttpForwarder.MarkerBody, await Body(response));
+        Assert.Equal($"{PortUpstream}/web/", factory.Forwarder.Single().RequestUri?.ToString());
+    }
+
+    /// <summary>
+    /// The inverse, which is what keeps the tie-break from becoming a hole: with the same stale snapshot
+    /// and the same route row, a section that does not name the port — the collision-drop case — still
+    /// refuses. The section is consulted to settle a disagreement, not to override a refusal.
+    /// </summary>
+    [Fact]
+    public async Task WhileTheListenerStateIsStale_AnUnprojectedPortIsStillRefused() {
+        // The row says 8443 and the projection dropped it: the TLS ingress listener has that port.
+        using var factory = WatchtowerApiFactory.WithIngress(
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "8443"));
+        using var client = factory.CreateApiClient(8443);
+        await factory.AddPortRouteAsync(8443, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        factory.Services.GetRequiredService<YarpListenerState>().Publish(
+            new YarpListenerSnapshot { ManagementPort = WatchtowerApiFactory.ManagementPort });
+
+        var response = await client.GetAsync("https://nas.lan/web/", Ct);
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
     /// <summary>The port a port route listens on in these tests, in both the settings and the row.</summary>
     private const int PortRoutePort = 9001;
+
+    /// <summary>
+    /// The shape the stale-snapshot hazard needs: both ingress ports off, so the only listeners besides
+    /// the management endpoint are the port routes' — which is what makes a stale <c>IngressPorts</c>
+    /// empty rather than merely incomplete.
+    /// </summary>
+    private static WatchtowerApiFactory PortRoutesOnlyEstate() => WatchtowerApiFactory.WithIngress(
+        ("Watchtower:Proxy:Yarp:HttpPort", "0"),
+        ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
+        ("Watchtower:Proxy:Yarp:PortRoutePorts",
+            PortRoutePort.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
     /// <summary>
     /// An ingress host that also has a port route's listener. The setting is what the Kestrel projection
@@ -766,6 +833,10 @@ public sealed class YarpDispatchTests {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static Task<string> Body(HttpResponseMessage response) => response.Content.ReadAsStringAsync(Ct);
+
+    /// <summary>A projected section naming no endpoints — a host with no port routes.</summary>
+    private static ProxyIngressSection EmptySection() =>
+        new(new ConfigurationBuilder().Build());
 
     /// <summary>An <see cref="IOptionsMonitor{T}"/> over one fixed value, for the direct middleware test.</summary>
     private sealed class StaticOptionsMonitor(WatchtowerOptions value) : IOptionsMonitor<WatchtowerOptions> {
