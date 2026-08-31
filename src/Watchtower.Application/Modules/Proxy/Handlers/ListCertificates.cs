@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Modules.Proxy.Handlers;
 
@@ -9,8 +10,9 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// </summary>
 /// <param name="Source">
 /// Where the host comes from: <c>route</c> for a domain in the route table — Watchtower's own hostnames
-/// included, since ADR-0023 made those rows like any other — or <c>orphan</c> for a certificate still on
-/// disk that nothing routes to.
+/// included, since ADR-0023 made those rows like any other — <c>internal</c> for the shared LAN leaf the
+/// internal CA issues for the port routes (ADR-0033), which belongs to no single route and comes from no
+/// public CA, or <c>orphan</c> for a certificate still held that nothing routes to.
 /// </param>
 /// <param name="State">One of <c>none</c>, <c>pending</c>, <c>active</c>, <c>awaitingDns</c>, <c>error</c>.</param>
 public sealed record CertificateDto(
@@ -51,7 +53,11 @@ public sealed class ListCertificates(CertificateManager certificates, Watchtower
 
         var listed = certificates.Snapshot().Select(s => new CertificateDto(
             Host: s.Host,
-            Source: routeIds.ContainsKey(s.Host) ? "route" : "orphan",
+            // The internal leaf first: nothing routes its host name (it is selected by listening port, not
+            // by SNI), so the fall-through would call the one certificate every port route is served with
+            // an orphan and invite an operator to wonder why it is not being cleaned up.
+            Source: IsInternalLeaf(s.Host) ? "internal"
+                : routeIds.ContainsKey(s.Host) ? "route" : "orphan",
             RouteId: routeIds.TryGetValue(s.Host, out var id) ? id : null,
             State: s.State,
             NotBefore: s.NotBefore,
@@ -64,4 +70,8 @@ public sealed class ListCertificates(CertificateManager certificates, Watchtower
 
         return new Response(listed);
     }
+
+    /// <summary>Whether a host is the store key the internal CA's one shared LAN leaf is held under.</summary>
+    private static bool IsInternalLeaf(string host) =>
+        string.Equals(host, InternalCaNames.SharedLeafHost, StringComparison.OrdinalIgnoreCase);
 }

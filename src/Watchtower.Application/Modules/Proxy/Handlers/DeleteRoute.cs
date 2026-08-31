@@ -29,12 +29,20 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
     public sealed record Response(int Id, string? Warning = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
-        var domain = await db.Routes.AsNoTracking()
+        // The row rather than its domain: a port route has none (ADR-0033), and reading "no domain" as
+        // "no route" would make every port route undeletable.
+        var found = await db.Routes.AsNoTracking()
             .Where(r => r.Id == command.Id)
-            .Select(r => r.Domain)
+            .Select(r => new { r.Domain, r.ListenPort })
             .FirstOrDefaultAsync(ct);
-        if (domain is null)
+        if (found is null)
             return AppError.NotFound($"Route {command.Id} not found");
+
+        var domain = found.Domain;
+        // How the route is named in the trail and in the failure messages: the hostname where there is
+        // one, the port otherwise — the only thing an operator would recognise a port route by.
+        var subject = domain
+            ?? (found.ListenPort is { } listenPort ? $"port {listenPort}" : $"route {command.Id}");
 
         // Read before the delete: afterwards the foreign key has already set login_route_id to null and
         // there is nothing left to notice. Deleting is allowed — an operator removing a hostname has said
@@ -52,14 +60,15 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
               "visitors with 401 until another Watchtower route is marked as its login host.";
         if (warning is not null) {
             await audit.RecordAsync(
-                "proxy", "route.delete", domain, warning,
+                "proxy", "route.delete", subject, warning,
                 actor: await audit.ActorAsync(currentUser, ct), ct: ct);
         }
 
         // Forget BEFORE the reconcile: the reconcile preserves every rule for a hostname not in the
-        // table as foreign, so removing the rule afterwards would have to fight it.
+        // table as foreign, so removing the rule afterwards would have to fight it. Skipped for a port
+        // route: there is no hostname a provider could be holding a rule or a DNS record for.
         string? cleanupError = null;
-        if (command.RemoveFromProvider) {
+        if (command.RemoveFromProvider && domain is not null) {
             try {
                 await proxy.ForgetDomainAsync(domain, await audit.ActorAsync(currentUser, ct), ct);
             } catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -72,6 +81,6 @@ public sealed class DeleteRoute(WatchtowerDbContext db, IProxyProvider proxy, Au
         // the audit trail carries the provider's words, and the hostname is still visible as foreign.
         return cleanupError is null
             ? new Response(command.Id, warning)
-            : AppError.Internal($"The route was deleted, but removing {domain} from the provider failed: {cleanupError}");
+            : AppError.Internal($"The route was deleted, but removing {subject} from the provider failed: {cleanupError}");
     }
 }

@@ -15,10 +15,18 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 [Handler("proxy.checkDns")]
 public sealed class CheckDns(DnsPreflight dns)
     : IHandler<CheckDns.Command, Result<CheckDns.Response>> {
-    public sealed record Command(string Domain);
+    /// <param name="Domain">
+    /// The hostname to resolve. Nullable so a client editing a port route can round-trip the field it is
+    /// holding, and refused with a sentence saying why rather than with the generic "a domain is
+    /// required" — a port route (ADR-0033) is addressed by number and has nothing to resolve.
+    /// </param>
+    public sealed record Command(string? Domain);
     public sealed record Response(bool Resolves, IReadOnlyList<string> Addresses);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(command);
+        if (string.IsNullOrWhiteSpace(command.Domain))
+            return AppError.Validation("A port route has no domain to check.");
         if (!DesiredHosts.TryNormalize(command.Domain, out var domain, out var reason))
             return AppError.Validation(reason);
         var addresses = await dns.ResolveAsync(domain, ct);

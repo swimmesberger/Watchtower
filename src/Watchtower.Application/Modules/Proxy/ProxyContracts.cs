@@ -1,4 +1,8 @@
+using Microsoft.EntityFrameworkCore;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Persistence;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Modules.Proxy;
 
@@ -16,8 +20,17 @@ namespace Watchtower.Application.Modules.Proxy;
 /// </param>
 /// <param name="Domain">
 /// The route's hostname, or null for a port-bound route (ADR-0033), which is addressed by a listener of
-/// its own instead. The binding and the listen port are not carried yet — the API surface for port
-/// routes is the next stage; this field is nullable now because the column is.
+/// its own instead.
+/// </param>
+/// <param name="Binding">
+/// <c>domain</c> or <c>port</c> (ADR-0033) — how this route is addressed. A <c>port</c> route carries a
+/// <paramref name="ListenPort"/> and no <paramref name="Domain"/>; a <c>domain</c> route the other way
+/// round. Immutable after creation, like <paramref name="Target"/>.
+/// </param>
+/// <param name="ListenPort">
+/// The host port a <c>port</c> route's own TLS listener answers on; null on a <c>domain</c> route. The
+/// address a client types is that port together with one of the deployment's LAN names, which is why the
+/// client renders it from this and the configured names rather than storing a URL.
 /// </param>
 public sealed record RouteDto(
     int Id,
@@ -36,7 +49,9 @@ public sealed record RouteDto(
     string Target,
     int? RealmId,
     string? RealmSlug,
-    bool IsLoginRoute);
+    bool IsLoginRoute,
+    string Binding,
+    int? ListenPort);
 
 /// <summary>In-memory projection + validation helpers (not translatable to SQL).</summary>
 public static class RouteMapping {
@@ -56,7 +71,9 @@ public static class RouteMapping {
             r.Target.ToString().ToLowerInvariant(),
             r.RealmId,
             r.Realm?.Slug,
-            isLoginRoute);
+            isLoginRoute,
+            r.Binding.ToString().ToLowerInvariant(),
+            r.ListenPort);
     }
 
     /// <summary>Normalizes a domain: trimmed and lowercased. Returns null when blank/whitespace.</summary>
@@ -107,4 +124,93 @@ public static class RouteMapping {
         }
         return Enum.TryParse(target.Trim(), ignoreCase: true, out parsed) && Enum.IsDefined(parsed);
     }
+
+    /// <summary>
+    /// Reads the wire form of <see cref="RouteBinding"/>, defaulting to <see cref="RouteBinding.Domain"/>
+    /// for a blank or absent value — the only kind of route that existed before ADR-0033, and what every
+    /// client that says nothing means. An unrecognised value is refused rather than defaulted, for the
+    /// same reason <see cref="TryParseTarget"/> refuses one: a typo must not quietly create a route
+    /// addressed differently than the caller asked for.
+    /// </summary>
+    public static bool TryParseBinding(string? binding, out RouteBinding parsed) {
+        if (string.IsNullOrWhiteSpace(binding)) {
+            parsed = RouteBinding.Domain;
+            return true;
+        }
+        return Enum.TryParse(binding.Trim(), ignoreCase: true, out parsed) && Enum.IsDefined(parsed);
+    }
+}
+
+/// <summary>
+/// What a <see cref="RouteBinding.Port"/> route's listen port has to satisfy before the row is written
+/// (ADR-0033), shared by <c>proxy.createRoute</c> and <c>proxy.updateRoute</c> so a port a create accepted
+/// is never one an edit that changed nothing else would refuse.
+/// </summary>
+/// <remarks>
+/// Every rule here is about a listener actually coming up on the port. The ones about what a port route
+/// <em>is</em> — a public, TLS, service-target row with no hostname — are the check constraint's, not
+/// these, because those are invariants the request path relies on rather than advice at the boundary.
+/// </remarks>
+internal static class PortRouteRules {
+    /// <summary>
+    /// Checks a listen port against everything else this process binds, returning the operator-facing
+    /// message or null. Unlike the ingress ports, <c>0</c> is not an answer here: a port route <em>is</em>
+    /// its listener, so turning it off would leave a row nothing serves.
+    /// </summary>
+    public static string? ValidateListenPort(int listenPort, int? managementPort, YarpProxyOptions yarp) {
+        ArgumentNullException.ThrowIfNull(yarp);
+        if (listenPort is < 1 or > 65535)
+            return "The listen port must be between 1 and 65535.";
+        if (managementPort is { } management && listenPort == management) {
+            return $"Port {listenPort} is the management port — that is the listener Watchtower's own UI "
+                + "and API are served on.";
+        }
+        if (yarp.HttpPort != 0 && listenPort == yarp.HttpPort) {
+            return $"Port {listenPort} is the in-process proxy's HTTP ingress port, where domain routes "
+                + "are served. Choose a port of its own.";
+        }
+        if (yarp.HttpsPort != 0 && listenPort == yarp.HttpsPort) {
+            return $"Port {listenPort} is the in-process proxy's HTTPS ingress port, where domain routes "
+                + "are served. Choose a port of its own.";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The refusal naming the route that already holds <paramref name="listenPort"/>, or null when none
+    /// does. The friendly half of the filtered unique index on <c>listen_port</c> — which is what still
+    /// decides the question under a race, or between two instances on one database.
+    /// </summary>
+    /// <param name="exceptRouteId">The route being edited, which does not collide with itself.</param>
+    public static async ValueTask<string?> TakenByAsync(
+        WatchtowerDbContext db, int listenPort, int? exceptRouteId, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
+        var taken = await db.Routes.AsNoTracking()
+            .Where(r => r.ListenPort == listenPort && (exceptRouteId == null || r.Id != exceptRouteId))
+            .Select(r => new { r.Id, r.ServiceName })
+            .FirstOrDefaultAsync(ct);
+        return taken is null
+            ? null
+            : $"Port {listenPort} is already served by route {taken.Id} ({taken.ServiceName}). "
+              + "Two routes cannot share one listener.";
+    }
+
+    /// <summary>
+    /// Whether the deployment names at least one LAN address the internal CA can issue a leaf for. Junk
+    /// that does not parse counts as none: <c>proxy.updateConfig</c> refuses such a value, so the only way
+    /// to hold one is an environment pin, and issuance would fail on it the same way.
+    /// </summary>
+    public static bool HasLanNames(YarpProxyOptions yarp) {
+        ArgumentNullException.ThrowIfNull(yarp);
+        return InternalCaNames.TryParseLanNames(yarp.LanNames, out var dnsNames, out var ips, out _)
+            && (dnsNames.Count > 0 || ips.Count > 0);
+    }
+
+    /// <summary>
+    /// What an operator is told to do before a port route can be created at all: without a LAN name the
+    /// internal CA has nothing to issue for, so the route would come up permanently untrusted.
+    /// </summary>
+    public const string NoLanNames =
+        "Set the LAN names in Settings → Reverse proxy first — the certificate has to carry the name or "
+        + "IP you will type in the browser.";
 }

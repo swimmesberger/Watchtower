@@ -371,6 +371,57 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         Assert.Contains(WatchtowerSettingPaths.ProxyYarpHttpsPort, GetProxyConfig.ProxyPaths);
     }
 
+    /// <summary>
+    /// The other direction of the check <c>proxy.createRoute</c> makes (ADR-0033). Without it the
+    /// projection would drop the port route's listener as colliding, and the route would keep its row,
+    /// quietly stop being served, and go on reading as healthy on the Routes page.
+    /// </summary>
+    [Theory]
+    [InlineData(9001, 18443, "HTTP ingress port 9001")]
+    [InlineData(18081, 9001, "HTTPS ingress port 9001")]
+    public async Task AnIngressPortAPortRouteHolds_IsRefused_AndNamesTheRoute(
+        int http, int https, string expected) {
+        using var host = AuthTestHost.Start();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001, serviceName: "jellyfin");
+
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = http, YarpHttpsPort = https });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(expected, result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains($"route {routeId}", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("jellyfin", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A listener turned off holds no port, so it cannot be in a port route's way.</summary>
+    [Fact]
+    public async Task AnIngressPortTurnedOff_NeverCollidesWithAPortRoute() {
+        using var host = AuthTestHost.Start();
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = 0, YarpHttpsPort = 0 });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    /// <summary>
+    /// Switching the in-process provider on is the moment the stored ingress ports start being bound, so
+    /// the collision is checked then too — even though this request supplied neither port.
+    /// </summary>
+    [Fact]
+    public async Task EnablingTheProvider_ChecksTheStoredPortsAgainstThePortRoutes() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:Yarp:HttpsPort", "9001"));
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await SaveAsync(
+            host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("HTTPS ingress port 9001", result.Error.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>The audit line names the ports, because changing one moves a listener facing the internet.</summary>
     [Fact]
     public async Task TheAuditLineNamesTheIngressPorts() {

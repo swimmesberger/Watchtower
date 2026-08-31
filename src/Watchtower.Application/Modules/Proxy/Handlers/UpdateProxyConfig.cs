@@ -4,8 +4,10 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Elarion.Abstractions.Identity;
 using Elarion.Settings;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
+using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
@@ -30,7 +32,8 @@ public sealed class UpdateProxyConfig(
     EnvironmentSettingPins pins,
     AuditLog audit,
     ICurrentUser currentUser,
-    YarpListenerState listener)
+    YarpListenerState listener,
+    WatchtowerDbContext db)
     : IHandler<UpdateProxyConfig.Command, Result<UpdateProxyConfig.Response>> {
     public sealed record Command(
         bool Enabled,
@@ -101,9 +104,16 @@ public sealed class UpdateProxyConfig(
         // switches the in-process provider on, because that is the moment Kestrel is asked to bind them.
         // Unlike the ACME values these are cheap to check and cannot rot underneath us, but the rule is kept
         // the same so "disable the proxy" never fails on a value it is about to stop acting on.
-        if ((command.YarpHttpPort is not null || command.YarpHttpsPort is not null || enablingYarp)
-            && ValidateIngressPorts(httpPort, httpsPort, listener.ManagementPort) is { } portError)
-            return AppError.Validation(portError);
+        if (command.YarpHttpPort is not null || command.YarpHttpsPort is not null || enablingYarp) {
+            if (ValidateIngressPorts(httpPort, httpsPort, listener.ManagementPort) is { } portError)
+                return AppError.Validation(portError);
+            // The other direction of the check proxy.createRoute makes: there it is a new listen port
+            // against the stored ingress ports, here a new ingress port against the stored listen ports.
+            // Whichever of the two is written second is refused, so neither order can reach the collision
+            // — where it would surface as two Kestrel endpoints asked for one socket.
+            if (await PortRouteCollisionAsync(httpPort, httpsPort, ct) is { } clash)
+                return AppError.Validation(clash);
+        }
 
         if ((command.YarpAcmeDirectoryUrl is not null || enablingYarp)
             && !IsAcceptableAcmeDirectoryUrl(acmeDirectoryUrl))
@@ -342,6 +352,32 @@ public sealed class UpdateProxyConfig(
             return $"An ingress port must not be the management port ({management}) — "
                 + "that is the listener Watchtower's own UI and API are served on.";
         return null;
+    }
+
+    /// <summary>
+    /// Checks the two ingress ports against the ports the existing port routes already listen on
+    /// (ADR-0033), returning the operator-facing message naming the route in the way, or null.
+    /// </summary>
+    /// <remarks>
+    /// The projection drops a port-route listener whose port collides with an ingress one, so without
+    /// this the route would keep its row, quietly stop being served, and read as healthy on the Routes
+    /// page. Off is never a collision: a listener that is not bound cannot take anything.
+    /// </remarks>
+    private async ValueTask<string?> PortRouteCollisionAsync(int httpPort, int httpsPort, CancellationToken ct) {
+        var wanted = new List<int>();
+        if (httpPort != 0) wanted.Add(httpPort);
+        if (httpsPort != 0) wanted.Add(httpsPort);
+        if (wanted.Count == 0) return null;
+
+        var clash = await db.Routes.AsNoTracking()
+            .Where(r => r.ListenPort != null && wanted.Contains(r.ListenPort.Value))
+            .Select(r => new { r.Id, r.ListenPort, r.ServiceName })
+            .FirstOrDefaultAsync(ct);
+        if (clash is null) return null;
+
+        var which = clash.ListenPort == httpPort ? "HTTP" : "HTTPS";
+        return $"The {which} ingress port {clash.ListenPort} is route {clash.Id}'s listen port "
+            + $"({clash.ServiceName}). Move that port route first, or choose another ingress port.";
     }
 
     /// <summary>A port for the audit line, with <c>0</c> spelled out as what it means.</summary>

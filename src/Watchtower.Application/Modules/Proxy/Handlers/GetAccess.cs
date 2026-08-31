@@ -41,6 +41,15 @@ public sealed class GetAccess(WatchtowerDbContext db)
         if (route is null)
             return AppError.NotFound($"Route {query.RouteId} not found");
 
+        // Refused rather than answered with "Public, no grants" (ADR-0033): a port route has no hostname
+        // for a login redirect to come back to, so it can never be anything else, and returning a policy
+        // shape a form could then edit would offer a control that SetAccess refuses.
+        if (route.Binding == RouteBinding.Port) {
+            return AppError.Validation(
+                "A port route is always public. It has no hostname for a login redirect to return to, so "
+                + "route access control does not apply.");
+        }
+
         // Resolved the same way SetAccess resolves it — the stack's category, or the operator realm for a
         // standalone stack — so the read and the write agree on which population a grant may come from.
         var realmId = await RouteAccessPolicy.RouteRealmIdAsync(db, route.Id, ct);

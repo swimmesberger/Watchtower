@@ -190,6 +190,57 @@ public sealed class ProxyStatusSurfaceTests {
         Assert.Null(status.ProviderDetail);
     }
 
+    // ── Port routes (ADR-0033) ───────────────────────────────────────────────
+
+    /// <summary>
+    /// The deployment shape that would otherwise read as TLS-less: HTTPS ingress off, every service on a
+    /// port route of its own. The first note is true and the second is what stops it being read as
+    /// "nothing here is terminating TLS".
+    /// </summary>
+    [Fact]
+    public async Task WithTlsIngressOffAndPortRoutesBound_BothAreReported() {
+        using var host = AuthTestHost.Start(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", ProxyProviderNames.Yarp),
+            ("Watchtower:Proxy:Yarp:HttpsPort", "0"));
+        host.Services.GetRequiredService<YarpListenerState>().Update(s => s with {
+            IngressPorts = new HashSet<int> { 9002, 9001 },
+            PortRoutePorts = new HashSet<int> { 9002, 9001 },
+        });
+
+        var status = await StatusAsync(host, new StubBoundPorts(new HashSet<int> { 9001, 9002 }));
+
+        Assert.Equal(
+            "HTTPS ingress disabled (port 0) — routes are served over plain HTTP only · "
+            + "2 port routes on ports 9001, 9002 (TLS from the internal CA)",
+            status.ProviderDetail);
+    }
+
+    [Fact]
+    public async Task OnePortRoute_IsCountedInTheSingular() {
+        using var host = YarpHost();
+        host.Services.GetRequiredService<YarpListenerState>().Update(s => s with {
+            HttpsBound = true,
+            IngressPorts = new HashSet<int> { 9001 },
+            PortRoutePorts = new HashSet<int> { 9001 },
+        });
+
+        var status = await StatusAsync(host, new StubBoundPorts(new HashSet<int> { 9001 }));
+
+        Assert.Equal("1 port route on port 9001 (TLS from the internal CA)", status.ProviderDetail);
+    }
+
+    /// <summary>A deployment with none of them says nothing — the old wording, unchanged.</summary>
+    [Fact]
+    public async Task WithNoPortRoutes_NothingIsSaidAboutThem() {
+        using var host = YarpHost();
+        host.Services.GetRequiredService<YarpListenerState>().Update(s => s with { HttpsBound = true });
+
+        var status = await StatusAsync(host);
+
+        Assert.Null(status.ProviderDetail);
+    }
+
     /// <summary>The ports ride the config surface, so the Settings page can offer them as fields.</summary>
     [Fact]
     public async Task TheConfigSurfaceReportsTheIngressPorts() {

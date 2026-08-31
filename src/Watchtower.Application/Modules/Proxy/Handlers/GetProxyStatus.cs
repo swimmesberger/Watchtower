@@ -76,7 +76,26 @@ public sealed class GetProxyStatus(
         // already says the proxy is running — and next to a caveat that says something is wrong.
         if (notes.Count == 0 && CertificateProgress() is { } progress) notes.Add(progress);
 
+        // Last, and outside the caveat count above, because it is neither a caveat nor a reason to hide
+        // the certificate progress. It is here so the one deployment shape that otherwise reads as
+        // TLS-less does not: HttpsPort turned off with every service on a port route of its own says
+        // "HTTPS ingress disabled" and would look like nothing is terminating TLS at all.
+        if (PortListeners() is { } portRoutes) notes.Add(portRoutes);
+
         return notes.Count == 0 ? null : string.Join(" · ", notes);
+    }
+
+    /// <summary>
+    /// The port-bound routes' own TLS listeners (ADR-0033), or null when there are none. Read off the
+    /// listener state rather than counted in the route table, so what is reported is what this instance is
+    /// actually listening on — a port the projection dropped is absent from both.
+    /// </summary>
+    private string? PortListeners() {
+        var ports = listener.PortRoutePorts.Order().ToArray();
+        if (ports.Length == 0) return null;
+        return ports.Length == 1
+            ? $"1 port route on port {ports[0]} (TLS from the internal CA)"
+            : $"{ports.Length} port routes on ports {string.Join(", ", ports)} (TLS from the internal CA)";
     }
 
     /// <summary>
