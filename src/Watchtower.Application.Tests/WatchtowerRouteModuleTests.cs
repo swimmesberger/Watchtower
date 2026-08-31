@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Modules.Proxy;
 using Watchtower.Application.Modules.Proxy.Handlers;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -358,7 +359,12 @@ public sealed class WatchtowerRouteModuleTests {
             scope.ServiceProvider, new ListRoutes.Query());
 
         Assert.True(result.IsSuccess, Describe(result));
-        var byDomain = result.Value.Routes.ToDictionary(r => r.Domain);
+        // Keyed by hostname, so the rows without one are simply not in it — every route this test creates
+        // has a domain, and a port route (ADR-0033) would have nothing to key by.
+        var byDomain = new Dictionary<string, RouteDto>(StringComparer.Ordinal);
+        foreach (var route in result.Value.Routes) {
+            if (route.Domain is { } domain) byDomain[domain] = route;
+        }
         Assert.True(byDomain["login.acme.invalid"].IsLoginRoute);
         Assert.Equal("acme", byDomain["login.acme.invalid"].RealmSlug);
         // A second Watchtower hostname for the same realm is not the login host.

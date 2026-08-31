@@ -14,11 +14,16 @@ namespace Watchtower.Application.Modules.Proxy;
 /// Whether the realm named this route as its login host — the address its protected apps redirect
 /// anonymous visitors to.
 /// </param>
+/// <param name="Domain">
+/// The route's hostname, or null for a port-bound route (ADR-0033), which is addressed by a listener of
+/// its own instead. The binding and the listen port are not carried yet — the API surface for port
+/// routes is the next stage; this field is nullable now because the column is.
+/// </param>
 public sealed record RouteDto(
     int Id,
     int? StackId,
     string? StackName,
-    string Domain,
+    string? Domain,
     string ServiceName,
     int ContainerPort,
     bool TlsEnabled,

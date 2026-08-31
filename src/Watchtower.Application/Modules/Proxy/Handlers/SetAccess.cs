@@ -224,8 +224,8 @@ public sealed class SetAccess(
         db.AuditEvents.Add(new AuditEvent {
             Category = AuthEventKinds.CategoryOf(AuthEventKinds.RouteAccessChanged),
             Action = AuthEventKinds.RouteAccessChanged,
-            Target = route.Domain,
-            Detail = $"actor={actorId}; route={route.Domain}#{route.Id}; mode={mode}",
+            Target = route.DisplayAddress,
+            Detail = $"actor={actorId}; route={route.DisplayAddress}#{route.Id}; mode={mode}",
             Actor = await AuditLog.ResolveActorAsync(db, currentUser.UserId),
             Success = true,
             CreatedAt = time.GetUtcNow(),

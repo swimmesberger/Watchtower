@@ -47,7 +47,7 @@ public sealed class RouteDomainNormalizationTests {
         // The stored value, read without any normalization of its own.
         var stored = await db.Routes.AsNoTracking().Select(r => r.Domain).SingleAsync(Ct);
         Assert.Equal("login.example.invalid", stored);
-        Assert.Empty(await db.Routes.AsNoTracking().Where(r => r.Domain != r.Domain.ToLower()).ToListAsync(Ct));
+        Assert.Empty(await db.Routes.AsNoTracking().Where(r => r.Domain != null && r.Domain != r.Domain.ToLower()).ToListAsync(Ct));
 
         // And the two lookups that now compare against the raw column still answer for a header that
         // arrives in any case, because they normalize the parameter instead.

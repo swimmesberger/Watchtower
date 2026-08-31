@@ -74,7 +74,8 @@ public sealed class RouteStatusUpdater(IServiceScopeFactory scopeFactory, ILogge
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             await db.Routes
-                .Where(r => wanted.Contains(r.Domain) && r.Status == RouteStatus.Pending && r.StatusDetail == null)
+                .Where(r => r.Domain != null && wanted.Contains(r.Domain)
+                    && r.Status == RouteStatus.Pending && r.StatusDetail == null)
                 // Only the detail: the filter already pins these rows to Pending.
                 .ExecuteUpdateAsync(s => s.SetProperty(r => r.StatusDetail, "Waiting for a certificate"), ct);
         } catch (Exception ex) when (ex is not OperationCanceledException) {

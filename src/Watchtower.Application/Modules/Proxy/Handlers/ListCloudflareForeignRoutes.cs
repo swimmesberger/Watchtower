@@ -87,7 +87,11 @@ public sealed class ListCloudflareForeignRoutes(
                 + "a locally-managed cloudflared configuration file are not visible to Watchtower — "
                 + "recreate them as remotely-managed public hostnames, or add them here as routes.");
 
-        var routeDomains = await db.Routes.AsNoTracking().Select(r => r.Domain).ToListAsync(ct);
+        // Hostnames only: a port route (ADR-0033) has none, so there is nothing in a tunnel's ingress
+        // rules for it to be the local counterpart of.
+        var routeDomains = (await db.Routes.AsNoTracking().Select(r => r.Domain).ToListAsync(ct))
+            .OfType<string>()
+            .ToList();
         var stacks = await db.Stacks.AsNoTracking()
             .Select(s => new StackCandidate(s.Id, s.Name, s.ComposeProjectName))
             .ToListAsync(ct);

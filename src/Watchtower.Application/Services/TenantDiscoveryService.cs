@@ -73,10 +73,14 @@ public sealed class TenantDiscoveryService(
     /// <returns>The proven user's id, or null.</returns>
     public async Task<int?> ResolveAssertionSubjectAsync(
         int callerStackId, string? assertion, CancellationToken ct) {
-        var audiences = await db.Routes.AsNoTracking()
-            .Where(r => r.StackId == callerStackId)
-            .Select(r => r.Domain)
-            .ToListAsync(ct);
+        // Hostnames only: an assertion's audience is a domain, so a port route (ADR-0033) is not one this
+        // stack could ever have been handed a token for.
+        var audiences = (await db.Routes.AsNoTracking()
+                .Where(r => r.StackId == callerStackId)
+                .Select(r => r.Domain)
+                .ToListAsync(ct))
+            .OfType<string>()
+            .ToList();
 
         // The realm the caller serves: its category's, or the operator realm when it is a standalone stack.
         // A stack that has vanished lands here too and is harmless — it has no routes either, and the signer
@@ -141,7 +145,10 @@ public sealed class TenantDiscoveryService(
         var reachable = new List<AccessibleTenant>(tenants.Count);
         foreach (var tenant in tenants) {
             if (!primary.TryGetValue(tenant.Id, out var route) || !accessible.Contains(route.Id)) continue;
-            reachable.Add(new AccessibleTenant(tenant.Id, tenant.Slug, route.Domain));
+            // The switcher navigates a browser to this address, so a tenant whose primary route is
+            // port-bound (ADR-0033) is not one it can offer — there is no hostname to send anyone to.
+            if (route.Domain is not { } domain) continue;
+            reachable.Add(new AccessibleTenant(tenant.Id, tenant.Slug, domain));
         }
 
         // Ordinal, and sorted here rather than in SQL: slugs are already normalised to lowercase ASCII, and

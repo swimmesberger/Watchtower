@@ -489,16 +489,34 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
         // always Public. The second is the invariant "no realm's login host sits behind its own gate",
         // which used to be a force-unprotect in the site projection and is now something the database
         // will not store.
-        b.ToTable("routes", t => t.HasCheckConstraint(
-            "ck_routes_target",
-            """
-            ("target" = 'Watchtower' AND "stack_id" IS NULL AND "realm_id" IS NOT NULL AND "access_mode" = 'Public')
-            OR ("target" = 'Service' AND "stack_id" IS NOT NULL AND "realm_id" IS NULL)
-            """));
+        b.ToTable("routes", t => {
+            t.HasCheckConstraint(
+                "ck_routes_target",
+                """
+                ("target" = 'Watchtower' AND "stack_id" IS NULL AND "realm_id" IS NOT NULL AND "access_mode" = 'Public')
+                OR ("target" = 'Service' AND "stack_id" IS NOT NULL AND "realm_id" IS NULL)
+                """);
+            // The second axis (ADR-0033): what addresses this route. A domain route is what the table
+            // always held; a port route is addressed by a listener of its own and carries no hostname at
+            // all. Everything a port route is *not* allowed to be is here rather than in the handlers,
+            // because each of them is an invariant the request path relies on and would have no way to
+            // recover from: it forwards to a stack service (there is no hostname for Watchtower to be
+            // served on), it is public (a login redirect needs a domain to come back to), and it is TLS
+            // (a plain-HTTP twin of a protected app would be a second way in).
+            t.HasCheckConstraint(
+                "ck_routes_binding",
+                """
+                ("binding" = 'Domain' AND "domain" IS NOT NULL AND "listen_port" IS NULL)
+                OR ("binding" = 'Port' AND "domain" IS NULL AND "listen_port" BETWEEN 1 AND 65535
+                    AND "target" = 'Service' AND "access_mode" = 'Public' AND "tls_enabled")
+                """);
+        });
         b.HasKey(x => x.Id);
         b.UseXminAsConcurrencyToken();
-        b.Property(x => x.Domain).IsRequired();
         b.Property(x => x.ServiceName).IsRequired();
+        // Stored as the enum name ("Domain"/"Port"); "Domain" is the default, which is what the check
+        // constraint reads for every row written before port routes existed.
+        b.Property(x => x.Binding).HasConversion<string>().HasDefaultValue(RouteBinding.Domain);
         // Stored as the enum name ("Service"/"Watchtower"); "Service" is the default, which is what the
         // check constraint above reads for a route written without one.
         b.Property(x => x.Target).HasConversion<string>().HasDefaultValue(RouteTarget.Service);
@@ -515,7 +533,14 @@ public sealed class RouteConfiguration : IEntityTypeConfiguration<Route> {
         // have no notion of realms, so two realms claiming one host could not both be served. A *service*
         // route's realm is inherited from its stack's template rather than stored here (design.md §13);
         // realm_id is filled only by a Watchtower route, which has no stack to inherit from.
-        b.HasIndex(x => x.Domain).IsUnique();
+        // Filtered, now that a port route stores no domain: PostgreSQL treats NULLs as distinct in a
+        // unique index, so an unfiltered one would happen to work — but the filter states that only rows
+        // with a hostname are being kept unique, and keeps the index off the rows that have none.
+        b.HasIndex(x => x.Domain).IsUnique().HasFilter("\"domain\" IS NOT NULL");
+        // The port routes' half of the same rule, and the one that has to hold: two routes on one port
+        // would be two Kestrel endpoints on one socket. The create-time check is the friendly message;
+        // this is what makes it true under a race or a second instance.
+        b.HasIndex(x => x.ListenPort).IsUnique().HasFilter("\"listen_port\" IS NOT NULL");
         b.HasIndex(x => x.StackId);
         b.HasIndex(x => x.RealmId);
         b.HasOne(x => x.Stack)

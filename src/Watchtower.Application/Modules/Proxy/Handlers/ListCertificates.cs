@@ -40,9 +40,14 @@ public sealed class ListCertificates(CertificateManager certificates, Watchtower
         // Route ids come from the database rather than from the routing table, because a route created
         // moments ago may not have been projected yet — and a host with no row at all is a certificate
         // nothing routes to any more.
-        var routeIds = await db.Routes.AsNoTracking()
-            .Select(r => new { r.Id, r.Domain })
-            .ToDictionaryAsync(r => r.Domain, r => r.Id, StringComparer.OrdinalIgnoreCase, ct);
+        // Keyed by hostname, so the rows without one — the port routes (ADR-0033) — are left out. Their
+        // certificate is the internal CA's shared LAN leaf, which is not a route's certificate at all:
+        // one leaf serves every port route at once.
+        var rows = await db.Routes.AsNoTracking().Select(r => new { r.Id, r.Domain }).ToListAsync(ct);
+        var routeIds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows) {
+            if (row.Domain is { } domain) routeIds[domain] = row.Id;
+        }
 
         var listed = certificates.Snapshot().Select(s => new CertificateDto(
             Host: s.Host,

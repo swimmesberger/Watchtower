@@ -246,7 +246,14 @@ public sealed class AccessVerifier(
 
         // Source of truth, forwarded for every protected route regardless of mode. It carries the groups
         // even on a None route: the signed assertion is where a group-aware app should read them from.
-        var assertion = signer.Mint(user, route.Domain, realm, groups);
+        // The audience is the route's hostname, and every route that reaches access control has one — a
+        // port route is stored Public or not at all (ADR-0033), because the login flow has nowhere to
+        // send a visitor back to without a domain. Stated rather than suppressed: an assertion minted for
+        // an empty audience is one no upstream could pin.
+        var audience = route.Domain
+            ?? throw new InvalidOperationException(
+                $"Route {route.Id} is access-controlled but carries no domain to mint an assertion for.");
+        var assertion = signer.Mint(user, audience, realm, groups);
         headers.Add(new KeyValuePair<string, string>(RouteAccessPolicy.JwtHeaderName, assertion));
         // Cloudflare mode: the same assertion also travels under Cloudflare's header name, so an app
         // written against Cf-Access-Jwt-Assertion only re-points its JWKS/issuer config at Watchtower.

@@ -208,8 +208,12 @@ public static class WatchtowerAccessEndpoints {
             // Caddy always sets X-Forwarded-Host for a request that reached the app's own site block, so
             // its absence means this did not arrive through one — refuse rather than mint a cookie scoped
             // to a host the code was not bound to. A present header must match the code's route domain.
+            // A route with no hostname cannot match one either: a port route (ADR-0033) is Public by
+            // construction, so no code was ever minted against it, and the comparison states that rather
+            // than relying on it.
             var host = RouteAccessPolicy.NormalizeForwardedHost(http.Request.Headers["X-Forwarded-Host"]);
-            if (host is null || !string.Equals(host, route.Domain, StringComparison.OrdinalIgnoreCase))
+            if (host is null || route.Domain is not { } domain
+                || !string.Equals(host, domain, StringComparison.OrdinalIgnoreCase))
                 return ExpiredCodePage();
 
             var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == grant.UserId, ct);
@@ -218,7 +222,7 @@ public static class WatchtowerAccessEndpoints {
             if (route.AccessMode == AccessMode.Public ||
                 !await RouteAccessPolicy.IsAuthorizedAsync(db, route, user.Id, ct)) {
                 return Html(StatusCodes.Status403Forbidden, "Access denied",
-                    $"Your account is not permitted to use {Encode(route.Domain)}.",
+                    $"Your account is not permitted to use {Encode(domain)}.",
                     "Ask an administrator to grant you access.");
             }
 
@@ -227,7 +231,7 @@ public static class WatchtowerAccessEndpoints {
                 http, AuthSessionService.AccessCookieName, token,
                 sessions.AbsoluteLifetime, options.CurrentValue.Auth.CookieSecure);
 
-            await AuthAudit.QueueAsync(db, time, CodeRedeemed, user.Id, route.Id, Describe(http), target: route.Domain);
+            await AuthAudit.QueueAsync(db, time, CodeRedeemed, user.Id, route.Id, Describe(http), target: domain);
             await db.SaveChangesAsync(CancellationToken.None);
 
             // Re-parse rather than trusting the stored string: the redirect target is re-derived from a
@@ -443,18 +447,36 @@ public static class WatchtowerAccessEndpoints {
         // Watchtower's own routes are excluded outright (ADR-0023): the portal names applications a visitor
         // can be sent to, and the page they are already looking at is not one of them — it is where this
         // list is rendered.
-        var rows = await db.Routes.AsNoTracking()
-            .Where(r => r.Target == RouteTarget.Service)
-            .Select(r => new AppRouteRow(
-                r.Id, r.Domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId!.Value, r.ServiceName, r.Stack!.Name))
+        // A port route (ADR-0033) is left out with them, and for the same reason: the portal renders an
+        // address a visitor can navigate to, and a route addressed by a listener on this host has none.
+        var projected = await db.Routes.AsNoTracking()
+            .Where(r => r.Target == RouteTarget.Service && r.Binding == RouteBinding.Domain)
+            .Select(r => new {
+                r.Id,
+                r.Domain,
+                r.AccessMode,
+                r.TlsEnabled,
+                r.IsPrimary,
+                StackId = r.StackId!.Value,
+                r.ServiceName,
+                StackName = r.Stack!.Name,
+            })
             .ToListAsync(ct);
 
+        var rows = new List<AppRouteRow>(projected.Count);
+        foreach (var r in projected) {
+            // The filter above already settled this; the row is built from a hostname, so it is stated.
+            if (r.Domain is not { } domain) continue;
+            rows.Add(new AppRouteRow(
+                r.Id, domain, r.AccessMode, r.TlsEnabled, r.IsPrimary, r.StackId, r.ServiceName, r.StackName));
+        }
+
         // Detached stand-ins rather than a widened projection: AccessibleRouteIdsAsync documents that it
-        // reads Id and AccessMode and nothing else, so those are the only two set here. Domain and
-        // ServiceName are placeholders present because the entity marks them `required`, never values the
-        // policy consults — the real ones stay on the rows above.
+        // reads Id and AccessMode and nothing else, so those are the only two set here. ServiceName is a
+        // placeholder present because the entity marks it `required`, never a value the policy consults —
+        // the real ones stay on the rows above.
         var candidates = rows
-            .Select(r => new Route { Id = r.Id, AccessMode = r.AccessMode, Domain = "", ServiceName = "" })
+            .Select(r => new Route { Id = r.Id, AccessMode = r.AccessMode, ServiceName = "" })
             .ToList();
         var accessible = await RouteAccessPolicy.AccessibleRouteIdsAsync(db, candidates, session.UserId, ct);
         if (accessible.Count == 0) return Ok(http, []);

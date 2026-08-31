@@ -76,7 +76,10 @@ public sealed class YarpProxyProviderApplyTests {
 
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var byDomain = await db.Routes.AsNoTracking().ToDictionaryAsync(r => r.Domain, r => r.StatusDetail, Ct);
+        var byDomain = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var route in await db.Routes.AsNoTracking().ToListAsync(Ct)) {
+            if (route.Domain is { } domain) byDomain[domain] = route.StatusDetail;
+        }
         Assert.Equal("Waiting for a certificate", byDomain["app.example.invalid"]);
         // Nothing is pending for a route that is served over plain HTTP.
         Assert.Null(byDomain["plain.example.invalid"]);

@@ -37,7 +37,7 @@ public sealed class CloudflareIngressMergeTests {
         var routes = new[] { NewRoute("app.example.com", "shop", "web", 3000) };
 
         var merged = CloudflareTunnelProvider.MergeIngress(
-            existing, CloudflareTunnelProvider.ProjectIngress(routes), routes.Select(r => r.Domain));
+            existing, CloudflareTunnelProvider.ProjectIngress(routes), routes.Select(r => r.Domain).OfType<string>());
 
         // Foreign rules first (dashboard order, path intact), then ours, then exactly one catch-all.
         Assert.Equal(
@@ -58,7 +58,7 @@ public sealed class CloudflareIngressMergeTests {
         var routes = new[] { NewRoute("app.example.com", "shop", "web", 3000) };
 
         var merged = CloudflareTunnelProvider.MergeIngress(
-            existing, CloudflareTunnelProvider.ProjectIngress(routes), routes.Select(r => r.Domain));
+            existing, CloudflareTunnelProvider.ProjectIngress(routes), routes.Select(r => r.Domain).OfType<string>());
 
         var rule = Assert.Single(merged, r => r.Hostname == "app.example.com");
         Assert.Equal("http://shop-web:3000", rule.Service);
@@ -68,7 +68,7 @@ public sealed class CloudflareIngressMergeTests {
     public void EmptyRemoteConfiguration_MergesToJustTheProjection() {
         var routes = new[] { NewRoute("app.example.com", "shop", "web", 3000) };
         var merged = CloudflareTunnelProvider.MergeIngress(
-            [], CloudflareTunnelProvider.ProjectIngress(routes), routes.Select(r => r.Domain));
+            [], CloudflareTunnelProvider.ProjectIngress(routes), routes.Select(r => r.Domain).OfType<string>());
         Assert.Equal(["app.example.com", null], merged.Select(r => r.Hostname));
     }
 
