@@ -6,6 +6,7 @@ using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Proxy.Handlers;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 using Xunit;
 
@@ -483,6 +484,25 @@ public sealed class CreatePortRouteValidationTests {
 
         Assert.False(result.IsSuccess);
         Assert.Equal("A port route has no domain to check.", result.Error.Message);
+    }
+
+    // ── Certificates ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The LAN leaf is served but is never in the ACME desired set, so the generic refusal would tell an
+    /// operator the proxy does not serve a host it plainly is serving.
+    /// </summary>
+    [Fact]
+    public async Task RenewingTheLanCertificate_ExplainsThatItIsNotAnAcmeOne() {
+        using var host = AuthTestHost.Start(services => services.AddRenewCertificate());
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<RenewCertificate.Command, RenewCertificate.Response>(
+            scope.ServiceProvider, new RenewCertificate.Command(InternalCaNames.SharedLeafHost));
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("internal CA", result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("is not a host", result.Error.Message, StringComparison.Ordinal);
     }
 
     // ── Wiring ───────────────────────────────────────────────────────────────

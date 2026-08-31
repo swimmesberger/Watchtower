@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Modules.Proxy.Handlers;
 
@@ -30,6 +31,15 @@ public sealed class RenewCertificate(
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         if (!DesiredHosts.TryNormalize(command.Host, out var host, out var reason))
             return AppError.Validation(reason);
+
+        // Said before the desired check, because the answer that check would give is misleading here: the
+        // LAN leaf is never in the ACME desired set (ADR-0033) and yet is plainly being served, so
+        // "not a host the in-process proxy serves" would read as a lie.
+        if (string.Equals(host, InternalCaNames.SharedLeafHost, StringComparison.OrdinalIgnoreCase)) {
+            return AppError.Validation(
+                "The LAN certificate comes from Watchtower's internal CA, not from a public one over "
+                + "ACME. It is reissued on its own when the LAN names change or it nears expiry.");
+        }
 
         var known = certificates.Snapshot().FirstOrDefault(s => s.Host == host);
         if (known is null || !known.Desired)
