@@ -405,8 +405,10 @@ export function RoutesPage() {
     onSuccess: (route) => {
       toast.success(`Route ${routeLabel(route)} created.`)
       qc.invalidateQueries({ queryKey: ['routes'] })
-      // A new port route mints the internal CA on first use, so the block that offers its root appears.
-      qc.invalidateQueries({ queryKey: ['proxy-internal-ca'] })
+      // A new port route mints the internal CA on first use, so the block that offers its root
+      // appears. The Settings card reads it under this same key — creating the first port route is
+      // exactly when its download link has to stop being hidden.
+      qc.invalidateQueries({ queryKey: ['proxy', 'internal-ca'] })
       // An imported hostname stops being foreign the moment its route row exists.
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
       setForm({ ...emptyForm })
@@ -556,7 +558,7 @@ export function RoutesPage() {
         <ExternalLink className="size-3.5 text-text-3" />
       </a>
     ) : (
-      // No LAN name configured yet: there is no address to link to, and saying so beats a dead link.
+      // No LAN name to build one from: there is no address to link to, and saying so beats a dead link.
       <span className="font-medium text-text">{label}</span>
     )
 
@@ -566,7 +568,11 @@ export function RoutesPage() {
         label={
           lanNames.length > 0
             ? `Also reachable on ${lanNames.map((n) => `${n}:${r.listenPort}`).join(', ')} — the certificate carries every LAN name.`
-            : 'Set the LAN names under Settings → Reverse proxy to give this port an address.'
+            : // Same distinction the form makes: no names and no answer are different states, and
+              // sending an operator to configure what may already be there is the wrong one to guess.
+              lanNamesKnown
+              ? 'Set the LAN names under Settings → Reverse proxy to give this port an address.'
+              : 'The proxy settings could not be read, so the address this port is reached at cannot be shown.'
         }
       >
         {link}
@@ -1487,7 +1493,7 @@ function CertificatesCard() {
  */
 function InternalCaBlock() {
   const { data: ca } = useQuery({
-    queryKey: ['proxy-internal-ca'],
+    queryKey: ['proxy', 'internal-ca'],
     queryFn: api.proxy.getInternalCa,
   })
   if (!ca?.present) return null
