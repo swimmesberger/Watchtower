@@ -9,7 +9,7 @@ import {
   RotateCcw,
   Timer,
 } from 'lucide-react'
-import { api, BUNDLE_DOWNLOAD_URL } from '@/lib/api'
+import { api, BUNDLE_DOWNLOAD_URL, INTERNAL_CA_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AuthConfig,
   AutomationConfig,
@@ -680,6 +680,8 @@ interface ProxyDraft {
   /** Only sent when non-empty — an empty field keeps the stored key. */
   yarpAcmeEabHmacKey: string
   yarpRedirectHttpToHttps: boolean
+  /** Comma- or newline-separated LAN host names and IPs the internal CA issues port-route leaves for. */
+  yarpLanNames: string
   cfAccountId: string
   cfZoneId: string
   /** Only sent when non-empty — an empty field keeps the stored token. */
@@ -708,6 +710,7 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     yarpAcmeEabKeyId: config.yarp.acmeEabKeyId ?? '',
     yarpAcmeEabHmacKey: '',
     yarpRedirectHttpToHttps: config.yarp.redirectHttpToHttps,
+    yarpLanNames: config.yarp.lanNames,
     cfAccountId: config.cloudflare.accountId ?? '',
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
@@ -763,6 +766,9 @@ function ProxyCard() {
         yarpAcmeEabHmacKey:
           next.provider === 'yarp' ? next.yarpAcmeEabHmacKey.trim() || null : null,
         yarpRedirectHttpToHttps: next.provider === 'yarp' ? next.yarpRedirectHttpToHttps : null,
+        // Empty is a real value here — it means the internal CA is unused — so the field is sent as
+        // typed rather than coalesced away, and clearing it is a save like any other.
+        yarpLanNames: next.provider === 'yarp' ? next.yarpLanNames.trim() : null,
         cloudflareAccountId: next.cfAccountId.trim() || null,
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
@@ -1010,6 +1016,42 @@ function ProxyCard() {
                         ? 'Configured'
                         : 'Off — routes are served over plain HTTP only'}
                     </p>
+                  )}
+                </Field>
+
+                <Field
+                  label="LAN names"
+                  hint="The hostnames and IPs you type in the browser — every port-route certificate carries all of them (e.g. nas.lan, 192.168.1.10). Comma- or newline-separated. Leave empty if you have no LAN-only routes."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="nas.lan, 192.168.1.10"
+                        value={form.yarpLanNames}
+                        onChange={e => set('yarpLanNames', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:Yarp:LanNames')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:Yarp:LanNames') && (
+                        <PinnedNote path="Watchtower:Proxy:Yarp:LanNames" />
+                      )}
+                      {/* Only once the CA exists, which is the moment there is something to import.
+                          Offering the download before then would invite an operator to trust a root
+                          nothing is signed by. */}
+                      {data?.yarp.lanNames.trim() !== '' && (
+                        <p className="mt-1.5 text-[13px] text-text-2">
+                          <a
+                            href={INTERNAL_CA_DOWNLOAD_URL}
+                            download
+                            className="text-brand hover:underline"
+                          >
+                            Download the internal CA root
+                          </a>{' '}
+                          and import it into each device's trust store, so these addresses validate.
+                        </p>
+                      )}
+                    </>
                   )}
                 </Field>
 

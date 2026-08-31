@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, CloudDownload, ExternalLink, Globe, Lock, Plus, RefreshCw, Trash2, X } from 'lucide-react'
-import { api } from '@/lib/api'
+import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, Lock, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
+import { api, INTERNAL_CA_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AccessMode,
   CertificateInfo,
@@ -10,6 +10,7 @@ import type {
   IdentityHeaderMode,
   Route,
   RouteAccess,
+  RouteBinding,
   RouteStatus,
   RouteTarget,
 } from '@/lib/types'
@@ -85,6 +86,9 @@ const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
 ]
 
 const emptyForm = {
+  // How the route is addressed (ADR-0033). `domain` is the default because it is what nearly every route
+  // is; `port` drops the hostname half of the form entirely.
+  binding: 'domain' as RouteBinding,
   // What the hostname is served by (ADR-0023). `service` is the default because it is what nearly every
   // route is; `watchtower` swaps the stack/service/port half of the form for a realm picker.
   target: 'service' as RouteTarget,
@@ -94,6 +98,7 @@ const emptyForm = {
   domain: '',
   serviceName: '',
   containerPort: '',
+  listenPort: '',
   tlsEnabled: true,
   // True once the user opts out of the discovered-value dropdown to type a custom value.
   serviceManual: false,
@@ -114,7 +119,53 @@ const ROUTE_TARGETS: { value: RouteTarget; label: string; description: string }[
   },
 ]
 
+/** The two ways to address a route, in menu order, with the copy the create form shows for each. */
+const ROUTE_BINDINGS: { value: RouteBinding; label: string; description: string }[] = [
+  {
+    value: 'domain',
+    label: 'Domain (public, automatic certificates)',
+    description:
+      'A hostname on the shared ingress listeners, with a certificate issued automatically over ACME.',
+  },
+  {
+    value: 'port',
+    label: 'Port (LAN only, internal CA)',
+    description:
+      "A TLS port of its own on this host, with no hostname — for a service reached by address on the "
+      + "local network. The certificate comes from Watchtower's own CA, which you import once.",
+  },
+]
+
 const MANUAL = '__manual__'
+
+/** The LAN names as a list — the raw setting is comma- or newline-separated, as the operator typed it. */
+function parseLanNames(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(/[,\n\r]+/)
+    .map((n) => n.trim())
+    .filter(Boolean)
+}
+
+/**
+ * How a route is named in a message, a tooltip or an aria-label: its hostname where there is one, and
+ * the port otherwise — a port route has no name of its own (ADR-0033). Mirrors `Route.DisplayAddress`
+ * on the server, so the two never call the same row different things.
+ */
+function routeLabel(r: Route): string {
+  return r.domain ?? (r.listenPort != null ? `port ${r.listenPort}` : `route ${r.id}`)
+}
+
+/**
+ * The URL a visitor types for a route. A port route has no hostname of its own, so the address is built
+ * from the deployment's first LAN name and the listen port — the other names reach it just as well, and
+ * the row's tooltip lists them.
+ */
+function routeUrl(r: Route, lanNames: string[], https: boolean): string | null {
+  if (r.binding === 'port') {
+    return lanNames.length > 0 ? `https://${lanNames[0]}:${r.listenPort}` : null
+  }
+  return r.domain ? `${https ? 'https' : 'http'}://${r.domain}` : null
+}
 
 /**
  * Why the Access dialog is unavailable on a Watchtower route, said in one place so the tooltip and the
@@ -122,6 +173,17 @@ const MANUAL = '__manual__'
  */
 const WATCHTOWER_ACCESS_NOTE =
   "Watchtower authenticates visitors with its own login — route access control does not apply."
+
+/** The same, for a port route: there is no hostname a login redirect could bring the visitor back to. */
+const PORT_ACCESS_NOTE =
+  'A port route is always public — it has no hostname for a login redirect to return to.'
+
+/** Why the Access dialog is unavailable for a route, or null when it is available. */
+function accessNote(r: Route): string | null {
+  if (r.target === 'watchtower') return WATCHTOWER_ACCESS_NOTE
+  if (r.binding === 'port') return PORT_ACCESS_NOTE
+  return null
+}
 
 /** localStorage key for the "Found in Cloudflare" card's collapsed state. */
 const FOREIGN_COLLAPSED_KEY = 'watchtower:routes:foreign-collapsed'
@@ -230,6 +292,19 @@ export function RoutesPage() {
   const isCloudflare = status?.provider === 'cloudflare'
   const servesHttps = (r: Route) => isCloudflare || r.tlsEnabled
 
+  // Port routes are the in-process provider's alone — Caddy and the tunnel have no listener to give
+  // one, and both mark such a row as an error. Offering the choice elsewhere would be offering a route
+  // that cannot be served.
+  const supportsPortRoutes = status?.provider === 'yarp'
+  // The LAN names the internal CA issues for. Needed for two things at once: the addresses the table
+  // renders for port routes, and whether creating one is possible at all.
+  const { data: proxyConfig } = useQuery({
+    queryKey: ['proxy-config'],
+    queryFn: api.proxy.getConfig,
+    enabled: supportsPortRoutes,
+  })
+  const lanNames = useMemo(() => parseLanNames(proxyConfig?.yarp.lanNames), [proxyConfig])
+
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
   // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
   // and "the tunnel cannot be seen" both render as a banner — a silently empty list here reads as
@@ -278,7 +353,10 @@ export function RoutesPage() {
   // non-administrator simply sees an empty roster and the Watchtower target defaults to the operator
   // realm the server would have chosen anyway.
   const { realms, systemRealmId } = useRealms({ enabled: caps.hasRole('Admin') })
-  const isWatchtowerForm = form.target === 'watchtower'
+  const isPortForm = form.binding === 'port'
+  // A port route is always a stack service (ADR-0033), so the Watchtower half of the form is out of
+  // reach in port mode whatever the target field happens to hold.
+  const isWatchtowerForm = !isPortForm && form.target === 'watchtower'
   const formRealmId = form.realmId === '' ? systemRealmId : Number(form.realmId)
   const formRealm = realms.find((r) => r.id === formRealmId)
 
@@ -316,8 +394,10 @@ export function RoutesPage() {
   const create = useMutation({
     mutationFn: (data: CreateRouteRequest) => api.proxy.createRoute(data),
     onSuccess: (route) => {
-      toast.success(`Route ${route.domain} created.`)
+      toast.success(`Route ${routeLabel(route)} created.`)
       qc.invalidateQueries({ queryKey: ['routes'] })
+      // A new port route mints the internal CA on first use, so the block that offers its root appears.
+      qc.invalidateQueries({ queryKey: ['proxy-internal-ca'] })
       // An imported hostname stops being foreign the moment its route row exists.
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
       setForm({ ...emptyForm })
@@ -351,7 +431,11 @@ export function RoutesPage() {
     mutationFn: ({ route, removeFromProvider }: { route: Route; removeFromProvider: boolean }) =>
       api.proxy.deleteRoute(route.id, removeFromProvider),
     onSuccess: (result, { route, removeFromProvider }) => {
-      toast.success(removeFromProvider ? `Deleted ${route.domain} and removed it from Cloudflare.` : `Deleted ${route.domain}.`)
+      toast.success(
+        removeFromProvider
+          ? `Deleted ${routeLabel(route)} and removed it from Cloudflare.`
+          : `Deleted ${routeLabel(route)}.`,
+      )
       // Deleting a realm's login host is allowed and has a consequence the operator has to hear about:
       // that realm's protected apps stop redirecting anywhere until another one is designated.
       if (result?.warning) toast.error(result.warning)
@@ -360,7 +444,7 @@ export function RoutesPage() {
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
     },
     onError: (err: Error, { route }) => {
-      toast.error(`Failed to delete ${route.domain}: ${err.message}`)
+      toast.error(`Failed to delete ${routeLabel(route)}: ${err.message}`)
       // A cleanup failure still deleted the route row; show the table as it now is.
       qc.invalidateQueries({ queryKey: ['routes'] })
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
@@ -373,6 +457,35 @@ export function RoutesPage() {
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
+
+    // A port route has no hostname at all, and every field that describes one is refused rather than
+    // ignored — so the domain half of the form is not sent, and not checked either.
+    if (isPortForm) {
+      const stackId = Number(form.stackId)
+      const containerPort = Number(form.containerPort)
+      const listenPort = Number(form.listenPort)
+      if (lanNames.length === 0)
+        return toast.error('Set the LAN names under Settings → Reverse proxy first.')
+      if (!stackId) return toast.error('Choose a stack.')
+      if (!form.serviceName.trim()) return toast.error('Enter a service name.')
+      if (!containerPort || containerPort < 1 || containerPort > 65535)
+        return toast.error('Enter a valid container port (1–65535).')
+      if (!listenPort || listenPort < 1 || listenPort > 65535)
+        return toast.error('Enter a valid listen port (1–65535).')
+      return create.mutate({
+        binding: 'port',
+        target: 'service',
+        stackId,
+        domain: null,
+        serviceName: form.serviceName.trim(),
+        containerPort,
+        listenPort,
+        // Fixed by what a port route is, and settled by the server either way.
+        tlsEnabled: true,
+        isPrimary: false,
+      })
+    }
+
     if (!form.domain.trim()) return toast.error('Enter a domain.')
 
     // A Watchtower route has no stack, no service and no port — the server refuses them rather than
@@ -408,21 +521,53 @@ export function RoutesPage() {
     })
   }
 
+  /**
+   * The route's address, as a link where one can be built. A port route is shown as
+   * `https://{first LAN name}:{port}`; the tooltip names the rest, because every configured LAN name
+   * reaches it and the certificate carries all of them.
+   */
+  const renderAddress = (r: Route) => {
+    const href = routeUrl(r, lanNames, servesHttps(r))
+    const label =
+      r.binding === 'port'
+        ? lanNames.length > 0
+          ? `${lanNames[0]}:${r.listenPort}`
+          : `port ${r.listenPort}`
+        : (r.domain ?? routeLabel(r))
+    const link = href ? (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1.5 font-medium text-text hover:text-brand"
+      >
+        {label}
+        <ExternalLink className="size-3.5 text-text-3" />
+      </a>
+    ) : (
+      // No LAN name configured yet: there is no address to link to, and saying so beats a dead link.
+      <span className="font-medium text-text">{label}</span>
+    )
+
+    if (r.binding !== 'port') return link
+    return (
+      <Tooltip
+        label={
+          lanNames.length > 0
+            ? `Also reachable on ${lanNames.map((n) => `${n}:${r.listenPort}`).join(', ')} — the certificate carries every LAN name.`
+            : 'Set the LAN names under Settings → Reverse proxy to give this port an address.'
+        }
+      >
+        {link}
+      </Tooltip>
+    )
+  }
+
   const columns: DataListColumn<Route>[] = [
     {
       key: 'domain',
-      header: 'Domain',
-      cell: (r) => (
-        <a
-          href={`${servesHttps(r) ? 'https' : 'http'}://${r.domain}`}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1.5 font-medium text-text hover:text-brand"
-        >
-          {r.domain}
-          <ExternalLink className="size-3.5 text-text-3" />
-        </a>
-      ),
+      header: 'Address',
+      cell: renderAddress,
     },
     {
       key: 'stack',
@@ -438,7 +583,14 @@ export function RoutesPage() {
             )}
           </div>
         ) : (
-          <span className="text-[13px] text-text-2">{r.stackName ?? `#${r.stackId}`}</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[13px] text-text-2">{r.stackName ?? `#${r.stackId}`}</span>
+            {r.binding === 'port' && (
+              <Tooltip label="Served on a TLS port of its own, with a certificate from Watchtower's internal CA. LAN only — there is no public hostname.">
+                <Badge tone="neutral">LAN port</Badge>
+              </Tooltip>
+            )}
+          </div>
         ),
     },
     {
@@ -476,14 +628,14 @@ export function RoutesPage() {
       cell: (r) => (
         <div className="flex items-center justify-end gap-1">
           {canManageAccess && (
-            <Tooltip label={r.target === 'watchtower' ? WATCHTOWER_ACCESS_NOTE : 'Access control'}>
-              {/* Disabled rather than hidden: an administrator looking for the gate on this hostname
+            <Tooltip label={accessNote(r) ?? 'Access control'}>
+              {/* Disabled rather than hidden: an administrator looking for the gate on this address
                   should be told there isn't one, not left wondering where the button went. */}
               <Button
                 size="icon-sm"
                 variant="ghost"
-                aria-label={`Access control for ${r.domain}`}
-                disabled={r.target === 'watchtower'}
+                aria-label={`Access control for ${routeLabel(r)}`}
+                disabled={accessNote(r) != null}
                 onClick={() => setAccessRoute(r)}
                 className="text-text-2 hover:text-text"
               >
@@ -495,7 +647,7 @@ export function RoutesPage() {
             <Button
               size="icon-sm"
               variant="ghost"
-              aria-label={`Delete ${r.domain}`}
+              aria-label={`Delete ${routeLabel(r)}`}
               onClick={() => setPendingDelete(r)}
               className="text-text-2 hover:text-danger"
             >
@@ -510,15 +662,7 @@ export function RoutesPage() {
   const renderCard = (r: Route) => (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <a
-          href={`${servesHttps(r) ? 'https' : 'http'}://${r.domain}`}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1.5 font-medium text-text hover:text-brand"
-        >
-          {r.domain}
-          <ExternalLink className="size-3.5 text-text-3" />
-        </a>
+        {renderAddress(r)}
         <Badge tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</Badge>
       </div>
       {r.target === 'watchtower' ? (
@@ -533,7 +677,7 @@ export function RoutesPage() {
           <span className="font-mono">
             {r.serviceName}:{r.containerPort}
           </span>{' '}
-          · {servesHttps(r) ? 'HTTPS' : 'HTTP'}
+          · {r.binding === 'port' ? 'HTTPS (LAN port)' : servesHttps(r) ? 'HTTPS' : 'HTTP'}
         </p>
       )}
       <div className="flex items-center justify-between border-t border-border pt-3">
@@ -543,8 +687,8 @@ export function RoutesPage() {
             <Button
               size="icon-sm"
               variant="ghost"
-              aria-label={`Access control for ${r.domain}`}
-              disabled={r.target === 'watchtower'}
+              aria-label={`Access control for ${routeLabel(r)}`}
+              disabled={accessNote(r) != null}
               onClick={() => setAccessRoute(r)}
               className="text-text-2 hover:text-text"
             >
@@ -554,7 +698,7 @@ export function RoutesPage() {
           <Button
             size="icon-sm"
             variant="ghost"
-            aria-label={`Delete ${r.domain}`}
+            aria-label={`Delete ${routeLabel(r)}`}
             onClick={() => setPendingDelete(r)}
             className="text-text-2 hover:text-danger"
           >
@@ -677,6 +821,56 @@ export function RoutesPage() {
               description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically."
             />
             <form onSubmit={submit} className="space-y-4">
+              {supportsPortRoutes && (
+                <Field
+                  label="How it is reached"
+                  required
+                  hint={ROUTE_BINDINGS.find((b) => b.value === form.binding)?.description}
+                >
+                  {() => (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {ROUTE_BINDINGS.map((b) => (
+                        <label
+                          key={b.value}
+                          className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 hover:bg-surface-2"
+                        >
+                          <input
+                            type="radio"
+                            name="route-binding"
+                            checked={form.binding === b.value}
+                            // Switching invalidates the other kind's half of the form outright: a port
+                            // route has no hostname and a domain route no listener, and carrying either
+                            // across would submit a value the server refuses.
+                            onChange={() =>
+                              setForm((f) => ({
+                                ...emptyForm,
+                                binding: b.value,
+                                stackId: f.stackId,
+                                serviceName: f.serviceName,
+                                containerPort: f.containerPort,
+                                serviceManual: f.serviceManual,
+                                portManual: f.portManual,
+                              }))
+                            }
+                            className="size-4 shrink-0 accent-[var(--brand)]"
+                          />
+                          <span className="text-sm text-text">{b.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </Field>
+              )}
+
+              {isPortForm && lanNames.length === 0 && (
+                <Banner tone="warn" title="No LAN names configured">
+                  A port route's certificate is issued for the names and IPs you type in the browser, so
+                  there has to be at least one. Add them under Settings → Reverse proxy (“LAN names”),
+                  then come back.
+                </Banner>
+              )}
+
+              {!isPortForm && (
               <Field
                 label="Serve this domain with"
                 required
@@ -710,7 +904,35 @@ export function RoutesPage() {
                   </Select>
                 )}
               </Field>
+              )}
 
+              {isPortForm ? (
+                <Field
+                  label="Listen port"
+                  required
+                  hint={
+                    lanNames.length > 0
+                      ? `Reached at https://${lanNames[0]}:{port} — and on every other LAN name you configured.`
+                      : 'The host port this route answers on.'
+                  }
+                >
+                  {({ id, describedBy }) => (
+                    <Input
+                      id={id}
+                      aria-describedby={describedBy}
+                      mono
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={form.listenPort}
+                      onChange={(e) => setForm((f) => ({ ...f, listenPort: e.target.value }))}
+                      placeholder="9001"
+                      autoComplete="off"
+                    />
+                  )}
+                </Field>
+              ) : (
+                <>
               <Field label="Domain" required hint="e.g. app.example.com — point its DNS at this host">
                 {({ id, describedBy }) => (
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -745,6 +967,8 @@ export function RoutesPage() {
                     ? `Resolves to ${dns.data.addresses.join(', ')}. Make sure that points at this host.`
                     : 'Does not resolve yet — add a DNS record pointing this domain at your server.'}
                 </p>
+              )}
+                </>
               )}
 
               {isWatchtowerForm ? (
@@ -880,7 +1104,18 @@ export function RoutesPage() {
               </div>
               )}
 
-              {isCloudflare ? (
+              {isPortForm ? (
+                <Banner tone="info" title="Publish the port on Watchtower's container">
+                  Watchtower listens on this port inside its container, so the container has to publish
+                  it too — add{' '}
+                  <span className="font-mono">
+                    -p {form.listenPort || '9001'}:{form.listenPort || '9001'}
+                  </span>{' '}
+                  (or the equivalent <span className="font-mono">ports:</span> entry) and recreate it.
+                  Until then nothing can connect. HTTPS is always on, with a certificate from
+                  Watchtower's internal CA — download its root below and import it once per device.
+                </Banner>
+              ) : isCloudflare ? (
                 <p className="text-xs text-text-3">
                   Served over HTTPS — TLS terminates at Cloudflare's edge, so there is no certificate to
                   manage here.
@@ -905,7 +1140,13 @@ export function RoutesPage() {
                 <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" loading={create.isPending}>
+                {/* Disabled rather than refused on submit: with no LAN name there is no certificate the
+                    route could be served with, and the server refuses it for the same reason. */}
+                <Button
+                  type="submit"
+                  loading={create.isPending}
+                  disabled={isPortForm && lanNames.length === 0}
+                >
                   Create route
                 </Button>
               </div>
@@ -962,11 +1203,13 @@ export function RoutesPage() {
         onOpenChange={(open) => {
           if (!open && !remove.isPending) setPendingDelete(null)
         }}
-        title={pendingDelete ? `Delete ${pendingDelete.domain}?` : 'Delete route?'}
+        title={pendingDelete ? `Delete ${routeLabel(pendingDelete)}?` : 'Delete route?'}
         description={
-          isCloudflare
-            ? 'Watchtower stops managing this domain. The target container keeps running.'
-            : 'The proxy will stop serving this domain. The target container keeps running.'
+          pendingDelete?.binding === 'port'
+            ? 'The proxy will stop listening on this port. The target container keeps running, and the port stays published on Watchtower’s container until you remove it there.'
+            : isCloudflare
+              ? 'Watchtower stops managing this domain. The target container keeps running.'
+              : 'The proxy will stop serving this domain. The target container keeps running.'
         }
         extra={
           <>
@@ -1034,6 +1277,7 @@ const CERT_STATE_LABEL: Record<CertificateInfo['state'], string> = {
 
 const CERT_SOURCE_LABEL: Record<CertificateInfo['source'], string> = {
   route: 'Route',
+  internal: 'Internal CA',
   orphan: 'Orphan',
 }
 
@@ -1123,16 +1367,19 @@ function CertificatesCard() {
       key: 'actions',
       header: '',
       align: 'right',
-      cell: (c) => (
-        <Button
-          size="sm"
-          variant="secondary"
-          loading={renew.isPending && renew.variables === c.host}
-          onClick={() => renew.mutate(c.host)}
-        >
-          <RefreshCw /> Renew now
-        </Button>
-      ),
+      // Nothing to ask for on the internal leaf: it is not issued over ACME, and the service that
+      // signs it reissues on its own when the LAN names change or it nears expiry.
+      cell: (c) =>
+        c.source === 'internal' ? null : (
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={renew.isPending && renew.variables === c.host}
+            onClick={() => renew.mutate(c.host)}
+          >
+            <RefreshCw /> Renew now
+          </Button>
+        ),
     },
   ]
 
@@ -1148,16 +1395,18 @@ function CertificatesCard() {
         <span title={absoluteTitle(c.nextAttemptAt)}>{relativeTime(c.nextAttemptAt)}</span>
       </p>
       {c.lastError && <p className="text-[13px] text-danger">{c.lastError}</p>}
-      <div className="flex justify-end border-t border-border pt-3">
-        <Button
-          size="sm"
-          variant="secondary"
-          loading={renew.isPending && renew.variables === c.host}
-          onClick={() => renew.mutate(c.host)}
-        >
-          <RefreshCw /> Renew now
-        </Button>
-      </div>
+      {c.source !== 'internal' && (
+        <div className="flex justify-end border-t border-border pt-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={renew.isPending && renew.variables === c.host}
+            onClick={() => renew.mutate(c.host)}
+          >
+            <RefreshCw /> Renew now
+          </Button>
+        </div>
+      )}
     </div>
   )
 
@@ -1168,6 +1417,7 @@ function CertificatesCard() {
           title="Certificates"
           description="Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then."
         />
+        <InternalCaBlock />
         {isError ? (
           <Banner
             tone="danger"
@@ -1198,6 +1448,55 @@ function CertificatesCard() {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * Watchtower's own certificate authority (ADR-0033), shown only once it exists — which happens the
+ * first time a port route needs a LAN certificate. Reading it never mints a root, so an operator with
+ * no port routes never sees an invitation to import something nothing uses.
+ */
+function InternalCaBlock() {
+  const { data: ca } = useQuery({
+    queryKey: ['proxy-internal-ca'],
+    queryFn: api.proxy.getInternalCa,
+  })
+  if (!ca?.present) return null
+
+  return (
+    <div className="mb-4 rounded-md border border-border bg-surface-2 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-brand" />
+            <span className="font-medium text-text">Internal CA</span>
+          </div>
+          <p className="font-mono text-[13px] text-text-2">{ca.subject}</p>
+          <p className="text-xs text-text-3">
+            Root expires <span title={absoluteTitle(ca.notAfter)}>{relativeTime(ca.notAfter)}</span>
+            {ca.leafNotAfter && (
+              <>
+                {' '}· LAN certificate expires{' '}
+                <span title={absoluteTitle(ca.leafNotAfter)}>{relativeTime(ca.leafNotAfter)}</span>
+              </>
+            )}
+          </p>
+          {ca.subjectAltNames.length > 0 && (
+            <p className="text-xs text-text-3">
+              Valid for <span className="font-mono">{ca.subjectAltNames.join(', ')}</span>
+            </p>
+          )}
+        </div>
+        <Button size="sm" variant="secondary" asChild>
+          <a href={INTERNAL_CA_DOWNLOAD_URL} download>
+            <Download /> Download root
+          </a>
+        </Button>
+      </div>
+      <p className="mt-3 text-xs text-text-3">
+        Import this into your OS or browser trust store so LAN addresses validate.
+      </p>
+    </div>
   )
 }
 
@@ -1236,7 +1535,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
   const save = useMutation({
     mutationFn: (data: RouteAccess) => api.proxy.setAccess(route!.id, data),
     onSuccess: () => {
-      toast.success(`Access updated for ${route!.domain}.`)
+      toast.success(`Access updated for ${routeLabel(route!)}.`)
       onClose()
     },
     // The backend's AppError text (a rejected bypass line, an unknown user) rides RpcError.message.
@@ -1247,7 +1546,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
     <Dialog open={open} onOpenChange={(o) => !o && !save.isPending && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Access · {route?.domain}</DialogTitle>
+          <DialogTitle>Access · {route ? routeLabel(route) : null}</DialogTitle>
           <DialogDescription>
             Decide who may reach this app. The proxy enforces it on every request.
           </DialogDescription>

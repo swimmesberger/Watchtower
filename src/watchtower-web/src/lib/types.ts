@@ -862,6 +862,12 @@ export interface ProxyYarpConfig {
   /** True when an EAB HMAC key is stored — the UI sends a new one only to replace it. */
   hasAcmeEabHmacKey: boolean
   redirectHttpToHttps: boolean
+  /**
+   * The host names and IP addresses this deployment is reached on over the LAN, comma- or
+   * newline-separated, as the operator typed them (ADR-0033). Every port-route certificate the internal
+   * CA issues carries all of them, so a name missing here is one no browser will trust.
+   */
+  lanNames: string
   /** Runtime state: false means nothing is terminating TLS and routes are served in the clear. */
   httpsListenerBound: boolean
 }
@@ -916,6 +922,8 @@ export interface UpdateProxyConfigRequest {
   yarpAcmeEabKeyId?: string | null
   yarpAcmeEabHmacKey?: string | null
   yarpRedirectHttpToHttps?: boolean | null
+  /** Comma- or newline-separated LAN host names and IPs the internal CA issues port-route leaves for. */
+  yarpLanNames?: string | null
   cloudflareAccountId?: string | null
   cloudflareZoneId?: string | null
   cloudflareApiToken?: string | null
@@ -942,12 +950,21 @@ export type DomainKind = 'managed' | 'custom'
  */
 export type RouteTarget = 'service' | 'watchtower'
 
+/**
+ * How a route is addressed (ADR-0033). `domain` is the original kind: a public hostname matched from the
+ * `Host` header on the shared ingress listeners, with an ACME certificate. `port` is a LAN address with
+ * no hostname at all — a TLS listener of its own on this host, certified by Watchtower's internal CA,
+ * always a public service route. Fixed at creation; changing it means deleting and recreating.
+ */
+export type RouteBinding = 'domain' | 'port'
+
 export interface Route {
   id: number
   /** Null on a `watchtower` route, which forwards nowhere. */
   stackId: number | null
   stackName: string | null
-  domain: string
+  /** Null on a `port` route, which is addressed by its listener instead. */
+  domain: string | null
   serviceName: string
   containerPort: number
   tlsEnabled: boolean
@@ -964,11 +981,16 @@ export interface Route {
   realmSlug: string | null
   /** Whether that realm redirects its anonymous visitors to this hostname. */
   isLoginRoute: boolean
+  /** Whether this route is reached by hostname or by a port of its own. */
+  binding: RouteBinding
+  /** The host port a `port` route's own TLS listener answers on; null on a `domain` route. */
+  listenPort: number | null
 }
 
 export interface CreateRouteRequest {
   stackId: number
-  domain: string
+  /** Required for a `domain` route; a `port` route has no hostname and sending one is refused. */
+  domain: string | null
   serviceName: string
   containerPort: number
   tlsEnabled: boolean
@@ -980,10 +1002,15 @@ export interface CreateRouteRequest {
   realmId?: number | null
   /** `watchtower` routes only; omitted means "yes, if the realm has no login host yet". */
   makeLoginRoute?: boolean | null
+  /** Omitted means `domain` — the only kind of route that existed before ADR-0033. */
+  binding?: RouteBinding | null
+  /** `port` routes only: the host port to listen on. Must also be published on Watchtower's container. */
+  listenPort?: number | null
 }
 
 export interface UpdateRouteRequest {
-  domain: string
+  /** Required for a `domain` route; a `port` route has none, and sending one is refused. */
+  domain: string | null
   serviceName: string
   containerPort: number
   tlsEnabled: boolean
@@ -991,6 +1018,10 @@ export interface UpdateRouteRequest {
   kind?: DomainKind | null
   /** `watchtower` routes only: designate (true) or release (false) this realm's login host. */
   makeLoginRoute?: boolean | null
+  /** Sent back for confirmation only — the binding is fixed, and naming another one is refused. */
+  binding?: RouteBinding | null
+  /** `port` routes only: move the route to another host port. Omitted keeps the current one. */
+  listenPort?: number | null
 }
 
 /**
@@ -1047,8 +1078,11 @@ export interface DnsCheckResult {
  */
 export interface CertificateInfo {
   host: string
-  /** `route` — a routed domain; `orphan` — nothing routes here any more. */
-  source: 'route' | 'orphan'
+  /**
+   * `route` — a routed domain; `internal` — the one LAN leaf the internal CA issues for every port route
+   * (ADR-0033), which belongs to no single route; `orphan` — nothing routes here any more.
+   */
+  source: 'route' | 'internal' | 'orphan'
   routeId?: number | null
   /** `active` means a certificate is being served, whatever the last renewal attempt did. */
   state: 'none' | 'pending' | 'active' | 'awaitingDns' | 'error'
@@ -1061,6 +1095,26 @@ export interface CertificateInfo {
   /** When the scheduler will try again — a renewal when healthy, a backoff rung after a failure. */
   nextAttemptAt?: string | null
   consecutiveFailures: number
+}
+
+/**
+ * Watchtower's own certificate authority, as `proxy.getInternalCa` reports it (ADR-0033). It signs the
+ * one LAN leaf every port route is served with; importing its root into a client's trust store is what
+ * makes those addresses validate. Reading this never creates the CA — `present: false` means nothing has
+ * needed a LAN certificate yet.
+ */
+export interface InternalCaInfo {
+  present: boolean
+  subject: string | null
+  thumbprint: string | null
+  notBefore: string | null
+  notAfter: string | null
+  /** When the LAN certificate currently being served expires; null when none is held. */
+  leafNotAfter: string | null
+  /** The names that certificate answers for — the configured LAN names, as issued. */
+  subjectAltNames: string[]
+  /** Where the root is fetched from; see {@link INTERNAL_CA_DOWNLOAD_URL}. */
+  downloadPath: string
 }
 
 /**
