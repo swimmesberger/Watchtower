@@ -714,6 +714,41 @@ public sealed class YarpDispatchTests {
         Assert.Empty(factory.Forwarder.Forwarded);
     }
 
+    /// <summary>
+    /// A port route whose listen port collides with an ingress port never captures that port. The
+    /// projection refuses to bind such a route — two endpoints on one socket — so the listener on 8443 is
+    /// the TLS ingress endpoint and nothing else, and the route table still holding the row must not be
+    /// able to turn it into a forward.
+    /// </summary>
+    /// <remarks>
+    /// Reachable in production: <c>Yarp:HttpsPort</c> is an environment-pinnable setting, so it can move
+    /// onto a port that create-time validation already accepted for a route. Getting this wrong is not a
+    /// missing feature — every request arriving on 443 would be forwarded to that one upstream, past the
+    /// host lookup, past the ingress/management split and past the access check, handing every visitor's
+    /// session cookie to a service that has no business seeing it.
+    /// </remarks>
+    [Fact]
+    public async Task APortRouteCollidingWithAnIngressPort_DoesNotCaptureIt() {
+        // The row says 8443; the projection drops that endpoint because the TLS ingress listener has it.
+        using var factory = WatchtowerApiFactory.WithIngress(
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "8443"));
+        using var client = factory.CreateApiClient(8443);
+        await factory.AddPortRouteAsync(8443, serviceName: "jellyfin", containerPort: 8096);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        // The listener is ingress, so it dispatches by host exactly as it always did: the routed domain is
+        // forwarded to its own upstream…
+        var routed = await client.GetAsync($"https://{AppDomain}/reports", Ct);
+        Assert.Equal(HttpStatusCode.OK, routed.StatusCode);
+        Assert.Equal($"{AppUpstream}/reports", factory.Forwarder.Single().RequestUri?.ToString());
+
+        // …and an unrouted host is the stranger it always was, rather than the port route's upstream.
+        var stranger = await client.GetAsync("https://nas.lan/", Ct);
+        Assert.Equal(HttpStatusCode.NotFound, stranger.StatusCode);
+        Assert.Single(factory.Forwarder.Forwarded);
+    }
+
     /// <summary>The port a port route listens on in these tests, in both the settings and the row.</summary>
     private const int PortRoutePort = 9001;
 

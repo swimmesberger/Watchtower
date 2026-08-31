@@ -159,16 +159,25 @@ public sealed class YarpHostDispatchMiddleware(
         // lookup because on this listener the Host header decides nothing: a client reaching a bare LAN
         // address writes whatever it likes there, and letting it name a routed domain would turn one
         // service's dedicated port into a way into another's.
-        if (routes.TryGetByPort(localPort, out var portRow)) {
-            await ForwardPortRouteAsync(context, portRow);
-            return;
-        }
-
-        // The listener is a port route's and the table no longer has the route: a deletion a moment ago,
-        // with the socket not yet unbound. The same nothing an unrouted host gets on ingress, and for the
-        // stronger version of the same reason — falling through here would let the Host header pick a
-        // route on a listener whose own route is gone.
+        //
+        // Both halves of the condition are load-bearing, and the order matters. The listener state is
+        // asked first because it is the *post-projection* truth: the route table is built from the rows,
+        // while ProxyIngressKestrelConfiguration refuses to bind a port route whose port collides with the
+        // management or ingress ports. A route on the ingress HTTPS port is reachable — Yarp:HttpsPort is
+        // an environment-pinnable setting, so it can move underneath a route that create-time validation
+        // already accepted — and without this guard every request arriving on 443 would be forwarded to
+        // that one upstream: no host lookup, no ingress/management split, no access check, and every
+        // visitor's session cookie handed to a service that has no business seeing it.
         if (listeners.PortRoutePorts.Contains(localPort)) {
+            if (routes.TryGetByPort(localPort, out var portRow)) {
+                await ForwardPortRouteAsync(context, portRow);
+                return;
+            }
+
+            // The listener is a port route's and the table no longer has the route: a deletion a moment
+            // ago, with the socket not yet unbound. The same nothing an unrouted host gets on ingress, and
+            // for the stronger version of the same reason — falling through here would let the Host header
+            // pick a route on a listener whose own route is gone.
             NotFound(context);
             return;
         }
