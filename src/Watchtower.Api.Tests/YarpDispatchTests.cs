@@ -783,12 +783,14 @@ public sealed class YarpDispatchTests {
     }
 
     /// <summary>
-    /// The inverse, which is what keeps the tie-break from becoming a hole: with the same stale snapshot
-    /// and the same route row, a section that does not name the port — the collision-drop case — still
-    /// refuses. The section is consulted to settle a disagreement, not to override a refusal.
+    /// The inverse, which is what keeps consulting the section from becoming a hole: a port the
+    /// projection <em>dropped</em> is absent from the section too, so asking it cannot reinstate the
+    /// route. Asked with the snapshot carrying the port as ingress but not as a port route's — which is
+    /// not a lag at all but the permanent steady state of a collision, and therefore the reading the
+    /// hot path really lives with.
     /// </summary>
     [Fact]
-    public async Task WhileTheListenerStateIsStale_AnUnprojectedPortIsStillRefused() {
+    public async Task WhenTheSectionDoesNotNameThePort_ItIsNotAPortRouteListener() {
         // The row says 8443 and the projection dropped it: the TLS ingress listener has that port.
         using var factory = WatchtowerApiFactory.WithIngress(
             ("Watchtower:Proxy:Yarp:PortRoutePorts", "8443"));
@@ -797,11 +799,46 @@ public sealed class YarpDispatchTests {
         await factory.ApplyProxyAsync();
 
         factory.Services.GetRequiredService<YarpListenerState>().Publish(
-            new YarpListenerSnapshot { ManagementPort = WatchtowerApiFactory.ManagementPort });
+            new YarpListenerSnapshot {
+                ManagementPort = WatchtowerApiFactory.ManagementPort,
+                IngressPorts = new HashSet<int> { 8081, 8443 },
+            });
 
         var response = await client.GetAsync("https://nas.lan/web/", Ct);
 
-        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        // The bare 404 an unrouted host gets on ingress — not the port route's upstream, and not
+        // Watchtower's own pipeline.
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("", await Body(response));
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// The other half of the section being consulted unconditionally: a port it names whose route row
+    /// this instance has not projected yet — another instance created the route, the setting reached the
+    /// configuration and Kestrel bound the listener, and the change signal has not been acted on here.
+    /// The listener is a port route's, so the only thing that may be served on it is its own route; a
+    /// fall-through would put Watchtower's own pipeline on a port published to the LAN.
+    /// </summary>
+    /// <remarks>
+    /// Asked for <c>/health</c> rather than an application path, because that is what tells the two
+    /// outcomes apart: Watchtower answers it 200 with a body, so a fall-through is loud. An arbitrary
+    /// path would be a 404 either way — from the dispatcher's refusal or from the SPA fallback finding no
+    /// file — and the test would pass without proving anything.
+    /// </remarks>
+    [Fact]
+    public async Task WhenTheSectionNamesAPortTheTableDoesNot_ItIs404() {
+        using var factory = PortRoutesOnlyEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        // No port route row at all, and the listener state as empty as it is before the first projection.
+        await factory.ApplyProxyAsync();
+        factory.Services.GetRequiredService<YarpListenerState>().Publish(
+            new YarpListenerSnapshot { ManagementPort = WatchtowerApiFactory.ManagementPort });
+
+        var response = await client.GetAsync("https://nas.lan/health", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.DoesNotContain("healthy", await Body(response), StringComparison.Ordinal);
         Assert.Empty(factory.Forwarder.Forwarded);
     }
 

@@ -154,19 +154,22 @@ public sealed class YarpHostDispatchMiddleware(
     /// socket is bound and the snapshot has not caught up. On a deployment whose only listeners are port
     /// routes the stale snapshot carries no ingress ports at all, which would make
     /// <see cref="IsIngress"/> false and drop the request through to Watchtower's own SPA — on a port
-    /// published to the LAN. So where the snapshot and the route table disagree, and only there, the
-    /// projected section settles it: it is the exact data Kestrel used to create the listener, and it is
-    /// enumerated on a path that a converged instance never takes.
+    /// published to the LAN. The projected section is asked as well, unconditionally: it is the exact
+    /// data Kestrel used to create the listener, so a port it names is a port route's listener no matter
+    /// what any cached reading of it says, and no combination of lagging route table and lagging snapshot
+    /// can reopen that window.
     /// </para>
     /// <para>
-    /// The two compose the right way round. A collision-dropped port is absent from the section as well
-    /// as from the snapshot, so the tie-break refuses it a second time rather than reinstating it.
+    /// The two compose the right way round. The section is <em>post-projection</em> truth: a
+    /// collision-dropped port is absent from it as well as from the snapshot, so consulting it cannot
+    /// reinstate a port the projection refused to bind. And a port the section names whose route row has
+    /// not been projected yet takes the 404 branch below rather than falling through — the only thing
+    /// that can be served on a port route's listener is its own route.
     /// </para>
     /// </remarks>
-    private bool IsPortRouteListener(
-        YarpListenerSnapshot listeners, ProxyRouteTableSnapshot routes, int localPort) =>
+    private bool IsPortRouteListener(YarpListenerSnapshot listeners, int localPort) =>
         listeners.PortRoutePorts.Contains(localPort)
-        || (routes.TryGetByPort(localPort, out _) && section.BoundPortRoutePorts().Contains(localPort));
+        || section.BoundPortRoutePorts().Contains(localPort);
 
     public async Task InvokeAsync(HttpContext context) {
         ArgumentNullException.ThrowIfNull(context);
@@ -195,7 +198,7 @@ public sealed class YarpHostDispatchMiddleware(
         // lookup because on this listener the Host header decides nothing: a client reaching a bare LAN
         // address writes whatever it likes there, and letting it name a routed domain would turn one
         // service's dedicated port into a way into another's.
-        if (IsPortRouteListener(listeners, routes, localPort)) {
+        if (IsPortRouteListener(listeners, localPort)) {
             if (routes.TryGetByPort(localPort, out var portRow)) {
                 await ForwardPortRouteAsync(context, portRow);
                 return;
