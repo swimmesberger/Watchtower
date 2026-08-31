@@ -368,6 +368,87 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         Assert.Contains("ingress http 18081, https off", row.Detail, StringComparison.Ordinal);
     }
 
+    // ── LAN names (the internal CA's subject alternative names) ──────────────
+
+    [Fact]
+    public async Task TheLanNamesArePersisted_AsTyped() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpLanNames = " nas.lan, 192.168.1.10 " });
+
+        Assert.True(result.IsSuccess);
+        // Echoed verbatim rather than reformatted: the field an operator edits is the value that was
+        // stored, and the parser is what turns it into subject alternative names.
+        Assert.Equal("nas.lan, 192.168.1.10", result.Value.Config.Yarp.LanNames);
+        var settings = host.Services.GetRequiredService<ISettingsManager>();
+        Assert.Equal("nas.lan, 192.168.1.10",
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpLanNames, SettingsScope.Global, Ct));
+    }
+
+    /// <summary>Empty means the internal CA is unused — and has to stay a way to clear the field.</summary>
+    [Fact]
+    public async Task NoLanNames_IsAccepted() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpLanNames = "" });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("", result.Value.Config.Yarp.LanNames);
+    }
+
+    [Theory]
+    [InlineData("nas.lan, nas.lan:9001", "nas.lan:9001")]
+    [InlineData("https://nas.lan", "https://nas.lan")]
+    [InlineData("*.lan", "*.lan")]
+    public async Task AJunkLanName_IsRefused_AndNamed(string lanNames, string offender) {
+        // Checked here because the alternative is a certificate that silently covers four names out of
+        // five, discovered weeks later as one device that cannot reach the service.
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpLanNames = lanNames });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(offender, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Switching the in-process provider on is the moment the internal CA starts issuing for these
+    /// names, so a stored value that could not be issued for is refused then too.
+    /// </summary>
+    [Fact]
+    public async Task EnablingTheProvider_ChecksTheStoredLanNames() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:Yarp:LanNames", "nas .lan"));
+        var result = await SaveAsync(
+            host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("nas .lan", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task APinnedLanNamesValueIsRefused() {
+        using var host = AuthTestHost.Start();
+        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__YARP__LANNAMES"]);
+
+        var result = await SaveAsync(host, Command() with { YarpLanNames = "nas.lan" }, pins: pins);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("WATCHTOWER__PROXY__YARP__LANNAMES", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(WatchtowerSettingPaths.ProxyYarpLanNames, GetProxyConfig.ProxyPaths);
+    }
+
+    /// <summary>They decide which devices can reach this deployment over TLS, so the trail names them.</summary>
+    [Fact]
+    public async Task TheAuditLineNamesTheLanNames() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with {
+            Provider = ProxyProviderNames.Yarp, YarpLanNames = "nas.lan, 192.168.1.10",
+        });
+        Assert.True(result.IsSuccess);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuditEvents.SingleAsync(Ct);
+        Assert.Contains("lan names nas.lan, 192.168.1.10", row.Detail, StringComparison.Ordinal);
+    }
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     private static UpdateProxyConfig.Command Command() =>

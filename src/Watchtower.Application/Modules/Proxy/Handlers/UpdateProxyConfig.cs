@@ -7,6 +7,7 @@ using Elarion.Settings;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Modules.Proxy.Handlers;
@@ -43,6 +44,7 @@ public sealed class UpdateProxyConfig(
         string? YarpAcmeEabKeyId = null,
         string? YarpAcmeEabHmacKey = null,
         bool? YarpRedirectHttpToHttps = null,
+        string? YarpLanNames = null,
         string? CloudflareAccountId = null,
         string? CloudflareZoneId = null,
         string? CloudflareApiToken = null,
@@ -83,6 +85,7 @@ public sealed class UpdateProxyConfig(
         var acmeEabKeyId = Coalesce(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId);
         var acmeEabHmacKey = Coalesce(command.YarpAcmeEabHmacKey, yarp.AcmeEabHmacKey);
         var redirectHttpToHttps = command.YarpRedirectHttpToHttps ?? yarp.RedirectHttpToHttps;
+        var lanNames = Coalesce(command.YarpLanNames, yarp.LanNames) ?? "";
         var httpPort = command.YarpHttpPort ?? yarp.HttpPort;
         var httpsPort = command.YarpHttpsPort ?? yarp.HttpsPort;
 
@@ -116,6 +119,15 @@ public sealed class UpdateProxyConfig(
         if ((command.YarpAcmeEabKeyId is not null || command.YarpAcmeEabHmacKey is not null || enablingYarp)
             && ValidateAcmeEab(acmeEabKeyId, acmeEabHmacKey) is { } eabError)
             return AppError.Validation(eabError);
+
+        // Same rule as the ports: checked when supplied, and when this save switches the in-process
+        // provider on, because that is the moment the internal CA starts issuing for these names. Empty
+        // is valid and means the internal CA is unused — a deployment with no LAN addresses to serve.
+        if ((command.YarpLanNames is not null || enablingYarp)
+            && !InternalCaNames.TryParseLanNames(lanNames, out _, out _, out var lanReason))
+            return AppError.Validation(
+                $"{lanReason} List the host names and IP addresses this deployment is reached on, "
+                + "separated by commas or newlines.");
 
         // Effective cloudflare values after this update: supplied value, else what is already configured.
         var accountId = Coalesce(command.CloudflareAccountId, cf.AccountId);
@@ -160,6 +172,7 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId, Changed(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId));
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey is not null);
         Check(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps != yarp.RedirectHttpToHttps);
+        Check(WatchtowerSettingPaths.ProxyYarpLanNames, Changed(command.YarpLanNames, yarp.LanNames));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccountId, Changed(command.CloudflareAccountId, cf.AccountId));
         Check(WatchtowerSettingPaths.ProxyCloudflareZoneId, Changed(command.CloudflareZoneId, cf.ZoneId));
         Check(WatchtowerSettingPaths.ProxyCloudflareApiToken, command.CloudflareApiToken is not null);
@@ -226,6 +239,8 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey.Trim(), ct);
         if (command.YarpRedirectHttpToHttps is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps ? "true" : "false", ct);
+        if (command.YarpLanNames is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpLanNames, command.YarpLanNames.Trim(), ct);
         if (command.CloudflareAccountId is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccountId, command.CloudflareAccountId.Trim(), ct);
         if (command.CloudflareZoneId is not null)
@@ -268,7 +283,10 @@ public sealed class UpdateProxyConfig(
                 // the ingress ports, because changing one rebinds a listener facing the internet.
                 ProxyProviderNames.Yarp =>
                     $" · acme {AcmeHost(acmeDirectoryUrl)}"
-                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}",
+                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}"
+                    // Named because they decide what the internal CA issues for, and a name added or
+                    // removed here changes which devices can reach this deployment over TLS.
+                    + $" · lan names {(lanNames.Length > 0 ? lanNames : "none")}",
                 _ => $" · image {image}",
             })
             + (secretsUpdated.Count > 0 ? $" · secrets updated: {string.Join(", ", secretsUpdated)}" : ""),
@@ -289,6 +307,7 @@ public sealed class UpdateProxyConfig(
                 AcmeEabKeyId = string.IsNullOrWhiteSpace(acmeEabKeyId) ? null : acmeEabKeyId,
                 AcmeEabHmacKey = string.IsNullOrWhiteSpace(acmeEabHmacKey) ? null : acmeEabHmacKey,
                 RedirectHttpToHttps = redirectHttpToHttps,
+                LanNames = lanNames,
             },
             Cloudflare = cf with {
                 AccountId = accountId,

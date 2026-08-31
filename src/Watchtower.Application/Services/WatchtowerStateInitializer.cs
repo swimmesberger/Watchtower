@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Services;
 
@@ -32,6 +33,11 @@ public static class WatchtowerStateInitializer {
             await scope.ServiceProvider.GetRequiredService<FileStateImport>().RunAsync(ct);
 
         await services.GetRequiredService<CertificateStore>().InitializeAsync(ct);
+        // Immediately after the store is filled, and before anything is served: a LAN certificate that
+        // is missing or no longer names what it should is issued here rather than a background pass
+        // later, so the first connection after a restart already gets it. A no-op — not even a CA is
+        // created — while nothing wants one.
+        await services.GetRequiredService<InternalCertificateService>().EnsureAsync(ct);
         await services.GetRequiredService<AuthTokenSigner>().InitializeAsync(ct);
     }
 }

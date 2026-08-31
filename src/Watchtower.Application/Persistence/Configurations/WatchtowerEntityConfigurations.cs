@@ -886,6 +886,30 @@ public sealed class SigningKeyConfiguration : IEntityTypeConfiguration<SigningKe
     }
 }
 
+// The fifth table of that plane, added later: the internal CA an operator imports once to get HTTPS on
+// a LAN address no public CA would issue for. Not a former file — it has never existed anywhere else.
+
+[EntityConfiguration]
+public sealed class InternalCaConfiguration : IEntityTypeConfiguration<InternalCa> {
+    public void Configure(EntityTypeBuilder<InternalCa> b) {
+        b.ToTable("internal_cas");
+        b.HasKey(x => x.Id);
+        // Nothing rewrites this row today, but a rotation would — and the loser of that race must be
+        // told rather than silently overwrite the root every client has since imported.
+        b.UseXminAsConcurrencyToken();
+        b.Property(x => x.Name).IsRequired();
+        // Load-bearing rather than descriptive, exactly like acme_accounts' index: it is what makes the
+        // unconditional insert in InternalCaStore a race guard, so two instances starting together end
+        // up with one root instead of two — of which the operator could only ever trust one.
+        b.HasIndex(x => x.Name).IsUnique();
+        b.Property(x => x.CertificatePem).IsRequired();
+        b.Property(x => x.PrivateKey).IsRequired();
+        b.Property(x => x.Protection).IsRequired();
+        b.Property(x => x.Subject).IsRequired();
+        b.Property(x => x.Thumbprint).IsRequired();
+    }
+}
+
 /// <summary>
 /// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3),
 /// mapped onto <see cref="IHasXmin.Xmin"/> — a real property on the entity.

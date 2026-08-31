@@ -21,6 +21,7 @@ using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
@@ -220,6 +221,12 @@ public static class WatchtowerServiceCollectionExtensions {
         // like the rest of the proxy services; filled by WatchtowerStateInitializer before Kestrel
         // serves, because the handshake path cannot wait for a query.
         services.AddSingleton<CertificateStore>();
+
+        // Watchtower's own CA and the one LAN certificate it signs: how a service reached at a LAN
+        // address gets TLS at all, where no public CA would issue. Singletons alongside the ACME pair
+        // above, and inert until something asks for a LAN certificate.
+        services.AddSingleton<InternalCaStore>();
+        services.AddSingleton<InternalCertificateService>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and
