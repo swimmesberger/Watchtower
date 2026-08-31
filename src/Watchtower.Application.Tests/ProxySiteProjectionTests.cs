@@ -208,8 +208,71 @@ public sealed class ProxySiteProjectionTests {
         Assert.Equal(IdentityHeaderMode.None, site.Mode);
     }
 
+    // ── Port-bound routes (ADR-0033) ──────────────────────────────────────────
+
+    /// <summary>
+    /// A port route is not a site. Every provider that consumes <c>Project</c>'s result renders a
+    /// hostname — a Caddy site block, a Cloudflare ingress rule — and there is no hostname here to
+    /// render, so the row is skipped there and answered by <c>ProjectPortRoutes</c> instead.
+    /// </summary>
+    [Fact]
+    public void APortRoute_IsNotASite() {
+        var routes = new[] { Route("app.example.invalid", AccessMode.Public), PortRoute(9001) };
+
+        var site = Assert.Single(ProxySiteProjection.Project(routes, new AuthOptions { Enabled = true }));
+        Assert.Equal("app.example.invalid", site.Domain);
+    }
+
+    [Fact]
+    public void APortRoute_IsProjectedOntoItsListenerAndItsUpstream() {
+        var routes = new[] { Route("app.example.invalid", AccessMode.Public), PortRoute(9001) };
+
+        var port = Assert.Single(ProxySiteProjection.ProjectPortRoutes(routes));
+        Assert.Equal(9001, port.ListenPort);
+        // The same edge alias a domain-bound service route gets: the hop is the stack's ingress network
+        // either way, and only the address the visitor used differs.
+        Assert.Equal("watchtower-web", port.UpstreamHost);
+        Assert.Equal(8080, port.UpstreamPort);
+        Assert.Equal(9, port.RouteId);
+    }
+
+    /// <summary>The mirror of the rule above: a domain-bound route has no listener of its own.</summary>
+    [Fact]
+    public void ADomainRoute_IsNotAPortListener() =>
+        Assert.Empty(ProxySiteProjection.ProjectPortRoutes(
+            [Route("app.example.invalid", AccessMode.Public), SelfRoute(SelfHost)]));
+
+    /// <summary>
+    /// The same rule a service site follows: a row whose stack has gone names no upstream. The foreign
+    /// key cascades, so this is the window between the two rather than a state anything settles in.
+    /// </summary>
+    [Fact]
+    public void APortRouteWithoutItsStack_IsSkipped() {
+        var orphan = PortRoute(9001);
+        orphan.Stack = null;
+
+        Assert.Empty(ProxySiteProjection.ProjectPortRoutes([orphan]));
+    }
+
     private static ProxySite Site(IEnumerable<ProxySite> sites, string domain) =>
         Assert.Single(sites, s => s.Domain == domain);
+
+    private static Route PortRoute(int listenPort) => new() {
+        Id = 9,
+        Target = RouteTarget.Service,
+        Binding = RouteBinding.Port,
+        StackId = 1,
+        Domain = null,
+        ListenPort = listenPort,
+        ServiceName = "web",
+        ContainerPort = 8080,
+        TlsEnabled = true,
+        AccessMode = AccessMode.Public,
+        Stack = new Stack {
+            Name = "watchtower",
+            ComposeProjectName = "watchtower",
+        },
+    };
 
     private static Route Route(string domain, AccessMode mode) => new() {
         Target = RouteTarget.Service,

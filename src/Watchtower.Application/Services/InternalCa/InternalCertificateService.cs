@@ -98,8 +98,8 @@ public sealed class InternalCertificateService(
                     + "deployment is reached on under Settings → Reverse proxy.");
             await RecordPortRoutesAsync(
                 RouteStatus.Error,
-                "No LAN certificate: set the addresses this deployment is reached on under "
-                + "Settings → Reverse proxy.", null, ct);
+                "No LAN certificate: no LAN names are configured. Set the addresses this deployment is "
+                + "reached on under Settings → Reverse proxy.", null, ct);
             return;
         }
         _lastRefusal = null;

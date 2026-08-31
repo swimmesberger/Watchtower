@@ -15,9 +15,9 @@ namespace Watchtower.Application.Tests;
 /// held certificate wrong: the names moved, the CA moved, or it is old.
 /// </summary>
 /// <remarks>
-/// The "is a leaf wanted" question is passed in rather than read off the routing state, because that
-/// state is what stage 2 adds. Everything after it — issue, reissue, install, prune — is exercised here
-/// as it will ship.
+/// Most of these pass the "is a leaf wanted" question in, so the issue/reissue/install/prune decisions
+/// can be exercised without a route table. The production predicate — "is there a port-bound route?" —
+/// and the route statuses it settles have their own section at the end.
 /// </remarks>
 public sealed class InternalCertificateServiceTests {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -143,7 +143,7 @@ public sealed class InternalCertificateServiceTests {
     public async Task NothingWantsALeaf_SoNoCaIsEvenCreated() {
         using var host = LanHost("nas.lan");
 
-        // The production predicate, which stage 2 wires to port routes and which nothing satisfies yet.
+        // The production predicate, on an instance with no port routes.
         await host.Services.GetRequiredService<InternalCertificateService>().EnsureAsync(Ct);
 
         Assert.Null(Store(host).SelectCertificate(Host));
@@ -238,6 +238,72 @@ public sealed class InternalCertificateServiceTests {
                 current: null, entry: null, root.Certificate, ["nas.lan"], [], now));
     }
 
+    // ── What wants a leaf, and what it tells the routes (ADR-0033) ────────────
+
+    /// <summary>
+    /// The production predicate. One port-bound route is what makes a LAN certificate wanted, and one
+    /// leaf covers however many there are.
+    /// </summary>
+    [Fact]
+    public async Task APortRoute_IsWhatMakesALeafWanted() {
+        using var host = LanHost("nas.lan");
+        var stackId = await host.AddStackAsync("media", composeProjectName: "media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+
+        await host.Services.GetRequiredService<InternalCertificateService>().EnsureAsync(Ct);
+
+        var leaf = Store(host).SelectCertificate(Host);
+        Assert.NotNull(leaf);
+
+        // Pending with no explanation is what a freshly created route would otherwise sit at forever;
+        // the certificate that makes it serveable is the thing its status is about.
+        var route = await RouteAsync(host, routeId);
+        Assert.Equal(RouteStatus.Active, route.Status);
+        Assert.Null(route.StatusDetail);
+        Assert.Equal(leaf.NotAfter.ToUniversalTime(), route.CertNotAfter?.UtcDateTime);
+    }
+
+    /// <summary>
+    /// A second route created while the leaf already covers the configured names. Nothing is reissued —
+    /// the same certificate serves it — but the row still has to be told that it is being served, or the
+    /// operator would see a permanent Pending on a route that works.
+    /// </summary>
+    [Fact]
+    public async Task ARouteAddedUnderAnUpToDateLeaf_IsStillMarkedActive() {
+        using var host = LanHost("nas.lan");
+        var stackId = await host.AddStackAsync("media", composeProjectName: "media");
+        await host.AddPortRouteAsync(stackId, 9001);
+        var service = host.Services.GetRequiredService<InternalCertificateService>();
+        await service.EnsureAsync(Ct);
+        var thumbprint = Store(host).SelectCertificate(Host)!.Thumbprint;
+
+        var second = await host.AddPortRouteAsync(stackId, 9002, serviceName: "jellyfin");
+        await service.EnsureAsync(Ct);
+
+        Assert.Equal(thumbprint, Store(host).SelectCertificate(Host)!.Thumbprint);
+        var route = await RouteAsync(host, second);
+        Assert.Equal(RouteStatus.Active, route.Status);
+        Assert.NotNull(route.CertNotAfter);
+    }
+
+    /// <summary>
+    /// The refusal an operator is most likely to hit: a port route created before the LAN names are set.
+    /// The log says so once, and the row says so where they are looking.
+    /// </summary>
+    [Fact]
+    public async Task WithoutLanNames_ThePortRoutesSayWhyTheyAreNotServed() {
+        using var host = LanHost("");
+        var stackId = await host.AddStackAsync("media", composeProjectName: "media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+
+        await host.Services.GetRequiredService<InternalCertificateService>().EnsureAsync(Ct);
+
+        var route = await RouteAsync(host, routeId);
+        Assert.Equal(RouteStatus.Error, route.Status);
+        Assert.Contains("LAN names", route.StatusDetail ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Null(route.CertNotAfter);
+    }
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     /// <summary>A host running the in-process proxy with LAN names configured.</summary>
@@ -260,6 +326,12 @@ public sealed class InternalCertificateServiceTests {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.ProxyCertificates.AsNoTracking().FirstOrDefaultAsync(c => c.Host == Host, Ct);
+    }
+
+    private static async Task<Route> RouteAsync(AuthTestHost host, int routeId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
     }
 
     private static async Task<InternalCa?> CaRowAsync(AuthTestHost host) {

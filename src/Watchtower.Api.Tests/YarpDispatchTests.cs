@@ -582,6 +582,150 @@ public sealed class YarpDispatchTests {
     private static WatchtowerApiFactory IngressLoginHostEstate() => WatchtowerApiFactory.WithIngress(
         ("Watchtower:Auth:Enabled", "true"), ("Watchtower:Auth:Host", AuthHost));
 
+    // ── Port-bound routes (ADR-0033) ──────────────────────────────────────────
+
+    /// <summary>The alias <see cref="PortRouteEstate"/>'s stack produces, on the container port it names.</summary>
+    private const string PortUpstream = "http://media-jellyfin:8096";
+
+    /// <summary>
+    /// The whole rule in one test: on a port route's listener the route is decided by the port, and the
+    /// <c>Host</c> header — which a client dialling a bare LAN address writes whatever it likes into —
+    /// decides nothing. Including when it names a domain that is itself routed here.
+    /// </summary>
+    [Theory]
+    [InlineData("nas.lan")]
+    [InlineData("192.168.1.10")]
+    [InlineData(AppDomain)]
+    public async Task RequestOnAPortRoutesListener_IsForwardedWhateverTheHostSays(string host) {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{host}/web/index.html?q=1", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(RecordingHttpForwarder.MarkerBody, await Body(response));
+        var forwarded = factory.Forwarder.Single();
+        Assert.Equal(PortUpstream, forwarded.DestinationPrefix);
+        Assert.Equal($"{PortUpstream}/web/index.html?q=1", forwarded.RequestUri?.ToString());
+        // Echoed, not rewritten: an application building absolute URLs has to hear back the address the
+        // client actually dialled, and the route has no hostname of its own to substitute.
+        Assert.Equal(host, forwarded.Header("X-Forwarded-Host"));
+        // Always https — the listener terminates TLS and does nothing else.
+        Assert.Equal("https", forwarded.Header("X-Forwarded-Proto"));
+    }
+
+    /// <summary>
+    /// The strip is not one of the things a port route skips. Nothing a client sent under an identity
+    /// header's name reaches an upstream, on any listener — and on this one there is no identity to
+    /// replace it with, so a smuggled header would be the only thing the application saw.
+    /// </summary>
+    [Fact]
+    public async Task IdentityHeaders_AreStrippedOnAPortRoute_AndNoneAreAdded() {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        var request = new HttpRequestMessage(HttpMethod.Get, "https://nas.lan/");
+        request.Headers.Add("Remote-User", "smuggled");
+        request.Headers.Add("X-Auth-Request-User", "smuggled");
+        request.Headers.Add("X-Forwarded-Method", "GET");
+        await client.SendAsync(request, Ct);
+
+        var forwarded = factory.Forwarder.Single();
+        Assert.Null(forwarded.Header("Remote-User"));
+        Assert.Null(forwarded.Header("X-Auth-Request-User"));
+        Assert.Null(forwarded.Header("X-Forwarded-Method"));
+        Assert.Null(forwarded.Header(RouteAccessPolicy.JwtHeaderName));
+    }
+
+    /// <summary>
+    /// <c>/.watchtower/*</c> is reserved on a domain route because that is where an anonymous visitor is
+    /// handed a session. A port route is public by construction, so nothing redirects anyone there — and
+    /// holding the prefix would take a path away from an upstream entitled to serve it.
+    /// </summary>
+    [Fact]
+    public async Task TheReservedPrefix_IsForwardedOnAPortRoute() {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("https://nas.lan/.watchtower/userinfo", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal($"{PortUpstream}/.watchtower/userinfo", factory.Forwarder.Single().RequestUri?.ToString());
+    }
+
+    /// <summary>
+    /// No HTTPS upgrade either. The redirect is rebuilt from the route's hostname, and there is none —
+    /// so a request that somehow arrived over plain HTTP is served rather than sent to an address that
+    /// does not exist.
+    /// </summary>
+    [Fact]
+    public async Task APortRoute_NeverRedirects() {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("http://nas.lan/web/", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// The race: the row is deleted and the socket has not been unbound yet. A bare 404, not a fall
+    /// through to the host lookup — otherwise the <c>Host</c> header could pick some other route on a
+    /// listener whose own route is gone.
+    /// </summary>
+    [Fact]
+    public async Task APortWithNoRouteLeft_Is404_EvenForARoutedHost() {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddRouteAsync(AppDomain, AccessMode.Public);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{AppDomain}/reports", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("", await Body(response));
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>
+    /// And the ingress listeners are unaffected: a port route is reached on its own port and nowhere
+    /// else, so it cannot be a second door into a service on 443.
+    /// </summary>
+    [Fact]
+    public async Task APortRoute_IsNotReachableOnTheIngressPorts() {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(8443);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync("https://nas.lan/", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Empty(factory.Forwarder.Forwarded);
+    }
+
+    /// <summary>The port a port route listens on in these tests, in both the settings and the row.</summary>
+    private const int PortRoutePort = 9001;
+
+    /// <summary>
+    /// An ingress host that also has a port route's listener. The setting is what the Kestrel projection
+    /// derives the endpoint from, so naming it here is what gives the listener state — and therefore the
+    /// dispatcher — a port to recognise.
+    /// </summary>
+    private static WatchtowerApiFactory PortRouteEstate() => WatchtowerApiFactory.WithIngress(
+        ("Watchtower:Proxy:Yarp:PortRoutePorts",
+            PortRoutePort.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;

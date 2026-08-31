@@ -194,6 +194,57 @@ public sealed class ProxyListenerStateTests {
         Assert.Equal("http://127.0.0.1:8080", state.LocalHttpAddress);
     }
 
+    // ── Port routes (ADR-0033) ────────────────────────────────────────────────
+
+    /// <summary>
+    /// A port route's listener is public ingress like the two named ones, and it is also recorded
+    /// separately — the handshake path has to know which ports the LAN certificate answers on, and the
+    /// dispatcher has to tell a listener whose route was just deleted from a listener that never had one.
+    /// </summary>
+    [Fact]
+    public void PortRouteEndpoints_AreIngressAndAreNamedAsSuch() {
+        var snapshot = ProxyListenerStateInitializer.Derive(
+            Section(
+                ("Endpoints:Http:Url", "http://+:8080"),
+                ("Endpoints:ProxyHttp:Url", "http://+:8081"),
+                ("Endpoints:ProxyHttps:Url", "https://+:8443"),
+                ("Endpoints:ProxyPort9001:Url", "https://+:9001"),
+                ("Endpoints:ProxyPort9002:Url", "https://+:9002")),
+            hostingUrls: null);
+
+        Assert.Equal([8081, 8443, 9001, 9002], snapshot.IngressPorts.Order());
+        Assert.Equal([9001, 9002], snapshot.PortRoutePorts.Order());
+        Assert.Equal(8080, snapshot.ManagementPort);
+    }
+
+    /// <summary>
+    /// A deployment that serves nothing but port routes: both ingress ports off, HTTPS reported as
+    /// unbound — that flag is about the shared TLS ingress endpoint — and the port listeners still
+    /// counted as ingress, so an unrouted host on one of them is refused rather than shown the UI.
+    /// </summary>
+    [Fact]
+    public void WithOnlyPortRoutes_ThoseAreTheIngressPorts() {
+        var snapshot = ProxyListenerStateInitializer.Derive(
+            Section(("Endpoints:Http:Url", "http://+:8080"), ("Endpoints:ProxyPort9001:Url", "https://+:9001")),
+            hostingUrls: null);
+
+        Assert.Equal([9001], snapshot.IngressPorts.Order());
+        Assert.Equal([9001], snapshot.PortRoutePorts.Order());
+        Assert.False(snapshot.HttpsBound);
+        // The self-check still has the management endpoint to dial, as it does on any single-listener host.
+        Assert.Equal("http://127.0.0.1:8080", snapshot.LocalHttpAddress);
+    }
+
+    /// <summary>An endpoint of the operator's own is ingress but is not a port route's.</summary>
+    [Fact]
+    public void AnotherEndpoint_IsNotReadAsAPortRoutes() {
+        var snapshot = ProxyListenerStateInitializer.Derive(
+            Section(("Endpoints:Http:Url", "http://+:8080"), ("Endpoints:ProxyPortal:Url", "https://+:7000")),
+            hostingUrls: null);
+
+        Assert.Empty(snapshot.PortRoutePorts);
+    }
+
     /// <summary>The shipped image's projected section: management on 8080, ingress on 8081/8443.</summary>
     private static IConfiguration ShippedEndpoints() => Section(
         ("Endpoints:Http:Url", "http://+:8080"),

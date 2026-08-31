@@ -159,6 +159,50 @@ internal static class AccessTestEstate {
     }
 
     /// <summary>
+    /// Adds a stack with a port-bound route (ADR-0033): no hostname, a listener of its own, and the shape
+    /// <c>ck_routes_binding</c> insists on — a service target, public, TLS. Returns the route's id.
+    /// </summary>
+    /// <remarks>
+    /// The listen port is a fact about the <em>listener</em> as well as the row, so a test that wants the
+    /// request path to reach this route also has to give its host a matching
+    /// <c>Watchtower:Proxy:Yarp:PortRoutePorts</c> — the projection is what decides which ports exist.
+    /// </remarks>
+    public static async Task<int> AddPortRouteAsync(
+        this WatchtowerApiFactory factory, int listenPort, string stackName = "media",
+        string serviceName = "web", int containerPort = 8080) {
+        ArgumentNullException.ThrowIfNull(factory);
+        var routeId = 0;
+        await factory.WithScopeAsync(async sp => {
+            var db = sp.GetRequiredService<WatchtowerDbContext>();
+            var ct = TestContext.Current.CancellationToken;
+
+            var stack = new Stack {
+                Name = stackName,
+                ComposeProjectName = stackName,
+                ProductId = await ProductIdForAsync(db, templateId: null, stackName, ct),
+            };
+            db.Stacks.Add(stack);
+            await db.SaveChangesAsync(ct);
+
+            var route = new Route {
+                Target = RouteTarget.Service,
+                Binding = RouteBinding.Port,
+                StackId = stack.Id,
+                Domain = null,
+                ListenPort = listenPort,
+                ServiceName = serviceName,
+                ContainerPort = containerPort,
+                TlsEnabled = true,
+                AccessMode = AccessMode.Public,
+            };
+            db.Routes.Add(route);
+            await db.SaveChangesAsync(ct);
+            routeId = route.Id;
+        });
+        return routeId;
+    }
+
+    /// <summary>
     /// Adds another domain for the stack <paramref name="routeId"/> belongs to, carrying the same access
     /// mode so that what distinguishes it is only its service and <see cref="Route.IsPrimary"/>.
     /// </summary>
