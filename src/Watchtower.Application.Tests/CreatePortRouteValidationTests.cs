@@ -118,6 +118,22 @@ public sealed class CreatePortRouteValidationTests {
         Assert.Contains("leave realmId and makeLoginRoute unset", result.Error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Refused rather than fixed, the way the edit handler refuses it: <c>kind</c> is optional, so a
+    /// caller that filled it in said something about this route, and quietly storing something else is
+    /// how create and update would end up disagreeing about one request.
+    /// </summary>
+    [Fact]
+    public async Task APortRouteNamingADomainKind_IsRefused() {
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001) with { Kind = "custom" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("leave the kind unset", result.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task APortRouteWithNoService_IsRefused() {
         using var host = LanHost();
@@ -245,6 +261,27 @@ public sealed class CreatePortRouteValidationTests {
         Assert.Contains("Set the LAN names in Settings", result.Error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The friendly pre-check is not the thing that decides the question: two requests, or two
+    /// instances against one database, can both pass it. Staged by leaving a competing row unsaved on
+    /// the handler's own context — the pre-check queries the database and misses it, and the two rows
+    /// then meet in one <c>SaveChanges</c>, which is exactly the shape of the real race.
+    /// </summary>
+    [Fact]
+    public async Task APortTakenBetweenTheCheckAndTheWrite_IsAConflict() {
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        Stage(scope.ServiceProvider, stackId, 9001);
+        var handler = ActivatorUtilities.CreateInstance<CreateRoute>(scope.ServiceProvider);
+        var result = await handler.HandleAsync(PortCommand(stackId, 9001), Ct);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorKind.Conflict, result.Error.Kind);
+        Assert.Contains("was taken by another route", result.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task APortRouteOnAStackThatIsNotThere_IsNotFound() {
         using var host = LanHost();
@@ -351,6 +388,43 @@ public sealed class CreatePortRouteValidationTests {
         Assert.Contains("is the management port", result.Error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The same rule as at creation, and the one that matters most on an edit: a move onto an ingress
+    /// port would have the projection drop the listener, leaving a row that reads Active and serves
+    /// nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(18081, "HTTP ingress port")]
+    [InlineData(18443, "HTTPS ingress port")]
+    public async Task APortRouteMovedOntoAnIngressPort_IsRefused(int listenPort, string expected) {
+        using var host = LanHost(
+            ("Watchtower:Proxy:Yarp:HttpPort", "18081"), ("Watchtower:Proxy:Yarp:HttpsPort", "18443"));
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await UpdateAsync(host, PortEdit(routeId) with { ListenPort = listenPort });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(expected, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The edit side of the same race the create path guards; staged the same way.</summary>
+    [Fact]
+    public async Task APortTakenBetweenTheCheckAndTheEditsWrite_IsAConflict() {
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        Stage(scope.ServiceProvider, stackId, 9002);
+        var handler = ActivatorUtilities.CreateInstance<UpdateRoute>(scope.ServiceProvider);
+        var result = await handler.HandleAsync(PortEdit(routeId) with { ListenPort = 9002 }, Ct);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorKind.Conflict, result.Error.Kind);
+        Assert.Contains("was taken by another route", result.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TurningAPortRouteIntoADomainRoute_IsRefused() {
         using var host = LanHost();
@@ -437,6 +511,33 @@ public sealed class CreatePortRouteValidationTests {
         Assert.Empty(proxy.Forgotten);
     }
 
+    /// <summary>
+    /// A port route has no hostname to name in the trail, so the row says <c>port {n}</c> — the only
+    /// thing an operator would recognise it by. The audit row is only written when the deletion cost a
+    /// realm its login host, and no handler will make a port route one, so the realm is pointed at it
+    /// directly: the fallback exists precisely so that a row nothing produced cannot be recorded
+    /// against a blank target.
+    /// </summary>
+    [Fact]
+    public async Task DeletingAPortRoute_NamesItByItsPortInTheTrail() {
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var realm = await db.Realms.SingleAsync(r => r.Id == Realm.SystemRealmId, Ct);
+        realm.LoginRouteId = routeId;
+        await db.SaveChangesAsync(Ct);
+
+        var result = await SendAsync<DeleteRoute.Command, DeleteRoute.Response>(
+            scope.ServiceProvider, new DeleteRoute.Command(routeId));
+
+        Assert.True(result.IsSuccess, Describe(result));
+        var row = await db.AuditEvents.AsNoTracking().SingleAsync(e => e.Action == "route.delete", Ct);
+        Assert.Equal("port 9001", row.Target);
+    }
+
     // ── Access ───────────────────────────────────────────────────────────────
 
     [Fact]
@@ -471,19 +572,23 @@ public sealed class CreatePortRouteValidationTests {
     // ── DNS ──────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The preflight the UI runs before a certificate can issue. A port route has nothing to resolve, and
-    /// the generic "a domain is required" would read as a form the operator failed to fill in.
+    /// The preflight the UI runs before a certificate can issue. Blank reaches it from two directions —
+    /// a name not typed yet, and a port route, which has none — so the refusal has to read correctly
+    /// for both rather than telling one of them about the other's situation.
     /// </summary>
-    [Fact]
-    public async Task CheckingDnsWithoutADomain_SaysAPortRouteHasNone() {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task CheckingDnsWithoutADomain_SaysWhatBothCallersNeedToHear(string? domain) {
         using var host = AuthTestHost.Start(services => services.AddCheckDns());
 
         await using var scope = host.Services.CreateAsyncScope();
         var result = await SendAsync<CheckDns.Command, CheckDns.Response>(
-            scope.ServiceProvider, new CheckDns.Command(null));
+            scope.ServiceProvider, new CheckDns.Command(domain));
 
         Assert.False(result.IsSuccess);
-        Assert.Equal("A port route has no domain to check.", result.Error.Message);
+        Assert.Equal("Enter a domain to check; a port route has none to resolve.", result.Error.Message);
     }
 
     // ── Certificates ─────────────────────────────────────────────────────────
@@ -534,6 +639,27 @@ public sealed class CreatePortRouteValidationTests {
         object[] overrides = [.. new object?[] { listener }.OfType<object>()];
         var handler = ActivatorUtilities.CreateInstance<UpdateRoute>(scope.ServiceProvider, overrides);
         return await handler.HandleAsync(command, Ct);
+    }
+
+    /// <summary>
+    /// Puts a competing port route on the handler's own context <em>without</em> saving it. The
+    /// collision pre-checks query the database, so they cannot see it; both rows then reach one
+    /// <c>SaveChanges</c> and meet on the unique index — the same thing that happens when two requests
+    /// or two instances pass the pre-check together.
+    /// </summary>
+    private static void Stage(IServiceProvider scope, int stackId, int listenPort) {
+        var db = scope.GetRequiredService<WatchtowerDbContext>();
+        db.Routes.Add(new Route {
+            Binding = RouteBinding.Port,
+            StackId = stackId,
+            Domain = null,
+            ListenPort = listenPort,
+            ServiceName = "raced",
+            ContainerPort = 8080,
+            TlsEnabled = true,
+            AccessMode = AccessMode.Public,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
     }
 
     private static async Task<int> DomainRouteIdAsync(AuthTestHost host, string domain) {

@@ -204,9 +204,11 @@ public sealed class CreateRoute(
     /// Everything <c>ck_routes_binding</c> makes structural is settled here rather than taken from the
     /// request — the target is a service, the access mode is Public and TLS is on — because each of them
     /// is an invariant the request path relies on rather than a preference. <see cref="Route.IsPrimary"/>
-    /// and <see cref="Route.Kind"/> are fixed for the opposite reason: both describe a hostname (which of
-    /// a stack's domains is canonical, and whether it is operator- or customer-owned), and a route with no
-    /// hostname has nothing for either to be about.
+    /// is fixed for a different reason: it says which of a stack's <em>domains</em> is canonical, and a
+    /// route with no hostname is not among them. <see cref="Route.Kind"/> is the same kind of value but
+    /// is <em>refused</em> rather than fixed, the way <c>proxy.updateRoute</c> refuses it: it is an
+    /// optional field, so a caller that filled it in said something about this route, and quietly
+    /// storing something else is how the two handlers would end up disagreeing about one request.
     /// </remarks>
     private async ValueTask<Result<Response>> CreatePortRouteAsync(
         Command command, RouteTarget target, CancellationToken ct) {
@@ -222,6 +224,11 @@ public sealed class CreateRoute(
             return AppError.Validation(
                 "A port route serves a stack service, not a realm's Watchtower surface; leave realmId and "
                 + "makeLoginRoute unset.");
+        }
+        if (command.Kind is not null) {
+            return AppError.Validation(
+                "A port route has no hostname, so it is neither a managed subdomain nor a custom domain; "
+                + "leave the kind unset.");
         }
         if (string.IsNullOrWhiteSpace(command.ServiceName))
             return AppError.Validation("Service name is required.");
