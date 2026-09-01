@@ -78,6 +78,12 @@ namespace Watchtower.Application.Persistence.Migrations
                 name: "listen_port",
                 table: "routes");
 
+            // A pre-ADR-0033 schema has no way to represent a port route: the address of one lives in
+            // listen_port, which the column drop above has just removed, and domain is about to become
+            // NOT NULL again. So the downgrade drops those rows deliberately, rather than failing on the
+            // AlterColumn with a message that names a column and explains nothing.
+            migrationBuilder.Sql("DELETE FROM routes WHERE domain IS NULL");
+
             migrationBuilder.AlterColumn<string>(
                 name: "domain",
                 table: "routes",
