@@ -193,8 +193,9 @@ public static class ProxyIngressKestrelConfiguration {
         // One TLS listener per port route (ADR-0033), named after its port so the set of endpoints is a
         // function of the set of ports and a route that goes away takes its endpoint with it. The
         // certificate is not named here: these endpoints carry no Certificate section at all and are made
-        // TLS by the https defaults, which is what lets an endpoint appear at runtime under a name nobody
-        // registered a callback for.
+        // TLS by the endpoint defaults, which is what lets an endpoint appear at runtime under a name
+        // nobody registered a callback for. Not by ConfigureHttpsDefaults — that was the approach this
+        // one replaced, and naming it here is how a reader would reconstruct it.
         foreach (var port in portRoutePorts) {
             // A route's port that is already somebody's listener is dropped rather than bound: a second
             // endpoint on one port is a duplicate bind, and the two collisions worth naming separately are

@@ -58,9 +58,6 @@ public sealed class ProxyRouteTableSnapshot {
     /// <summary>The ports this table serves a route on — the set the listener projection is derived from.</summary>
     public IReadOnlyCollection<int> PortRoutePorts => _byPort.Keys;
 
-    /// <summary>Every port-bound row in the table.</summary>
-    public IEnumerable<ProxyPortRouteSnapshot> PortRows => _byPort.Values;
-
     /// <summary>
     /// Looks up the route a connection's local port belongs to. Asked <em>before</em> the host lookup on
     /// every request: a client dialling a bare LAN address sends whatever <c>Host</c> it likes, and on a

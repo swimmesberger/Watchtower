@@ -115,7 +115,10 @@ public sealed class ProxyRouteTableTests {
         Assert.Equal(1, table.Count);
         Assert.True(table.TryGet("app.example.invalid", out _));
         Assert.True(table.TryGetByPort(9001, out _));
-        Assert.Single(table.PortRows);
+        // The host half does not answer for the port route's upstream, and the port half is not reachable
+        // by the hostname that has one.
+        Assert.False(table.TryGet("media-jellyfin", out _));
+        Assert.Single(table.PortRoutePorts);
     }
 
     /// <summary>

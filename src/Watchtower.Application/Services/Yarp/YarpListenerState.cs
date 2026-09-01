@@ -98,15 +98,23 @@ public sealed record YarpListenerSnapshot {
 
     /// <summary>
     /// The local ports carrying a port-bound route's dedicated TLS listener (ADR-0033) — the
-    /// <c>ProxyPort{n}</c> endpoints. Read on the handshake path, to decide whether the internal CA's
-    /// LAN certificate is what a connection on this port should be answered with, and on the request path
-    /// to dispatch by port instead of by host.
+    /// <c>ProxyPort{n}</c> endpoints. Read on the request path: it is the dispatcher's first reading of
+    /// "is this a port route's listener?" (before it falls back to the projected section), it is how
+    /// <c>AcmeChallengeMiddleware</c> knows not to answer a challenge on one, and it is what
+    /// <c>proxy.getStatus</c> and the startup log report.
     /// </summary>
     /// <remarks>
+    /// Deliberately <em>not</em> the handshake path's source. Which certificate a connection on a given
+    /// port is answered with is settled from the projected Kestrel section
+    /// (<see cref="PortRouteListeners.BoundPorts"/>), because this snapshot is republished from a reload
+    /// callback of that same section and the order the two callbacks run in is not something the
+    /// handshake gets to assume (ADR-0033 §4).
+    /// <para>
     /// A subset of <see cref="IngressPorts"/>, and the two are filled together by
     /// <c>ProxyListenerStateInitializer.Derive</c>: a port route's listener is public ingress like any
     /// other, so every rule stated in terms of ingress — the dispatcher's refusal to serve the management
     /// plane there, the failed-bind reporting — holds for it without being restated.
+    /// </para>
     /// </remarks>
     public IReadOnlySet<int> PortRoutePorts {
         get => _portRoutePorts;
