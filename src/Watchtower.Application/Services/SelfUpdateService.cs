@@ -27,7 +27,12 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private static readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
 
     private const string KeyConfig = "self.config";
-    private const string KeyRuntime = "self.runtime";
+
+    /// <summary>
+    /// Where the apply state lives. Internal because the port-publish path has to read it before
+    /// spawning a coordinator of its own — see <see cref="CoordinatorContainers.OtherRecreateInFlightAsync"/>.
+    /// </summary>
+    internal const string KeyRuntime = "self.runtime";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
@@ -287,6 +292,12 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             || string.IsNullOrWhiteSpace(detected.ContainerId))
             throw new InvalidOperationException(
                 "Self-update requires Watchtower to be running as a Docker container. Running outside Docker is not supported.");
+
+        // The other path to a container recreate has a mutex and a stage of its own, and neither of them
+        // is this one — but the container both would recreate is the same.
+        if (await CoordinatorContainers.OtherRecreateInFlightAsync(
+                _scopeFactory, CoordinatorContainers.CoordinatorKind.SelfUpdate, ct) is { } busy)
+            throw new InvalidOperationException(busy);
 
         var (username, token) = await ResolveCredentialAsync(config, ct);
 

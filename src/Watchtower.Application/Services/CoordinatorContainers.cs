@@ -1,4 +1,6 @@
 using System.Text;
+using Elarion.Settings;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Watchtower.Application.Services;
@@ -16,6 +18,55 @@ namespace Watchtower.Application.Services;
 /// them together would give one of the two the other's apply state.
 /// </remarks>
 internal static class CoordinatorContainers {
+    /// <summary>
+    /// Why a coordinator must not be spawned right now because the <em>other</em> one is mid-flight, or
+    /// null when the stage is clear.
+    /// </summary>
+    /// <remarks>
+    /// The two services guard themselves — an apply mutex each, an apply stage each — and that is not
+    /// enough, because what they contend for is neither: it is the Watchtower container. Two coordinators
+    /// spawned seconds apart each sleep three seconds and then stop, rename aside and recreate the
+    /// <em>same</em> container id. The loser acts on a container the winner has already renamed or
+    /// removed, and its stop is the one step outside the coordinator's try block — so it dies with no
+    /// rollback, leaving whatever the winner was halfway through.
+    /// <para>
+    /// This became reachable when the two apply records were deliberately split apart, so the check is
+    /// deliberately the cross one: each caller reads the record it does not own. Both are read through
+    /// the settings store rather than a shared in-process flag, which also makes the refusal correct for
+    /// the coordinator a <em>previous</em> process instance left running — the case where no in-memory
+    /// mutex exists at all.
+    /// </para>
+    /// </remarks>
+    /// <param name="asking">What the caller is about to do, named in the refusal.</param>
+    public static async Task<string?> OtherRecreateInFlightAsync(
+        IServiceScopeFactory scopeFactory, CoordinatorKind asking, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsManager>();
+
+        if (asking == CoordinatorKind.PortPublish) {
+            var update = await settings.GetAsync(
+                SelfUpdateService.KeyRuntime, new SelfUpdateRuntime(), SettingsScope.Global, ct);
+            return update.ApplyStage is "pulling" or "restarting"
+                ? "A Watchtower self-update is in progress — it is about to recreate this container. Wait "
+                  + "for it to finish, then publish the ports."
+                : null;
+        }
+
+        var ports = await settings.GetAsync(
+            SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime(), SettingsScope.Global, ct);
+        return ports.ApplyStage == "restarting"
+            ? "A host-port change is being applied — it is about to recreate this container. Wait for "
+              + "Watchtower to restart, then update."
+            : null;
+    }
+
+    /// <summary>Which of the two recreate paths is asking, for <see cref="OtherRecreateInFlightAsync"/>.</summary>
+    public enum CoordinatorKind {
+        SelfUpdate,
+        PortPublish,
+    }
+
     /// <summary>
     /// Creates and starts a coordinator container from <paramref name="image"/> and returns its id.
     /// </summary>

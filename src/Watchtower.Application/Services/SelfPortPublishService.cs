@@ -40,7 +40,11 @@ namespace Watchtower.Application.Services;
 /// </para>
 /// </remarks>
 public sealed class SelfPortPublishService : IHostedService, IDisposable {
-    private const string KeyRuntime = "proxy.ports.runtime";
+    /// <summary>
+    /// Where the apply state lives. Internal because the self-update path has to read it before spawning
+    /// a coordinator of its own — see <see cref="CoordinatorContainers.OtherRecreateInFlightAsync"/>.
+    /// </summary>
+    internal const string KeyRuntime = "proxy.ports.runtime";
 
     /// <summary><inheritdoc cref="SelfUpdateService.StartupReconcileTimeout" path="/summary"/></summary>
     internal static readonly TimeSpan StartupReconcileTimeout = TimeSpan.FromSeconds(60);
@@ -59,6 +63,14 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     private readonly TimeSpan _startupReconcileTimeout;
     private readonly TimeSpan _applyWatchTimeout;
     private Task? _applyTask;
+
+    /// <summary>
+    /// Held from passing the apply mutex until <see cref="_applyTask"/> exists, so the settings write
+    /// that happens in between is inside the accepted branch rather than in front of it. Without it a
+    /// second, rejected call would still have claimed the ports on its way to being refused. Read and
+    /// written only under <see cref="_applyLock"/>.
+    /// </summary>
+    private bool _applyReserved;
 
     public SelfPortPublishService(
         IServiceScopeFactory scopeFactory,
@@ -258,6 +270,12 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     public async Task<PortBindingPlan> ApplyAsync(string? actor = null, CancellationToken ct = default) {
         if (MultiInstanceRefusal() is { } refusal) throw new InvalidOperationException(refusal);
 
+        // The self-update recreates the same container from the same coordinator binary. Its mutex is
+        // not this one, so without this check the two spawn coordinators that race over one container id.
+        if (await CoordinatorContainers.OtherRecreateInFlightAsync(
+                _scopeFactory, CoordinatorContainers.CoordinatorKind.PortPublish, ct) is { } busy)
+            throw new InvalidOperationException(busy);
+
         var inspect = await TryInspectSelfRawAsync(ct)
             ?? throw new InvalidOperationException(NotContainerised);
 
@@ -265,15 +283,24 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         var plan = ComputePlan(desired, BoundHostPorts(inspect.Inspect), await LoadManagedPortsAsync(ct));
         if (plan.IsNoOp) return plan;
 
-        // Written before the spawn, because the coordinator ends this process — see the setting's own
-        // documentation for why claiming a port the recreate might not reach is the safe direction.
-        await SaveManagedPortsAsync(plan.NextManaged, ct);
-
         lock (_applyLock) {
-            if (_applyTask is not null && !_applyTask.IsCompleted)
+            if (_applyReserved || (_applyTask is not null && !_applyTask.IsCompleted))
                 throw new InvalidOperationException(
                     "A host-port change is already being applied. Wait for Watchtower to restart.");
-            _applyTask = SpawnAndWatchAsync(inspect.ContainerId, inspect.ImageName, plan, actor, _cts.Token);
+            _applyReserved = true;
+        }
+
+        try {
+            // Inside the accepted branch, and still before the spawn — the coordinator ends this process,
+            // so there is no "after". See the setting's own documentation for why claiming a port the
+            // recreate might not reach is the safe direction to be wrong in.
+            await SaveManagedPortsAsync(plan.NextManaged, ct);
+            lock (_applyLock) {
+                _applyTask = SpawnAndWatchAsync(inspect.ContainerId, inspect.ImageName, plan, actor, _cts.Token);
+            }
+        } finally {
+            // Released once the task itself is the mutex — or once the attempt has failed without one.
+            lock (_applyLock) { _applyReserved = false; }
         }
 
         // The start is the only success this process can record: on a successful apply the coordinator
@@ -288,8 +315,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             await SetStageAsync("restarting", error: null, ct);
 
             var name = $"watchtower-port-coordinator-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
-            // The container's current image, not a pulled one: nothing is being updated, so the
-            // coordinator runs exactly the code this instance is running.
+            // The container's configured image reference rather than a pulled one: nothing is being
+            // updated here. It is the tag, not the resolved id, and deliberately — writing a sha256 into
+            // the clone's Config.Image would break the self-update's digest comparison afterwards. The
+            // cost is that a tag which moved locally since this process started brings the newer image
+            // along; the recreate is faithful either way, and ADR-0033 records the drift.
             var coordinatorId = await CoordinatorContainers.SpawnAsync(
                 _docker, imageName,
                 [

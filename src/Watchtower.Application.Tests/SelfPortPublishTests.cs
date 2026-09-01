@@ -170,11 +170,68 @@ public sealed class SelfPortPublishTests {
         // process. See the setting's own documentation for why claiming early is the safe direction.
         Assert.Equal("9001", await ManagedPortsAsync(host));
 
-        var body = await WaitForCoordinatorAsync(estate);
-        Assert.Contains("--publish-ports", body, StringComparison.Ordinal);
-        Assert.Contains("9001", body, StringComparison.Ordinal);
-        // The container's current image, not a pulled one — nothing is being updated.
-        Assert.Contains("registry.invalid/watchtower:latest", body, StringComparison.Ordinal);
+        // Asserted as the argv the coordinator will actually parse, not as a substring of the JSON: the
+        // flags are positional pairs, and "the body mentions 9001 somewhere" would pass just as happily
+        // for a command line that publishes nothing.
+        var create = await WaitForCoordinatorAsync(estate);
+        Assert.Equal("registry.invalid/watchtower:latest", create["Image"]!.GetValue<string>());
+        Assert.Equal(
+            [
+                "--self-update",
+                "--container-id", SelfId,
+                "--image", "registry.invalid/watchtower:latest",
+                "--publish-ports", "9001",
+                // Empty rather than absent: the flag and its value are one positional pair, so dropping
+                // the value would make the next flag read as this one's argument.
+                "--unpublish-ports", "",
+            ],
+            create["Cmd"]!.AsArray().Select(n => n!.GetValue<string>()));
+    }
+
+    /// <summary>
+    /// The two recreate paths have a mutex and an apply stage each, and neither is the other's — but the
+    /// container they would both stop, rename aside and recreate is one container. Two coordinators
+    /// racing over it end with the loser acting on a container the winner already renamed, and its stop
+    /// is the one step outside the coordinator's rollback.
+    /// </summary>
+    [Fact]
+    public async Task ApplyingWhileASelfUpdateIsRestarting_IsRefused() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+        await SetRuntimeAsync(host, SelfUpdateService.KeyRuntime, new SelfUpdateRuntime {
+            ApplyStage = "restarting", CoordinatorId = "coordinator",
+        });
+
+        var result = await ApplyAsync(host);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("self-update is in progress", result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
+        // And it did not claim the ports on its way to being refused.
+        Assert.True(string.IsNullOrEmpty(await ManagedPortsAsync(host)));
+    }
+
+    /// <summary>The mirror image: a self-update refused while a host-port recreate is on its way.</summary>
+    [Fact]
+    public async Task SelfUpdatingWhileAPortChangeIsRestarting_IsRefused() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
+            ApplyStage = "restarting", CoordinatorId = "coordinator",
+        });
+        var selfUpdate = new SelfUpdateService(
+            host.Services.GetRequiredService<IServiceScopeFactory>(), estate.Client,
+            Options.Create(new WatchtowerOptions()), NullLogger<SelfUpdateService>.Instance);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => selfUpdate.ApplyUpdateAsync(actor: null, Ct));
+
+        Assert.Contains("host-port change is being applied", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
     }
 
     [Fact]
@@ -441,18 +498,25 @@ public sealed class SelfPortPublishTests {
     }
 
     /// <summary>
-    /// The coordinator's create body. Polled rather than awaited: the spawn is the apply mutex's task, and
-    /// the handler deliberately answers before it — the coordinator waits three seconds precisely so the
-    /// request that asked for the restart can be answered first.
+    /// The coordinator's create body, parsed. Polled rather than awaited: the spawn is the apply mutex's
+    /// task, and the handler deliberately answers before it — the coordinator waits three seconds
+    /// precisely so the request that asked for the restart can be answered first.
     /// </summary>
-    private static async Task<string> WaitForCoordinatorAsync(DockerClientEstate estate) {
+    private static async Task<JsonObject> WaitForCoordinatorAsync(DockerClientEstate estate) {
         for (var attempt = 0; attempt < 100; attempt++) {
             var index = estate.Default.Requests.FindIndex(r => r.Contains("/containers/create"));
-            if (index >= 0) return estate.Default.Bodies[index] ?? "";
+            if (index >= 0) return JsonNode.Parse(estate.Default.Bodies[index] ?? "{}")!.AsObject();
             await Task.Delay(50, Ct);
         }
         Assert.Fail("The coordinator container was never created.");
-        return "";
+        return [];
+    }
+
+    /// <summary>Seeds one of the two apply records, for the cross-guard tests.</summary>
+    private static async Task SetRuntimeAsync<T>(AuthTestHost host, string key, T value) {
+        await using var scope = host.Services.CreateAsyncScope();
+        await scope.ServiceProvider.GetRequiredService<ISettingsManager>()
+            .SetAsync(key, value, SettingsScope.Global, expectedVersion: null, Ct);
     }
 
     private static string Describe<T>(Result<T> result) =>

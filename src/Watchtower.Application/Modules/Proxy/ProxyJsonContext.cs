@@ -39,8 +39,11 @@ namespace Watchtower.Application.Modules.Proxy;
 [JsonSerializable(typeof(ApplyPortBindings.Command), TypeInfoPropertyName = "ApplyPortBindingsCommand")]
 [JsonSerializable(typeof(ApplyPortBindings.Response), TypeInfoPropertyName = "ApplyPortBindingsResponse")]
 // The apply's own state record, stored as a typed setting under proxy.ports.runtime — it reaches the
-// serializer through this context the same way self.runtime reaches it through the System module's.
+// serializer through this context the same way self.runtime reaches it through the System module's. The
+// self-update's record is here for the mirror-image reason: before spawning a coordinator this path
+// checks whether that one already has one in flight over the same container (ADR-0033).
 [JsonSerializable(typeof(SelfPortPublishRuntime))]
+[JsonSerializable(typeof(SelfUpdateRuntime))]
 [JsonSerializable(typeof(InternalCaDto))]
 [JsonSerializable(typeof(GetInternalCa.Query), TypeInfoPropertyName = "GetInternalCaQuery")]
 [JsonSerializable(typeof(GetInternalCa.Response), TypeInfoPropertyName = "GetInternalCaResponse")]
