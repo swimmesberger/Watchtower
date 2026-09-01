@@ -50,6 +50,10 @@ public static class InternalCaIssuer {
     /// one that names every address the operator said this deployment answers on.
     /// </remarks>
     /// <exception cref="ArgumentException">Neither a DNS name nor an IP address was given.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The root has expired, so nothing it signs could be valid. Stated rather than left to the platform,
+    /// which reports it as two dates in the wrong order.
+    /// </exception>
     public static InternalLeaf IssueLeaf(
         X509Certificate2 root,
         IReadOnlyList<string> dnsNames,
@@ -103,6 +107,15 @@ public static class InternalCaIssuer {
             // the moment the operator has to replace the CA row and re-import it anyway.
             var expiry = notBefore + LeafLifetime;
             var ceiling = new DateTimeOffset(root.NotAfter.ToUniversalTime(), TimeSpan.Zero);
+            // Past the anchor's own expiry the clamp has nothing left to clamp to, and Create would throw
+            // an ArgumentException about the order of two dates — true, and useless to the person who has
+            // to act on it. Said plainly instead: this surfaces through EnsureAsync's catch onto the port
+            // routes' rows, so it is what an operator reads on the Routes page.
+            if (ceiling <= notBefore)
+                throw new InvalidOperationException(
+                    $"The internal CA expired on {root.NotAfter.ToUniversalTime():u}, so it can no longer "
+                    + "sign a LAN certificate. Delete the internal_cas row so a new root is minted, then "
+                    + "re-import it on every device that trusts the old one.");
             var certificate = request.Create(
                 root, notBefore, expiry < ceiling ? expiry : ceiling, RandomNumberGenerator.GetBytes(16));
             try {

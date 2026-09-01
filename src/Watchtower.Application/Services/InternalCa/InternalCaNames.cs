@@ -60,8 +60,9 @@ public static class InternalCaNames {
     /// An IPv4 address has to be written in its canonical dotted-quad form. The framework's parser still
     /// honours the inet_aton spellings, so <c>192.168.001.010</c> would quietly become 192.168.1.8 and the
     /// leaf would name an address nobody typed — which is the "junk fails the whole parse" contract above,
-    /// inverted. A host name may carry the trailing dot of its fully-qualified form, as
-    /// <see cref="Acme.DesiredHosts.TryNormalize"/> lets a domain route's host.
+    /// inverted. An entry of either kind may carry the trailing dot of its fully-qualified form, as
+    /// <see cref="Acme.DesiredHosts.TryNormalize"/> lets a domain route's host — and it is dropped before
+    /// the two kinds are told apart, so <c>192.168.1.10.</c> is still an address rather than a name.
     /// </para>
     /// </remarks>
     /// <param name="reason">Why the parse failed, naming the offending entry; null on success.</param>
@@ -81,9 +82,21 @@ public static class InternalCaNames {
 
         foreach (var entry in (raw ?? "").Split(
                      [',', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            // One trailing dot is the fully-qualified spelling of the same thing, and
+            // DesiredHosts.TryNormalize accepts it for a domain route — so refusing it here would make
+            // `nas.lan.` valid in one field of the Settings page and junk in another. Exactly one: a
+            // second dot leaves an empty label, which NormalizeHost refuses as it should.
+            //
+            // Stripped here rather than on the DNS branch alone, and that ordering is the point:
+            // `192.168.1.10.` is an address written the fully-qualified way, which IPAddress.TryParse
+            // refuses. A strip that ran only after the IP attempt would hand it to the DNS branch, which
+            // accepts it — putting an address into a DNS SAN, the exact wrong-kind-of-SAN the ordering
+            // below exists to prevent.
+            var value = entry.EndsWith('.') ? entry[..^1] : entry;
+
             // An IP first: 192.168.1.10 would also satisfy the DNS-name grammar, and reading it as a
             // host name would put it in the wrong kind of SAN — where no client looks for it.
-            if (IPAddress.TryParse(entry, out var ip)) {
+            if (IPAddress.TryParse(value, out var ip)) {
                 // IPAddress still accepts the inet_aton spellings — octal (`192.168.001.010` is
                 // 192.168.1.8), hex (`0x7f.1`), a bare integer (`2130706433`), a three-part address
                 // (`10.0.1`). Every one of them is a typo far more often than an intention, and issuing
@@ -93,7 +106,7 @@ public static class InternalCaNames {
                 // has many correct spellings (`FE80::1`, `fe80:0:0:0:0:0:0:1`), and refusing those would
                 // be refusing valid input.
                 if (ip.AddressFamily == AddressFamily.InterNetwork
-                    && !string.Equals(ip.ToString(), entry, StringComparison.Ordinal)) {
+                    && !string.Equals(ip.ToString(), value, StringComparison.Ordinal)) {
                     reason = $"'{entry}' is not a plain dotted-quad address — it would mean {ip}. "
                         + "Write the address out in full.";
                     return false;
@@ -109,17 +122,11 @@ public static class InternalCaNames {
                 continue;
             }
 
-            // One trailing dot is the fully-qualified spelling of the same name, and
-            // DesiredHosts.TryNormalize accepts it for a domain route — so refusing it here would make
-            // `nas.lan.` valid in one field of the Settings page and junk in another. Exactly one: a
-            // second dot leaves an empty label, which NormalizeHost refuses as it should.
-            var candidate = entry.EndsWith('.') ? entry[..^1] : entry;
-
             string name;
             try {
                 // The same validation the certificate store applies to a host, so a name that parses
                 // here is a name a leaf can actually be stored and served under.
-                name = CertificateStore.NormalizeHost(candidate);
+                name = CertificateStore.NormalizeHost(value);
             } catch (ArgumentException) {
                 reason = $"'{entry}' is neither a host name nor an IP address.";
                 return false;

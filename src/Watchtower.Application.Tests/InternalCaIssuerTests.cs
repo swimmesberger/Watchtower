@@ -168,8 +168,32 @@ public sealed class InternalCaIssuerTests {
         Assert.Equal(root.NotAfter.ToUniversalTime(), leaf.Certificate.NotAfter.ToUniversalTime());
     }
 
-    /// <summary>A CA of the same shape as the stored one, with a lifetime the test chooses.</summary>
-    private static X509Certificate2 ShortLivedRoot(TimeSpan lifetime) {
+    /// <summary>
+    /// Past the anchor's own expiry there is nothing left to clamp to, and the platform reports that as
+    /// two dates in the wrong order — true, and no help at all to the person who has to act on it. The
+    /// message travels: <c>EnsureAsync</c> catches it and writes it onto the port routes' rows, so this
+    /// sentence is what an operator reads on the Routes page.
+    /// </summary>
+    [Fact]
+    public void AnExpiredRoot_IsRefusedWithInstructionsRatherThanADateComparison() {
+        using var root = RootValidFor(from: TimeSpan.FromDays(-400), to: TimeSpan.FromDays(-35));
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => InternalCaIssuer.IssueLeaf(root, ["nas.lan"], [], DateTimeOffset.UtcNow));
+
+        Assert.Contains("The internal CA expired", ex.Message, StringComparison.Ordinal);
+        // Both halves of the recovery, because the second one is the cost the first one hides: every
+        // device that trusted the old root has to import the new one.
+        Assert.Contains("internal_cas", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("re-import", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A CA of the same shape as the stored one, valid for a span the test chooses.</summary>
+    private static X509Certificate2 ShortLivedRoot(TimeSpan lifetime) =>
+        RootValidFor(from: TimeSpan.FromMinutes(-5), to: lifetime - TimeSpan.FromMinutes(5));
+
+    /// <summary>The same, stated as two offsets from now, so a root can also be one that has expired.</summary>
+    private static X509Certificate2 RootValidFor(TimeSpan from, TimeSpan to) {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var request = new CertificateRequest("CN=Watchtower Internal CA", key, HashAlgorithmName.SHA256);
         request.CertificateExtensions.Add(
@@ -181,8 +205,8 @@ public sealed class InternalCaIssuerTests {
                 X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, critical: true));
         request.CertificateExtensions.Add(
             new X509SubjectKeyIdentifierExtension(request.PublicKey, critical: false));
-        var notBefore = DateTimeOffset.UtcNow.AddMinutes(-5);
-        return request.CreateSelfSigned(notBefore, notBefore + lifetime);
+        var now = DateTimeOffset.UtcNow;
+        return request.CreateSelfSigned(now + from, now + to);
     }
 
     [Fact]
@@ -403,6 +427,23 @@ public sealed class InternalCaIssuerTests {
     [Fact]
     public void TwoTrailingDots_AreStillJunk() =>
         Assert.False(InternalCaNames.TryParseLanNames("nas.lan..", out _, out _, out _));
+
+    /// <summary>
+    /// And the dot comes off <em>before</em> the two kinds are told apart. <c>192.168.1.10.</c> is an
+    /// address written the fully-qualified way, which <c>IPAddress.TryParse</c> refuses — so a strip that
+    /// ran only on the name branch would put it in a DNS SAN, where a browser dialling
+    /// <c>https://192.168.1.10:9001</c> does not look. One character, and the certificate silently stops
+    /// working for the address it was issued for.
+    /// </summary>
+    [Fact]
+    public void AFullyQualifiedAddress_IsStillAnAddress() {
+        Assert.True(InternalCaNames.TryParseLanNames(
+            "192.168.1.10., nas.lan.", out var names, out var ips, out var reason));
+
+        Assert.Null(reason);
+        Assert.Equal("192.168.1.10", Assert.Single(ips).ToString());
+        Assert.Equal("nas.lan", Assert.Single(names));
+    }
 
     private static InternalCaStore Ca(AuthTestHost host) =>
         host.Services.GetRequiredService<InternalCaStore>();
