@@ -356,6 +356,46 @@ export function RoutesPage() {
         : false,
   })
 
+  // Whether each port route's host port is actually published on Watchtower's container (ADR-0033). A
+  // port route is served the moment it exists, but nothing outside the container can reach it until the
+  // container publishes that port — and Docker can only do that by recreating it. Asked whenever the
+  // in-process provider is active rather than only when a port route exists: a port left published by a
+  // route that has since been deleted is precisely the case with no route to gate on.
+  const portBindingsQuery = useQuery({
+    queryKey: ['proxy', 'port-bindings'],
+    queryFn: api.proxy.getPortBindings,
+    enabled: supportsPortRoutes,
+    staleTime: 15_000,
+  })
+  const portBindings = portBindingsQuery.data
+  const bindingByPort = useMemo(
+    () => new Map((portBindings?.ports ?? []).map((p) => [p.port, p])),
+    [portBindings],
+  )
+  const pendingPorts = useMemo(
+    () => (portBindings?.ports ?? []).filter((p) => !p.bound),
+    [portBindings],
+  )
+  // Ports Watchtower published for a route that has since been deleted. No row of their own — the route
+  // that named them is gone — so the banner is the only place they can be mentioned at all.
+  const stalePorts = portBindings?.pendingUnpublish ?? []
+  const firstPending = pendingPorts[0]
+  const hasPendingPorts = pendingPorts.length > 0 || stalePorts.length > 0
+  // Publishing restarts the management plane, so it is never automatic and never a single click.
+  const [confirmPublish, setConfirmPublish] = useState(false)
+  const publishPorts = useMutation({
+    mutationFn: () => api.proxy.applyPortBindings(),
+    onSuccess: (result) => {
+      // The response arrives before the restart does — the coordinator waits three seconds for exactly
+      // this. Saying "restarting" rather than "done" is the honest description of what happens next.
+      if (result.restarting) toast.success(result.message)
+      else toast.info(result.message)
+      qc.invalidateQueries({ queryKey: ['proxy', 'port-bindings'] })
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSettled: () => setConfirmPublish(false),
+  })
+
   const { data: stacks = [] } = useQuery({ queryKey: ['stacks'], queryFn: api.stacks.list })
 
   // The populations a Watchtower route can serve. Admin-gated like realms.list itself, so a
@@ -409,6 +449,9 @@ export function RoutesPage() {
       // appears. The Settings card reads it under this same key — creating the first port route is
       // exactly when its download link has to stop being hidden.
       qc.invalidateQueries({ queryKey: ['proxy', 'internal-ca'] })
+      // A new port route is a new host port that is almost certainly not published yet — which is the
+      // banner offering to publish it, so it has to be recomputed rather than waiting out a staleTime.
+      qc.invalidateQueries({ queryKey: ['proxy', 'port-bindings'] })
       // An imported hostname stops being foreign the moment its route row exists.
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
       setForm({ ...emptyForm })
@@ -451,6 +494,9 @@ export function RoutesPage() {
       // that realm's protected apps stop redirecting anywhere until another one is designated.
       if (result?.warning) toast.error(result.warning)
       qc.invalidateQueries({ queryKey: ['routes'] })
+      // A deleted port route is a published host port with nothing behind it — which is the other half
+      // of what the banner offers to do.
+      qc.invalidateQueries({ queryKey: ['proxy', 'port-bindings'] })
       // An unowned hostname is foreign again (and a removed one is gone) — either way the card changes.
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
     },
@@ -580,6 +626,23 @@ export function RoutesPage() {
     )
   }
 
+  /**
+   * Whether this row is a port route whose host port the container does not publish. Only ever true on
+   * a positive answer: while the query is loading, or where the container cannot be inspected at all,
+   * nothing is claimed — an unadorned row is better than one accused of being broken.
+   */
+  const isUnpublished = (r: Route) =>
+    r.binding === 'port' && r.listenPort != null && bindingByPort.get(r.listenPort)?.bound === false
+
+  const unpublishedBadge = (r: Route) =>
+    isUnpublished(r) ? (
+      <Tooltip
+        label={`Watchtower listens on ${r.listenPort} inside its container, but the container does not publish that host port — nothing on the network can reach this route yet.`}
+      >
+        <Badge tone="warn">host port not published</Badge>
+      </Tooltip>
+    ) : null
+
   const columns: DataListColumn<Route>[] = [
     {
       key: 'domain',
@@ -607,6 +670,7 @@ export function RoutesPage() {
                 <Badge tone="neutral">LAN port</Badge>
               </Tooltip>
             )}
+            {unpublishedBadge(r)}
           </div>
         ),
     },
@@ -689,13 +753,16 @@ export function RoutesPage() {
           <span>· {servesHttps(r) ? 'HTTPS' : 'HTTP'}</span>
         </div>
       ) : (
-        <p className="text-[13px] text-text-2">
-          {r.stackName ?? `#${r.stackId}`} ·{' '}
-          <span className="font-mono">
-            {r.serviceName}:{r.containerPort}
-          </span>{' '}
-          · {r.binding === 'port' ? 'HTTPS (LAN port)' : servesHttps(r) ? 'HTTPS' : 'HTTP'}
-        </p>
+        <div className="space-y-1.5">
+          <p className="text-[13px] text-text-2">
+            {r.stackName ?? `#${r.stackId}`} ·{' '}
+            <span className="font-mono">
+              {r.serviceName}:{r.containerPort}
+            </span>{' '}
+            · {r.binding === 'port' ? 'HTTPS (LAN port)' : servesHttps(r) ? 'HTTPS' : 'HTTP'}
+          </p>
+          {unpublishedBadge(r)}
+        </div>
       )}
       <div className="flex items-center justify-between border-t border-border pt-3">
         <span className="text-xs text-text-3">created {timeAgo(r.createdAt)}</span>
@@ -765,6 +832,73 @@ export function RoutesPage() {
           published to Watchtower's ingress endpoints (<span className="font-mono">80:8081</span>,{' '}
           <span className="font-mono">443:8443</span>); the Caddy provider needs them free on the
           host; the Cloudflare Tunnel provider needs no open ports.
+        </Banner>
+      )}
+
+      {/* The gap between "the route exists" and "the route is reachable": Watchtower is already
+          listening on the port inside its container, and Docker cannot publish a host port on a running
+          container — only on a new one. So the fix is a recreate, which is a Watchtower restart, which
+          is why it is a button behind a confirmation and never something that just happens. */}
+      {hasPendingPorts && (
+        <Banner
+          tone={pendingPorts.length > 0 ? 'warn' : 'info'}
+          title={
+            firstPending === undefined
+              ? `${stalePorts.length === 1 ? 'A host port is' : `${stalePorts.length} host ports are`} published for no route`
+              : pendingPorts.length === 1
+                ? `Host port ${firstPending.port} is not published`
+                : `${pendingPorts.length} host ports are not published`
+          }
+          action={
+            portBindings?.containerDetected && !portBindings.unavailableReason ? (
+              <Button variant="link" onClick={() => setConfirmPublish(true)}>
+                Publish ports &amp; restart Watchtower (~5 s)
+              </Button>
+            ) : (
+              // Disabled rather than hidden: the operator is looking at a route that does not work and
+              // should be told why the obvious remedy is not on offer here.
+              <Tooltip
+                label={
+                  portBindings?.unavailableReason ??
+                  'Watchtower can only republish its own ports when it runs as the container it ships as.'
+                }
+              >
+                <Button variant="link" disabled>
+                  Publish ports &amp; restart Watchtower (~5 s)
+                </Button>
+              </Tooltip>
+            )
+          }
+        >
+          {firstPending !== undefined && (
+            <>
+              Watchtower listens on{' '}
+              <span className="font-mono">{pendingPorts.map((p) => p.port).join(', ')}</span> inside its
+              container, but the container does not publish{' '}
+              {pendingPorts.length === 1 ? 'that host port' : 'those host ports'} — so nothing on the
+              network reaches {pendingPorts.length === 1 ? 'that route' : 'those routes'} yet. Watchtower
+              can recreate its own container to add {pendingPorts.length === 1 ? 'it' : 'them'}, or add{' '}
+              <span className="font-mono">
+                -p {firstPending.port}:{firstPending.port}
+              </span>{' '}
+              yourself and recreate it.{' '}
+            </>
+          )}
+          {stalePorts.length > 0 && (
+            <>
+              Watchtower still publishes{' '}
+              <span className="font-mono">{stalePorts.join(', ')}</span> for{' '}
+              {stalePorts.length === 1 ? 'a route' : 'routes'} that no longer{' '}
+              {stalePorts.length === 1 ? 'exists' : 'exist'}; the same restart releases{' '}
+              {stalePorts.length === 1 ? 'it' : 'them'}. Ports you published yourself are never touched.
+            </>
+          )}
+          {portBindings?.lastError && (
+            <>
+              {' '}
+              The last attempt failed: {portBindings.lastError}
+            </>
+          )}
         </Banner>
       )}
 
@@ -1140,13 +1274,15 @@ export function RoutesPage() {
               {isPortForm ? (
                 <Banner tone="info" title="Publish the port on Watchtower's container">
                   Watchtower listens on this port inside its container, so the container has to publish
-                  it too — add{' '}
+                  it too. Once the route exists you can do that from here — a banner offers to recreate
+                  Watchtower's container with the port added, a restart of a few seconds. The manual
+                  equivalent is{' '}
                   <span className="font-mono">
                     -p {form.listenPort || '9001'}:{form.listenPort || '9001'}
                   </span>{' '}
-                  (or the equivalent <span className="font-mono">ports:</span> entry) and recreate it.
-                  Until then nothing can connect. HTTPS is always on, with a certificate from
-                  Watchtower's internal CA — download its root below and import it once per device.
+                  (or the matching <span className="font-mono">ports:</span> entry) and a recreate. Until
+                  then nothing can connect. HTTPS is always on, with a certificate from Watchtower's
+                  internal CA — download its root below and import it once per device.
                 </Banner>
               ) : isCloudflare ? (
                 <p className="text-xs text-text-3">
@@ -1283,6 +1419,25 @@ export function RoutesPage() {
           if (pendingDelete)
             remove.mutate({ route: pendingDelete, removeFromProvider: isCloudflare && removeFromCloudflare })
         }}
+      />
+
+      <ConfirmDialog
+        open={confirmPublish}
+        onOpenChange={(open) => {
+          if (!open && !publishPorts.isPending) setConfirmPublish(false)
+        }}
+        title="Restart Watchtower to publish these ports?"
+        description="Watchtower recreates its own container with the ports added. It — this page included — is unreachable for a few seconds, then comes back with the routes working. Running deploys and backups are not interrupted; they are resumed after the restart."
+        extra={
+          <Banner tone="info" title="Compose-managed installs">
+            A later <span className="font-mono">docker compose up -d</span> rebuilds the container from
+            your compose file and drops the ports added here. Mirror them into its{' '}
+            <span className="font-mono">ports:</span> list to keep them.
+          </Banner>
+        }
+        confirmLabel="Publish & restart"
+        loading={publishPorts.isPending}
+        onConfirm={() => publishPorts.mutate()}
       />
 
       {canManageAccess && (

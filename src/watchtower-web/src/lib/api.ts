@@ -61,6 +61,8 @@ import type {
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
+  PortBindingsApplied,
+  PortBindingsStatus,
   Product,
   ProductDetail,
   CreateReleaseRequest,
@@ -498,6 +500,13 @@ export const api = {
     // Read-only in the strong sense: asking never mints a root. `present: false` means nothing has
     // needed a LAN certificate yet, which is why the Routes page shows the block only once it is there.
     getInternalCa: async () => (await rpc('proxy.getInternalCa', {})).ca as InternalCaInfo,
+    // Whether each port route's host port is actually published on Watchtower's container (ADR-0033).
+    // Its own call rather than part of getStatus: answering it inspects the Docker daemon, and the
+    // status badge is polled from every page.
+    getPortBindings: async () => (await rpc('proxy.getPortBindings', {})) as PortBindingsStatus,
+    // Recreates Watchtower's own container to publish the pending ports. Answers before the restart
+    // lands — the coordinator waits three seconds precisely so this response gets through.
+    applyPortBindings: async () => (await rpc('proxy.applyPortBindings', {})) as PortBindingsApplied,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
     listCloudflareForeignRoutes: async () =>
       (await rpc('proxy.listCloudflareForeignRoutes', {})) as {

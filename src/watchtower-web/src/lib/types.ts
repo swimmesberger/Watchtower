@@ -1118,6 +1118,46 @@ export interface InternalCaInfo {
 }
 
 /**
+ * One port route's listen port, as Watchtower's own container publishes it (ADR-0033). A port route is
+ * served inside the container the moment it is created; it is reachable from the network only once the
+ * container publishes that host port too, which Docker can only do by recreating it.
+ */
+export interface PortBindingInfo {
+  port: number
+  routeId: number
+  serviceName: string
+  /** Whether the container publishes this host port right now. */
+  bound: boolean
+  /** Whether Watchtower published it itself — an operator's own binding is never taken away again. */
+  managed: boolean
+}
+
+/** What `proxy.getPortBindings` reports: whether each port route is reachable, and whether Watchtower can fix it. */
+export interface PortBindingsStatus {
+  /** False outside Docker (or with the daemon unreachable): nothing is known and nothing can be published. */
+  containerDetected: boolean
+  /** Why `proxy.applyPortBindings` would be refused, or null when it would be accepted. */
+  unavailableReason: string | null
+  /** What a previous apply failed with, or null. */
+  lastError: string | null
+  ports: PortBindingInfo[]
+  /**
+   * Ports Watchtower published that no route uses any more — what an apply would release. They have no
+   * entry in {@link ports}: the route that put them there is gone.
+   */
+  pendingUnpublish: number[]
+}
+
+/** What `proxy.applyPortBindings` answers with, before the restart it announces actually lands. */
+export interface PortBindingsApplied {
+  /** False when nothing needed changing — say so instead of warning about a restart that is not coming. */
+  restarting: boolean
+  published: number[]
+  unpublished: number[]
+  message: string
+}
+
+/**
  * A public hostname configured on the Cloudflare tunnel (dashboard-made) that Watchtower's route
  * table doesn't know. Preserved verbatim by the reconcile; importable as a route, with a heuristic
  * stack/service/port suggestion when the service URL follows Watchtower's own alias convention.
