@@ -83,8 +83,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             StartupReconcileTimeout, ApplyWatchTimeout) { }
 
     /// <summary>
-    /// Test seam: the two ceilings are injectable so a test need not wait out the real ones, and
-    /// <paramref name="beforeSpawn"/> holds the background task at its very first instruction.
+    /// Test seam: the two ceilings are injectable so a test need not wait out the real ones, and the two
+    /// callbacks hold the apply at the two instants nothing else can observe.
     /// </summary>
     /// <param name="beforeSpawn">
     /// Awaited before the spawn task does anything at all. It exists for one assertion that cannot be
@@ -92,6 +92,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     /// by the time <see cref="ApplyAsync"/> returns. Held only by that task, so nothing a caller observes
     /// afterwards can have come from it — which is the whole point, since a background task that merely
     /// tends to be slower would make the same assertion pass while the ordering was wrong.
+    /// </param>
+    /// <param name="beforeVerify">
+    /// Awaited between this path claiming its own stage and re-reading the other path's. It is the only
+    /// way to stand inside the window the claim-then-verify guard closes: in production the other path
+    /// writes its stage there of its own accord, and a test cannot make two applies interleave on demand.
     /// </param>
     internal SelfPortPublishService(
         IServiceScopeFactory scopeFactory,
@@ -102,7 +107,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         ILogger<SelfPortPublishService> logger,
         TimeSpan startupReconcileTimeout,
         TimeSpan applyWatchTimeout,
-        Func<CancellationToken, Task>? beforeSpawn = null) {
+        Func<CancellationToken, Task>? beforeSpawn = null,
+        Func<CancellationToken, Task>? beforeVerify = null) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _self = self;
@@ -112,10 +118,14 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         _startupReconcileTimeout = startupReconcileTimeout;
         _applyWatchTimeout = applyWatchTimeout;
         _beforeSpawn = beforeSpawn;
+        _beforeVerify = beforeVerify;
     }
 
-    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task})" path="/param[@name='beforeSpawn']"/>
+    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task}, Func{CancellationToken, Task})" path="/param[@name='beforeSpawn']"/>
     private readonly Func<CancellationToken, Task>? _beforeSpawn;
+
+    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task}, Func{CancellationToken, Task})" path="/param[@name='beforeVerify']"/>
+    private readonly Func<CancellationToken, Task>? _beforeVerify;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -314,6 +324,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
 
         // The self-update recreates the same container from the same coordinator binary. Its mutex is
         // not this one, so without this check the two spawn coordinators that race over one container id.
+        // This reading is the cheap refusal, not the guard: several round trips separate it from the
+        // spawn, and the guard that actually holds is the claim-then-verify below.
         if (await CoordinatorContainers.OtherRecreateInFlightAsync(
                 _scopeFactory, CoordinatorContainers.CoordinatorKind.PortPublish, ct) is { } busy)
             throw new InvalidOperationException(busy);
@@ -340,16 +352,35 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         }
 
         try {
-            // Inside the accepted branch, and still before the spawn — the coordinator ends this process,
-            // so there is no "after". The ports about to be released stay in the claim rather than being
-            // dropped in advance: a recreate that rolls back leaves them bound, and the startup prune
-            // only ever removes claims, so dropping them here would strand a bound port with nothing able
-            // to adopt it. See PortBindingPlan.ClaimedThroughTheRecreate.
-            await SaveManagedPortsAsync(plan.ClaimedThroughTheRecreate, ct);
-            // Published before the task exists, and that ordering is the point: this stage is what the
-            // self-update's guard reads, so writing it from inside the task — after that task's first
-            // await — would leave both paths able to pass their guard and spawn a coordinator each.
+            // Claim, then verify. The stage goes first — published before the task exists, because it is
+            // what the self-update's guard reads, and writing it from inside the task (after that task's
+            // first await) would leave both paths able to pass their guard and spawn a coordinator each.
             await SetStageAsync("restarting", error: null, ct);
+
+            // Only for a test, which is the only way to stand inside the window below. Null in production.
+            if (_beforeVerify is not null) await _beforeVerify(ct);
+
+            // …and only now is the other record read again. Between the cheap refusal above and this
+            // point there is a Docker inspect and several database round trips, and the self-update reads
+            // *this* record somewhere in there; without the second look both would pass and both would
+            // spawn. Claiming first is what makes the second look conclusive: whichever path writes its
+            // stage last sees the other's and stands down. Both standing down in a true tie is the
+            // correct outcome — nothing was started, and the operator presses the button again.
+            if (await CoordinatorContainers.OtherRecreateInFlightAsync(
+                    _scopeFactory, CoordinatorContainers.CoordinatorKind.PortPublish, ct) is { } racing) {
+                // Back to idle rather than to an error: nothing failed, and a stage left at "restarting"
+                // would block the other path — the one that won — for as long as this process lives.
+                await SetStageAsync("idle", error: null, ct);
+                throw new InvalidOperationException(racing);
+            }
+
+            // After the verify, so a refusal cannot leave a claim behind. Still before the spawn, because
+            // the coordinator ends this process and there is no "after". The ports about to be released
+            // stay in the claim rather than being dropped in advance: a recreate that rolls back leaves
+            // them bound, and the startup prune only ever removes claims, so dropping them here would
+            // strand a bound port with nothing able to adopt it. See
+            // PortBindingPlan.ClaimedThroughTheRecreate.
+            await SaveManagedPortsAsync(plan.ClaimedThroughTheRecreate, ct);
             lock (_applyLock) {
                 _applyTask = SpawnAndWatchAsync(inspect.ContainerId, inspect.ImageName, plan, actor, _cts.Token);
             }

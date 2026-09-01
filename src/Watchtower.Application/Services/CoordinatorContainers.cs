@@ -36,6 +36,16 @@ internal static class CoordinatorContainers {
     /// the coordinator a <em>previous</em> process instance left running — the case where no in-memory
     /// mutex exists at all.
     /// </para>
+    /// <para>
+    /// <b>Called twice by each caller, and the second call is the guard.</b> A single read before the
+    /// spawn is a time-of-check race: a Docker inspect and several database round trips separate it from
+    /// the write, and the other path reads this caller's record inside that gap, so both can read "idle"
+    /// and both can spawn. So each caller <em>claims</em> its own stage first and then asks this again;
+    /// whichever wrote last sees the other's claim and stands down, reverting its own stage to idle. Both
+    /// standing down in a true tie is the correct outcome — nothing was started, and the operator repeats
+    /// whichever action they wanted. The first call survives as the cheap refusal, so an obviously busy
+    /// deployment is turned away before anything is claimed.
+    /// </para>
     /// </remarks>
     /// <param name="asking">What the caller is about to do, named in the refusal.</param>
     public static async Task<string?> OtherRecreateInFlightAsync(

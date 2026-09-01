@@ -86,20 +86,31 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         : this(scopeFactory, docker, options, logger, StartupReconcileTimeout, ApplyWatchTimeout) { }
 
     /// <summary>Test seam: the two ceilings are injectable so a test need not wait out the real ones.</summary>
+    /// <param name="beforeVerify">
+    /// Awaited between this path claiming its own apply stage and re-reading the other path's. It is the
+    /// only way to stand inside the window the claim-then-verify guard closes: in production the other
+    /// path writes its stage there of its own accord, and a test cannot make two applies interleave on
+    /// demand.
+    /// </param>
     internal SelfUpdateService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         IOptions<WatchtowerOptions> options,
         ILogger<SelfUpdateService> logger,
         TimeSpan startupReconcileTimeout,
-        TimeSpan applyWatchTimeout) {
+        TimeSpan applyWatchTimeout,
+        Func<CancellationToken, Task>? beforeVerify = null) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _options = options.Value;
         _logger = logger;
         _startupReconcileTimeout = startupReconcileTimeout;
         _applyWatchTimeout = applyWatchTimeout;
+        _beforeVerify = beforeVerify;
     }
+
+    /// <inheritdoc cref="SelfUpdateService(IServiceScopeFactory, DockerEngineClient, IOptions{WatchtowerOptions}, ILogger{SelfUpdateService}, TimeSpan, TimeSpan, Func{CancellationToken, Task})" path="/param[@name='beforeVerify']"/>
+    private readonly Func<CancellationToken, Task>? _beforeVerify;
 
     public async Task StartAsync(CancellationToken cancellationToken) {
         // Reconcile any coordinator left behind by an apply that the previous process instance
@@ -303,7 +314,9 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
                 "Self-update requires Watchtower to be running as a Docker container. Running outside Docker is not supported.");
 
         // The other path to a container recreate has a mutex and a stage of its own, and neither of them
-        // is this one — but the container both would recreate is the same.
+        // is this one — but the container both would recreate is the same. This reading is the cheap
+        // refusal, not the guard: a credential lookup and the apply mutex come between it and the spawn,
+        // and the guard that actually holds is the claim-then-verify below.
         if (await CoordinatorContainers.OtherRecreateInFlightAsync(
                 _scopeFactory, CoordinatorContainers.CoordinatorKind.SelfUpdate, ct) is { } busy)
             throw new InvalidOperationException(busy);
@@ -322,6 +335,23 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
         try {
             await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
+
+            // Only for a test, which is the only way to stand inside the window below. Null in production.
+            if (_beforeVerify is not null) await _beforeVerify(ct);
+
+            // Claim, then verify — the mirror of the port-publish path. The refusal above was read
+            // several round trips ago, and the port path reads *this* record somewhere in that gap;
+            // without the second look both would pass their guard and both would spawn a coordinator over
+            // one container id. Whichever path writes its stage last sees the other's and stands down,
+            // and both standing down in a true tie is the correct outcome — nothing was started.
+            if (await CoordinatorContainers.OtherRecreateInFlightAsync(
+                    _scopeFactory, CoordinatorContainers.CoordinatorKind.SelfUpdate, ct) is { } racing) {
+                // Back to idle rather than to an error: nothing failed, and a stage left at "pulling"
+                // would block the path that won for as long as this process lives.
+                await SetStageAsync(SelfUpdateApplyStage.Idle, ct: ct);
+                throw new InvalidOperationException(racing);
+            }
+
             lock (_applyLock) {
                 _applyTask = PullAndSpawnAsync(
                     detected.ImageName, detected.ContainerId, username, token, actor, _cts.Token);

@@ -343,6 +343,47 @@ public sealed class SelfPortPublishTests {
         }
     }
 
+    /// <summary>
+    /// The race the single pre-flight read could not close. Between reading <c>self.runtime</c> and
+    /// writing its own stage this path does a Docker inspect and several database round trips, and the
+    /// self-update reads <em>this</em> record somewhere in that window — so both could read "idle" and
+    /// both could spawn a coordinator over one container id, which is the failure the cross-guard exists
+    /// to prevent.
+    /// </summary>
+    /// <remarks>
+    /// The other record is seeded from the seam that runs between this path's stage write and its verify
+    /// read — after the pre-flight read has already passed. That is not a convenience: two applies cannot
+    /// be made to interleave on demand, and a test that seeded beforehand would be exercising the cheap
+    /// refusal it is trying to prove is insufficient.
+    /// </remarks>
+    [Fact]
+    public async Task ASelfUpdateThatClaimsDuringTheWindow_MakesThisApplyStandDown() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        // Indirected through a field the host does not need at construction time, so the seam can write
+        // through the very host it belongs to.
+        Func<CancellationToken, Task> inTheWindow = _ => Task.CompletedTask;
+        using var host = PortHost(estate, beforeVerify: ct => inTheWindow(ct));
+        inTheWindow = _ => SetRuntimeAsync(host, SelfUpdateService.KeyRuntime, new SelfUpdateRuntime {
+            ApplyStage = "restarting", CoordinatorId = StuckCoordinatorId,
+        });
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await ApplyAsync(host);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("started by the Watchtower self-update", result.Error.Message, StringComparison.Ordinal);
+        // Its own stage is back to idle: nothing failed, and leaving it at "restarting" would block the
+        // path that won for as long as this process lives.
+        var runtime = await RuntimeAsync(host);
+        Assert.Equal("idle", runtime.ApplyStage);
+        Assert.Null(runtime.ApplyError);
+        // Nothing was spawned, and nothing was claimed on the way out.
+        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
+        Assert.True(string.IsNullOrEmpty(await ManagedPortsAsync(host)));
+    }
+
     /// <summary>The mirror image: a self-update refused while a host-port recreate is on its way.</summary>
     [Fact]
     public async Task SelfUpdatingWhileAPortChangeIsRestarting_IsRefused() {
@@ -362,6 +403,34 @@ public sealed class SelfPortPublishTests {
         Assert.Contains("started by the host-port change", ex.Message, StringComparison.Ordinal);
         Assert.Contains($"coordinator {StuckCoordinatorId[..12]}", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
+    }
+
+    /// <summary>
+    /// And the mirror of the race, so the guard is closed from both sides rather than only from the one
+    /// the port work happened to be written on.
+    /// </summary>
+    [Fact]
+    public async Task APortChangeThatClaimsDuringTheWindow_MakesTheSelfUpdateStandDown() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        var selfUpdate = new SelfUpdateService(
+            host.Services.GetRequiredService<IServiceScopeFactory>(), estate.Client,
+            Options.Create(new WatchtowerOptions()), NullLogger<SelfUpdateService>.Instance,
+            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5),
+            beforeVerify: _ => SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime,
+                new SelfPortPublishRuntime { ApplyStage = "restarting", CoordinatorId = StuckCoordinatorId }));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => selfUpdate.ApplyUpdateAsync(actor: null, Ct));
+
+        Assert.Contains("started by the host-port change", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
+        // Its own stage is back to idle — the pull never started, and "pulling" would block the winner.
+        await using var scope = host.Services.CreateAsyncScope();
+        var runtime = await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
+            SelfUpdateService.KeyRuntime, new SelfUpdateRuntime(), SettingsScope.Global, Ct);
+        Assert.Equal("idle", runtime.ApplyStage);
     }
 
     [Fact]
@@ -606,7 +675,8 @@ public sealed class SelfPortPublishTests {
     /// </summary>
     private static AuthTestHost PortHost(
         DockerClientEstate estate, bool leaseHeld = true, string? leaseHolder = null,
-        Func<CancellationToken, Task>? beforeSpawn = null) =>
+        Func<CancellationToken, Task>? beforeSpawn = null,
+        Func<CancellationToken, Task>? beforeVerify = null) =>
         AuthTestHost.Start(services => {
             services.AddApplyPortBindings();
             services.AddGetPortBindings();
@@ -626,7 +696,7 @@ public sealed class SelfPortPublishTests {
                 Options.Create(new WatchtowerOptions()),
                 NullLogger<SelfPortPublishService>.Instance,
                 TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5),
-                beforeSpawn));
+                beforeSpawn, beforeVerify));
         });
 
     /// <summary>
