@@ -146,19 +146,15 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
         try {
             var runtime = await LoadRuntimeAsync(linked.Token);
-            var resolvedACoordinator = false;
-            if (runtime is { ApplyStage: "restarting", CoordinatorId: { } coordinatorId }) {
+            if (runtime is { ApplyStage: "restarting", CoordinatorId: { } coordinatorId })
                 await ReconcileCoordinatorAsync(coordinatorId, _startupReconcileTimeout, linked.Token);
-                resolvedACoordinator = true;
-            } else if (runtime.ApplyStage == "restarting") {
+            else if (runtime.ApplyStage == "restarting")
                 await SetStageAsync("idle", error: null, linked.Token);
-            }
 
+            // Order matters: the prune below is what turns a release that really landed into an empty
+            // plan, which is what the clear after it reads.
             await ReconcileManagedPortsAsync(linked.Token);
-            // Not when a coordinator was just reconciled above: that reconcile is what writes the current
-            // verdict, and an unpublish-only recreate that failed leaves every routed port bound — which
-            // is exactly the shape the clear below reads as "resolved".
-            if (!resolvedACoordinator) await ClearResolvedApplyErrorAsync(linked.Token);
+            await ClearResolvedApplyErrorAsync(linked.Token);
         } catch (OperationCanceledException) {
             // Shutting down before the reconcile finished; the next start picks it up.
         } catch (Exception ex) {
@@ -246,7 +242,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             if (!IsTcp(key)) continue;
             if (value is not JsonArray entries) continue;
             foreach (var entry in entries) {
-                if (HostPortText(entry?["HostPort"]) is not { } text) continue;
+                // Pattern-matched to an object rather than indexed straight through: the string indexer
+                // throws on a node that is not one, and this reading is bookkeeping about ports — an
+                // entry Docker would never have written costs that entry, not the whole inspect.
+                if (entry is not JsonObject binding) continue;
+                if (HostPortText(binding["HostPort"]) is not { } text) continue;
                 foreach (var port in PortRouteListeners.Parse(text)) ports.Add(port);
             }
         }
@@ -352,6 +352,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         }
 
         try {
+            // Read before the claim overwrites it. A lost race has to put this record back the way it
+            // found it — writing a flat "idle" would quietly resolve an error a previous apply recorded,
+            // and the operator would lose the only account of why their ports are not published.
+            var priorRuntime = await LoadRuntimeAsync(ct);
+
             // Claim, then verify. The stage goes first — published before the task exists, because it is
             // what the self-update's guard reads, and writing it from inside the task (after that task's
             // first await) would leave both paths able to pass their guard and spawn a coordinator each.
@@ -368,9 +373,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             // correct outcome — nothing was started, and the operator presses the button again.
             if (await CoordinatorContainers.OtherRecreateInFlightAsync(
                     _scopeFactory, CoordinatorContainers.CoordinatorKind.PortPublish, ct) is { } racing) {
-                // Back to idle rather than to an error: nothing failed, and a stage left at "restarting"
-                // would block the other path — the one that won — for as long as this process lives.
-                await SetStageAsync("idle", error: null, ct);
+                // Back to exactly what was there before the claim. Not an error of its own — nothing
+                // failed — and not a blank "idle" either, which would erase a previous apply's recorded
+                // failure; a stage left at "restarting" would block the path that won for as long as this
+                // process lives.
+                await SetStageAsync(priorRuntime.ApplyStage, priorRuntime.ApplyError, ct);
                 throw new InvalidOperationException(racing);
             }
 
@@ -584,19 +591,26 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     }
 
     /// <summary>
-    /// Drops a recorded apply error once every routed port is published — whatever the failed apply was
-    /// going to do has happened by other means. Read before written, so a deployment with nothing to
-    /// clear costs one settings read on start and no write at all.
+    /// Drops a recorded apply error once an apply would have nothing left to do — whatever the failed one
+    /// was going to change has happened by other means. Read before written, so a deployment with nothing
+    /// to clear costs one settings read on start and no write at all.
     /// </summary>
+    /// <remarks>
+    /// The condition is the whole plan being empty, not merely every routed port being published. A
+    /// release that failed and rolled back leaves its port bound <em>and</em> still claimed — that is what
+    /// <see cref="PortBindingPlan.ClaimedThroughTheRecreate"/> is for — so every routed port can be
+    /// published while an unpublish is still outstanding. Clearing on the publishes alone would erase the
+    /// error on the very next start after such a failure, while the work it describes is still pending and
+    /// the page is still offering the button for it.
+    /// </remarks>
     private async Task ClearResolvedApplyErrorAsync(CancellationToken ct) {
         var runtime = await LoadRuntimeAsync(ct);
         if (runtime is { ApplyStage: not "error", ApplyError: null }) return;
         if (await TryInspectSelfRawAsync(ct) is not { } self) return;
 
-        var bound = BoundHostPorts(self.Inspect);
-        // Only the publishes: a claim still waiting to be released is a pending apply, not a failure the
-        // operator has resolved, and the page offers a button for it.
-        if (!(await DesiredRoutesAsync(ct)).All(r => bound.Contains(r.Port))) return;
+        var desired = (await DesiredRoutesAsync(ct)).Select(r => r.Port).ToList();
+        var plan = ComputePlan(desired, BoundHostPorts(self.Inspect), await LoadManagedPortsAsync(ct));
+        if (!plan.IsNoOp) return;
         await SetStageAsync("idle", error: null, ct);
     }
 

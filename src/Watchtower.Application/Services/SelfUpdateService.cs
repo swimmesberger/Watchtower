@@ -334,6 +334,11 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         }
 
         try {
+            // Read before the claim overwrites it. A lost race has to put this record back the way it
+            // found it — writing a flat Idle would quietly resolve an error a previous update recorded,
+            // and the operator would lose the only account of why the update did not land.
+            var priorRuntime = await LoadRuntimeAsync(ct);
+
             await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
 
             // Only for a test, which is the only way to stand inside the window below. Null in production.
@@ -346,9 +351,15 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             // and both standing down in a true tie is the correct outcome — nothing was started.
             if (await CoordinatorContainers.OtherRecreateInFlightAsync(
                     _scopeFactory, CoordinatorContainers.CoordinatorKind.SelfUpdate, ct) is { } racing) {
-                // Back to idle rather than to an error: nothing failed, and a stage left at "pulling"
-                // would block the path that won for as long as this process lives.
-                await SetStageAsync(SelfUpdateApplyStage.Idle, ct: ct);
+                // Back to exactly what was there before the claim. Not an error of its own — nothing
+                // failed — and not a blank Idle either, which would erase a previous update's recorded
+                // failure; a stage left at "pulling" would block the path that won for as long as this
+                // process lives. The cached check result is untouched by construction, since only the two
+                // apply fields are written back.
+                await UpdateRuntimeAsync(r => r with {
+                    ApplyStage = priorRuntime.ApplyStage,
+                    ApplyError = priorRuntime.ApplyError,
+                }, ct);
                 throw new InvalidOperationException(racing);
             }
 

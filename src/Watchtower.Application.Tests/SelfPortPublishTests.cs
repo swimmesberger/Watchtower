@@ -176,6 +176,19 @@ public sealed class SelfPortPublishTests {
         Assert.Equal([9003, 9004], SelfPortPublishService.BoundHostPorts(inspect).Order());
     }
 
+    /// <summary>
+    /// An entry that is not an object at all would make the string indexer throw, and this reading sits
+    /// on the status path the Routes page polls — one unreadable entry costs that entry, not the page.
+    /// </summary>
+    [Fact]
+    public void BoundHostPorts_SkipsAnEntryThatIsNotAnObject() {
+        var inspect = InspectJson(bindings: new JsonObject {
+            ["9001/tcp"] = new JsonArray("not an object", new JsonObject { ["HostPort"] = "9001" }),
+        });
+
+        Assert.Equal([9001], SelfPortPublishService.BoundHostPorts(inspect).Order());
+    }
+
     [Fact]
     public void BoundHostPorts_OfAContainerThatPublishesNothing_IsEmpty() {
         Assert.Empty(SelfPortPublishService.BoundHostPorts(InspectJson()));
@@ -384,6 +397,33 @@ public sealed class SelfPortPublishTests {
         Assert.True(string.IsNullOrEmpty(await ManagedPortsAsync(host)));
     }
 
+    /// <summary>
+    /// Standing down must not double as clearing the record. The claim overwrites the apply stage and its
+    /// error, so a revert that wrote a flat "idle" would resolve a previous apply's recorded failure —
+    /// losing the only account of why the ports are not published, on a call that itself did nothing.
+    /// </summary>
+    [Fact]
+    public async Task StandingDownFromALostRace_LeavesAnEarlierErrorWhereItWas() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        Func<CancellationToken, Task> inTheWindow = _ => Task.CompletedTask;
+        using var host = PortHost(estate, beforeVerify: ct => inTheWindow(ct));
+        inTheWindow = _ => SetRuntimeAsync(host, SelfUpdateService.KeyRuntime, new SelfUpdateRuntime {
+            ApplyStage = "restarting", CoordinatorId = StuckCoordinatorId,
+        });
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+        await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
+            ApplyStage = "error", ApplyError = "Publishing the host ports failed (exit 1)",
+        });
+
+        Assert.False((await ApplyAsync(host)).IsSuccess);
+
+        var runtime = await RuntimeAsync(host);
+        Assert.Equal("error", runtime.ApplyStage);
+        Assert.Equal("Publishing the host ports failed (exit 1)", runtime.ApplyError);
+    }
+
     /// <summary>The mirror image: a self-update refused while a host-port recreate is on its way.</summary>
     [Fact]
     public async Task SelfUpdatingWhileAPortChangeIsRestarting_IsRefused() {
@@ -426,11 +466,43 @@ public sealed class SelfPortPublishTests {
 
         Assert.Contains("started by the host-port change", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
-        // Its own stage is back to idle — the pull never started, and "pulling" would block the winner.
+        // Its own record is back where it was — here that is the default, so idle with no error. The pull
+        // never started, and a stage left at "pulling" would block the winner.
+        Assert.Equal("idle", (await UpdateRuntimeAsync(host)).ApplyStage);
+    }
+
+    /// <summary>
+    /// And the same on this side: the claim overwrites the apply stage and its error, so standing down
+    /// has to put both back rather than write a blank idle over a previous update's recorded failure.
+    /// </summary>
+    [Fact]
+    public async Task ASelfUpdateStandingDown_LeavesAnEarlierErrorWhereItWas() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        await SetRuntimeAsync(host, SelfUpdateService.KeyRuntime, new SelfUpdateRuntime {
+            ApplyStage = "error", ApplyError = "Coordinator failed (exit 1)",
+        });
+        var selfUpdate = new SelfUpdateService(
+            host.Services.GetRequiredService<IServiceScopeFactory>(), estate.Client,
+            Options.Create(new WatchtowerOptions()), NullLogger<SelfUpdateService>.Instance,
+            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5),
+            beforeVerify: _ => SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime,
+                new SelfPortPublishRuntime { ApplyStage = "restarting", CoordinatorId = StuckCoordinatorId }));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => selfUpdate.ApplyUpdateAsync(actor: null, Ct));
+
+        var runtime = await UpdateRuntimeAsync(host);
+        Assert.Equal("error", runtime.ApplyStage);
+        Assert.Equal("Coordinator failed (exit 1)", runtime.ApplyError);
+    }
+
+    /// <summary>The self-update's apply record, read the way another instance would read it.</summary>
+    private static async Task<SelfUpdateRuntime> UpdateRuntimeAsync(AuthTestHost host) {
         await using var scope = host.Services.CreateAsyncScope();
-        var runtime = await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
+        return await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
             SelfUpdateService.KeyRuntime, new SelfUpdateRuntime(), SettingsScope.Global, Ct);
-        Assert.Equal("idle", runtime.ApplyStage);
     }
 
     [Fact]
@@ -520,6 +592,34 @@ public sealed class SelfPortPublishTests {
         var runtime = await RuntimeAsync(host);
         Assert.Equal("idle", runtime.ApplyStage);
         Assert.Null(runtime.ApplyError);
+    }
+
+    /// <summary>
+    /// The restart <em>after</em> the one that reconciled a failed release. By then the stage says error
+    /// and the coordinator id has been cleared, so nothing marks this start as the aftermath of anything
+    /// — but the release is still pending: the port is bound, still claimed, and no route wants it. Read
+    /// as "every routed port is published" that looks resolved; read as "an apply would have nothing left
+    /// to do" it plainly is not.
+    /// </summary>
+    [Fact]
+    public async Task Startup_KeepsAnApplyErrorWhileAReleaseIsStillPending() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting(published: [9001]);
+        using var host = PortHost(estate);
+        // The route that wanted 9001 is gone, the release failed and rolled back, and the claim survived
+        // it — which is exactly what makes the port releasable on the next attempt.
+        await SetManagedPortsAsync(host, "9001");
+        await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
+            ApplyStage = "error", ApplyError = "Publishing the host ports failed (exit 1)",
+        });
+
+        await host.Services.GetRequiredService<SelfPortPublishService>().StartAsync(Ct);
+
+        var runtime = await RuntimeAsync(host);
+        Assert.Equal("error", runtime.ApplyStage);
+        Assert.NotNull(runtime.ApplyError);
+        // And the claim is still there, so the page still offers the release.
+        Assert.Equal("9001", await ManagedPortsAsync(host));
     }
 
     /// <summary>And it stays where a routed port is still unpublished — the failure has not been resolved.</summary>
