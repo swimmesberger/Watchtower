@@ -152,6 +152,14 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
+        // The same coordinator, pointed at this container's host ports instead of its image (ADR-0033):
+        // publishing a port route's listen port is a recreate, because Docker cannot add a binding to a
+        // running container. Singleton + hosted for the same two reasons as the self-update — an
+        // interrupted apply is reconciled on startup, and that is also where the record of which ports
+        // Watchtower published is pruned back to what the container actually has.
+        services.AddSingleton<SelfPortPublishService>();
+        services.AddHostedService(sp => sp.GetRequiredService<SelfPortPublishService>());
+
         // Reverse proxy — ADR-0015, extended by ADR-0022 for the third provider, which is also the
         // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):
         // the in-process proxy (Watchtower binds 80/443 itself, no sibling container), Caddy (a sibling

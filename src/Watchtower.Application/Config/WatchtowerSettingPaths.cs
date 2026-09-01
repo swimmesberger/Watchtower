@@ -97,6 +97,22 @@ public static class WatchtowerSettingPaths {
     /// or deleted afterwards would silently never gain or lose one. Do not pin it.
     /// </summary>
     public const string ProxyYarpPortRoutePorts = "Watchtower:Proxy:Yarp:PortRoutePorts";
+
+    /// <summary>
+    /// Internal marker: the host ports <see cref="Services.SelfPortPublishService"/> itself published on
+    /// the Watchtower container (ADR-0033), so that removing one later can be told apart from removing a
+    /// binding the operator declared. Not a user setting — never offered in the UI, never listed among
+    /// the proxy card's paths, and pinning it would be actively harmful in both directions: a pin that
+    /// names a port makes Watchtower believe it owns an operator's binding and offer to take it away,
+    /// and a pin that names none makes every port Watchtower published unremovable. Do not pin it.
+    /// <para>
+    /// Written <em>before</em> the coordinator is spawned, because there is no "after" — the coordinator
+    /// stops this process. That is safe in the direction that matters: a claim is only ever acted on for
+    /// a port that is <em>also</em> currently bound, so a recreate that failed and rolled back leaves a
+    /// claim that can remove nothing, and the startup reconcile prunes it back out.
+    /// </para>
+    /// </summary>
+    public const string ProxyYarpManagedHostPorts = "Watchtower:Proxy:Yarp:ManagedHostPorts";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";
     public const string ProxyCloudflareZoneId = "Watchtower:Proxy:Cloudflare:ZoneId";
     public const string ProxyCloudflareApiToken = "Watchtower:Proxy:Cloudflare:ApiToken";

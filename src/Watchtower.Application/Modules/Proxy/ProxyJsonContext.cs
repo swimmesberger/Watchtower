@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Watchtower.Application.Modules.Proxy.Handlers;
+using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Modules.Proxy;
 
@@ -32,6 +33,14 @@ namespace Watchtower.Application.Modules.Proxy;
 [JsonSerializable(typeof(ListCertificates.Response), TypeInfoPropertyName = "ListCertificatesResponse")]
 [JsonSerializable(typeof(RenewCertificate.Command), TypeInfoPropertyName = "RenewCertificateCommand")]
 [JsonSerializable(typeof(RenewCertificate.Response), TypeInfoPropertyName = "RenewCertificateResponse")]
+[JsonSerializable(typeof(PortBindingDto))]
+[JsonSerializable(typeof(GetPortBindings.Query), TypeInfoPropertyName = "GetPortBindingsQuery")]
+[JsonSerializable(typeof(GetPortBindings.Response), TypeInfoPropertyName = "GetPortBindingsResponse")]
+[JsonSerializable(typeof(ApplyPortBindings.Command), TypeInfoPropertyName = "ApplyPortBindingsCommand")]
+[JsonSerializable(typeof(ApplyPortBindings.Response), TypeInfoPropertyName = "ApplyPortBindingsResponse")]
+// The apply's own state record, stored as a typed setting under proxy.ports.runtime — it reaches the
+// serializer through this context the same way self.runtime reaches it through the System module's.
+[JsonSerializable(typeof(SelfPortPublishRuntime))]
 [JsonSerializable(typeof(InternalCaDto))]
 [JsonSerializable(typeof(GetInternalCa.Query), TypeInfoPropertyName = "GetInternalCaQuery")]
 [JsonSerializable(typeof(GetInternalCa.Response), TypeInfoPropertyName = "GetInternalCaResponse")]
