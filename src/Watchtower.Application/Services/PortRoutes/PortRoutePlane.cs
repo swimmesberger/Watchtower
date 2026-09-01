@@ -8,7 +8,6 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.InternalCa;
-using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Services.PortRoutes;
