@@ -159,6 +159,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // Watchtower published is pruned back to what the container actually has.
         services.AddSingleton<SelfPortPublishService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfPortPublishService>());
+        // The reading behind that feature's refusals: which containers already publish a host port. Also
+        // used by the route handlers, so it is a service of its own rather than the recreate's private
+        // helper; stateless apart from its two warn-once latches, hence a singleton.
+        services.AddSingleton<HostPortOccupancy>();
 
         // Reverse proxy — ADR-0015, extended by ADR-0022 for the third provider, which is also the
         // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):

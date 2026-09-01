@@ -1,10 +1,7 @@
-using System.Collections.ObjectModel;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
-using Watchtower.Application.Services;
 using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Modules.Proxy;
@@ -197,124 +194,6 @@ internal static class PortRouteRules {
             : $"Port {listenPort} is already served by route {taken.Id} ({taken.ServiceName}). "
               + "Two routes cannot share one listener.";
     }
-
-    /// <summary>
-    /// The refusals for the ports of <paramref name="ports"/> that another container on this host already
-    /// publishes, keyed by port — empty when none of them is taken. The friendly half of a bind that would
-    /// otherwise fail somewhere nobody is looking: a port route's listener is on Watchtower's own container,
-    /// so a stack that publishes the same host port takes it away, and the recreate that would publish it
-    /// fails to start, rolls back, and leaves the route reporting "host port not published" with nothing
-    /// naming the container that holds it.
-    /// </summary>
-    /// <param name="selfContainerId">
-    /// Watchtower's own container, which is excluded — it is where the listener lives, and a port it
-    /// already publishes is the state this whole feature is trying to reach. Null falls back to
-    /// <c>HOSTNAME</c>, the same reading <c>SelfUpdateService.DetectSelfAsync</c> starts from; a prefix
-    /// match either way, since <c>HOSTNAME</c> is the short id and the daemon reports the long one. With
-    /// no answer at all nothing is excluded, which is the safe direction: the worst case is a refusal
-    /// naming Watchtower's own container, not a collision that goes unmentioned.
-    /// </param>
-    /// <remarks>
-    /// <b>Fail-open by design.</b> A Docker call that throws — no socket, a bare-process install, a daemon
-    /// that is briefly unreachable — logs one warning and refuses nothing. This is a convenience against a
-    /// footgun, not a security boundary: nothing here decides what is served, and being unable to ask the
-    /// daemon must not be what stops an operator creating a route.
-    /// <para>
-    /// Containers in <em>any</em> state count, the way <c>networks.ports</c> deliberately reads them: a
-    /// stopped stack whose desired state is running comes back, taking the port with it. Only the TCP half
-    /// counts — a <c>9001/udp</c> binding is not in the way of an HTTPS listener — and a type Docker left
-    /// off is TCP, which is what the daemon assumes for a bare port number too.
-    /// </para>
-    /// </remarks>
-    public static async ValueTask<IReadOnlyDictionary<int, string>> PublishedByOtherContainersAsync(
-        DockerEngineClient docker,
-        IReadOnlyCollection<int> ports,
-        string? selfContainerId,
-        ILogger? logger,
-        CancellationToken ct) {
-        ArgumentNullException.ThrowIfNull(docker);
-        ArgumentNullException.ThrowIfNull(ports);
-        if (ports.Count == 0) return ReadOnlyDictionary<int, string>.Empty;
-
-        IReadOnlyList<DockerContainerInfo> containers;
-        try {
-            containers = await docker.ListAllContainersAsync(ct);
-        } catch (Exception ex) when (ex is not OperationCanceledException) {
-            logger?.LogWarning(
-                ex,
-                "Could not ask Docker which containers publish host port(s) {Ports}; the port-route "
-                + "collision check is skipped.",
-                string.Join(", ", ports));
-            return ReadOnlyDictionary<int, string>.Empty;
-        }
-
-        var self = string.IsNullOrWhiteSpace(selfContainerId)
-            ? Environment.GetEnvironmentVariable("HOSTNAME")
-            : selfContainerId;
-        var wanted = new HashSet<int>(ports);
-        var blocked = new Dictionary<int, string>();
-
-        foreach (var container in containers) {
-            if (IsSameContainer(container.Id, self)) continue;
-            foreach (var port in container.Ports) {
-                if (port.PublicPort is not { } published || !wanted.Contains(published)) continue;
-                if (!IsTcpBinding(port.Type)) continue;
-                blocked.TryAdd(published, PortHeldBy(published, container));
-            }
-        }
-        return blocked;
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="PublishedByOtherContainersAsync" path="/summary"/> The one-port form the route
-    /// handlers use, over the same reading.
-    /// </summary>
-    public static async ValueTask<string?> PublishedByAnotherContainerAsync(
-        DockerEngineClient docker,
-        int listenPort,
-        string? selfContainerId,
-        ILogger? logger,
-        CancellationToken ct) {
-        var blocked = await PublishedByOtherContainersAsync(
-            docker, [listenPort], selfContainerId, logger, ct);
-        return blocked.TryGetValue(listenPort, out var refusal) ? refusal : null;
-    }
-
-    /// <summary>The refusal itself: what holds the port, and the two ways out of it.</summary>
-    private static string PortHeldBy(int port, DockerContainerInfo container) {
-        var name = container.Names.Length > 0 && !string.IsNullOrWhiteSpace(container.Names[0])
-            ? container.Names[0].TrimStart('/')
-            : container.Id;
-        var project = container.Labels.TryGetValue(ComposeProjectLabel, out var p) && !string.IsNullOrWhiteSpace(p)
-            ? p
-            : null;
-        var service = container.Labels.TryGetValue(ComposeServiceLabel, out var s) && !string.IsNullOrWhiteSpace(s)
-            ? s
-            : null;
-        var labels = (project, service) switch {
-            (not null, not null) => $" (stack {project}, service {service})",
-            (not null, null) => $" (stack {project})",
-            (null, not null) => $" (service {service})",
-            _ => "",
-        };
-        return $"Host port {port} is already published by container {name}{labels}. A port route needs "
-            + "that port for Watchtower's own listener — remove that ports: entry from the stack or "
-            + "choose another port.";
-    }
-
-    /// <summary>Whether a listed container is the one this process runs in; see the parameter's note.</summary>
-    private static bool IsSameContainer(string id, string? self) =>
-        !string.IsNullOrWhiteSpace(id)
-        && !string.IsNullOrWhiteSpace(self)
-        && (id.StartsWith(self, StringComparison.OrdinalIgnoreCase)
-            || self.StartsWith(id, StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>A binding with no protocol at all is TCP, the same way a bare port number is.</summary>
-    private static bool IsTcpBinding(string? type) =>
-        string.IsNullOrEmpty(type) || string.Equals(type, "tcp", StringComparison.OrdinalIgnoreCase);
-
-    private const string ComposeProjectLabel = "com.docker.compose.project";
-    private const string ComposeServiceLabel = "com.docker.compose.service";
 
     /// <summary>
     /// Whether the deployment names at least one LAN address the internal CA can issue a leaf for. Junk
