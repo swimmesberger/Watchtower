@@ -480,12 +480,14 @@ answer.
 **Ingress HTTPS port** to `0`. Give it 8443 (or whatever you publish 443 onto) and the listener comes
 up immediately. Routes resolve and are served meanwhile, but over plain HTTP only.
 
-**A port is already in use.** This behaves differently depending on *when* it happens, and the
-difference matters.
+**A port is already in use.** Two different failures wear that name, and which one you get depends on
+how Watchtower is installed. Where its listeners share the host's network namespace — a bare process, a
+systemd unit, a container on `network_mode: host` — the conflict is Kestrel's own bind, and that
+behaves differently depending on *when* it happens.
 
 - **At startup it is fatal.** Kestrel throws `IOException: Failed to bind to address http://+:8443:
-  address already in use` out of its start-up path and the process exits. In Docker that is a
-  crash-loop: `docker logs watchtower` has the line.
+  address already in use` out of its start-up path and the process exits. Under host networking that is
+  a crash-loop: `docker logs watchtower` has the line.
 - **On a runtime change it is not.** When you move an ingress port from the Settings page and the new
   port is taken, Kestrel logs the failure at **Critical**, *keeps the listeners it already had*, and the
   process carries on serving. Nothing else changes — the management endpoint is untouched.
@@ -498,11 +500,20 @@ listening on a port the configuration asks for. **After changing an ingress port
 the container log before walking away.** Pick a free container port under Settings → Reverse proxy and
 republish it on the host side to match.
 
-**Which process holds it is usually one of your own stacks**, and Kestrel's message names nothing but
-the port. `docker ps --format '{{.Names}}\t{{.Ports}}' | grep 8443` finds it from a terminal; the
-exposure map on the **Infrastructure** page is the same answer with the stack and service beside it. The
-fix is to take that `ports:` entry out of the stack's compose file — a routed service needs none, and
-the proxy plane's ports are the one set a stack must leave alone
+**In the ordinary containerised deployment neither of those happens.** Kestrel binds 8443 *inside* the
+container, and another container's published host port cannot reach into that namespace. What is
+contended there is the **daemon's host-port allocation**, and it fails one step earlier: the container
+asked to start second is never created. So publishing a port route's host port reports
+`Bind for 0.0.0.0:9001 failed: port is already allocated`, the recreate rolls back, and the route says
+*host port not published* again; a stack service that wants a port Watchtower already holds fails its
+own `compose up` with the same line. Neither message mentions the proxy.
+
+Finding the holder: `docker ps --format '{{.Names}}\t{{.Ports}}' | grep 9001` from a terminal — running
+containers only, so a stopped stack that publishes the port will not appear there, while the refusal
+Watchtower makes when you create the route counts containers in any state. The exposure map on the
+**Infrastructure** page includes those, with the stack and service beside them. The fix is to take that
+`ports:` entry out of the stack's compose file — a routed service needs none, and the proxy plane's
+ports are the one set a stack must leave alone
 ([what a routed stack must not do](README.md#what-a-routed-stack-must-not-do)).
 
 The old listener is not a hole while it lasts. Watchtower decides what is ingress by exclusion — while
