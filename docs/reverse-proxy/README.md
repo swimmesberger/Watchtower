@@ -66,6 +66,53 @@ Note what this means for the built-in provider: **Watchtower's own container joi
 network**, because it *is* the proxy. That is a deliberate exposure change from the Caddy topology —
 see the consequences section of [ADR-0022](../decisions/0022-in-process-yarp-proxy.md).
 
+## What a routed stack must not do
+
+A routed service needs **no `ports:` at all**. That is the point of the topology above: the proxy dials
+it over the stack's ingress network, so the only thing a published host port adds is a second, ungated
+way in — and, with central auth, a way in that skips the access check entirely
+([central-auth](../central-auth/README.md)).
+
+There is one thing a stack's compose file genuinely **must not** do, and it is narrower than "avoid
+`ports:`": it must not publish a host port the proxy plane itself uses. Which ports those are depends on
+the provider:
+
+| Provider | Host ports the stack must leave alone |
+| --- | --- |
+| **`yarp`** | 80 and 443 (or whatever you publish the ingress container ports 8081/8443 onto), the management port (8080 by default), and **every port route's listen port** — a port route is host port == container port on Watchtower's own container by design ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md)). |
+| `caddy` | 80 and 443, which the Caddy container holds. |
+| `cloudflare` | None. The tunnel is outbound only and binds nothing on the host. |
+
+Break it and what you get depends on **which side got there first**, which is why the symptom looks like
+two unrelated bugs:
+
+- **The stack took the port first.** Watchtower's listener then cannot bind. At startup that is fatal
+  and the container crash-loops; at runtime — an ingress port moved from the Settings page, or a port
+  route created just now — the bind fails, the old listeners keep serving, and everything *looks* fine
+  until the next restart. See [A port is already in use](yarp.md#troubleshooting) for both halves. A
+  port route's publish is the same story with an extra step: Watchtower recreates its own container to
+  add the binding, the new container fails to start on the port, the recreate rolls back, and the route
+  reports *host port not published* again.
+- **Watchtower held it first.** Then it is the stack's deploy that fails: `docker compose up` reports a
+  bind error on that one service, naming the port and nothing else. Docker has no idea a reverse proxy
+  is involved, so the message says nothing about the proxy — check what Watchtower publishes
+  (`docker port watchtower`) before hunting elsewhere.
+
+**What Watchtower does about it.** Creating or editing a port route on a host port another container
+already publishes is refused, naming that container and its stack and service; so is pressing *Publish
+ports & restart Watchtower* for such a port, instead of letting the recreate fail and roll back. Any
+container counts, in any state — a stopped stack comes back — and a UDP binding on the same number does
+not, since these listeners are TCP. The check is a convenience, not a boundary: where the Docker socket
+cannot be reached (a bare-process install), it refuses nothing and logs a warning.
+
+**What it does not do.** The deploy path does not inspect a routed service's `ports:`. A stack that
+publishes 443 is deployed, and the collision is discovered by whichever listener loses. Making the
+deploy hold an opinion about that is [ADR-0029](../decisions/0029-blue-green-stack-deploys.md)'s
+territory, which is still Proposed.
+
+After the fact, the exposure map on the **Infrastructure** page is the view that shows it: every
+container's published ports with a derived exposure, grouped into host-port conflicts.
+
 ## Choosing a provider
 
 ```yaml

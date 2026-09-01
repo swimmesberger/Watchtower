@@ -95,6 +95,10 @@ talking to issues it itself rather than waiting for a background pass.
 
 ### 3. Publish the host port on the Watchtower container
 
+Pick a port no stack of yours publishes — the listener is on Watchtower's own container, so a stack that
+binds the same host port takes it away ([what a routed stack must not do](README.md#what-a-routed-stack-must-not-do)).
+Watchtower refuses a listen port another container already publishes, naming it.
+
 The proxy is now listening on 9001 *inside* its container. Docker cannot add a published port to a
 running container, so the Routes page offers to do the only thing that can: **Publish ports & restart
 Watchtower (~5 s)**. Confirm it and Watchtower recreates its own container with `9001:9001` added,
@@ -493,6 +497,13 @@ it can: the proxy status shows `ingress port 8443 failed to bind — see the log
 listening on a port the configuration asks for. **After changing an ingress port, check the status and
 the container log before walking away.** Pick a free container port under Settings → Reverse proxy and
 republish it on the host side to match.
+
+**Which process holds it is usually one of your own stacks**, and Kestrel's message names nothing but
+the port. `docker ps --format '{{.Names}}\t{{.Ports}}' | grep 8443` finds it from a terminal; the
+exposure map on the **Infrastructure** page is the same answer with the stack and service beside it. The
+fix is to take that `ports:` entry out of the stack's compose file — a routed service needs none, and
+the proxy plane's ports are the one set a stack must leave alone
+([what a routed stack must not do](README.md#what-a-routed-stack-must-not-do)).
 
 The old listener is not a hole while it lasts. Watchtower decides what is ingress by exclusion — while
 the proxy is on, every port except the management one is ingress — so the stranded listener keeps

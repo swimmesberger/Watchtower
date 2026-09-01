@@ -394,6 +394,17 @@ untouched, and nobody re-imports anything, because the root did not change.
   fatal at startup, survivable-but-stale on a reload. Create-time validation refuses a listen port that
   collides with Watchtower's own ports, but nothing can refuse an unrelated host process holding 9001 on
   bare metal, and that still wedges startup.
+- **A listen port another container already publishes is refused, naming that container.** Asked of the
+  Docker daemon at route creation, at an edit that moves the port, and again before the publish recreates
+  this container — the message carries the container's name and its compose project and service, because
+  the alternative is a recreate that fails to start, rolls back, and reports "host port not published"
+  with nothing pointing at what holds the port. Containers in any state count (a stopped desired-state
+  stack comes back) and only TCP does; the check is fail-open, so a daemon that cannot be reached refuses
+  nothing. What it deliberately does *not* do is inspect a routed service's `ports:` on the deploy path —
+  a stack is still free to publish the ingress or management ports, and whichever listener loses finds
+  out at bind time. That belongs to [ADR-0029](0029-blue-green-stack-deploys.md), which is still
+  Proposed; the contract itself is written down in
+  [docs/reverse-proxy/README.md](../reverse-proxy/README.md#what-a-routed-stack-must-not-do).
 - **Losing `KeyProtectionSecret` is no longer a self-healing failure.** ADR-0024 could say that losing
   it invalidates sessions and forces every certificate to be reissued — a blast radius that resolves
   itself, because ACME simply orders again. The CA key breaks that property: decision 6 treats an
