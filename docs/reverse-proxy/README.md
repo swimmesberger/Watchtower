@@ -107,12 +107,15 @@ state. The exposure map on the **Infrastructure** page is the same answer with t
 beside it, stopped containers included, and it groups host-port conflicts of its own accord.
 
 **Bare process, systemd, or `network_mode: host`.** Here Watchtower's listeners really are in the same
-namespace as everything else, so the failure is Kestrel's own bind: fatal at startup (the process exits
-— a host-networked container therefore crash-loops), and merely *stale* on a runtime change — the new listener
-does not come up, the old one keeps serving, and the instance crash-loops at the next restart instead.
+namespace as everything else, so the failure is Kestrel's own bind: fatal at startup (the process exits —
+a host-networked container therefore crash-loops), and merely *stale* on a runtime change — the new
+listener does not come up, the old one keeps serving, and the instance crash-loops at the next restart
+instead.
 That asymmetry is the one that bites; [A port is already in use](yarp.md#troubleshooting) has both
-halves. Nothing Watchtower can ask Docker sees a plain host process holding the port, so this shape is
-the one the refusals below cannot help with.
+halves. Nothing Watchtower can ask Docker sees a plain host process holding the port, so that half of
+this shape is one the refusals below cannot help with — but a *container* holding it still can be, and
+still is: a bare-process Watchtower binds host ports directly, so it is contending for the same numbers
+the daemon hands out, and the check runs there with nothing to exclude.
 
 **What Watchtower does about it.** Creating or editing a port route on a host port another container
 already publishes is refused, naming that container and its stack and service; so is pressing *Publish
