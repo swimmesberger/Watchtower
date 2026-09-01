@@ -544,6 +544,13 @@ public sealed record ProxyOptions {
     /// <summary>In-process proxy settings. Only used when <see cref="Provider"/> is <c>yarp</c>.</summary>
     public YarpProxyOptions Yarp { get; init; } = new();
 
+    /// <summary>
+    /// Port-bound route settings (ADR-0033). Read under <em>every</em> provider: a port route's listener
+    /// is on Watchtower's own container, so which provider terminates the public domains does not enter
+    /// into it (ADR-0033 addendum).
+    /// </summary>
+    public PortRouteOptions PortRoutes { get; init; } = new();
+
     /// <summary>Cloudflare Tunnel settings. Only used when <see cref="Provider"/> is <c>cloudflare</c>.</summary>
     public CloudflareProxyOptions Cloudflare { get; init; } = new();
 
@@ -682,7 +689,16 @@ public sealed record YarpProxyOptions {
     /// speaks HTTPS to the client — redirecting again would loop.
     /// </summary>
     public bool RedirectHttpToHttps { get; init; } = true;
+}
 
+/// <summary>
+/// Port-bound route settings (<c>WATCHTOWER__PROXY__PORTROUTES__*</c>), per ADR-0033. Provider-independent
+/// by construction: a port route is a dedicated TLS listener on Watchtower's own container, forwarded to
+/// a stack service over that stack's ingress network, so it works alongside <c>yarp</c>, <c>caddy</c> and
+/// <c>cloudflare</c> alike. These lived under <c>Proxy:Yarp:</c> until the ADR-0033 addendum, which is
+/// what <see cref="Services.PortRoutes.PortRouteSettingsMigration"/> exists to carry across.
+/// </summary>
+public sealed record PortRouteOptions {
     /// <summary>
     /// The addresses this deployment is reached on from the local network — host names and IPs,
     /// separated by commas or newlines (<c>nas.lan, 192.168.1.10</c>). They become the subject

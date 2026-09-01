@@ -288,9 +288,7 @@ public sealed class YarpDispatchTests {
     public async Task MaxRequestBodySize_IsLifted() {
         var forwarder = new RecordingHttpForwarder();
         var table = new ProxyRouteTable();
-        table.Replace(ProxyRouteTable.From([
-            new ProxySite(AppDomain, "app-web", 8080, Tls: false),
-        ]));
+        table.PublishHostRoutes([new ProxySite(AppDomain, "app-web", 8080, Tls: false)]);
         using var client = new ProxyForwardHttpClient();
         var middleware = new YarpHostDispatchMiddleware(
             _ => Task.FromException(new InvalidOperationException("The request must not fall through.")),
@@ -763,7 +761,7 @@ public sealed class YarpDispatchTests {
     public async Task APortRouteCollidingWithAnIngressPort_DoesNotCaptureIt() {
         // The row says 8443; the projection drops that endpoint because the TLS ingress listener has it.
         using var factory = WatchtowerApiFactory.WithIngress(
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "8443"));
+            ("Watchtower:Proxy:PortRoutes:Ports", "8443"));
         using var client = factory.CreateApiClient(8443);
         await factory.AddPortRouteAsync(8443, serviceName: "jellyfin", containerPort: 8096);
         await factory.AddRouteAsync(AppDomain, AccessMode.Public);
@@ -823,7 +821,7 @@ public sealed class YarpDispatchTests {
     public async Task WhenTheSectionDoesNotNameThePort_ItIsNotAPortRouteListener() {
         // The row says 8443 and the projection dropped it: the TLS ingress listener has that port.
         using var factory = WatchtowerApiFactory.WithIngress(
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "8443"));
+            ("Watchtower:Proxy:PortRoutes:Ports", "8443"));
         using var client = factory.CreateApiClient(8443);
         await factory.AddPortRouteAsync(8443, serviceName: "jellyfin", containerPort: 8096);
         await factory.ApplyProxyAsync();
@@ -883,7 +881,7 @@ public sealed class YarpDispatchTests {
     private static WatchtowerApiFactory PortRoutesOnlyEstate() => WatchtowerApiFactory.WithIngress(
         ("Watchtower:Proxy:Yarp:HttpPort", "0"),
         ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
-        ("Watchtower:Proxy:Yarp:PortRoutePorts",
+        ("Watchtower:Proxy:PortRoutes:Ports",
             PortRoutePort.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
     /// <summary>
@@ -892,7 +890,7 @@ public sealed class YarpDispatchTests {
     /// dispatcher — a port to recognise.
     /// </summary>
     private static WatchtowerApiFactory PortRouteEstate() => WatchtowerApiFactory.WithIngress(
-        ("Watchtower:Proxy:Yarp:PortRoutePorts",
+        ("Watchtower:Proxy:PortRoutes:Ports",
             PortRoutePort.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
     // ── Helpers ───────────────────────────────────────────────────────────────

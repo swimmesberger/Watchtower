@@ -40,19 +40,29 @@ public sealed class GetProxyStatus(
         var running = await proxy.IsRunningAsync(ct);
         var proxyOptions = options.CurrentValue.Proxy;
         var yarp = proxyOptions.ResolveProvider() == ProxyProviderKind.Yarp && proxy.Enabled;
+
+        var notes = yarp ? IngressNotes(proxyOptions.Yarp) : [];
+        // Outside the provider branch, and last (ADR-0033 addendum): a port route's listener is on
+        // Watchtower's own container whichever provider terminates the public domains, so it is reported
+        // under Caddy and Cloudflare too. It is also neither a caveat nor a reason to hide the certificate
+        // progress above — it is here so the one deployment shape that otherwise reads as TLS-less does
+        // not: HttpsPort turned off with every service on a port route of its own says "HTTPS ingress
+        // disabled" and would look like nothing is terminating TLS at all.
+        if (proxy.Enabled && PortListeners() is { } portRoutes) notes.Add(portRoutes);
+
         return new Response(
             proxy.Enabled, running, count, proxyOptions.ProviderName(),
-            yarp ? Detail(proxyOptions.Yarp) : null);
+            notes.Count == 0 ? null : string.Join(" · ", notes));
     }
 
     /// <summary>
-    /// The caveats worth a sentence next to the status, joined. The "off" cases are configuration rather
-    /// than failure — an operator who set a port to 0 meant it — so they are stated as what they are and
-    /// not as the old "never came up" alarm; a port that was asked for and did not bind is the one real
-    /// alarm here, and it is additive because turning one listener off does not stop the other from
-    /// failing.
+    /// The in-process provider's ingress caveats, in the order they are read. The "off" cases are
+    /// configuration rather than failure — an operator who set a port to 0 meant it — so they are stated
+    /// as what they are and not as the old "never came up" alarm; a port that was asked for and did not
+    /// bind is the one real alarm here, and it is additive because turning one listener off does not stop
+    /// the other from failing.
     /// </summary>
-    private string? Detail(YarpProxyOptions yarp) {
+    private List<string> IngressNotes(YarpProxyOptions yarp) {
         var notes = new List<string>();
 
         if (!listener.HttpsBound)
@@ -76,13 +86,7 @@ public sealed class GetProxyStatus(
         // already says the proxy is running — and next to a caveat that says something is wrong.
         if (notes.Count == 0 && CertificateProgress() is { } progress) notes.Add(progress);
 
-        // Last, and outside the caveat count above, because it is neither a caveat nor a reason to hide
-        // the certificate progress. It is here so the one deployment shape that otherwise reads as
-        // TLS-less does not: HttpsPort turned off with every service on a port route of its own says
-        // "HTTPS ingress disabled" and would look like nothing is terminating TLS at all.
-        if (PortListeners() is { } portRoutes) notes.Add(portRoutes);
-
-        return notes.Count == 0 ? null : string.Join(" · ", notes);
+        return notes;
     }
 
     /// <summary>

@@ -35,7 +35,7 @@ namespace Watchtower.Application.Services;
 /// </para>
 /// <para>
 /// Only ports Watchtower itself published are ever taken away again — that is what
-/// <see cref="WatchtowerSettingPaths.ProxyYarpManagedHostPorts"/> is for, and why the plan never
+/// <see cref="WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts"/> is for, and why the plan never
 /// contains an unpublish for a port the operator declared.
 /// </para>
 /// </remarks>
@@ -139,7 +139,7 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     /// </summary>
     /// <remarks>
     /// The reconcile is what makes the pre-spawn write of the managed set safe (see
-    /// <see cref="WatchtowerSettingPaths.ProxyYarpManagedHostPorts"/>). Two things produce a claim on a
+    /// <see cref="WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts"/>). Two things produce a claim on a
     /// port that is not bound, and both are ordinary: a recreate that failed and rolled back, and an
     /// operator running <c>docker compose up -d</c>, which rebuilds the container from the compose file
     /// and drops whatever this service added. Pruning the claim in both cases is what puts the port back
@@ -667,14 +667,14 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var settings = scope.ServiceProvider.GetRequiredService<ISettingsManager>();
         return PortRouteListeners.Parse(
-            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpManagedHostPorts, SettingsScope.Global, ct));
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts, SettingsScope.Global, ct));
     }
 
     private async Task SaveManagedPortsAsync(IReadOnlyList<int> ports, CancellationToken ct) {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var settings = scope.ServiceProvider.GetRequiredService<ISettingsManager>();
         await settings.SetStringAsync(
-            WatchtowerSettingPaths.ProxyYarpManagedHostPorts, PortRouteListeners.Format(ports),
+            WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts, PortRouteListeners.Format(ports),
             SettingsScope.Global, expectedVersion: null, ct);
     }
 

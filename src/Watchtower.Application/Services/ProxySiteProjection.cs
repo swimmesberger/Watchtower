@@ -48,16 +48,6 @@ public sealed record ProxyPortSite(int ListenPort, string UpstreamHost, int Upst
 /// place regardless of which proxy is active.
 /// </summary>
 public static class ProxySiteProjection {
-    /// <summary>
-    /// What a <see cref="RouteBinding.Port"/> route's status says under a provider that cannot serve one
-    /// (ADR-0033) — a listener on Watchtower's own host is not something a sibling proxy container or a
-    /// tunnel has to lend. Stated once so both providers and their tests read the same sentence, the way
-    /// <c>CloudflareTunnelProvider.SelfRouteUnsupported</c> is.
-    /// </summary>
-    public const string PortRouteUnsupported =
-        "Port routes are served by the in-process (yarp) provider only. Switch the reverse proxy to the "
-        + "in-process provider under Settings, or give this service a domain instead.";
-
     /// <summary>DNS alias Watchtower itself answers on inside the container network.</summary>
     public const string SelfAlias = "watchtower";
     /// <summary>Port Watchtower listens on inside its container; where the proxy reaches it.</summary>

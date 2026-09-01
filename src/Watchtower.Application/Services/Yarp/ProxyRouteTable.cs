@@ -97,25 +97,63 @@ public sealed class ProxyRouteTableSnapshot {
 
 /// <summary>
 /// The in-process proxy's routing table: a singleton holding the current
-/// <see cref="ProxyRouteTableSnapshot"/>, replaced wholesale by
-/// <see cref="YarpProxyProvider.ApplyAsync"/> on every route change — ADR-0022.
+/// <see cref="ProxyRouteTableSnapshot"/> — ADR-0022.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The read is the request hot path and the write happens once per reconcile, so the concurrency
 /// story is deliberately the cheapest one that is correct: a volatile reference swap. Readers get
 /// either the whole old table or the whole new one, never a mixture, and no reader ever blocks.
+/// </para>
+/// <para>
+/// <b>Two writers, one snapshot</b> (ADR-0033 addendum). The host half is
+/// <see cref="YarpProxyProvider"/>'s and exists only while the in-process provider serves the domains;
+/// the port half is <see cref="PortRoutes.PortRoutePlane"/>'s and exists whenever the proxy is enabled,
+/// whichever provider that is. They are published independently — under Caddy or Cloudflare the yarp
+/// provider never writes at all — so each half is held here and every publish recomputes one combined
+/// snapshot from both. The dispatcher still reads exactly one immutable object per request and knows
+/// nothing about the split.
+/// </para>
 /// </remarks>
 public sealed class ProxyRouteTable {
     private volatile ProxyRouteTableSnapshot _current = ProxyRouteTableSnapshot.Empty;
 
+    // Guards the read-recompute-swap of the two halves. Contended only between two control-plane
+    // passes, never by a reader: readers take the volatile reference and nothing else.
+    private readonly Lock _gate = new();
+    private IReadOnlyList<ProxySite> _hostSites = [];
+    private IReadOnlyList<ProxyPortSite> _portSites = [];
+
     /// <summary>The table in force right now.</summary>
     public ProxyRouteTableSnapshot Current => _current;
 
-    /// <summary>Swaps in a newly projected table.</summary>
-    public void Replace(ProxyRouteTableSnapshot next) => _current = next;
+    /// <summary>
+    /// Publishes the host-addressed half — the domains the in-process provider serves. An empty list is
+    /// what the provider publishes while it is inactive, and it leaves the port half untouched.
+    /// </summary>
+    public void PublishHostRoutes(IReadOnlyList<ProxySite> sites) {
+        ArgumentNullException.ThrowIfNull(sites);
+        lock (_gate) {
+            _hostSites = sites;
+            _current = Compose(_hostSites, _portSites);
+        }
+    }
 
     /// <summary>
-    /// Projects the provider-independent site lists onto a routing table. Pure, so the routing rules
+    /// Publishes the port-addressed half (ADR-0033) — one dedicated listener each, on Watchtower's own
+    /// container. An empty list is what the plane publishes while the proxy is disabled, and it leaves
+    /// the host half untouched.
+    /// </summary>
+    public void PublishPortRoutes(IReadOnlyList<ProxyPortSite> portSites) {
+        ArgumentNullException.ThrowIfNull(portSites);
+        lock (_gate) {
+            _portSites = portSites;
+            _current = Compose(_hostSites, _portSites);
+        }
+    }
+
+    /// <summary>
+    /// Projects the provider-independent site lists onto one routing table. Pure, so the routing rules
     /// are testable without a database. Hosts are lowercased; on a duplicate domain — or a duplicate
     /// port — the first site wins, a defensive rule rather than a load-bearing one, since the filtered
     /// unique indexes on <c>routes.domain</c> and <c>routes.listen_port</c> mean the projection cannot
@@ -124,10 +162,12 @@ public sealed class ProxyRouteTable {
     /// <param name="portSites">
     /// The port-bound routes (ADR-0033). Their hosts never enter <see cref="ProxyRouteTableSnapshot.TlsHosts"/>:
     /// they have no hostname, and their certificate comes from the internal CA rather than from the ACME
-    /// desired set this feeds.
+    /// desired set this feeds — which is also why <c>TlsHosts</c> is derived from the host half alone.
     /// </param>
-    public static ProxyRouteTableSnapshot From(
-        IReadOnlyList<ProxySite> sites, IReadOnlyList<ProxyPortSite>? portSites = null) {
+    private static ProxyRouteTableSnapshot Compose(
+        IReadOnlyList<ProxySite> sites, IReadOnlyList<ProxyPortSite> portSites) {
+        if (sites.Count == 0 && portSites.Count == 0) return ProxyRouteTableSnapshot.Empty;
+
         var byHost = new Dictionary<string, ProxyRouteSnapshot>(StringComparer.OrdinalIgnoreCase);
         var tlsHosts = new List<string>();
         foreach (var site in sites) {
@@ -148,7 +188,7 @@ public sealed class ProxyRouteTable {
         }
 
         var byPort = new Dictionary<int, ProxyPortRouteSnapshot>();
-        foreach (var site in portSites ?? []) {
+        foreach (var site in portSites) {
             if (byPort.ContainsKey(site.ListenPort)) continue;
             byPort[site.ListenPort] = new ProxyPortRouteSnapshot(
                 site.ListenPort, site.RouteId, site.UpstreamHost, site.UpstreamPort);

@@ -153,18 +153,40 @@ public sealed class InternalCertificateServiceTests {
         Assert.Null(await CaRowAsync(host));
     }
 
-    [Fact]
-    public async Task AnotherProvider_IssuesNothing() {
+    /// <summary>
+    /// The ADR-0033 addendum: a port route's listener is on Watchtower's own container, so the leaf it
+    /// presents is issued whichever provider terminates the public domains. Gating this on <c>yarp</c>
+    /// was what let a Caddy or Cloudflare deployment bind a port-route listener with nothing to serve on
+    /// it — a TLS handshake that fails for a route the Routes page calls Active.
+    /// </summary>
+    [Theory]
+    [InlineData("caddy")]
+    [InlineData("cloudflare")]
+    public async Task UnderAnotherProvider_TheLeafIsStillIssued(string provider) {
         using var host = AuthTestHost.Start(
             ("Watchtower:Proxy:Enabled", "true"),
-            ("Watchtower:Proxy:Provider", "caddy"),
-            ("Watchtower:Proxy:Yarp:LanNames", "nas.lan"));
+            ("Watchtower:Proxy:Provider", provider),
+            ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan"));
 
         await EnsureAsync(host);
 
-        // These certificates are served by the in-process proxy's listeners; under Caddy there is
-        // nothing to serve them.
+        var leaf = Store(host).SelectCertificate(Host);
+        Assert.NotNull(leaf);
+        Assert.NotNull(await CaRowAsync(host));
+    }
+
+    /// <summary>The one gate left: with the proxy off there is no listener to present anything on.</summary>
+    [Fact]
+    public async Task WithTheProxyDisabled_IssuesNothing() {
+        using var host = AuthTestHost.Start(
+            ("Watchtower:Proxy:Enabled", "false"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan"));
+
+        await EnsureAsync(host);
+
         Assert.Null(Store(host).SelectCertificate(Host));
+        // A CA that exists is a root an operator is invited to import; minting one nothing uses is noise.
         Assert.Null(await CaRowAsync(host));
     }
 
@@ -314,7 +336,7 @@ public sealed class InternalCertificateServiceTests {
     private static (string Key, string? Value)[] LanSettings(string lanNames) => [
         ("Watchtower:Proxy:Enabled", "true"),
         ("Watchtower:Proxy:Provider", "yarp"),
-        ("Watchtower:Proxy:Yarp:LanNames", lanNames),
+        ("Watchtower:Proxy:PortRoutes:LanNames", lanNames),
     ];
 
     /// <summary>

@@ -249,7 +249,7 @@ public sealed class CertificateManagerTests {
     [Fact]
     public async Task TheInternalCertificate_IsIssuedByANonHolderToo() {
         await using var estate = await AcmeEstate.StartAsync(
-            settings: ("Watchtower:Proxy:Yarp:LanNames", "nas.lan, 192.168.1.10"));
+            settings: ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan, 192.168.1.10"));
         await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
         estate.Factory.IssuerLease.IsHeld = false;
         estate.Factory.IssuerLease.CurrentHolder = "node-b:abc";
@@ -270,7 +270,7 @@ public sealed class CertificateManagerTests {
     [Fact]
     public async Task TheInternalLeafsHost_IsHeldButNeverDesired() {
         await using var estate = await AcmeEstate.StartAsync(
-            settings: ("Watchtower:Proxy:Yarp:LanNames", "nas.lan"));
+            settings: ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan"));
         await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
         await estate.AddRouteAsync(Host);
 

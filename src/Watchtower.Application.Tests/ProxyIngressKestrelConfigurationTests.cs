@@ -282,7 +282,7 @@ public sealed class ProxyIngressKestrelConfigurationTests {
         var section = ProxyIngressKestrelConfiguration.Build(Root(
             ("Watchtower:Proxy:Enabled", "true"),
             ("Watchtower:Proxy:Provider", "yarp"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001,9002")));
+            ("Watchtower:Proxy:PortRoutes:Ports", "9001,9002")));
 
         Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
         Assert.Equal("https://+:9002", section["Endpoints:ProxyPort9002:Url"]);
@@ -301,7 +301,7 @@ public sealed class ProxyIngressKestrelConfigurationTests {
             ("Watchtower:Proxy:Provider", "yarp"),
             ("Watchtower:Proxy:Yarp:HttpPort", "0"),
             ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"),
+            ("Watchtower:Proxy:PortRoutes:Ports", "9001"),
             ("urls", "http://localhost:5080")));
 
         Assert.Null(section["Endpoints:ProxyHttp:Url"]);
@@ -310,18 +310,57 @@ public sealed class ProxyIngressKestrelConfigurationTests {
         Assert.Equal("http://localhost:5080", section["Endpoints:Http:Url"]);
     }
 
-    /// <summary>Same gate as the ingress ports: under another provider nothing serves them.</summary>
+    /// <summary>
+    /// The point of the ADR-0033 addendum, in one assertion: a port route's listener is on Watchtower's
+    /// own container, so it exists under Caddy and Cloudflare exactly as it does under yarp. The ingress
+    /// endpoints stay behind the provider gate — under Caddy they are absent from the same projection.
+    /// </summary>
     [Theory]
-    [InlineData("false", "yarp")]
-    [InlineData("true", "caddy")]
-    [InlineData("true", "cloudflare")]
-    public void WithoutTheInProcessProvider_ThereAreNoPortRouteEndpoints(string enabled, string provider) {
+    [InlineData("yarp")]
+    [InlineData("caddy")]
+    [InlineData("cloudflare")]
+    public void UnderEveryProvider_ThePortRoutePortsAreProjected(string provider) {
         var section = ProxyIngressKestrelConfiguration.Build(Root(
-            ("Watchtower:Proxy:Enabled", enabled),
+            ("Watchtower:Proxy:Enabled", "true"),
             ("Watchtower:Proxy:Provider", provider),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001")));
+            ("Watchtower:Proxy:PortRoutes:Ports", "9001")));
+
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
+        // …and only the port routes: a Caddy or Cloudflare deployment carries no idle ingress listener.
+        var yarp = provider == "yarp";
+        Assert.Equal(yarp, section["Endpoints:ProxyHttps:Url"] is not null);
+        Assert.Equal(yarp, section["Endpoints:ProxyHttp:Url"] is not null);
+    }
+
+    /// <summary>The one gate that is left: with the proxy off nothing binds, whichever provider is named.</summary>
+    [Theory]
+    [InlineData("yarp")]
+    [InlineData("caddy")]
+    [InlineData("cloudflare")]
+    public void WithTheProxyDisabled_ThereAreNoPortRouteEndpoints(string provider) {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", "false"),
+            ("Watchtower:Proxy:Provider", provider),
+            ("Watchtower:Proxy:PortRoutes:Ports", "9001")));
 
         Assert.Null(section["Endpoints:ProxyPort9001:Url"]);
+    }
+
+    /// <summary>
+    /// Under Caddy the ingress ports are null, so the only collision left for a port route to lose is
+    /// the management port — and it still loses it, because two endpoints on one port is a duplicate
+    /// bind and the management plane is what would stop being reachable.
+    /// </summary>
+    [Fact]
+    public void UnderAnotherProvider_APortRouteOnTheManagementPort_IsStillDropped() {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "caddy"),
+            ("Watchtower:Proxy:PortRoutes:Ports", "8080,9001"),
+            ("Kestrel:Endpoints:Http:Url", "http://127.0.0.1:8080")));
+
+        Assert.Null(section["Endpoints:ProxyPort8080:Url"]);
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
     }
 
     /// <summary>
@@ -333,7 +372,7 @@ public sealed class ProxyIngressKestrelConfigurationTests {
         var section = ProxyIngressKestrelConfiguration.Build(Root(
             ("Watchtower:Proxy:Enabled", "true"),
             ("Watchtower:Proxy:Provider", "yarp"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"),
+            ("Watchtower:Proxy:PortRoutes:Ports", "9001"),
             ("Kestrel:Endpoints:ProxyPort9001:Url", "https://+:1234"),
             ("Kestrel:Endpoints:ProxyPort4242:Url", "https://+:4242"),
             ("Kestrel:Endpoints:ProxyPort9001:SslProtocols:0", "Tls12")));
@@ -377,7 +416,7 @@ public sealed class ProxyIngressKestrelConfigurationTests {
                 ("Watchtower:Proxy:Provider", "yarp"),
                 ("Watchtower:Proxy:Yarp:HttpPort", "8081"),
                 ("Watchtower:Proxy:Yarp:HttpsPort", "8443"),
-                ("Watchtower:Proxy:Yarp:PortRoutePorts", "8080,8443,9001"),
+                ("Watchtower:Proxy:PortRoutes:Ports", "8080,8443,9001"),
                 ("Kestrel:Endpoints:Http:Url", "http://+:8080")),
             warnings);
 
@@ -401,13 +440,13 @@ public sealed class ProxyIngressKestrelConfigurationTests {
         ChangeToken.OnChange(section.GetReloadToken, () => reloads++);
 
         settings.Publish(
-            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"));
+            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:PortRoutes:Ports", "9001"));
         Assert.Equal(1, reloads);
         Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
 
         // Re-written in another spelling: the same set of ports, so no rebind.
         settings.Publish(
-            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Yarp:PortRoutePorts", " 9001 , "));
+            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:PortRoutes:Ports", " 9001 , "));
         Assert.Equal(1, reloads);
 
         settings.Publish(("Watchtower:Proxy:Enabled", "true"));
@@ -421,11 +460,11 @@ public sealed class ProxyIngressKestrelConfigurationTests {
             [9001, 9002],
             ProxyIngressKestrelConfiguration.DerivePortRoutePorts(Root(
                 ("Watchtower:Proxy:Enabled", "true"),
-                ("Watchtower:Proxy:Yarp:PortRoutePorts", "9002,9001"))));
+                ("Watchtower:Proxy:PortRoutes:Ports", "9002,9001"))));
         Assert.Empty(
             ProxyIngressKestrelConfiguration.DerivePortRoutePorts(Root(
                 ("Watchtower:Proxy:Enabled", "false"),
-                ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"))));
+                ("Watchtower:Proxy:PortRoutes:Ports", "9001"))));
     }
 
     [Fact]

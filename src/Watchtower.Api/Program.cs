@@ -17,6 +17,7 @@ using Watchtower.Api.Proxy;
 using Watchtower.Application;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 // ── Coordinator mode ──────────────────────────────────────────────────────────
@@ -310,6 +311,12 @@ static async Task InitializeDatabaseAsync(WebApplication app) {
     // Here rather than in a hosted service so the ordering is stated rather than inherited: after the
     // migration (it reads the routes table) and before app.RunAsync() starts the proxy providers.
     await scope.ServiceProvider.GetRequiredService<ProxyProviderMigration>().RunAsync();
+
+    // The ADR-0033 addendum's rename: the port-route settings move out of the Proxy:Yarp namespace,
+    // because a port route never was the in-process provider's. Same window and for the same reason —
+    // the copied rows have to reach configuration before the port plane and the certificate services
+    // start acting on them.
+    await scope.ServiceProvider.GetRequiredService<PortRouteSettingsMigration>().RunAsync();
 
     // ADR-0023's one-time conversion: a configured Auth:Host becomes the operator realm's Watchtower
     // route. Here for the same reason and in the same window — after the migration (which converts the

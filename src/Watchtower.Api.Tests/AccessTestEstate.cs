@@ -165,7 +165,7 @@ internal static class AccessTestEstate {
     /// <remarks>
     /// The listen port is a fact about the <em>listener</em> as well as the row, so a test that wants the
     /// request path to reach this route also has to give its host a matching
-    /// <c>Watchtower:Proxy:Yarp:PortRoutePorts</c> — the projection is what decides which ports exist.
+    /// <c>Watchtower:Proxy:PortRoutes:Ports</c> — the projection is what decides which ports exist.
     /// </remarks>
     public static async Task<int> AddPortRouteAsync(
         this WatchtowerApiFactory factory, int listenPort, string stackName = "media",

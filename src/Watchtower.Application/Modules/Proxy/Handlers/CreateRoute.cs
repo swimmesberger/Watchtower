@@ -240,7 +240,8 @@ public sealed class CreateRoute(
             return AppError.Validation(
                 "A port route needs a listen port — the port on this host clients will address it by.");
         }
-        var yarp = options.CurrentValue.Proxy.Yarp;
+        var proxyOptions = options.CurrentValue.Proxy;
+        var yarp = proxyOptions.Yarp;
         if (PortRouteRules.ValidateListenPort(listenPort, listener.ManagementPort, yarp) is { } portError)
             return AppError.Validation(portError);
         if (await PortRouteRules.TakenByAsync(db, listenPort, exceptRouteId: null, ct) is { } clash)
@@ -254,7 +255,7 @@ public sealed class CreateRoute(
         // The certificate for a port route comes from the internal CA and is issued for the LAN names,
         // nothing else — so with none configured there is no name a browser could be pointed at that the
         // certificate would answer for, and the route would come up permanently untrusted.
-        if (!PortRouteRules.HasLanNames(yarp))
+        if (!PortRouteRules.HasLanNames(proxyOptions.PortRoutes))
             return AppError.Validation(PortRouteRules.NoLanNames);
 
         if (!await db.Stacks.AnyAsync(s => s.Id == command.StackId, ct))

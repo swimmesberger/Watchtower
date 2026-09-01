@@ -47,7 +47,7 @@ public sealed class UpdateProxyConfig(
         string? YarpAcmeEabKeyId = null,
         string? YarpAcmeEabHmacKey = null,
         bool? YarpRedirectHttpToHttps = null,
-        string? YarpLanNames = null,
+        string? PortRoutesLanNames = null,
         string? CloudflareAccountId = null,
         string? CloudflareZoneId = null,
         string? CloudflareApiToken = null,
@@ -81,6 +81,7 @@ public sealed class UpdateProxyConfig(
         var proxy = options.CurrentValue.Proxy;
         var cf = proxy.Cloudflare;
         var yarp = proxy.Yarp;
+        var portRoutes = proxy.PortRoutes;
 
         // Effective in-process-proxy values after this update: supplied value, else what is configured.
         var acmeDirectoryUrl = Coalesce(command.YarpAcmeDirectoryUrl, yarp.AcmeDirectoryUrl) ?? "";
@@ -88,7 +89,7 @@ public sealed class UpdateProxyConfig(
         var acmeEabKeyId = Coalesce(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId);
         var acmeEabHmacKey = Coalesce(command.YarpAcmeEabHmacKey, yarp.AcmeEabHmacKey);
         var redirectHttpToHttps = command.YarpRedirectHttpToHttps ?? yarp.RedirectHttpToHttps;
-        var lanNames = Coalesce(command.YarpLanNames, yarp.LanNames) ?? "";
+        var lanNames = Coalesce(command.PortRoutesLanNames, portRoutes.LanNames) ?? "";
         var httpPort = command.YarpHttpPort ?? yarp.HttpPort;
         var httpsPort = command.YarpHttpsPort ?? yarp.HttpsPort;
 
@@ -130,10 +131,11 @@ public sealed class UpdateProxyConfig(
             && ValidateAcmeEab(acmeEabKeyId, acmeEabHmacKey) is { } eabError)
             return AppError.Validation(eabError);
 
-        // Same rule as the ports: checked when supplied, and when this save switches the in-process
-        // provider on, because that is the moment the internal CA starts issuing for these names. Empty
-        // is valid and means the internal CA is unused — a deployment with no LAN addresses to serve.
-        if ((command.YarpLanNames is not null || enablingYarp)
+        // Same rule as the ports, one gate wider: checked when supplied, and when this save switches the
+        // proxy on under *any* provider, because that is the moment the internal CA starts issuing for
+        // these names — port routes are served alongside Caddy and Cloudflare too (ADR-0033 addendum).
+        // Empty is valid and means the internal CA is unused: a deployment with no LAN addresses to serve.
+        if ((command.PortRoutesLanNames is not null || command.Enabled)
             && !InternalCaNames.TryParseLanNames(lanNames, out _, out _, out var lanReason))
             return AppError.Validation(
                 $"{lanReason} List the host names and IP addresses this deployment is reached on, "
@@ -182,7 +184,7 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId, Changed(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId));
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey is not null);
         Check(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps != yarp.RedirectHttpToHttps);
-        Check(WatchtowerSettingPaths.ProxyYarpLanNames, Changed(command.YarpLanNames, yarp.LanNames));
+        Check(WatchtowerSettingPaths.ProxyPortRoutesLanNames, Changed(command.PortRoutesLanNames, portRoutes.LanNames));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccountId, Changed(command.CloudflareAccountId, cf.AccountId));
         Check(WatchtowerSettingPaths.ProxyCloudflareZoneId, Changed(command.CloudflareZoneId, cf.ZoneId));
         Check(WatchtowerSettingPaths.ProxyCloudflareApiToken, command.CloudflareApiToken is not null);
@@ -249,8 +251,9 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey.Trim(), ct);
         if (command.YarpRedirectHttpToHttps is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps ? "true" : "false", ct);
-        if (command.YarpLanNames is not null)
-            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpLanNames, command.YarpLanNames.Trim(), ct);
+        if (command.PortRoutesLanNames is not null)
+            await SetUnlessPinnedAsync(
+                WatchtowerSettingPaths.ProxyPortRoutesLanNames, command.PortRoutesLanNames.Trim(), ct);
         if (command.CloudflareAccountId is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccountId, command.CloudflareAccountId.Trim(), ct);
         if (command.CloudflareZoneId is not null)
@@ -293,12 +296,13 @@ public sealed class UpdateProxyConfig(
                 // the ingress ports, because changing one rebinds a listener facing the internet.
                 ProxyProviderNames.Yarp =>
                     $" · acme {AcmeHost(acmeDirectoryUrl)}"
-                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}"
-                    // Named because they decide what the internal CA issues for, and a name added or
-                    // removed here changes which devices can reach this deployment over TLS.
-                    + $" · lan names {(lanNames.Length > 0 ? lanNames : "none")}",
+                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}",
                 _ => $" · image {image}",
             })
+            // Outside the provider switch since the ADR-0033 addendum: the LAN names decide what the
+            // internal CA issues for under every provider, and a name added or removed here changes which
+            // devices can reach this deployment's port routes over TLS.
+            + $" · lan names {(lanNames.Length > 0 ? lanNames : "none")}"
             + (secretsUpdated.Count > 0 ? $" · secrets updated: {string.Join(", ", secretsUpdated)}" : ""),
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
@@ -317,8 +321,8 @@ public sealed class UpdateProxyConfig(
                 AcmeEabKeyId = string.IsNullOrWhiteSpace(acmeEabKeyId) ? null : acmeEabKeyId,
                 AcmeEabHmacKey = string.IsNullOrWhiteSpace(acmeEabHmacKey) ? null : acmeEabHmacKey,
                 RedirectHttpToHttps = redirectHttpToHttps,
-                LanNames = lanNames,
             },
+            PortRoutes = portRoutes with { LanNames = lanNames },
             Cloudflare = cf with {
                 AccountId = accountId,
                 ZoneId = zoneId,

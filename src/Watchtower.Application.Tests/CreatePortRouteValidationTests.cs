@@ -450,7 +450,7 @@ public sealed class CreatePortRouteValidationTests {
     [InlineData("")]
     [InlineData("   ")]
     public async Task APortRouteWithNoLanNamesConfigured_IsRefused(string lanNames) {
-        using var host = AuthTestHost.Start(WithRouteHandlers, ("Watchtower:Proxy:Yarp:LanNames", lanNames));
+        using var host = AuthTestHost.Start(WithRouteHandlers, ("Watchtower:Proxy:PortRoutes:LanNames", lanNames));
         var stackId = await host.AddStackAsync("media");
 
         var result = await CreateAsync(host, PortCommand(stackId, 9001));
@@ -847,7 +847,7 @@ public sealed class CreatePortRouteValidationTests {
 
     /// <summary>A host with LAN names configured — the precondition for creating a port route at all.</summary>
     private static AuthTestHost LanHost(params (string Key, string? Value)[] settings) =>
-        AuthTestHost.Start(WithRouteHandlers, [("Watchtower:Proxy:Yarp:LanNames", LanNames), .. settings]);
+        AuthTestHost.Start(WithRouteHandlers, [("Watchtower:Proxy:PortRoutes:LanNames", LanNames), .. settings]);
 
     private static CreateRoute.Command PortCommand(int stackId, int listenPort) =>
         new(StackId: stackId, Domain: null, ServiceName: "web", ContainerPort: 8080, TlsEnabled: true,

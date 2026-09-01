@@ -22,6 +22,7 @@ using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.InternalCa;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
@@ -216,10 +217,19 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddHostedService(sp => sp.GetRequiredService<CertificateManager>());
         services.AddSingleton<YarpProxyProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<YarpProxyProvider>());
+        // The port-bound routes (ADR-0033 and its addendum). Not a provider and not selected by
+        // Proxy:Provider — a port route's listener is on Watchtower's own container whatever terminates
+        // the public domains — so it is registered alongside the three providers rather than among them,
+        // and ProxyProviderRouter drives it in addition to whichever one is selected.
+        services.AddSingleton<PortRoutePlane>();
+        services.AddHostedService(sp => sp.GetRequiredService<PortRoutePlane>());
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
         // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0022). Scoped because it
         // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.
         services.AddScoped<ProxyProviderMigration>();
+        // The port-route settings' rename out of the Proxy:Yarp namespace (ADR-0033 addendum). Scoped for
+        // the settings manager and run from the same place, immediately after the provider migration.
+        services.AddScoped<PortRouteSettingsMigration>();
         // The other one-time upgrade step: a configured Auth:Host becomes the system realm's Watchtower
         // route (ADR-0023). Scoped and run from the same place, and after the migration — which is what
         // converts the realms' own stored auth hosts.

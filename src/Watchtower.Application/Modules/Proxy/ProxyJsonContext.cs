@@ -49,6 +49,7 @@ namespace Watchtower.Application.Modules.Proxy;
 [JsonSerializable(typeof(GetInternalCa.Response), TypeInfoPropertyName = "GetInternalCaResponse")]
 [JsonSerializable(typeof(ProxyConfigDto))]
 [JsonSerializable(typeof(ProxyYarpConfigDto))]
+[JsonSerializable(typeof(ProxyPortRoutesConfigDto))]
 [JsonSerializable(typeof(ProxyCloudflareConfigDto))]
 [JsonSerializable(typeof(GetProxyConfig.Query), TypeInfoPropertyName = "GetProxyConfigQuery")]
 [JsonSerializable(typeof(GetProxyConfig.Response), TypeInfoPropertyName = "GetProxyConfigResponse")]

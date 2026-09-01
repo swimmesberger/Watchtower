@@ -951,14 +951,14 @@ public sealed class SelfPortPublishTests {
     private static async Task SetManagedPortsAsync(AuthTestHost host, string value) {
         await using var scope = host.Services.CreateAsyncScope();
         await scope.ServiceProvider.GetRequiredService<ISettingsManager>().SetStringAsync(
-            WatchtowerSettingPaths.ProxyYarpManagedHostPorts, value, SettingsScope.Global,
+            WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts, value, SettingsScope.Global,
             expectedVersion: null, Ct);
     }
 
     private static async Task<string?> ManagedPortsAsync(AuthTestHost host) {
         await using var scope = host.Services.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<ISettingsManager>()
-            .GetStringAsync(WatchtowerSettingPaths.ProxyYarpManagedHostPorts, SettingsScope.Global, Ct);
+            .GetStringAsync(WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts, SettingsScope.Global, Ct);
     }
 
     /// <summary>

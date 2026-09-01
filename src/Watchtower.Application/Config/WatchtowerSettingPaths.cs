@@ -83,20 +83,34 @@ public static class WatchtowerSettingPaths {
     public const string ProxyYarpAcmeEabKeyId = "Watchtower:Proxy:Yarp:AcmeEabKeyId";
     public const string ProxyYarpAcmeEabHmacKey = "Watchtower:Proxy:Yarp:AcmeEabHmacKey";
     public const string ProxyYarpRedirectHttpToHttps = "Watchtower:Proxy:Yarp:RedirectHttpToHttps";
-    public const string ProxyYarpLanNames = "Watchtower:Proxy:Yarp:LanNames";
+
+    // ── Port routes (ADR-0033, and the addendum that took `Yarp` out of these names) ──
+    //
+    // A port route is a listener on Watchtower's own container, so it has nothing to do with which
+    // provider terminates the public domains. These three settings used to live under `Proxy:Yarp:`,
+    // which said the opposite; `Services.PortRoutes.PortRouteSettingsMigration` copies a stored value
+    // from the old name to the new one, once, on the first start after the upgrade.
+
+    /// <summary>
+    /// The addresses this deployment answers on from the local network — the subject alternative names
+    /// of the one certificate the internal CA issues for the port routes. A user setting, edited in the
+    /// "LAN port routes" section of the proxy card and pinnable as
+    /// <c>WATCHTOWER__PROXY__PORTROUTES__LANNAMES</c>.
+    /// </summary>
+    public const string ProxyPortRoutesLanNames = "Watchtower:Proxy:PortRoutes:LanNames";
 
     /// <summary>
     /// Internal marker: the listen ports of the port-bound routes (ADR-0033), written by
-    /// <see cref="Services.Yarp.YarpProxyProvider.ApplyAsync"/> from the projected route table and read
+    /// <see cref="Services.PortRoutes.PortRoutePlane.ApplyAsync"/> from the projected route table and read
     /// back by <see cref="Services.Yarp.ProxyIngressKestrelConfiguration"/> to emit one Kestrel endpoint
     /// per port. Not a user setting — never offered in the UI and never listed among the proxy card's
     /// paths, so it is never offered as a pin either. Setting
-    /// <c>WATCHTOWER__PROXY__YARP__PORTROUTEPORTS</c> in the environment <em>would</em> take effect, since
+    /// <c>WATCHTOWER__PROXY__PORTROUTES__PORTS</c> in the environment <em>would</em> take effect, since
     /// environment configuration layers above the settings store (ADR-0014) — and it would break the
     /// feature: the pinned value would become the permanent set of listeners, and every port route created
     /// or deleted afterwards would silently never gain or lose one. Do not pin it.
     /// </summary>
-    public const string ProxyYarpPortRoutePorts = "Watchtower:Proxy:Yarp:PortRoutePorts";
+    public const string ProxyPortRoutesPorts = "Watchtower:Proxy:PortRoutes:Ports";
 
     /// <summary>
     /// Internal marker: the host ports <see cref="Services.SelfPortPublishService"/> itself published on
@@ -117,7 +131,17 @@ public static class WatchtowerSettingPaths {
     /// <c>managed ∩ bound</c> prune on every start drops it once the release really lands.
     /// </para>
     /// </summary>
-    public const string ProxyYarpManagedHostPorts = "Watchtower:Proxy:Yarp:ManagedHostPorts";
+    public const string ProxyPortRoutesManagedHostPorts = "Watchtower:Proxy:PortRoutes:ManagedHostPorts";
+
+    /// <summary>
+    /// Internal marker: <see cref="Services.PortRoutes.PortRouteSettingsMigration"/> has already copied
+    /// the three port-route settings out of the <c>Proxy:Yarp:</c> namespace they were named in before
+    /// the ADR-0033 addendum. Not a user setting — never offered in the UI, never listed among the proxy
+    /// card's paths, and deliberately not env-pinnable. It is what makes the copy one-shot: the old rows
+    /// are left in place, so without a sentinel every restart would re-copy them and undo whatever has
+    /// happened to the new ones since.
+    /// </summary>
+    public const string ProxyPortRoutesMigrated = "Watchtower:Proxy:PortRoutes:Migrated";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";
     public const string ProxyCloudflareZoneId = "Watchtower:Proxy:Cloudflare:ZoneId";
     public const string ProxyCloudflareApiToken = "Watchtower:Proxy:Cloudflare:ApiToken";
