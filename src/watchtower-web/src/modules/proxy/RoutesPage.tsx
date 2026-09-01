@@ -389,12 +389,13 @@ export function RoutesPage() {
   const stalePorts = portsKnown ? (portBindings?.pendingUnpublish ?? []) : []
   const firstPending = pendingPorts[0]
   const hasPendingPorts = pendingPorts.length > 0 || stalePorts.length > 0
-  // The same restart does both, so the label names whichever half is actually pending — "publish" over a
-  // banner that is only going to release a leftover port would promise something it does not do.
-  const publishActionLabel =
-    pendingPorts.length === 0
-      ? 'Release ports & restart Watchtower (~5 s)'
-      : 'Publish ports & restart Watchtower (~5 s)'
+  // The same restart does both, so every piece of copy about it names whichever half is actually
+  // pending — from the banner's button through to the confirmation it opens. "Publish" in front of a
+  // recreate that is only going to give a leftover port back describes the opposite of what happens.
+  const releaseOnly = pendingPorts.length === 0
+  const publishActionLabel = releaseOnly
+    ? 'Release ports & restart Watchtower (~5 s)'
+    : 'Publish ports & restart Watchtower (~5 s)'
   // The other state worth a word, and a different one: there are port routes and whether their ports are
   // reachable is simply not knowable from here. Said as that, without a verdict on the routes.
   const portsUnknown = portBindings != null && !portsKnown && portRoutes.length > 0
@@ -1461,16 +1462,24 @@ export function RoutesPage() {
         onOpenChange={(open) => {
           if (!open && !publishPorts.isPending) setConfirmPublish(false)
         }}
-        title="Restart Watchtower to publish these ports?"
-        description="Watchtower recreates its own container with the ports added. It — this page included — is unreachable for a few seconds, then comes back with the routes working. A deploy or backup running right now is cancelled by the restart."
-        extra={
-          <Banner tone="info" title="Compose-managed installs">
-            A later <span className="font-mono">docker compose up -d</span> rebuilds the container from
-            your compose file and drops the ports added here. Mirror them into its{' '}
-            <span className="font-mono">ports:</span> list to keep them.
-          </Banner>
+        title={releaseOnly ? 'Restart Watchtower to release these ports?' : 'Restart Watchtower to publish these ports?'}
+        description={
+          releaseOnly
+            ? 'Watchtower recreates its own container without the ports it published for routes that are gone. It — this page included — is unreachable for a few seconds. A deploy or backup running right now is cancelled by the restart.'
+            : 'Watchtower recreates its own container with the ports added. It — this page included — is unreachable for a few seconds, then comes back with the routes working. A deploy or backup running right now is cancelled by the restart.'
         }
-        confirmLabel="Publish & restart"
+        extra={
+          // Only where something is being added: a release has nothing for a compose file to lose, and
+          // the drift warning would be advice about the opposite of what is about to happen.
+          releaseOnly ? null : (
+            <Banner tone="info" title="Compose-managed installs">
+              A later <span className="font-mono">docker compose up -d</span> rebuilds the container from
+              your compose file and drops the ports added here. Mirror them into its{' '}
+              <span className="font-mono">ports:</span> list to keep them.
+            </Banner>
+          )
+        }
+        confirmLabel={releaseOnly ? 'Release & restart' : 'Publish & restart'}
         loading={publishPorts.isPending}
         onConfirm={() => publishPorts.mutate()}
       />
