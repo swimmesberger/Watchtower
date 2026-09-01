@@ -60,6 +60,45 @@ public sealed class PortRouteSettingsMigration(
     ];
 
     /// <summary>
+    /// The boot-time half of the rename: reads a snapshot of the stored Global settings and adds
+    /// <c>(new key, value of the old key)</c> for each pair whose new key is not in it. Pure — no
+    /// database, no logger, no ordering assumptions — and idempotent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="RunAsync"/> is the durable half and it runs too late for one boot. The Kestrel
+    /// projection is built before the host exists and the certificate ensure runs in
+    /// <c>WatchtowerStateInitializer</c>, and both read the synchronous boot snapshot
+    /// (<c>RuntimeSettingsLayering.LoadStoredGlobalSettings</c>) — which the migration has not written to
+    /// yet, because it runs later in <c>InitializeDatabaseAsync</c>. Without this, the first start after
+    /// the upgrade would read <c>Proxy:PortRoutes:Ports</c> and <c>:LanNames</c> as unset: no
+    /// <c>ProxyPort{n}</c> endpoint at the initial bind — which also silently downgrades a bind conflict
+    /// from fatal-at-startup to stale-after-reload — and every port route stamped
+    /// <c>Error: no LAN names</c> until the plane's reconcile corrected it a moment later.
+    /// </para>
+    /// <para>
+    /// An alias, not a write: it shadows nothing an operator has stated. A new key already in the
+    /// snapshot wins (the migration has run, or somebody saved the new field), and the environment
+    /// provider still sits above the whole snapshot (ADR-0014), so a pin on the new name wins over both.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<KeyValuePair<string, string?>> WithLegacyAliases(
+        IEnumerable<KeyValuePair<string, string?>> storedSettings) {
+        ArgumentNullException.ThrowIfNull(storedSettings);
+        var snapshot = storedSettings.ToList();
+        var byKey = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        // Last wins, which is the reading a configuration provider gives the same list.
+        foreach (var (key, value) in snapshot) byKey[key] = value;
+
+        foreach (var (old, renamed) in Renames) {
+            if (byKey.ContainsKey(renamed)) continue;
+            if (!byKey.TryGetValue(old, out var value)) continue;
+            snapshot.Add(new KeyValuePair<string, string?>(renamed, value));
+        }
+        return snapshot;
+    }
+
+    /// <summary>
     /// Warns about any old name still pinned in the environment, then — once ever — copies each stored
     /// old value onto its new path. Returns the paths it wrote, empty when there was nothing to do.
     /// </summary>

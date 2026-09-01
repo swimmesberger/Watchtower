@@ -103,10 +103,15 @@ builder.Services.AddCors(o => o.AddPolicy(DevCorsPolicy, p =>
 // to the pre-DI reads below (Auth:Enabled), which run before the live provider loads.
 // Ordered before AddWatchtowerServices so those same reads inside it see the stored values too.
 builder.AddElarionSettingsConfiguration();
+// WithLegacyAliases is the boot-time half of the ADR-0033 addendum's rename: the durable copy runs in
+// InitializeDatabaseAsync, which is after this snapshot is read and after Kestrel's projection is built,
+// so on the first start after the upgrade the port-route settings would read as unset. It shadows
+// nothing — a value already stored under the new name wins, and env still wins over the whole snapshot.
 RuntimeSettingsLayering.MakeEnvironmentWin(
     builder.Configuration,
-    RuntimeSettingsLayering.LoadStoredGlobalSettings(
-        WatchtowerConnectionString.Find(builder.Configuration)));
+    PortRouteSettingsMigration.WithLegacyAliases(
+        RuntimeSettingsLayering.LoadStoredGlobalSettings(
+            WatchtowerConnectionString.Find(builder.Configuration))));
 
 // Application infrastructure: strongly-typed options, the PostgreSQL EF Core context, the Docker/
 // compose/git service layer, the deploy engine, and the background update checkers.
