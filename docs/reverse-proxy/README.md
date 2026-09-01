@@ -226,7 +226,7 @@ it added itself, and only when the route that asked for them is gone.
 
 ### 4. Download and import the root certificate
 
-The **Internal CA** block on the Routes page has a **Download root** button; **Settings → Reverse proxy**
+The **Internal CA** card on the Routes page has a **Download root** button; **Settings → Reverse proxy**
 has the same thing as a *Download the internal CA root* link under the LAN names. Both fetch
 `/api/proxy/internal-ca.crt` (PEM; add `?format=der` for the binary form some import dialogs insist on),
 and neither appears until the CA exists — which is the first port route, not the first LAN name. Then
@@ -257,6 +257,17 @@ anonymous URL to point a device at.
 
 The root is valid for ten years and is never rotated automatically, so this is genuinely once per
 device. It carries no secret: the signing key stays in the database and is never part of the download.
+
+**If the browser still does not trust it**, the error message tells you which of the two causes it is.
+
+- *"Not trusted" / "unknown authority"* — the root has not been imported on this device, or was imported
+  without the trust flag (macOS and Firefox both need that second step). Download it again and re-check
+  the table above.
+- *"The name does not match" / `NET::ERR_CERT_COMMON_NAME_INVALID`* — the address you typed is not among
+  the **LAN names**. A host name and its IP are two separate entries: listing `nas.lan` does not make
+  `https://192.168.1.10:9001` work. Add it under **Settings → Reverse proxy → LAN port routes**; the
+  certificate is reissued as soon as the setting is saved, and no device has to re-import anything,
+  because the root did not change.
 
 ### 5. Browse it
 
