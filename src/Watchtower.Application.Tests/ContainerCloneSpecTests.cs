@@ -203,6 +203,51 @@ public sealed class ContainerCloneSpecTests {
         Assert.True(Exposed(spec).ContainsKey("9001/tcp"));
     }
 
+    /// <summary>
+    /// Same numbers, different mapping. <c>127.0.0.1:9001:9001</c> reaches only the host itself, which is
+    /// a deliberate choice an operator made and not the all-interfaces binding Watchtower writes — so the
+    /// host port alone cannot decide whose entry it is, and matching on it would take away a binding
+    /// Watchtower never made.
+    /// </summary>
+    [Fact]
+    public void UnpublishingAPort_LeavesAnInterfaceQualifiedMappingOfTheSamePort() {
+        var inspect = Inspect(i => {
+            i["HostConfig"]!["PortBindings"] = new JsonObject {
+                ["9001/tcp"] = new JsonArray(
+                    new JsonObject { ["HostIp"] = "127.0.0.1", ["HostPort"] = "9001" },
+                    // Watchtower's own, written without a HostIp at all.
+                    new JsonObject { ["HostPort"] = "9001" },
+                    // And the daemon's spelling of the same thing, which is equally ours to remove.
+                    new JsonObject { ["HostIp"] = "0.0.0.0", ["HostPort"] = "9001" }),
+            };
+            i["Config"]!["ExposedPorts"] = new JsonObject { ["9001/tcp"] = new JsonObject() };
+        });
+
+        var spec = ContainerCloneSpec.FromInspect(
+            inspect, "img:v2", new ContainerCloneSpec.PortAmendments([], [9001]));
+
+        var entry = Assert.Single(Bindings(spec)["9001/tcp"]!.AsArray());
+        Assert.Equal("127.0.0.1", entry!["HostIp"]!.GetValue<string>());
+        Assert.True(Exposed(spec).ContainsKey("9001/tcp"));
+    }
+
+    /// <summary>
+    /// An array element Docker would never have written is not a reason to throw in the middle of a
+    /// recreate — the stop has already happened, and there is no rollback for an exception here.
+    /// </summary>
+    [Fact]
+    public void UnpublishingPastAMalformedEntry_DoesNotThrow() {
+        var inspect = Inspect(i => i["HostConfig"]!["PortBindings"] = new JsonObject {
+            ["9001/tcp"] = new JsonArray("not an object", new JsonObject { ["HostPort"] = "9001" }),
+        });
+
+        var spec = ContainerCloneSpec.FromInspect(
+            inspect, "img:v2", new ContainerCloneSpec.PortAmendments([], [9001]));
+
+        // Ours went; the element nothing can read stays, and the key with it.
+        Assert.Equal("not an object", Assert.Single(Bindings(spec)["9001/tcp"]!.AsArray())!.GetValue<string>());
+    }
+
     /// <summary>And when the last entry goes, so does the key — and its ExposedPorts twin with it.</summary>
     [Fact]
     public void UnpublishingTheLastMapping_RemovesTheKeyAndTheExposedPort() {
