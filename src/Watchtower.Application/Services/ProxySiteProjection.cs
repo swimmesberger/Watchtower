@@ -32,9 +32,10 @@ public sealed record ProxySite(
     bool Local = false);
 
 /// <summary>
-/// One port-bound route the in-process proxy serves (ADR-0033): a dedicated TLS
-/// <paramref name="ListenPort"/> on this host forwarded to a stack service, with no hostname anywhere in
-/// it. Deliberately a separate shape from <see cref="ProxySite"/> rather than one with a nullable
+/// One port-bound route (ADR-0033): a dedicated TLS <paramref name="ListenPort"/> on Watchtower's own
+/// container forwarded to a stack service, with no hostname anywhere in it. Served by
+/// <see cref="PortRoutes.PortRoutePlane"/> under every provider (ADR-0033 addendum).
+/// Deliberately a separate shape from <see cref="ProxySite"/> rather than one with a nullable
 /// <c>Domain</c>: every field a site carries for a host — on-demand TLS, the access mode, the identity
 /// headers — is meaningless here, and the providers that build host-shaped configuration must not have to
 /// remember to skip these rows.
@@ -135,8 +136,9 @@ public static class ProxySiteProjection {
     }
 
     /// <summary>
-    /// Projects the port-bound routes (ADR-0033) onto the listeners the in-process proxy serves. The
-    /// counterpart to <see cref="Project"/> over the same table, and pure for the same reason.
+    /// Projects the port-bound routes (ADR-0033) onto the listeners Watchtower binds on its own
+    /// container. The counterpart to <see cref="Project"/> over the same table, and pure for the same
+    /// reason.
     /// </summary>
     /// <remarks>
     /// There is no access-control argument here and no <c>Protected</c> flag: <c>ck_routes_binding</c>

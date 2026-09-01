@@ -82,6 +82,20 @@ Retention is bounded (newest 2000 events kept). The trail is admin-only and surv
 the routes/stacks it mentions. The same `audit.listEvents` surface is category-filterable, so future
 planes (deploys, settings changes) land in the same log.
 
+## LAN port routes work alongside the tunnel
+
+A **port route** — a stack service on a dedicated TLS port of Watchtower's own, with a certificate from
+Watchtower's own CA — is not this provider's business in either direction, and is not refused by it. Its
+listener is inside the Watchtower container, so `app.example.com` can be served through the tunnel while
+`https://nas.lan:9001` is served on the LAN at the same time, from the same instance.
+
+What joins which network: **cloudflared** joins the ingress network of every stack with a *domain* route,
+and **Watchtower's own container** joins the ingress network of every stack with a *port* route. A stack
+with both gets both, on the one network it already had.
+
+The full walkthrough — LAN names, publishing the host port, importing the root — is in
+[README.md → Port routes](README.md#port-routes-https-on-a-lan-with-any-provider).
+
 ## Limitations
 
 - **Watchtower routes are not served by this provider.** A route whose target is Watchtower itself
