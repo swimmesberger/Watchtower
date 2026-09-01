@@ -1,8 +1,53 @@
 using System.Net;
 using System.Text;
+using System.Text.Json.Nodes;
 using Watchtower.Application.Services;
 
 namespace Watchtower.Application.Tests;
+
+/// <summary>
+/// A container as <c>GET /containers/json</c> reports it: enough of the shape for
+/// <see cref="DockerContainerInfo"/> to deserialize — its required members included — and nothing else.
+/// </summary>
+/// <param name="PublicPort">The host port it publishes; null for a port exposed but not published.</param>
+/// <param name="Protocol">
+/// <c>tcp</c> or <c>udp</c>; an empty string stands in for the daemon leaving the field off, which
+/// readers take as tcp.
+/// </param>
+/// <param name="State">Any state at all — a stopped container still holds its declared bindings.</param>
+internal sealed record ListedContainer(
+    string Id,
+    string Name,
+    int? PublicPort,
+    int PrivatePort = 8096,
+    string Protocol = "tcp",
+    string State = "running",
+    string? Project = null,
+    string? Service = null) {
+    public JsonObject ToJson() {
+        var labels = new JsonObject();
+        if (Project is not null) labels["com.docker.compose.project"] = Project;
+        if (Service is not null) labels["com.docker.compose.service"] = Service;
+        var port = new JsonObject {
+            ["IP"] = "0.0.0.0",
+            ["PrivatePort"] = PrivatePort,
+            ["Type"] = Protocol,
+        };
+        if (PublicPort is { } published) port["PublicPort"] = published;
+        return new JsonObject {
+            ["Id"] = Id,
+            ["Names"] = new JsonArray($"/{Name}"),
+            ["Image"] = "registry.invalid/app:latest",
+            ["State"] = State,
+            ["Status"] = State,
+            ["Labels"] = labels,
+            ["Ports"] = new JsonArray(port),
+        };
+    }
+
+    public static string Body(params ListedContainer[] containers) =>
+        new JsonArray([.. containers.Select(c => (JsonNode)c.ToJson())]).ToJsonString();
+}
 
 /// <summary>
 /// Records the paths it is asked for and answers each with a body the Docker DTOs can parse.
@@ -215,6 +260,32 @@ internal sealed class DockerClientEstate : IDisposable {
         };
         var client = new DockerEngineClient("1.43", defaultClient, longRunningClient, pruneTimeout);
         return new DockerClientEstate(client, defaultHandler, longRunningHandler, defaultClient, longRunningClient);
+    }
+
+    /// <summary>
+    /// Makes <c>GET /containers/json</c> answer with these containers, leaving whatever else the
+    /// double was already answering — a self-inspect, most usefully — where it was.
+    /// </summary>
+    public void ListsContainers(params ListedContainer[] containers) =>
+        AnswerContainerList(_ => new HttpResponseMessage(HttpStatusCode.OK) {
+            Content = new StringContent(
+                ListedContainer.Body(containers), Encoding.UTF8, "application/json"),
+        });
+
+    /// <summary>A daemon that cannot answer the container list — the fail-open case.</summary>
+    public void FailsTheContainerList() =>
+        AnswerContainerList(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError) {
+            Content = new StringContent("""{"message":"daemon is not running"}""", Encoding.UTF8, "application/json"),
+        });
+
+    private void AnswerContainerList(Func<HttpRequestMessage, HttpResponseMessage> answer) {
+        // Chained rather than assigned, so a double that is already answering a self-inspect keeps
+        // doing so; the two paths are distinct (`/containers/{id}/json` is not `/containers/json`).
+        var previous = Default.Responder;
+        Default.Responder = request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/containers/json", StringComparison.Ordinal)
+                ? answer(request)
+                : previous?.Invoke(request);
     }
 
     public void Dispose() {

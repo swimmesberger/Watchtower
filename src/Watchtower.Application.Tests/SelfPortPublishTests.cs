@@ -318,6 +318,101 @@ public sealed class SelfPortPublishTests {
     }
 
     /// <summary>
+    /// A port another container already publishes cannot be published here as well. Refused before the
+    /// stage claim, because the alternative is the coordinator recreating this container, the start
+    /// failing on the bind, the rollback putting the old container back, and the operator being told
+    /// only that the port is "not published" — with nothing naming what holds it.
+    /// </summary>
+    [Fact]
+    public async Task ApplyingAPortAnotherContainerHolds_IsRefusedBeforeAnythingIsClaimed() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        estate.ListsContainers(new ListedContainer(
+            "9e" + new string('0', 30), "media-jellyfin-1", PublicPort: 9001,
+            Project: "media", Service: "jellyfin"));
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await ApplyAsync(host);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            "Host port 9001 is already published by container media-jellyfin-1 (stack media, service "
+            + "jellyfin). A port route needs that port for Watchtower's own listener — remove that "
+            + "ports: entry from the stack or choose another port.",
+            result.Error.Message);
+        // Nothing was started, nothing was claimed, and the stage the other recreate path reads is
+        // untouched — a refusal that left "restarting" behind would block that path for this process's life.
+        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
+        Assert.Equal("idle", (await RuntimeAsync(host)).ApplyStage);
+        Assert.True(string.IsNullOrEmpty(await ManagedPortsAsync(host)));
+    }
+
+    /// <summary>
+    /// And the page says so per row before anyone presses the button, which is where an operator is
+    /// actually looking when a port route does not answer.
+    /// </summary>
+    [Fact]
+    public async Task TheStatus_NamesTheContainerHoldingAnUnpublishedPort() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        estate.ListsContainers(new ListedContainer(
+            "9e" + new string('0', 30), "media-jellyfin-1", PublicPort: 9001,
+            Project: "media", Service: "jellyfin"));
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var status = await StatusAsync(host);
+
+        var row = Assert.Single(status.Ports);
+        Assert.False(row.Bound);
+        Assert.NotNull(row.BlockedBy);
+        Assert.Contains("media-jellyfin-1", row.BlockedBy, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A port that is already published here is not blocked by anything, and asking Docker about it
+    /// would be a container list per poll for a question with no consequence.
+    /// </summary>
+    [Fact]
+    public async Task TheStatusOfAPublishedPort_ReportsNoBlockerAndAsksNothing() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting(published: [9001]);
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var status = await StatusAsync(host);
+
+        var row = Assert.Single(status.Ports);
+        Assert.True(row.Bound);
+        Assert.Null(row.BlockedBy);
+        Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/json"));
+    }
+
+    /// <summary>
+    /// The guard is fail-open: a daemon that cannot answer the container list refuses nothing, so an
+    /// apply on a bare-process install — or through a hiccup — goes ahead as it did before.
+    /// </summary>
+    [Fact]
+    public async Task ApplyingWhenTheContainerListCannotBeRead_GoesAhead() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        estate.FailsTheContainerList();
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await ApplyAsync(host);
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.True(result.Value.Restarting);
+        await WaitForCoordinatorAsync(estate);
+    }
+
+    /// <summary>
     /// The stage the other path's guard reads has to be true by the time the accepted call returns.
     /// Writing it from inside the fire-and-forget task instead would publish it only after that task's
     /// first await — a window in which a second apply reads "idle", passes the guard, and spawns the
