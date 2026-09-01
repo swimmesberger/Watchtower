@@ -503,7 +503,7 @@ republish it on the host side to match.
 **In the ordinary containerised deployment neither of those happens.** Kestrel binds 8443 *inside* the
 container, and another container's published host port cannot reach into that namespace. What is
 contended there is the **daemon's host-port allocation**, and it fails one step earlier: the container
-asked to start second is never created. So publishing a port route's host port reports
+asked to start second is created but never starts. So publishing a port route's host port reports
 `Bind for 0.0.0.0:9001 failed: port is already allocated`, the recreate rolls back, and the route says
 *host port not published* again; a stack service that wants a port Watchtower already holds fails its
 own `compose up` with the same line. Neither message mentions the proxy.
