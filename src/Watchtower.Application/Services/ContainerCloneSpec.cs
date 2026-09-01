@@ -38,8 +38,10 @@ public sealed record ContainerCloneSpec {
     /// nothing derives.
     /// </param>
     /// <param name="Unpublish">
-    /// Ports to stop publishing. A port named in both wins as a publish — the caller asking for both at
-    /// once is asking for a state, and the state it named last is "bound".
+    /// Ports to stop publishing — and only the mapping Watchtower would have made for them, host port
+    /// equal to container port. Another host port mapped onto the same container port stays. A port named
+    /// in both lists wins as a publish: the caller asking for both at once is asking for a state, and the
+    /// state it named last is "bound".
     /// </param>
     public sealed record PortAmendments(IReadOnlyList<int> Publish, IReadOnlyList<int> Unpublish) {
         /// <summary>Nothing to change — the shape every non-port recreate passes.</summary>
@@ -110,6 +112,12 @@ public sealed record ContainerCloneSpec {
     /// first two are ordinary (a container with no published ports), and the third is not valid Docker
     /// input in the first place — nothing that could be salvaged is being thrown away.
     /// </para>
+    /// <para>
+    /// A removal is per <em>entry</em>, not per key: <c>PortBindings["9001/tcp"]</c> is an array, and an
+    /// operator may have added a second mapping (<c>19001:9001</c>) next to the one Watchtower published.
+    /// Only the entry whose host port is the port being released goes; the key, and its
+    /// <c>ExposedPorts</c> twin, go with it only when nothing is left under them.
+    /// </para>
     /// </remarks>
     private static void ApplyPortAmendments(JsonObject body, PortAmendments ports) {
         var hostConfig = Block(body, "HostConfig");
@@ -118,8 +126,19 @@ public sealed record ContainerCloneSpec {
 
         // Removals first, and never for a port that is also being published: the caller named a state,
         // and "bound" is the one it named. Doing it in this order also makes the pair idempotent.
+        //
+        // A removal takes away the entry Watchtower published — host port equal to container port — and
+        // nothing else. One container port may carry several host mappings ("19001:9001" alongside
+        // "9001:9001"), and dropping the whole array would take away a mapping the operator declared,
+        // which is the one thing this file exists to prevent. The key and its ExposedPorts twin go only
+        // when the last entry under them has.
         foreach (var port in ports.Unpublish.Where(p => !ports.Publish.Contains(p))) {
             var key = PortKey(port);
+            if (bindings[key] is JsonArray entries) {
+                for (var i = entries.Count - 1; i >= 0; i--)
+                    if (IsHostPort(entries[i], port)) entries.RemoveAt(i);
+                if (entries.Count > 0) continue;
+            }
             bindings.Remove(key);
             exposed.Remove(key);
         }
@@ -134,6 +153,20 @@ public sealed record ContainerCloneSpec {
             exposed[key] = new JsonObject();
         }
     }
+
+    /// <summary>
+    /// Whether a <c>PortBindings</c> entry is the mapping Watchtower publishes for
+    /// <paramref name="port"/> — host port equal to container port. Docker writes the host port as a
+    /// string; a number is accepted rather than treated as somebody else's entry. An empty value
+    /// ("any free port") never matches, because it is not a mapping this ever wrote.
+    /// </summary>
+    private static bool IsHostPort(JsonNode? entry, int port) => entry?["HostPort"] switch {
+        JsonValue v when v.TryGetValue<string>(out var text) =>
+            int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            && parsed == port,
+        JsonValue v when v.TryGetValue<int>(out var number) => number == port,
+        _ => false,
+    };
 
     /// <summary>Docker's key for a TCP port. UDP is out of scope: a port route serves HTTPS.</summary>
     private static string PortKey(int port) =>

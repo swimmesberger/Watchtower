@@ -178,6 +178,41 @@ public sealed class ContainerCloneSpecTests {
         Assert.Equal("9002", HostPort(spec, 9002));
     }
 
+    /// <summary>
+    /// One container port can carry several host mappings, and only one of them is Watchtower's. Removing
+    /// the whole array would take away a binding the operator declared — the exact thing the managed set
+    /// exists to make impossible — on the say-so of a claim about a different host port.
+    /// </summary>
+    [Fact]
+    public void UnpublishingAPort_LeavesASecondMappingOfTheSameContainerPort() {
+        var inspect = Inspect(i => {
+            i["HostConfig"]!["PortBindings"] = new JsonObject {
+                ["9001/tcp"] = new JsonArray(
+                    new JsonObject { ["HostPort"] = "19001" },
+                    new JsonObject { ["HostPort"] = "9001" }),
+            };
+            i["Config"]!["ExposedPorts"] = new JsonObject { ["9001/tcp"] = new JsonObject() };
+        });
+
+        var spec = ContainerCloneSpec.FromInspect(
+            inspect, "img:v2", new ContainerCloneSpec.PortAmendments([], [9001]));
+
+        var entries = Bindings(spec)["9001/tcp"]!.AsArray();
+        Assert.Equal("19001", Assert.Single(entries)!["HostPort"]!.GetValue<string>());
+        // The container port is still offered, because something still maps onto it.
+        Assert.True(Exposed(spec).ContainsKey("9001/tcp"));
+    }
+
+    /// <summary>And when the last entry goes, so does the key — and its ExposedPorts twin with it.</summary>
+    [Fact]
+    public void UnpublishingTheLastMapping_RemovesTheKeyAndTheExposedPort() {
+        var spec = ContainerCloneSpec.FromInspect(
+            WithPublished(9001), "img:v2", new ContainerCloneSpec.PortAmendments([], [9001]));
+
+        Assert.False(Bindings(spec).ContainsKey("9001/tcp"));
+        Assert.False(Exposed(spec).ContainsKey("9001/tcp"));
+    }
+
     [Fact]
     public void PublishingAndUnpublishingDisjointPorts_DoesBoth() {
         var inspect = WithPublished(9003);
