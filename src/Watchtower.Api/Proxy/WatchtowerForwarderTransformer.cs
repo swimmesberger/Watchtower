@@ -24,11 +24,19 @@ namespace Watchtower.Api.Proxy;
 /// </list>
 /// </summary>
 /// <param name="originalHost">
-/// The host the visitor asked for, as the dispatcher normalised it — the same value that matched the route
-/// table, decided the access question and goes into <c>X-Forwarded-Host</c>. Deliberately that rather than
-/// the raw <c>Host</c> header: one name throughout is what stops a request being authorised as one host and
-/// forwarded as a slightly different spelling of it. The port is not carried across for the same reason the
-/// HTTPS redirect drops it — the listener that answered is the one the operator published.
+/// The address the visitor asked for, in the one rendering the dispatcher settled on — the same value that
+/// goes into both the upstream <c>Host</c> and <c>X-Forwarded-Host</c>. Deliberately one value rather than
+/// the raw header read twice: one name throughout is what stops a request being authorised as one host and
+/// forwarded as a slightly different spelling of it.
+/// <para>
+/// What that rendering <em>is</em> differs by the kind of route, because the address does. A domain route
+/// passes the normalised host name with no port: the route table is keyed by the name, the access decision
+/// was made against it, and the port is dropped for the same reason the HTTPS redirect drops it — the
+/// listener that answered is the one the operator published on the standard number. A port route
+/// (ADR-0033) passes <c>Host.Value</c>, port included, because its whole address <em>is</em> <c>host:port</c>
+/// — there is no table entry naming it, and an upstream told the bare name would redirect visitors to an
+/// address the deployment does not answer on.
+/// </para>
 /// </param>
 /// <param name="scheme">The scheme of the visitor's connection — <c>https</c> or <c>http</c>.</param>
 /// <param name="clientIp">The remote address, or <see langword="null"/> when there is none to state.</param>
