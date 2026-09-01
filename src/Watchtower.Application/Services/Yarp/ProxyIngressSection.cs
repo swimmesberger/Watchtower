@@ -27,39 +27,46 @@ public sealed class ProxyIngressSection {
     private readonly IConfiguration _section;
 
     /// <summary>
-    /// The last computed set, or null when it has to be computed again. Volatile because it is written by
-    /// whichever thread notices the invalidation and read by every request thread.
+    /// The last computed set together with the token that was current when it was read, or null before
+    /// the first read. Volatile because it is written by whichever thread recomputed and read by every
+    /// request thread.
     /// </summary>
-    private volatile FrozenSet<int>? _ports;
+    private volatile Reading? _reading;
+
+    /// <summary>A set and the reload token it is only valid for. One field, so the two cannot part company.</summary>
+    private sealed record Reading(IChangeToken Token, FrozenSet<int> Ports);
 
     public ProxyIngressSection(IConfiguration section) {
         ArgumentNullException.ThrowIfNull(section);
         _section = section;
-        // Held for the life of the process, like the configuration it watches — there is nothing to
-        // unsubscribe from before the host itself goes away. Invalidation only: the recompute happens on
-        // the next read, so a settings write that touches no listener costs one null assignment.
-        ChangeToken.OnChange(section.GetReloadToken, () => _ports = null);
     }
 
     /// <summary>
-    /// The ports the projection currently gives a port route a listener on. A frozen-set lookup per call
-    /// once warm, which is what lets the request path ask it on every request rather than only on a rare
-    /// disagreement — including on a deployment where a port route's row permanently names a port the
-    /// projection refuses to bind, where the answer never changes and the question is asked constantly.
+    /// The ports the projection currently gives a port route a listener on. A frozen-set lookup and one
+    /// boolean per call once warm, which is what lets the request path ask it on every request rather
+    /// than only on a rare disagreement — including on a deployment where a port route's row permanently
+    /// names a port the projection refuses to bind, where the answer never changes and the question is
+    /// asked constantly.
     /// </summary>
     /// <remarks>
-    /// The reload token is taken <em>before</em> the section is read and checked after it. The projection
-    /// assigns its data before raising that token, so a token that has not changed across the read proves
-    /// the reading is current; a reload that lands mid-read would otherwise let the older reading be
-    /// published over the invalidation and stay cached until the next one. A reading that loses that race
-    /// is returned to its own caller and simply not cached, so the next call recomputes.
+    /// The cached set carries the reload token it was read under, and every read checks it. That pairing
+    /// is what makes the cache correct without a lock. Under an invalidation callback and a bare set the
+    /// two steps could interleave: a thread that read the section before the projection assigned its new
+    /// data would still see an unchanged token, and could publish that stale reading <em>after</em> the
+    /// callback had cleared the cache — pinning ports that no longer exist until the next reload, which
+    /// on a converged deployment may never come. Here a stale entry cannot outlive its token: the very
+    /// next reader sees <c>HasChanged</c> and recomputes.
+    /// <para>
+    /// The token is still taken before the section is read and checked after it, so a reading that loses
+    /// the race is handed to its own caller and simply not cached.
+    /// </para>
     /// </remarks>
     public IReadOnlySet<int> BoundPortRoutePorts() {
-        if (_ports is { } cached) return cached;
+        if (_reading is { } cached && !cached.Token.HasChanged) return cached.Ports;
 
         var token = _section.GetReloadToken();
         var ports = PortRouteListeners.BoundPorts(_section).ToFrozenSet();
-        if (!token.HasChanged) _ports = ports;
+        if (!token.HasChanged) _reading = new Reading(token, ports);
         return ports;
     }
 }
