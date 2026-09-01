@@ -295,6 +295,10 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             // so there is no "after". See the setting's own documentation for why claiming a port the
             // recreate might not reach is the safe direction to be wrong in.
             await SaveManagedPortsAsync(plan.NextManaged, ct);
+            // Published before the task exists, and that ordering is the point: this stage is what the
+            // self-update's guard reads, so writing it from inside the task — after that task's first
+            // await — would leave both paths able to pass their guard and spawn a coordinator each.
+            await SetStageAsync("restarting", error: null, ct);
             lock (_applyLock) {
                 _applyTask = SpawnAndWatchAsync(inspect.ContainerId, inspect.ImageName, plan, actor, _cts.Token);
             }
@@ -312,8 +316,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     private async Task SpawnAndWatchAsync(
         string containerId, string imageName, PortBindingPlan plan, string? actor, CancellationToken ct) {
         try {
-            await SetStageAsync("restarting", error: null, ct);
-
+            // The "restarting" stage is already published — ApplyAsync writes it before this task
+            // exists, so the self-update's guard cannot read a stale "idle".
             var name = $"watchtower-port-coordinator-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
             // The container's configured image reference rather than a pulled one: nothing is being
             // updated here. It is the tag, not the resolved id, and deliberately — writing a sha256 into

@@ -69,6 +69,15 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private readonly TimeSpan _applyWatchTimeout;
     private Task? _applyTask;
 
+    /// <summary>
+    /// Held from passing the apply mutex until <see cref="_applyTask"/> exists, so the apply stage can be
+    /// written in between. It has to be written there rather than inside the task: the stage is what the
+    /// <em>other</em> recreate path's guard reads, and a task that writes it after its first await leaves
+    /// a window in which both paths pass their guard and both spawn a coordinator. Read and written only
+    /// under <see cref="_applyLock"/>.
+    /// </summary>
+    private bool _applyReserved;
+
     public SelfUpdateService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
@@ -301,11 +310,25 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
         var (username, token) = await ResolveCredentialAsync(config, ct);
 
-        // Guard against concurrent applies, then flip to "pulling" before releasing the lock.
+        // Guard against concurrent applies, then publish the stage before the task exists. The order is
+        // the point: the stage is what the port-publish path's guard reads, so writing it from inside
+        // the task — after that task's first await — would leave both paths able to pass their guard and
+        // spawn a coordinator each. A failure to write it releases the reservation and spawns nothing.
         lock (_applyLock) {
-            if (_applyTask is not null && !_applyTask.IsCompleted)
+            if (_applyReserved || (_applyTask is not null && !_applyTask.IsCompleted))
                 throw new InvalidOperationException("A self-update is already in progress. Wait for the current pull to finish.");
-            _applyTask = PullAndSpawnAsync(detected.ImageName, detected.ContainerId, username, token, actor, _cts.Token);
+            _applyReserved = true;
+        }
+
+        try {
+            await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
+            lock (_applyLock) {
+                _applyTask = PullAndSpawnAsync(
+                    detected.ImageName, detected.ContainerId, username, token, actor, _cts.Token);
+            }
+        } finally {
+            // Released once the task itself is the mutex — or once the attempt has failed without one.
+            lock (_applyLock) { _applyReserved = false; }
         }
 
         // The start is the only success this process can record — on a successful apply the
@@ -327,8 +350,8 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private async Task PullAndSpawnAsync(
         string imageName, string containerId, string? username, string? token, string? actor, CancellationToken ct) {
         try {
-            await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
-
+            // The "pulling" stage is already published — ApplyUpdateAsync writes it before this task
+            // exists, so the other recreate path's guard cannot read a stale "idle".
             _logger.LogInformation("Pulling image {Image} before self-update", imageName);
             await _docker.PullImageAsync(imageName, username, token, ct);
             await VerifyPullLandedAsync(imageName, ct);

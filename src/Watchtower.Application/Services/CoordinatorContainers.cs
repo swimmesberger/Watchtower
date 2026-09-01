@@ -48,17 +48,37 @@ internal static class CoordinatorContainers {
             var update = await settings.GetAsync(
                 SelfUpdateService.KeyRuntime, new SelfUpdateRuntime(), SettingsScope.Global, ct);
             return update.ApplyStage is "pulling" or "restarting"
-                ? "A Watchtower self-update is in progress — it is about to recreate this container. Wait "
-                  + "for it to finish, then publish the ports."
+                ? Refusal("the Watchtower self-update", update.CoordinatorId,
+                    "Wait for it to finish, then publish the ports.")
                 : null;
         }
 
         var ports = await settings.GetAsync(
             SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime(), SettingsScope.Global, ct);
         return ports.ApplyStage == "restarting"
-            ? "A host-port change is being applied — it is about to recreate this container. Wait for "
-              + "Watchtower to restart, then update."
+            ? Refusal("the host-port change", ports.CoordinatorId,
+                "Wait for Watchtower to restart, then update.")
             : null;
+    }
+
+    /// <summary>
+    /// The refusal, naming the coordinator that holds the stage and what to do if it is stuck.
+    /// </summary>
+    /// <remarks>
+    /// A <em>wedged</em> coordinator — running, never exiting — now blocks both paths until someone
+    /// intervenes, and that is the intended trade: clearing the stage on a timeout would let a second
+    /// coordinator start while the first may still be genuinely mid-recreate, which is the hazard this
+    /// guard exists to close. What can be fixed is the operator's position, so the message names the
+    /// container to look at and the two steps that release it. The id is absent only in the short window
+    /// between the stage being published and the coordinator being created, where there is nothing stuck
+    /// to name and nothing to remove.
+    /// </remarks>
+    private static string Refusal(string startedBy, string? coordinatorId, string thenDo) {
+        var named = coordinatorId is { Length: > 0 } id ? $" (coordinator {Short(id)})" : "";
+        var wedged = named.Length == 0
+            ? ""
+            : " If it is wedged, remove that container and restart Watchtower.";
+        return $"A container recreate started by {startedBy} is still in progress{named}. {thenDo}{wedged}";
     }
 
     /// <summary>Which of the two recreate paths is asking, for <see cref="OtherRecreateInFlightAsync"/>.</summary>

@@ -34,6 +34,9 @@ public sealed class SelfPortPublishTests {
 
     private const string SelfId = "abc123def4567890abcdef";
 
+    /// <summary>The coordinator a seeded apply record points at; long enough for the refusal's [..12].</summary>
+    private const string StuckCoordinatorId = "f00dcafe12345678deadbeef";
+
     // ── ComputePlan ──────────────────────────────────────────────────────────
 
     /// <summary>A container that publishes nothing: every routed port is a publish, and becomes managed.</summary>
@@ -202,16 +205,44 @@ public sealed class SelfPortPublishTests {
         var stackId = await host.AddStackAsync("media");
         await host.AddPortRouteAsync(stackId, 9001);
         await SetRuntimeAsync(host, SelfUpdateService.KeyRuntime, new SelfUpdateRuntime {
-            ApplyStage = "restarting", CoordinatorId = "coordinator",
+            ApplyStage = "restarting", CoordinatorId = StuckCoordinatorId,
         });
 
         var result = await ApplyAsync(host);
 
         Assert.False(result.IsSuccess);
-        Assert.Contains("self-update is in progress", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("started by the Watchtower self-update", result.Error.Message, StringComparison.Ordinal);
+        // Actionable rather than merely true: a coordinator that never exits blocks both paths until
+        // somebody removes it, so the refusal has to say which container and what to do about it.
+        Assert.Contains($"coordinator {StuckCoordinatorId[..12]}", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("remove that container and restart Watchtower", result.Error.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
         // And it did not claim the ports on its way to being refused.
         Assert.True(string.IsNullOrEmpty(await ManagedPortsAsync(host)));
+    }
+
+    /// <summary>
+    /// The stage the other path's guard reads has to be true by the time the accepted call returns.
+    /// Writing it from inside the fire-and-forget task instead would publish it only after that task's
+    /// first await — a window in which a second apply reads "idle", passes the guard, and spawns the
+    /// second coordinator this guard exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task AnAcceptedApply_HasPublishedItsStageBeforeItReturns() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        Assert.True((await ApplyAsync(host)).IsSuccess);
+
+        // Read straight from the store, so what is asserted is what another instance — or the other
+        // path's guard, which goes through the same store — would see at this instant.
+        await using var scope = host.Services.CreateAsyncScope();
+        var runtime = await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
+            SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime(), SettingsScope.Global, Ct);
+        Assert.Equal("restarting", runtime.ApplyStage);
     }
 
     /// <summary>The mirror image: a self-update refused while a host-port recreate is on its way.</summary>
@@ -221,7 +252,7 @@ public sealed class SelfPortPublishTests {
         using var estate = SelfInspecting();
         using var host = PortHost(estate);
         await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
-            ApplyStage = "restarting", CoordinatorId = "coordinator",
+            ApplyStage = "restarting", CoordinatorId = StuckCoordinatorId,
         });
         var selfUpdate = new SelfUpdateService(
             host.Services.GetRequiredService<IServiceScopeFactory>(), estate.Client,
@@ -230,7 +261,8 @@ public sealed class SelfPortPublishTests {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => selfUpdate.ApplyUpdateAsync(actor: null, Ct));
 
-        Assert.Contains("host-port change is being applied", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("started by the host-port change", ex.Message, StringComparison.Ordinal);
+        Assert.Contains($"coordinator {StuckCoordinatorId[..12]}", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
     }
 
