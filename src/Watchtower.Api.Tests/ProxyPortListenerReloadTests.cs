@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Watchtower.Api.Proxy;
 using Watchtower.Application.Services.InternalCa;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 using Watchtower.Application.Tests;
 using Xunit;

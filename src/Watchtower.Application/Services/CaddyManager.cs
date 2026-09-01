@@ -325,14 +325,12 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
             .Include(r => r.Stack)
             .ToListAsync(ct);
 
-        // Port routes (ADR-0033) are not this provider's business at all, in either direction: their
-        // listeners are on Watchtower's own container and PortRoutePlane serves them alongside whatever
-        // terminates the domains (ADR-0033 addendum). The projection leaves them out of the Caddyfile,
-        // and their status is the internal CA's to write.
-
         // Watchtower's own hostnames are rows in that table like any other (ADR-0023); the projection
         // points them at `watchtower:8080` on the control network, which is where Caddy already sends the
-        // forward-auth and callback traffic of every protected site.
+        // forward-auth and callback traffic of every protected site. It also leaves the port-bound rows
+        // out, which is the whole of this provider's involvement with them in either direction: their
+        // listeners are on Watchtower's own container, PortRoutePlane serves them alongside Caddy, and
+        // their status is the internal CA's to write (ADR-0033 addendum).
         return ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);
     }
 

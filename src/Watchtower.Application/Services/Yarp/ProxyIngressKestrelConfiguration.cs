@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Primitives;
 using Watchtower.Application.Config;
+using Watchtower.Application.Services.PortRoutes;
 
 namespace Watchtower.Application.Services.Yarp;
 
