@@ -164,9 +164,11 @@ host lookup. A port that is a port route's listener but whose row is not in the 
 moment ago, the socket not yet unbound — gets the same bare 404 an unrouted host gets on ingress, rather
 than falling through to the host path.
 
-What the branch does: strip every identity header the client sent (`Remote-*`, `X-Auth-Request-*`,
-`X-Watchtower-*`, `X-Forwarded-Method`, `X-Forwarded-Uri`), lift Kestrel's 30 MB body cap because the
-upstream is entitled to an opinion about its own uploads, and forward to
+What the branch does: strip the full `IdentityForwarding.StripHeaderNames` set the host path strips —
+every name in every identity vocabulary the proxy can emit, `Remote-*`, `X-Auth-Request-*`,
+`X-Forwarded-User`/`-Email`/`-Groups`/`-PreferredUsername`, the Cloudflare Access pair and
+`X-Watchtower-*` — plus `X-Forwarded-Method` and `X-Forwarded-Uri`; lift Kestrel's 30 MB body cap
+because the upstream is entitled to an opinion about its own uploads; and forward to
 `http://{project}-{service}:{port}` over the stack's ingress network with `X-Forwarded-Host` echoed from
 the request, `X-Forwarded-Proto: https` and no identity headers at all.
 
@@ -392,6 +394,17 @@ untouched, and nobody re-imports anything, because the root did not change.
   fatal at startup, survivable-but-stale on a reload. Create-time validation refuses a listen port that
   collides with Watchtower's own ports, but nothing can refuse an unrelated host process holding 9001 on
   bare metal, and that still wedges startup.
+- **Losing `KeyProtectionSecret` is no longer a self-healing failure.** ADR-0024 could say that losing
+  it invalidates sessions and forces every certificate to be reissued — a blast radius that resolves
+  itself, because ACME simply orders again. The CA key breaks that property: decision 6 treats an
+  unreadable one as fatal to issuance and refuses to mint a replacement root, since minting one would
+  abandon the anchor every LAN client was told to trust and the failure would then surface on those
+  clients rather than on the server. So issuance stops and the port routes go to `Error` until a human
+  either restores the secret or deletes the `internal_cas` row — and the second option costs an import
+  on every device that trusted the old root. That is the right trade (a silent re-mint would break the
+  same devices, without telling anyone), and it means the key-protection secret is now backup material
+  with a manual recovery step behind it. The operator documentation says so in all three places it
+  describes the secret.
 - **Certificate scope is narrow on purpose.** The internal CA serves port routes and nothing else;
   domain routes stay on ACME, and the internal leaf's store key never enters the ACME desired set. The
   seam for a per-route certificate source — an uploaded certificate, a second CA — is left open by the

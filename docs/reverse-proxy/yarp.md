@@ -12,14 +12,19 @@ For what all three providers share, start at [README.md](README.md).
 
 ## Ports: ingress is not the management plane
 
-Watchtower binds **three** listeners when the built-in proxy is on, and the split is load-bearing
-rather than tidy.
+Watchtower binds **three** listeners when the built-in proxy is on — plus one more for each port route
+you create — and the split is load-bearing rather than tidy.
 
 | Container port | Endpoint | What it is | Publish it as |
 | --- | --- | --- | --- |
 | 8080 | `Http` | **Management plane** — Watchtower's own UI, `/rpc` and `/api/*`. Answers for every host name. Set in the image (`Kestrel__Endpoints__Http__Url`). | `127.0.0.1:8080:8080` — a private interface, never the internet |
 | 8081 (default) | `ProxyHttp` | **Ingress, plain HTTP** — ACME HTTP-01 validation and the plain half of the proxy. Setting: **Ingress HTTP port**. | `80:8081` |
 | 8443 (default) | `ProxyHttps` | **Ingress, TLS** — the routed traffic, one certificate per SNI name. Setting: **Ingress HTTPS port**. | `443:8443` |
+| one per port route | `ProxyPort{n}` | **Ingress, TLS, one service** — a LAN address with no domain, certified by Watchtower's own CA. Comes and goes with the route, no restart. See [port routes](#https-on-a-lan-without-a-domain-port-routes). | `{n}:{n}` |
+
+A port route's listener is **ingress** like the other two: an unknown host gets nothing there, and the
+management plane is never served on it. What it does *not* share is the host lookup — it serves exactly
+one route, chosen by the port the connection arrived on.
 
 The two ingress listeners are **reverse-proxy settings, not image configuration**: they exist only
 while the built-in provider is enabled, and their container ports are editable under **Settings →
@@ -121,14 +126,27 @@ on). Then install it as a trusted root on every device that should reach these a
 | --- | --- |
 | macOS | Keychain Access → System → drag the file in → open it → **Trust → Always Trust** |
 | Windows | Double-click → Install Certificate → Local Machine → **Trusted Root Certification Authorities** |
-| Linux | Copy to `/usr/local/share/ca-certificates/watchtower-internal-ca.crt`, then `sudo update-ca-certificates` |
-| Firefox | Has its own store: Settings → Privacy & Security → Certificates → View Certificates → Authorities → **Import**, tick "identify websites" |
-| Android | Settings → Security → Encryption & credentials → Install a certificate → **CA certificate** (use the `?format=der` download) |
+| Linux (Debian, Ubuntu) | Copy to `/usr/local/share/ca-certificates/watchtower-internal-ca.crt`, then `sudo update-ca-certificates` |
+| Linux (RHEL, Fedora, CentOS) | Copy to `/etc/pki/ca-trust/source/anchors/`, then `sudo update-ca-trust` |
+| Linux (Arch) | Copy to `/etc/ca-certificates/trust-source/anchors/`, then `sudo trust extract-compat` |
+| Firefox | Has its own store, on every platform: Settings → Privacy & Security → Certificates → View Certificates → Authorities → **Import**, tick "identify websites" |
+| Android | Settings → Security & privacy → More security settings → Encryption & credentials → Install a certificate → **CA certificate** (the path is shorter on Android 11 and older; use the `?format=der` download). **Browsers will trust it; apps will not** — see below |
 | iOS | Install the profile, then Settings → General → About → **Certificate Trust Settings** and enable it |
 
+**Android caveat.** Since Android 7 a user-installed CA is trusted by Chrome and the other browsers but
+**not by apps**, unless an app ships a `network_security_config` that opts into the user store. So a
+port route works in a phone's browser and a native client of the same service may still refuse it, with
+a certificate error that looks identical. There is no fix from Watchtower's side; the answers are to use
+the browser, to use an app that opts in, or to put that service on a real domain with an ACME
+certificate instead.
+
+**Getting the file onto a phone or tablet.** The download sits behind the management-plane login, like
+the volume download — so either sign in to Watchtower from that device and download it there, or fetch
+it once on a desktop and transfer it out of band (AirDrop, a file share, a USB cable). There is no
+anonymous URL to point a device at.
+
 The root is valid for ten years and is never rotated automatically, so this is genuinely once per
-device. It carries no secret — the signing key stays in the database — but the download sits behind the
-management-plane login like the volume download does.
+device. It carries no secret: the signing key stays in the database and is never part of the download.
 
 ### 5. Browse it
 
@@ -140,7 +158,9 @@ Deleting a port route unbinds its listener straight away. The host port stays pu
 the change; the Routes page then offers **Release ports & restart Watchtower**, which recreates the
 container without the ports Watchtower itself added.
 
+## Enabling it
 
+Publish the two ingress ports on Watchtower's own container, then turn the proxy on.
 
 ```yaml
 services:
@@ -207,7 +227,7 @@ pinned and read-only until the variable is removed.
                     │  Kestrel ingress (ProxyHttp/ProxyHttps)  │
                     └────────────────────┬────────────────────┘
                                          ▼
-                    /.well-known/acme-challenge/*  ──► answered from the challenge store, always
+                    /.well-known/acme-challenge/*  ──► answered from the challenge store
                                          │              (never forwarded, never redirected)
                                          ▼
                          Host in the route table?  ── no ──►  404, and nothing else
@@ -236,8 +256,17 @@ Watchtower's literal endpoints (`/rpc`, `/api/*`, the SPA fallback) would otherw
 catch-all and swallow the tenant's paths.
 
 The management endpoint (8080) runs the same middleware with the branches reversed: an unknown host is
-Watchtower's own UI, and a *routed* host is the 404. Only the challenge responder behaves identically
-on every port, because the CA does not get to choose which listener it reaches.
+Watchtower's own UI, and a *routed* host is the 404. The challenge responder behaves identically on
+both of them, because the CA does not get to choose which listener it reaches.
+
+**A port route's listener takes a much shorter path**, and the diagram above does not apply to it. There
+is no host lookup — the port decides the route, and the `Host` header decides nothing — so there is no
+404 branch, no `/.watchtower/*` handling, no HTTP→HTTPS upgrade (the listener is TLS and there is no
+plain leg) and no access check (a port route is public by construction). The identity-header strip is
+the one step it keeps: nothing a client sends under those names reaches an upstream, on any listener.
+**ACME challenges are not answered on a port-route listener either** — such a listener serves exactly
+one upstream on a LAN address no CA validates, so answering there would hold a path the application is
+entitled to serve itself, for a challenge that could never have been aimed at that address.
 
 ### Watchtower routes
 
@@ -282,15 +311,24 @@ host with the same certificate, whichever instance obtained it. A file on one no
 
 **Encryption at rest is optional and worth turning on.** Set
 `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase and the private keys —
-certificates, the ACME account, the identity-assertion signing key — are stored AES-256-GCM encrypted
-under a key derived from it. Keep it out of the database (that is the entire point) and out of your
-backups of the database. It covers the certificate keys, the ACME account key, the identity-assertion
-signing key and the ASP.NET data-protection key ring. Left unset, all four are stored exactly as the
-files on the data volume were — unencrypted — and the host says so once at startup. Setting it later
-works: certificates are re-encrypted as they renew, the signing key and the ACME account on the next
-start, and the key ring for keys generated from then on. Losing a configured secret invalidates sessions
-and forces every certificate to be reissued, which is the same blast radius losing the key directory
-always had.
+certificates, the ACME account, the internal CA, the identity-assertion signing key — are stored
+AES-256-GCM encrypted under a key derived from it. Keep it out of the database (that is the entire
+point) and out of your backups of the database. It covers the certificate keys, the ACME account key,
+**the internal CA's signing key**, the identity-assertion signing key and the ASP.NET data-protection
+key ring. Left unset, all five are stored exactly as the files on the data volume were — unencrypted —
+and the host says so once at startup. Setting it later works: certificates are re-encrypted as they
+renew, the signing key, the ACME account and the internal CA on the next start, and the key ring for
+keys generated from then on.
+
+**Losing a configured secret is worse than it used to be, in exactly one place.** Sessions are
+invalidated and every ACME certificate is reissued automatically — that much is the blast radius losing
+the key directory always had, and it resolves itself. The **internal CA does not**: an unreadable CA key
+is treated as fatal to issuance rather than silently replaced, because minting a fresh root would
+abandon the one every LAN client was told to trust and the failure would surface on those clients
+instead of here. Issuance stops, the port routes go to `Error`, and recovery is manual — restore the
+secret the row was written with, or delete the `internal_cas` row to generate a new CA and then
+**re-import the new root on every device that trusted the old one**, a step per laptop and per phone. If
+you use port routes, back the secret up accordingly.
 
 ### Which instance orders
 

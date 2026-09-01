@@ -127,9 +127,12 @@ docker compose exec -T postgres psql -U watchtower -d postgres < watchtower.sql
 
 Then start Watchtower: it migrates on startup, so a dump from an older version comes forward on its
 own. **Carry `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` across with it.** The certificates, the ACME
-account key and the signing key are encrypted in the database under that secret, and an instance
-restored without it throws on every one of them. It is an environment variable, never stored in the
-database, and it cannot be changed at runtime.
+account key, the internal CA's signing key and the identity-assertion signing key are encrypted in the
+database under that secret, and an instance restored without it throws on every one of them. It is an
+environment variable, never stored in the database, and it cannot be changed at runtime. Only the ACME
+material recovers by itself: an unreadable internal CA key is never replaced automatically, so a
+deployment that uses port routes and loses the secret has to delete the `internal_cas` row and re-import
+the new root on every device that trusted the old one.
 
 (The `watchtower-data` volume is not part of this. It held the certificates and key ring before
 ADR-0024; it holds nothing Watchtower needs now.)
