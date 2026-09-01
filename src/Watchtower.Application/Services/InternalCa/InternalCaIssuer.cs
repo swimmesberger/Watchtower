@@ -96,8 +96,15 @@ public static class InternalCaIssuer {
             // building purely local, which is the only way it can work on a network with no route out.
 
             var notBefore = now - Backdate;
+            // Clamped to the root, because CertificateRequest.Create throws outright for a leaf that
+            // outlives its issuer. Ten years in, that is what an unclamped year would be — and the throw
+            // would come out of the renewal pass, putting every port route into Error with an exception
+            // about a date. A short final leaf is the honest answer: it expires with the anchor, which is
+            // the moment the operator has to replace the CA row and re-import it anyway.
+            var expiry = notBefore + LeafLifetime;
+            var ceiling = new DateTimeOffset(root.NotAfter.ToUniversalTime(), TimeSpan.Zero);
             var certificate = request.Create(
-                root, notBefore, notBefore + LeafLifetime, RandomNumberGenerator.GetBytes(16));
+                root, notBefore, expiry < ceiling ? expiry : ceiling, RandomNumberGenerator.GetBytes(16));
             try {
                 // The leaf alone. There is no intermediate to send — the chain is two certificates deep
                 // — and the root is the one thing the client already has, by construction.

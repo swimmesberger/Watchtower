@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using Watchtower.Application.Services.Acme;
 
 namespace Watchtower.Application.Services.InternalCa;
@@ -55,6 +56,13 @@ public static class InternalCaNames {
     /// dropped, because the encoding has nowhere to put one and everything downstream compares what was
     /// configured against what was issued.
     /// </para>
+    /// <para>
+    /// An IPv4 address has to be written in its canonical dotted-quad form. The framework's parser still
+    /// honours the inet_aton spellings, so <c>192.168.001.010</c> would quietly become 192.168.1.8 and the
+    /// leaf would name an address nobody typed — which is the "junk fails the whole parse" contract above,
+    /// inverted. A host name may carry the trailing dot of its fully-qualified form, as
+    /// <see cref="Acme.DesiredHosts.TryNormalize"/> lets a domain route's host.
+    /// </para>
     /// </remarks>
     /// <param name="reason">Why the parse failed, naming the offending entry; null on success.</param>
     /// <returns>Whether every entry was a DNS name or an IP address. An empty value parses to nothing.</returns>
@@ -76,6 +84,20 @@ public static class InternalCaNames {
             // An IP first: 192.168.1.10 would also satisfy the DNS-name grammar, and reading it as a
             // host name would put it in the wrong kind of SAN — where no client looks for it.
             if (IPAddress.TryParse(entry, out var ip)) {
+                // IPAddress still accepts the inet_aton spellings — octal (`192.168.001.010` is
+                // 192.168.1.8), hex (`0x7f.1`), a bare integer (`2130706433`), a three-part address
+                // (`10.0.1`). Every one of them is a typo far more often than an intention, and issuing
+                // for the address it silently means would put a name in the certificate that the operator
+                // never wrote. Round-tripped rather than pattern-matched, so the rule is exactly "the
+                // canonical spelling of what this means is what you typed". IPv4 only: an IPv6 address
+                // has many correct spellings (`FE80::1`, `fe80:0:0:0:0:0:0:1`), and refusing those would
+                // be refusing valid input.
+                if (ip.AddressFamily == AddressFamily.InterNetwork
+                    && !string.Equals(ip.ToString(), entry, StringComparison.Ordinal)) {
+                    reason = $"'{entry}' is not a plain dotted-quad address — it would mean {ip}. "
+                        + "Write the address out in full.";
+                    return false;
+                }
                 // Rebuilt from the address bytes, which drops any IPv6 scope id (`fe80::1%3`). A
                 // certificate cannot carry one — the SAN builder encodes the 16 address bytes and
                 // nothing else — so keeping it here would make the held certificate look like it named
@@ -87,11 +109,17 @@ public static class InternalCaNames {
                 continue;
             }
 
+            // One trailing dot is the fully-qualified spelling of the same name, and
+            // DesiredHosts.TryNormalize accepts it for a domain route — so refusing it here would make
+            // `nas.lan.` valid in one field of the Settings page and junk in another. Exactly one: a
+            // second dot leaves an empty label, which NormalizeHost refuses as it should.
+            var candidate = entry.EndsWith('.') ? entry[..^1] : entry;
+
             string name;
             try {
                 // The same validation the certificate store applies to a host, so a name that parses
                 // here is a name a leaf can actually be stored and served under.
-                name = CertificateStore.NormalizeHost(entry);
+                name = CertificateStore.NormalizeHost(candidate);
             } catch (ArgumentException) {
                 reason = $"'{entry}' is neither a host name nor an IP address.";
                 return false;

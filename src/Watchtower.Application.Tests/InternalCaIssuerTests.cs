@@ -151,6 +151,40 @@ public sealed class InternalCaIssuerTests {
         Assert.True(CertificateRenewalPolicy.IsRenewalDue(now.AddDays(300), notBefore, notAfter));
     }
 
+    /// <summary>
+    /// The root is valid for ten years and a leaf for one, so nine years in the two stop composing:
+    /// <c>CertificateRequest.Create</c> refuses outright to sign a certificate that outlives its issuer.
+    /// Unclamped, that throw comes out of the renewal pass and puts every port route into Error with an
+    /// exception about a date — nine years after anybody chose the numbers.
+    /// </summary>
+    [Fact]
+    public void ALeafNeverOutlivesTheRootThatSignedIt() {
+        using var root = ShortLivedRoot(TimeSpan.FromDays(100));
+
+        using var leaf = InternalCaIssuer.IssueLeaf(root, ["nas.lan"], [], DateTimeOffset.UtcNow);
+
+        // Exactly the root's expiry, not a year: the leaf ends with the anchor, which is the moment the
+        // operator has to replace the CA row and re-import it on every client anyway.
+        Assert.Equal(root.NotAfter.ToUniversalTime(), leaf.Certificate.NotAfter.ToUniversalTime());
+    }
+
+    /// <summary>A CA of the same shape as the stored one, with a lifetime the test chooses.</summary>
+    private static X509Certificate2 ShortLivedRoot(TimeSpan lifetime) {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest("CN=Watchtower Internal CA", key, HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(
+            new X509BasicConstraintsExtension(
+                certificateAuthority: true, hasPathLengthConstraint: true, pathLengthConstraint: 0,
+                critical: true));
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(
+                X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, critical: true));
+        request.CertificateExtensions.Add(
+            new X509SubjectKeyIdentifierExtension(request.PublicKey, critical: false));
+        var notBefore = DateTimeOffset.UtcNow.AddMinutes(-5);
+        return request.CreateSelfSigned(notBefore, notBefore + lifetime);
+    }
+
     [Fact]
     public async Task TwoLeaves_HaveDifferentSerialNumbers() {
         using var host = AuthTestHost.Start();
@@ -321,6 +355,54 @@ public sealed class InternalCaIssuerTests {
         Assert.NotNull(reason);
         Assert.Contains(offender, reason);
     }
+
+    /// <summary>
+    /// The framework's parser still honours the inet_aton spellings, and every one of them means an
+    /// address other than the one it looks like: <c>192.168.001.010</c> is 192.168.1.8, <c>10.0.1</c> is
+    /// 10.0.0.1, <c>2130706433</c> is 127.0.0.1. Accepting them would put an address in the certificate
+    /// that the operator never wrote, which is the same failure as dropping an entry — one device that
+    /// cannot reach the service, discovered weeks later.
+    /// </summary>
+    [Theory]
+    [InlineData("192.168.001.010", "192.168.1.8")]
+    [InlineData("010.010.010.010", "8.8.8.8")]
+    [InlineData("10.0.1", "10.0.0.1")]
+    [InlineData("0x7f.1", "127.0.0.1")]
+    [InlineData("2130706433", "127.0.0.1")]
+    public void AnAddressInAnAlternativeSpelling_IsRefused_AndSaysWhatItWouldHaveMeant(
+        string raw, string wouldMean) {
+        Assert.False(InternalCaNames.TryParseLanNames(raw, out _, out _, out var reason));
+        Assert.NotNull(reason);
+        Assert.Contains(raw, reason, StringComparison.Ordinal);
+        Assert.Contains(wouldMean, reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>And the canonical spelling of the same kind of address is still accepted.</summary>
+    [Fact]
+    public void APlainDottedQuad_IsAccepted() {
+        Assert.True(InternalCaNames.TryParseLanNames("192.168.1.10", out var names, out var ips, out _));
+
+        Assert.Empty(names);
+        Assert.Equal("192.168.1.10", Assert.Single(ips).ToString());
+    }
+
+    /// <summary>
+    /// <c>nas.lan.</c> is the same name, fully qualified, and <c>DesiredHosts.TryNormalize</c> accepts it
+    /// for a domain route — so refusing it here would make one spelling valid in one field of the
+    /// Settings page and junk in another.
+    /// </summary>
+    [Fact]
+    public void ATrailingDot_IsTheSameName() {
+        Assert.True(InternalCaNames.TryParseLanNames("nas.lan.", out var names, out _, out var reason));
+
+        Assert.Null(reason);
+        Assert.Equal("nas.lan", Assert.Single(names));
+    }
+
+    /// <summary>Exactly one, though: a second dot leaves an empty label, which is not a name.</summary>
+    [Fact]
+    public void TwoTrailingDots_AreStillJunk() =>
+        Assert.False(InternalCaNames.TryParseLanNames("nas.lan..", out _, out _, out _));
 
     private static InternalCaStore Ca(AuthTestHost host) =>
         host.Services.GetRequiredService<InternalCaStore>();
