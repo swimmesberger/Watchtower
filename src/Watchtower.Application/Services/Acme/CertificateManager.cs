@@ -349,15 +349,23 @@ public sealed class CertificateManager : BackgroundService, IProxyCertificateMan
     /// </remarks>
     public async Task ReconcileAsync(CancellationToken ct) {
         DrainRetiredSessions();
-        if (!IsActive) return;
 
         // Watchtower's own CA (ADR-0033), on the same five-minute cadence and deliberately outside every
-        // gate below it. Not the issuer lease: that protects a rate-limited remote resource, while
-        // issuing here is local, free and resolved by a unique index when two instances race — and the
-        // instance an operator is talking to must be able to make the port route they just created work.
-        // Not HttpsBound either: a deployment serving nothing but port routes runs with the HTTPS ingress
-        // port off, and gating on it would mean exactly that deployment never got a certificate.
+        // gate below it — including <see cref="IsActive"/>, which is the ADR-0033 addendum's point: a port
+        // route's listener is on Watchtower's own container, so its leaf is issued and renewed under Caddy
+        // and Cloudflare too. Below the gate this was the only periodic driver those deployments did not
+        // have, and a converged one would have served an expired leaf a year later, having renewed only at
+        // startup or on a route change. EnsureCoreAsync self-gates on Proxy:Enabled, so with the proxy off
+        // this is one options read.
+        //
+        // Not the issuer lease either: that protects a rate-limited remote resource, while issuing here is
+        // local, free and resolved by a unique index when two instances race — and the instance an operator
+        // is talking to must be able to make the port route they just created work. Nor HttpsBound: a
+        // deployment serving nothing but port routes runs with the HTTPS ingress port off, and gating on it
+        // would mean exactly that deployment never got a certificate.
         await _internalCerts.EnsureAsync(ct);
+
+        if (!IsActive) return;
 
         var desired = _desired;
         var issuer = ObserveIssuerLease();

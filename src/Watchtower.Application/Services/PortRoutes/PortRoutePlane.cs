@@ -8,6 +8,7 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.InternalCa;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Services.PortRoutes;
@@ -62,9 +63,11 @@ public class PortRoutePlane : IHostedService, IDisposable {
     // flipped twice in quick succession cannot interleave two projections of the same table.
     private readonly SemaphoreSlim _transitionLock = new(1, 1);
     private readonly object _appliedGate = new();
-    // Whether the plane was serving on the last options change, so OnChange can tell an enable from a
-    // disable from a setting that has nothing to do with it.
+    // The two facts about the proxy settings this plane acts on, as of the last options change, so
+    // OnChange can tell an enable from a disable from a reissue from a setting that has nothing to do
+    // with it.
     private bool _applied;
+    private string _appliedLanNames;
     private Task? _reconcileTask;
 
     public PortRoutePlane(
@@ -83,7 +86,8 @@ public class PortRoutePlane : IHostedService, IDisposable {
         _options = options;
         _logger = logger;
         _applied = options.CurrentValue.Proxy.Enabled;
-        _optionsSubscription = options.OnChange(o => OnProxyOptionsChanged(o.Proxy.Enabled));
+        _appliedLanNames = options.CurrentValue.Proxy.PortRoutes.LanNames;
+        _optionsSubscription = options.OnChange(o => OnProxyOptionsChanged(o.Proxy));
     }
 
     /// <summary>
@@ -230,19 +234,54 @@ public class PortRoutePlane : IHostedService, IDisposable {
 
     // ── Runtime enable/disable (settings-driven) ──────────────────────────────
 
-    private void OnProxyOptionsChanged(bool enabled) {
-        bool was;
+    /// <summary>
+    /// The two settings changes this plane owes a pass to: the enablement toggle, and the LAN names.
+    /// </summary>
+    /// <remarks>
+    /// The LAN names are here because nothing else would carry them. <c>proxy.updateConfig</c> writes the
+    /// row and returns — it never calls <c>ApplyAsync</c>, since a settings save is not a route change —
+    /// so before the ADR-0033 addendum a LAN-names edit reached the certificate only through
+    /// <see cref="YarpProxyProvider"/>'s own options subscription, whose <c>Refresh</c> transition ended
+    /// in the <c>EnsureAsync</c> tail that moved here. Watching only the flag would leave an operator who
+    /// adds a name waiting for the five-minute certificate reconcile under yarp, and forever under the
+    /// providers that do not run one.
+    /// <para>
+    /// Compared <see cref="StringComparison.Ordinal"/> against the raw stored text rather than against the
+    /// parsed name set: the parse is <see cref="InternalCertificateService"/>'s to make, and re-deciding
+    /// it here would be a second opinion about which spellings mean the same certificate. A no-op save
+    /// re-writes the identical string, so this still costs nothing.
+    /// </para>
+    /// </remarks>
+    private void OnProxyOptionsChanged(ProxyOptions proxy) {
+        var enabled = proxy.Enabled;
+        var lanNames = proxy.PortRoutes.LanNames;
+        bool wasEnabled;
+        bool lanNamesMoved;
         lock (_appliedGate) {
-            was = _applied;
+            wasEnabled = _applied;
+            lanNamesMoved = !string.Equals(_appliedLanNames, lanNames, StringComparison.Ordinal);
             _applied = enabled;
+            _appliedLanNames = lanNames;
         }
-        if (was == enabled) return;
-        _logger.LogInformation("Port routes {Transition} at runtime.", enabled ? "enabled" : "disabled");
-        // Enabling is the full pass, because the ingress networks have to be joined before anything can
-        // be forwarded; disabling is just a projection, which empties the port half and the setting with
-        // it. No separate teardown: ApplyAsync's disabled path is the teardown.
-        Func<CancellationToken, Task> operation = enabled ? ReconcileAsync : ApplyAsync;
-        _reconcileTask = Task.Run(() => RunExclusiveAsync(operation, _cts.Token), CancellationToken.None);
+
+        if (wasEnabled != enabled) {
+            _logger.LogInformation(
+                "Port routes {Transition} at runtime.", enabled ? "enabled" : "disabled");
+            // Enabling is the full pass, because the ingress networks have to be joined before anything
+            // can be forwarded; disabling is just a projection, which empties the port half and the
+            // setting with it. No separate teardown: ApplyAsync's disabled path is the teardown.
+            Func<CancellationToken, Task> operation = enabled ? ReconcileAsync : ApplyAsync;
+            _reconcileTask = Task.Run(
+                () => RunExclusiveAsync(operation, _cts.Token), CancellationToken.None);
+            return;
+        }
+
+        // The names moved under an unchanged toggle: nothing about the topology or the rows changed, so
+        // the projection is the cheap half and the reissue is the point. ApplyAsync's tail is what does
+        // it, and it decides for itself whether the held leaf still says what it should.
+        if (!lanNamesMoved || !enabled) return;
+        _logger.LogInformation("The LAN names changed; reissuing the port routes' certificate.");
+        _reconcileTask = Task.Run(() => RunExclusiveAsync(ApplyAsync, _cts.Token), CancellationToken.None);
     }
 
     private async Task RunExclusiveAsync(Func<CancellationToken, Task> operation, CancellationToken ct) {
