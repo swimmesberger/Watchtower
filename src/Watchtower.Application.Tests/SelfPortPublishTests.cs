@@ -887,6 +887,7 @@ public sealed class SelfPortPublishTests {
                 new SelfUpdateService(
                     sp.GetRequiredService<IServiceScopeFactory>(), estate.Client,
                     Options.Create(new WatchtowerOptions()), NullLogger<SelfUpdateService>.Instance),
+                new HostPortOccupancy(estate.Client, NullLogger<HostPortOccupancy>.Instance),
                 lease,
                 Options.Create(new WatchtowerOptions()),
                 NullLogger<SelfPortPublishService>.Instance,

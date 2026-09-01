@@ -278,6 +278,23 @@ internal sealed class DockerClientEstate : IDisposable {
             Content = new StringContent("""{"message":"daemon is not running"}""", Encoding.UTF8, "application/json"),
         });
 
+    /// <summary>
+    /// A daemon that cannot answer a container <em>inspect</em> — which is how Watchtower identifies its
+    /// own container, so it stands in for every reason that identification can fail.
+    /// </summary>
+    public void FailsSelfInspection() {
+        var previous = Default.Responder;
+        Default.Responder = request => {
+            var path = request.RequestUri!.AbsolutePath;
+            return path.EndsWith("/json", StringComparison.Ordinal)
+                && !path.EndsWith("/containers/json", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound) {
+                    Content = new StringContent("""{"message":"No such container"}""", Encoding.UTF8, "application/json"),
+                }
+                : previous?.Invoke(request);
+        };
+    }
+
     private void AnswerContainerList(Func<HttpRequestMessage, HttpResponseMessage> answer) {
         // Chained rather than assigned, so a double that is already answering a self-inspect keeps
         // doing so; the two paths are distinct (`/containers/{id}/json` is not `/containers/json`).
