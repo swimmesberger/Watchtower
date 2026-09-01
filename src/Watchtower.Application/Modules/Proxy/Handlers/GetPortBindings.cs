@@ -13,7 +13,13 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// Whether Watchtower published it itself. A port the operator declared reads false and is never taken
 /// away again, even when its route is deleted.
 /// </param>
-public sealed record PortBindingDto(int Port, int RouteId, string ServiceName, bool Bound, bool Managed);
+/// <param name="BlockedBy">
+/// Why publishing this port would fail, naming the container that already holds it on this host, or null
+/// when nothing does. Set only on a port that is not <paramref name="Bound"/> — it is what tells "not
+/// published yet" from "an apply would recreate Watchtower, fail to start and roll back".
+/// </param>
+public sealed record PortBindingDto(
+    int Port, int RouteId, string ServiceName, bool Bound, bool Managed, string? BlockedBy);
 
 /// <summary>
 /// Reports whether the port routes' host ports are published on Watchtower's own container, and whether
@@ -53,7 +59,8 @@ public sealed class GetPortBindings(SelfPortPublishService ports)
             status.ContainerDetected,
             status.UnavailableReason,
             status.LastError,
-            [.. status.Ports.Select(p => new PortBindingDto(p.Port, p.RouteId, p.ServiceName, p.Bound, p.Managed))],
+            [.. status.Ports.Select(p => new PortBindingDto(
+                p.Port, p.RouteId, p.ServiceName, p.Bound, p.Managed, p.BlockedBy))],
             status.PendingUnpublish);
     }
 }

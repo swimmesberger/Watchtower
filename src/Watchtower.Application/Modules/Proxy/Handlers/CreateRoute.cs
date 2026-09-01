@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Watchtower.Application.Config;
@@ -24,7 +25,9 @@ public sealed class CreateRoute(
     WatchtowerDbContext db,
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
-    YarpListenerState listener)
+    YarpListenerState listener,
+    DockerEngineClient docker,
+    ILogger<CreateRoute> logger)
     : IHandler<CreateRoute.Command, Result<CreateRoute.Response>> {
     /// <param name="Domain">
     /// The hostname to serve. Required for a <c>domain</c> route and refused on a <c>port</c> one, which
@@ -244,6 +247,11 @@ public sealed class CreateRoute(
             return AppError.Validation(portError);
         if (await PortRouteRules.TakenByAsync(db, listenPort, exceptRouteId: null, ct) is { } clash)
             return AppError.Validation(clash);
+        // …and the same question asked of the host rather than of the route table: the listener is on
+        // Watchtower's own container, so a stack that publishes this port takes it away from us.
+        if (await PortRouteRules.PublishedByAnotherContainerAsync(
+                docker, listenPort, selfContainerId: null, logger, ct) is { } held)
+            return AppError.Validation(held);
 
         // The certificate for a port route comes from the internal CA and is issued for the LAN names,
         // nothing else — so with none configured there is no name a browser could be pointed at that the

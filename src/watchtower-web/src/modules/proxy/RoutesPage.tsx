@@ -678,12 +678,23 @@ export function RoutesPage() {
     r.listenPort != null &&
     bindingByPort.get(r.listenPort)?.bound === false
 
+  // Why the port cannot be published, when the answer is another container holding it. The server
+  // phrases it — it is the same sentence the publish and the route form refuse with — so the row, the
+  // button and the validation message never tell three different stories about one port.
+  const blockedBy = (r: Route) =>
+    (r.listenPort != null ? bindingByPort.get(r.listenPort)?.blockedBy : null) ?? null
+
   const unpublishedBadge = (r: Route) =>
     isUnpublished(r) ? (
       <Tooltip
-        label={`Watchtower listens on ${r.listenPort} inside its container, but the container does not publish that host port — nothing on the network can reach this route yet.`}
+        label={
+          blockedBy(r) ??
+          `Watchtower listens on ${r.listenPort} inside its container, but the container does not publish that host port — nothing on the network can reach this route yet.`
+        }
       >
-        <Badge tone="warn">host port not published</Badge>
+        <Badge tone="warn">
+          {blockedBy(r) ? 'host port held by another container' : 'host port not published'}
+        </Badge>
       </Tooltip>
     ) : null
 

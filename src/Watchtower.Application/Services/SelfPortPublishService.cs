@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
+using Watchtower.Application.Modules.Proxy;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.Yarp;
@@ -289,7 +290,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
                 ContainerDetected: false,
                 UnavailableReason: NotContainerised,
                 LastError: runtime.ApplyError,
-                Ports: [.. routes.Select(r => new HostPortBinding(r.Port, r.RouteId, r.ServiceName, false, false))],
+                Ports: [.. routes.Select(r => new HostPortBinding(
+                    r.Port, r.RouteId, r.ServiceName, false, false, BlockedBy: null))],
                 PendingUnpublish: []);
         }
 
@@ -298,12 +300,18 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         // The releases come off the plan rather than being recomputed here, so the banner can never
         // offer something the apply would not do.
         var plan = ComputePlan([.. routes.Select(r => r.Port)], bound, managed);
+        // Only the ports an apply would try to publish are worth asking Docker about: a port already
+        // bound here is not blocked by definition, and on a converged deployment — the common case for a
+        // polled status — the plan is empty and this costs no call at all.
+        var blocked = await PortRouteRules.PublishedByOtherContainersAsync(
+            _docker, plan.Publish, inspect.Value.ContainerId, _logger, ct);
         return new SelfPortPublishStatus(
             ContainerDetected: true,
             UnavailableReason: MultiInstanceRefusal(),
             LastError: runtime.ApplyError,
             Ports: [.. routes.Select(r => new HostPortBinding(
-                r.Port, r.RouteId, r.ServiceName, bound.Contains(r.Port), managed.Contains(r.Port)))],
+                r.Port, r.RouteId, r.ServiceName, bound.Contains(r.Port), managed.Contains(r.Port),
+                blocked.TryGetValue(r.Port, out var holder) ? holder : null))],
             PendingUnpublish: plan.Unpublish);
     }
 
@@ -343,6 +351,15 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             await ClearApplyErrorAsync(ct);
             return plan;
         }
+
+        // Refused here rather than discovered by the daemon. Recreating this container with a port
+        // another container already publishes fails at start, rolls back, and the operator is left with
+        // "host port not published" and a rolled-back restart — where what they need is the name of the
+        // container holding the port. Fail-open: an unreachable daemon refuses nothing.
+        var blocked = await PortRouteRules.PublishedByOtherContainersAsync(
+            _docker, plan.Publish, inspect.ContainerId, _logger, ct);
+        if (blocked.Count > 0)
+            throw new InvalidOperationException(blocked.OrderBy(e => e.Key).First().Value);
 
         lock (_applyLock) {
             if (_applyReserved || (_applyTask is not null && !_applyTask.IsCompleted))

@@ -1130,6 +1130,12 @@ export interface PortBindingInfo {
   bound: boolean
   /** Whether Watchtower published it itself — an operator's own binding is never taken away again. */
   managed: boolean
+  /**
+   * Why this port cannot be published, naming the container that already holds it on the host, or null
+   * when nothing does. Only ever set while {@link bound} is false: it is what tells "not published yet"
+   * from "publishing it would recreate Watchtower, fail to start and roll back".
+   */
+  blockedBy: string | null
 }
 
 /** What `proxy.getPortBindings` reports: whether each port route is reachable, and whether Watchtower can fix it. */
