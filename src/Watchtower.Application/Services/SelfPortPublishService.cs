@@ -82,7 +82,17 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         : this(scopeFactory, docker, self, issuerLease, options, logger,
             StartupReconcileTimeout, ApplyWatchTimeout) { }
 
-    /// <summary>Test seam: the two ceilings are injectable so a test need not wait out the real ones.</summary>
+    /// <summary>
+    /// Test seam: the two ceilings are injectable so a test need not wait out the real ones, and
+    /// <paramref name="beforeSpawn"/> holds the background task at its very first instruction.
+    /// </summary>
+    /// <param name="beforeSpawn">
+    /// Awaited before the spawn task does anything at all. It exists for one assertion that cannot be
+    /// made without it: that everything the <em>other</em> recreate path's guard reads has been published
+    /// by the time <see cref="ApplyAsync"/> returns. Held only by that task, so nothing a caller observes
+    /// afterwards can have come from it — which is the whole point, since a background task that merely
+    /// tends to be slower would make the same assertion pass while the ordering was wrong.
+    /// </param>
     internal SelfPortPublishService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
@@ -91,7 +101,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         IOptions<WatchtowerOptions> options,
         ILogger<SelfPortPublishService> logger,
         TimeSpan startupReconcileTimeout,
-        TimeSpan applyWatchTimeout) {
+        TimeSpan applyWatchTimeout,
+        Func<CancellationToken, Task>? beforeSpawn = null) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _self = self;
@@ -100,7 +111,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         _logger = logger;
         _startupReconcileTimeout = startupReconcileTimeout;
         _applyWatchTimeout = applyWatchTimeout;
+        _beforeSpawn = beforeSpawn;
     }
+
+    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task})" path="/param[@name='beforeSpawn']"/>
+    private readonly Func<CancellationToken, Task>? _beforeSpawn;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -316,6 +331,10 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     private async Task SpawnAndWatchAsync(
         string containerId, string imageName, PortBindingPlan plan, string? actor, CancellationToken ct) {
         try {
+            // First, and deliberately ahead of every other statement — see the seam's own documentation.
+            // Null outside tests.
+            if (_beforeSpawn is not null) await _beforeSpawn(ct);
+
             // The "restarting" stage is already published — ApplyAsync writes it before this task
             // exists, so the self-update's guard cannot read a stale "idle".
             var name = $"watchtower-port-coordinator-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";

@@ -227,22 +227,37 @@ public sealed class SelfPortPublishTests {
     /// first await — a window in which a second apply reads "idle", passes the guard, and spawns the
     /// second coordinator this guard exists to prevent.
     /// </summary>
+    /// <remarks>
+    /// The background task is held at its first instruction rather than merely being slower than the
+    /// assertion. That distinction is the test: against an in-memory Docker double the task runs to
+    /// completion in well under the time the accepted call spends writing its audit row, so a version
+    /// that published the stage from inside the task would satisfy an unheld assertion every time while
+    /// being exactly as wrong. Held, it cannot have contributed anything that is read below.
+    /// </remarks>
     [Fact]
     public async Task AnAcceptedApply_HasPublishedItsStageBeforeItReturns() {
         using var hostname = HostnameEnvironment.Set(SelfId);
+        using var gate = new SemaphoreSlim(0, 1);
         using var estate = SelfInspecting();
-        using var host = PortHost(estate);
+        using var host = PortHost(estate, beforeSpawn: ct => gate.WaitAsync(ct));
+        var service = host.Services.GetRequiredService<SelfPortPublishService>();
         var stackId = await host.AddStackAsync("media");
         await host.AddPortRouteAsync(stackId, 9001);
 
-        Assert.True((await ApplyAsync(host)).IsSuccess);
+        try {
+            Assert.True((await ApplyAsync(host)).IsSuccess);
 
-        // Read straight from the store, so what is asserted is what another instance — or the other
-        // path's guard, which goes through the same store — would see at this instant.
-        await using var scope = host.Services.CreateAsyncScope();
-        var runtime = await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
-            SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime(), SettingsScope.Global, Ct);
-        Assert.Equal("restarting", runtime.ApplyStage);
+            // Read straight from the store, so what is asserted is what another instance — or the other
+            // path's guard, which goes through the same store — would see at this instant.
+            await using var scope = host.Services.CreateAsyncScope();
+            var runtime = await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
+                SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime(), SettingsScope.Global, Ct);
+            Assert.Equal("restarting", runtime.ApplyStage);
+        } finally {
+            // Cancels the held task rather than releasing it: letting it run on would have it writing
+            // through a host this test is about to dispose.
+            await service.StopAsync(CancellationToken.None);
+        }
     }
 
     /// <summary>The mirror image: a self-update refused while a host-port recreate is on its way.</summary>
@@ -441,7 +456,8 @@ public sealed class SelfPortPublishTests {
     /// the module bootstrapper that would normally register its shape does not run here.
     /// </summary>
     private static AuthTestHost PortHost(
-        DockerClientEstate estate, bool leaseHeld = true, string? leaseHolder = null) =>
+        DockerClientEstate estate, bool leaseHeld = true, string? leaseHolder = null,
+        Func<CancellationToken, Task>? beforeSpawn = null) =>
         AuthTestHost.Start(services => {
             services.AddApplyPortBindings();
             services.AddGetPortBindings();
@@ -460,7 +476,8 @@ public sealed class SelfPortPublishTests {
                 lease,
                 Options.Create(new WatchtowerOptions()),
                 NullLogger<SelfPortPublishService>.Instance,
-                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5),
+                beforeSpawn));
         });
 
     /// <summary>
