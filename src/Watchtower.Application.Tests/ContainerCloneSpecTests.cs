@@ -121,4 +121,183 @@ public sealed class ContainerCloneSpecTests {
         Assert.False(spec.CreateBody.ContainsKey("NetworkingConfig"));
         Assert.Empty(spec.ExtraNetworks);
     }
+
+    // ── Port amendments (ADR-0033) ───────────────────────────────────────────
+
+    /// <summary>
+    /// The clone is also how a port route's host port gets published, since Docker cannot add a binding
+    /// to a running container. Both halves have to be written: the binding is what actually publishes,
+    /// and the exposed entry is what every inspect and UI reads back — including the next clone of this
+    /// container, which would otherwise carry the disagreement forward.
+    /// </summary>
+    [Fact]
+    public void PublishingAPort_WritesTheBindingAndTheExposedEntry() {
+        var spec = ContainerCloneSpec.FromInspect(Inspect(), "img:v2", Publish(9001));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+        Assert.True(Exposed(spec).ContainsKey("9001/tcp"));
+    }
+
+    /// <summary>Host port equals container port: the operator types the number the listener uses.</summary>
+    [Fact]
+    public void PublishingSeveralPorts_MapsEachOntoItself() {
+        var spec = ContainerCloneSpec.FromInspect(Inspect(), "img:v2", Publish(9001, 9002));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+        Assert.Equal("9002", HostPort(spec, 9002));
+    }
+
+    /// <summary>
+    /// The safety property of the whole feature: a binding the operator declared is not this method's to
+    /// touch, and a port never named is never looked at.
+    /// </summary>
+    [Fact]
+    public void PublishingAPort_LeavesTheOperatorsOwnBindingsAlone() {
+        var inspect = Inspect(i => i["HostConfig"]!["PortBindings"] = new JsonObject {
+            ["8080/tcp"] = new JsonArray(new JsonObject { ["HostIp"] = "127.0.0.1", ["HostPort"] = "18080" }),
+        });
+
+        var spec = ContainerCloneSpec.FromInspect(inspect, "img:v2", Publish(9001));
+
+        var bindings = Bindings(spec);
+        Assert.Equal("18080", bindings["8080/tcp"]![0]!["HostPort"]!.GetValue<string>());
+        // Down to the interface it was pinned to — the entry is carried across, not rebuilt.
+        Assert.Equal("127.0.0.1", bindings["8080/tcp"]![0]!["HostIp"]!.GetValue<string>());
+        Assert.Equal("9001", bindings["9001/tcp"]![0]!["HostPort"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void UnpublishingAPort_RemovesBothHalvesAndNothingElse() {
+        var inspect = WithPublished(9001, 9002);
+
+        var spec = ContainerCloneSpec.FromInspect(
+            inspect, "img:v2", new ContainerCloneSpec.PortAmendments([], [9001]));
+
+        Assert.False(Bindings(spec).ContainsKey("9001/tcp"));
+        Assert.False(Exposed(spec).ContainsKey("9001/tcp"));
+        Assert.Equal("9002", HostPort(spec, 9002));
+    }
+
+    [Fact]
+    public void PublishingAndUnpublishingDisjointPorts_DoesBoth() {
+        var inspect = WithPublished(9003);
+
+        var spec = ContainerCloneSpec.FromInspect(
+            inspect, "img:v2", new ContainerCloneSpec.PortAmendments([9001], [9003]));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+        Assert.False(Bindings(spec).ContainsKey("9003/tcp"));
+    }
+
+    /// <summary>
+    /// A port on both lists is a caller naming a state rather than two operations; "bound" is the state
+    /// it named last, and saying so here means the caller never has to order the lists.
+    /// </summary>
+    [Fact]
+    public void APortOnBothLists_IsPublished() {
+        var spec = ContainerCloneSpec.FromInspect(
+            Inspect(), "img:v2", new ContainerCloneSpec.PortAmendments([9001], [9001]));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+        Assert.True(Exposed(spec).ContainsKey("9001/tcp"));
+    }
+
+    /// <summary>
+    /// Applying the same publish to a container that already has it changes nothing — which is what lets
+    /// a plan be recomputed and reapplied without a growing pile of duplicate bindings.
+    /// </summary>
+    [Fact]
+    public void RepublishingAPortThatIsAlreadyBound_IsIdempotent() {
+        var spec = ContainerCloneSpec.FromInspect(WithPublished(9001), "img:v2", Publish(9001));
+
+        var entries = Bindings(spec)["9001/tcp"]!.AsArray();
+        Assert.Single(entries);
+        Assert.Equal("9001", entries[0]!["HostPort"]!.GetValue<string>());
+    }
+
+    /// <summary>
+    /// A container that publishes nothing has neither block, and older daemons write them as JSON null
+    /// rather than omitting them. Both are the ordinary shape of "no ports", not a reason to fail the
+    /// recreate this process is in the middle of.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PublishingOntoAContainerWithNoPortBlocks_CreatesThem(bool explicitNulls) {
+        var inspect = Inspect(i => {
+            if (!explicitNulls) return;
+            i["Config"]!["ExposedPorts"] = null;
+            i["HostConfig"]!["PortBindings"] = null;
+        });
+
+        var spec = ContainerCloneSpec.FromInspect(inspect, "img:v2", Publish(9001));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+        Assert.True(Exposed(spec).ContainsKey("9001/tcp"));
+    }
+
+    /// <summary>Not even a HostConfig block: the amendment brings one rather than dropping the ports.</summary>
+    [Fact]
+    public void PublishingOntoAnInspectWithNoHostConfig_StillBinds() {
+        var inspect = Inspect(i => i.Remove("HostConfig"));
+
+        var spec = ContainerCloneSpec.FromInspect(inspect, "img:v2", Publish(9001));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+    }
+
+    /// <summary>
+    /// A block that is not an object is not something Docker would have accepted either, so it is
+    /// replaced rather than parsed. What matters is that the recreate goes ahead: this runs between the
+    /// stop and the create, where throwing leaves the container down.
+    /// </summary>
+    [Fact]
+    public void PublishingOntoAMalformedPortBlock_ReplacesIt() {
+        var inspect = Inspect(i => i["HostConfig"]!["PortBindings"] = "not an object");
+
+        var spec = ContainerCloneSpec.FromInspect(inspect, "img:v2", Publish(9001));
+
+        Assert.Equal("9001", HostPort(spec, 9001));
+    }
+
+    /// <summary>An amendment with nothing in it is not an amendment: the body comes through untouched.</summary>
+    [Fact]
+    public void AnEmptyAmendment_AddsNoPortBlocks() {
+        var spec = ContainerCloneSpec.FromInspect(Inspect(), "img:v2", ContainerCloneSpec.PortAmendments.None);
+
+        Assert.False(spec.CreateBody.ContainsKey("ExposedPorts"));
+        Assert.False(spec.CreateBody["HostConfig"]!.AsObject().ContainsKey("PortBindings"));
+    }
+
+    /// <summary>Unpublishing a port nothing binds is a no-op, not a failure.</summary>
+    [Fact]
+    public void UnpublishingAPortThatIsNotBound_ChangesNothing() {
+        var spec = ContainerCloneSpec.FromInspect(
+            WithPublished(9002), "img:v2", new ContainerCloneSpec.PortAmendments([], [9001]));
+
+        Assert.Equal("9002", HostPort(spec, 9002));
+        Assert.Single(Bindings(spec));
+    }
+
+    private static ContainerCloneSpec.PortAmendments Publish(params int[] ports) => new(ports, []);
+
+    /// <summary>An inspect record whose container already publishes <paramref name="ports"/>.</summary>
+    private static JsonObject WithPublished(params int[] ports) => Inspect(i => {
+        var bindings = new JsonObject();
+        var exposed = new JsonObject();
+        foreach (var port in ports) {
+            bindings[$"{port}/tcp"] = new JsonArray(new JsonObject { ["HostPort"] = port.ToString() });
+            exposed[$"{port}/tcp"] = new JsonObject();
+        }
+        i["HostConfig"]!["PortBindings"] = bindings;
+        i["Config"]!["ExposedPorts"] = exposed;
+    });
+
+    private static JsonObject Bindings(ContainerCloneSpec spec) =>
+        spec.CreateBody["HostConfig"]!["PortBindings"]!.AsObject();
+
+    private static JsonObject Exposed(ContainerCloneSpec spec) => spec.CreateBody["ExposedPorts"]!.AsObject();
+
+    private static string HostPort(ContainerCloneSpec spec, int port) =>
+        Bindings(spec)[$"{port}/tcp"]![0]!["HostPort"]!.GetValue<string>();
 }

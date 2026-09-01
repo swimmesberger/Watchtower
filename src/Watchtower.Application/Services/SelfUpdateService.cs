@@ -136,12 +136,13 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
             if (details.State?.Status == "running") {
                 _logger.LogInformation("Coordinator {Id} is still running; waiting for it to exit", coordinatorId[..12]);
-                if (!await TryWaitForExitAsync(coordinatorId, waitTimeout, ct)) return;
+                if (!await CoordinatorContainers.TryWaitForExitAsync(_docker, _logger, coordinatorId, waitTimeout, ct))
+                    return;
                 details = await _docker.InspectContainerAsync(coordinatorId, ct);
             }
 
             var exitCode = details.State?.ExitCode ?? -1;
-            var logs = await CollectCoordinatorLogsAsync(coordinatorId, ct);
+            var logs = await CoordinatorContainers.CollectLogsAsync(_docker, coordinatorId, ct);
 
             if (exitCode == 0) {
                 _logger.LogInformation("Coordinator {Id} exited successfully — self-update applied", coordinatorId[..12]);
@@ -161,39 +162,6 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             _logger.LogDebug(ex, "Could not inspect coordinator container {Id}; assuming update completed", coordinatorId[..12]);
             await SetStageAsync(SelfUpdateApplyStage.Idle, ct: CancellationToken.None);
             await UpdateRuntimeAsync(r => r with { CoordinatorId = null }, CancellationToken.None);
-        }
-    }
-
-    /// <summary>
-    /// Waits for the coordinator to exit under a ceiling of its own, since the wait itself is
-    /// unbounded (the daemon holds the response until the container stops, on the untimed client).
-    /// Returns false when the ceiling won — the caller then leaves the apply stage and CoordinatorId
-    /// untouched for a later reconcile, exactly as a cancellation would.
-    /// </summary>
-    private async Task<bool> TryWaitForExitAsync(string coordinatorId, TimeSpan waitTimeout, CancellationToken ct) {
-        // The ceiling gets its own source so "the ceiling won" is read off it directly rather than
-        // inferred from ct, which a shutdown landing in the same instant would falsify.
-        using var ceiling = new CancellationTokenSource(waitTimeout);
-        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, ceiling.Token);
-        try {
-            await _docker.WaitContainerAsync(coordinatorId, bounded.Token);
-            return true;
-        } catch (OperationCanceledException) when (ceiling.IsCancellationRequested) {
-            _logger.LogWarning(
-                "Coordinator {Id} had not exited after {Timeout}; leaving the apply stage to be reconciled later",
-                coordinatorId[..12], waitTimeout);
-            return false;
-        }
-    }
-
-    private async Task<string> CollectCoordinatorLogsAsync(string containerId, CancellationToken ct) {
-        try {
-            var sb = new System.Text.StringBuilder();
-            await foreach (var line in _docker.StreamLogsAsync(containerId, tail: 50, follow: false, ct))
-                sb.AppendLine(line);
-            return sb.ToString();
-        } catch {
-            return "(logs unavailable)";
         }
     }
 
@@ -368,20 +336,11 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
             var coordinatorName = $"watchtower-coordinator-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
 
-            // The coordinator runs from the just-pulled image, so it executes the newest code. It
-            // only needs the Docker socket — the recreate is a pure Docker API operation.
-            var coordinatorId = await _docker.CreateContainerAsync(new DockerCreateContainerBody {
-                Image = imageName,
-                Cmd = ["--self-update", "--container-id", containerId, "--image", imageName],
-                Env = [$"WATCHTOWER__DOCKERAPIVERSION={_options.DockerApiVersion}"],
-                HostConfig = new DockerCreateHostConfig {
-                    Binds = ["/var/run/docker.sock:/var/run/docker.sock"],
-                    NetworkMode = "none",
-                    GroupAdd = HostSupplementaryGroups.Current(),
-                },
-            }, coordinatorName, ct);
-
-            await _docker.StartContainerAsync(coordinatorId, ct);
+            // The coordinator runs from the just-pulled image, so it executes the newest code.
+            var coordinatorId = await CoordinatorContainers.SpawnAsync(
+                _docker, imageName,
+                ["--self-update", "--container-id", containerId, "--image", imageName],
+                _options.DockerApiVersion, coordinatorName, ct);
             await UpdateRuntimeAsync(r => r with { CoordinatorId = coordinatorId }, ct);
 
             _logger.LogInformation(

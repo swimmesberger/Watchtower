@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 
 namespace Watchtower.Application.Services;
@@ -27,10 +28,37 @@ public sealed record ContainerCloneSpec {
     ];
 
     /// <summary>
+    /// Host ports to add to or remove from the clone (ADR-0033). Docker cannot add a port binding to a
+    /// running container, so publishing one is a recreate — and a recreate is what this type already
+    /// describes.
+    /// </summary>
+    /// <param name="Publish">
+    /// Ports to publish. Host port equals container port: a port route's listener is inside the container
+    /// on the same number an operator types in the browser, so any other mapping would be a second number
+    /// nothing derives.
+    /// </param>
+    /// <param name="Unpublish">
+    /// Ports to stop publishing. A port named in both wins as a publish — the caller asking for both at
+    /// once is asking for a state, and the state it named last is "bound".
+    /// </param>
+    public sealed record PortAmendments(IReadOnlyList<int> Publish, IReadOnlyList<int> Unpublish) {
+        /// <summary>Nothing to change — the shape every non-port recreate passes.</summary>
+        public static PortAmendments None { get; } = new([], []);
+
+        public bool IsEmpty => Publish.Count == 0 && Unpublish.Count == 0;
+    }
+
+    /// <summary>
     /// Builds the clone spec from <paramref name="inspect"/> (a <c>GET /containers/{id}/json</c>
     /// response), retargeted to <paramref name="imageRef"/>.
     /// </summary>
-    public static ContainerCloneSpec FromInspect(JsonObject inspect, string imageRef) {
+    /// <param name="ports">
+    /// Host-port bindings to add or remove on the way through, or null to clone them as they are. Only
+    /// the ports it names are touched; every other binding the operator declared is carried over
+    /// untouched, which is the whole safety property of this parameter.
+    /// </param>
+    public static ContainerCloneSpec FromInspect(
+        JsonObject inspect, string imageRef, PortAmendments? ports = null) {
         var oldId = inspect["Id"]?.GetValue<string>() ?? "";
         var name = (inspect["Name"]?.GetValue<string>() ?? "").TrimStart('/');
         if (string.IsNullOrEmpty(name))
@@ -50,6 +78,8 @@ public sealed record ContainerCloneSpec {
         if (inspect["HostConfig"]?.DeepClone() is JsonNode hostConfig)
             body["HostConfig"] = hostConfig;
 
+        if (ports is { IsEmpty: false }) ApplyPortAmendments(body, ports);
+
         var extraNetworks = new List<(string, JsonObject)>();
         if (inspect["NetworkSettings"]?["Networks"] is JsonObject networks && networks.Count > 0) {
             var oldShortId = oldId.Length >= 12 ? oldId[..12] : oldId;
@@ -65,6 +95,56 @@ public sealed record ContainerCloneSpec {
         }
 
         return new ContainerCloneSpec { Name = name, CreateBody = body, ExtraNetworks = extraNetworks };
+    }
+
+    /// <summary>
+    /// Adds and removes the named host ports on the create body, leaving every other binding alone.
+    /// </summary>
+    /// <remarks>
+    /// Both halves of a published port are written: <c>ExposedPorts</c> (a Config field, so top level in
+    /// the create body) and <c>HostConfig.PortBindings</c>. The daemon accepts a binding for a port that
+    /// is not exposed, but <c>docker inspect</c> and every UI then disagree about what the container
+    /// offers — and the next clone of this container would carry that disagreement forward.
+    /// <para>
+    /// A block that is missing, JSON null, or not an object at all is replaced with a fresh one. The
+    /// first two are ordinary (a container with no published ports), and the third is not valid Docker
+    /// input in the first place — nothing that could be salvaged is being thrown away.
+    /// </para>
+    /// </remarks>
+    private static void ApplyPortAmendments(JsonObject body, PortAmendments ports) {
+        var hostConfig = Block(body, "HostConfig");
+        var bindings = Block(hostConfig, "PortBindings");
+        var exposed = Block(body, "ExposedPorts");
+
+        // Removals first, and never for a port that is also being published: the caller named a state,
+        // and "bound" is the one it named. Doing it in this order also makes the pair idempotent.
+        foreach (var port in ports.Unpublish.Where(p => !ports.Publish.Contains(p))) {
+            var key = PortKey(port);
+            bindings.Remove(key);
+            exposed.Remove(key);
+        }
+
+        foreach (var port in ports.Publish) {
+            var key = PortKey(port);
+            // Replaced wholesale rather than merged: the binding Watchtower wants is the whole binding —
+            // every interface, host port equal to container port — and a stale entry alongside it would
+            // publish the same service somewhere nobody asked for.
+            bindings[key] = new JsonArray(
+                new JsonObject { ["HostPort"] = port.ToString(CultureInfo.InvariantCulture) });
+            exposed[key] = new JsonObject();
+        }
+    }
+
+    /// <summary>Docker's key for a TCP port. UDP is out of scope: a port route serves HTTPS.</summary>
+    private static string PortKey(int port) =>
+        string.Create(CultureInfo.InvariantCulture, $"{port}/tcp");
+
+    /// <summary>The named child object, created (or replaced, when it is not one) so it can be written to.</summary>
+    private static JsonObject Block(JsonObject parent, string name) {
+        if (parent[name] is JsonObject existing) return existing;
+        var created = new JsonObject();
+        parent[name] = created;
+        return created;
     }
 
     private static JsonObject SanitizeEndpoint(JsonObject? endpoint, string oldShortId) {
