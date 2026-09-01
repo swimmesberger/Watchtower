@@ -408,6 +408,13 @@ export function RoutesPage() {
   // pending — from the banner's button through to the confirmation it opens. "Publish" in front of a
   // recreate that is only going to give a leftover port back describes the opposite of what happens.
   const releaseOnly = pendingPorts.length === 0
+  // Every port the button would publish is already held by another container, so the recreate it starts
+  // could only fail to start and roll back. Offering it anyway would cost a restart to learn nothing.
+  // A mix is left enabled: the publishable half is still worth a recreate.
+  const allPendingBlocked = pendingPorts.length > 0 && pendingPorts.every((p) => p.blockedBy != null)
+  // One reason, whichever applies — the button is disabled with exactly one explanation attached.
+  const publishRefusal =
+    portBindings?.unavailableReason ?? (allPendingBlocked ? (pendingPorts[0]?.blockedBy ?? null) : null)
   const publishActionLabel = releaseOnly
     ? 'Release ports & restart Watchtower (~5 s)'
     : 'Publish ports & restart Watchtower (~5 s)'
@@ -920,14 +927,14 @@ export function RoutesPage() {
                 : `${pendingPorts.length} host ports are not published`
           }
           action={
-            portBindings?.unavailableReason == null ? (
+            publishRefusal == null ? (
               <Button variant="link" onClick={() => setConfirmPublish(true)}>
                 {publishActionLabel}
               </Button>
             ) : (
               // Disabled rather than hidden: the operator is looking at a route that does not work and
               // should be told why the obvious remedy is not on offer here.
-              <Tooltip label={portBindings.unavailableReason}>
+              <Tooltip label={publishRefusal}>
                 {/* A disabled button swallows pointer events and can't take focus, so the wrapping span
                     is the trigger — made focusable so keyboard users get the reason too. */}
                 <span className="inline-flex" tabIndex={0}>
