@@ -13,18 +13,32 @@ The feature is **opt-in**. While it is off, routes are stored and nothing is ser
 | `caddy` *(deprecated)* | A sibling Caddy container Watchtower manages, holding the host's ports 80/443. Kept for existing installs. | [caddy.md](caddy.md) |
 | `cloudflare` | A Cloudflare Tunnel: outbound only, no open ports, TLS at Cloudflare's edge, access gated by Zero Trust. | [cloudflare.md](cloudflare.md) |
 
+One capability is not shared, because it is a listener on Watchtower's own host and nothing else can
+lend one:
+
+| Capability | `yarp` | `caddy` | `cloudflare` |
+| --- | --- | --- | --- |
+| **Port routes** — HTTPS on a LAN address with no domain (`https://nas.lan:9001`), certified by a CA Watchtower generates for itself | ✔ | — | — |
+
+Under the other two providers such a route is stored but reports `Error` saying so. See
+[yarp.md](yarp.md) and [ADR-0033](../decisions/0033-port-routes-and-internal-ca.md).
+
 Background: [ADR-0015](../decisions/0015-proxy-provider-abstraction.md) (the provider seam) and
 [ADR-0022](../decisions/0022-in-process-yarp-proxy.md) (the in-process provider and the default flip).
 
 ## The route table is the source of truth
 
-A **route** is a domain plus a target. The target is either a **stack service** — a compose service in
-one of your stacks and a container port — or **Watchtower itself**, which is how this instance's own UI
-and login pages get their hostnames ([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md),
-and "Exposing Watchtower itself" below). You add them in the **Routes** UI (`/routes`); every provider is
-a projection of that one table, so switching providers does not mean re-entering anything. Each route
-also carries its **access mode** (Public / Authenticated / Restricted) and, for the two
-certificate-issuing providers, whether it is served over TLS.
+A **route** is an address plus a target. The address is a **domain** — the usual case — or, under the
+built-in provider only, a **port** of its own on this host, for a LAN deployment that has no domain to
+put in front of anything ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md)). The target is
+either a **stack service** — a compose service in one of your stacks and a container port — or
+**Watchtower itself**, which is how this instance's own UI and login pages get their hostnames
+([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md), and "Exposing Watchtower
+itself" below). You add them in the **Routes** UI (`/routes`); every provider is a projection of that one
+table, so switching providers does not mean re-entering anything. Each route also carries its **access
+mode** (Public / Authenticated / Restricted) and, for the two certificate-issuing providers, whether it
+is served over TLS — a port route is always public and always TLS, since it has no hostname a login
+redirect could return a visitor to.
 
 Route status (`Pending`, `Awaiting DNS`, `Active`, `Error`) reports the certificate state, and how much
 that is worth depends on the provider. Under the **built-in provider it is authoritative**: Watchtower

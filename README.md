@@ -21,7 +21,10 @@ domain at a service under *Routes* and it is served with a certificate Watchtowe
 itself over ACME — in its own process, with no sibling proxy container to run. Publish `80:8081` and
 `443:8443` and set `WATCHTOWER__PROXY__ENABLED=true`; ingress binds its own container ports, so an
 unknown domain arriving there gets a 404 rather than Watchtower's own UI, which stays on 8080 for you
-to bind privately. A **Cloudflare Tunnel** provider is there for
+to bind privately. No domain at all? A **port route** puts one service on a TLS port of its own
+(`https://nas.lan:9001`) with a certificate from an internal CA Watchtower generates and you import
+once — LAN HTTPS without ACME ([ADR-0033](docs/decisions/0033-port-routes-and-internal-ca.md)).
+A **Cloudflare Tunnel** provider is there for
 hosts that cannot open ports at all, and the older Caddy-container provider stays supported for
 existing installations. See [docs/reverse-proxy/](docs/reverse-proxy/README.md) and
 [ADR-0022](docs/decisions/0022-in-process-yarp-proxy.md).
