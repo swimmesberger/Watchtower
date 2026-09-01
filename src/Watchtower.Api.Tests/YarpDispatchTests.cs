@@ -870,6 +870,31 @@ public sealed class YarpDispatchTests {
         Assert.Empty(factory.Forwarder.Forwarded);
     }
 
+    /// <summary>
+    /// The request path is provider-blind by construction — the dispatch middleware is registered
+    /// unconditionally and branches on the local port before it asks anything about a host — and since
+    /// the ADR-0033 addendum that is load-bearing rather than incidental: a Caddy or Cloudflare
+    /// deployment really does serve port routes now. Pinned here so a future gate on the provider fails
+    /// a test rather than a LAN.
+    /// </summary>
+    [Theory]
+    [InlineData("caddy")]
+    [InlineData("cloudflare")]
+    public async Task UnderAnotherProvider_APortRouteIsStillForwarded(string provider) {
+        using var factory = WatchtowerApiFactory.WithIngress(
+            ("Watchtower:Proxy:Provider", provider),
+            ("Watchtower:Proxy:PortRoutes:Ports",
+                PortRoutePort.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://nas.lan:{PortRoutePort}/web/", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal($"{PortUpstream}/web/", factory.Forwarder.Single().RequestUri?.ToString());
+    }
+
     /// <summary>The port a port route listens on in these tests, in both the settings and the row.</summary>
     private const int PortRoutePort = 9001;
 

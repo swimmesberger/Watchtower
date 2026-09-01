@@ -158,6 +158,64 @@ public sealed class PortRouteSettingsMigrationTests {
         Assert.Equal("nas.lan", await StoredAsync(host, WatchtowerSettingPaths.ProxyPortRoutesLanNames));
     }
 
+    // ── The boot-snapshot half (WithLegacyAliases) ────────────────────────────
+
+    /// <summary>
+    /// The one boot the durable copy is too late for. The Kestrel projection is built before the host
+    /// exists and the certificate ensure runs in <c>WatchtowerStateInitializer</c>, both off the
+    /// synchronous boot snapshot — while <see cref="PortRouteSettingsMigration.RunAsync"/> runs later in
+    /// <c>InitializeDatabaseAsync</c>. Without the alias, that start binds no <c>ProxyPort{n}</c> at all
+    /// and stamps every port route <c>Error: no LAN names</c>.
+    /// </summary>
+    [Fact]
+    public void AnAbsentNewKey_IsAliasedToTheOldValue() {
+        var aliased = PortRouteSettingsMigration.WithLegacyAliases([
+            new(PortRouteSettingsMigration.LegacyLanNames, "nas.lan"),
+            new(PortRouteSettingsMigration.LegacyPorts, "9001,9002"),
+            new(PortRouteSettingsMigration.LegacyManagedHostPorts, "9001"),
+            new("Watchtower:Proxy:Enabled", "true"),
+        ]);
+
+        Assert.Equal("nas.lan", Read(aliased, WatchtowerSettingPaths.ProxyPortRoutesLanNames));
+        Assert.Equal("9001,9002", Read(aliased, WatchtowerSettingPaths.ProxyPortRoutesPorts));
+        Assert.Equal("9001", Read(aliased, WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts));
+        // Everything else passes through untouched, old names included — a rollback still finds them.
+        Assert.Equal("true", Read(aliased, "Watchtower:Proxy:Enabled"));
+        Assert.Equal("nas.lan", Read(aliased, PortRouteSettingsMigration.LegacyLanNames));
+    }
+
+    /// <summary>
+    /// It shadows nothing an operator has stated. A value already under the new name wins — that is the
+    /// migration having run, or somebody having saved the new field — including one saved as empty.
+    /// </summary>
+    [Theory]
+    [InlineData("nas.local")]
+    [InlineData("")]
+    public void APresentNewKey_IsLeftAlone(string existing) {
+        var aliased = PortRouteSettingsMigration.WithLegacyAliases([
+            new(PortRouteSettingsMigration.LegacyLanNames, "nas.lan"),
+            new(WatchtowerSettingPaths.ProxyPortRoutesLanNames, existing),
+        ]);
+
+        Assert.Equal(existing, Read(aliased, WatchtowerSettingPaths.ProxyPortRoutesLanNames));
+    }
+
+    /// <summary>With neither name stored there is nothing to alias — a fresh install's snapshot.</summary>
+    [Fact]
+    public void WithNeitherNameStored_NothingIsAdded() {
+        var snapshot = new KeyValuePair<string, string?>[] { new("Watchtower:Proxy:Enabled", "true") };
+
+        var aliased = PortRouteSettingsMigration.WithLegacyAliases(snapshot);
+
+        Assert.Equal(snapshot, aliased);
+    }
+
+    /// <summary>The last value wins on a duplicate key, which is the reading a config provider gives it.</summary>
+    private static string? Read(IEnumerable<KeyValuePair<string, string?>> snapshot, string key) =>
+        snapshot.Where(e => string.Equals(e.Key, key, StringComparison.OrdinalIgnoreCase))
+            .Select(e => e.Value)
+            .LastOrDefault();
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     /// <summary>
