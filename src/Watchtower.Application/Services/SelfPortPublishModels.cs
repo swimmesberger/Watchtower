@@ -39,6 +39,27 @@ public sealed record PortBindingPlan(
     IReadOnlyList<int> Publish, IReadOnlyList<int> Unpublish, IReadOnlyList<int> NextManaged) {
     /// <summary>Nothing to do — the container already publishes exactly what the routes need.</summary>
     public bool IsNoOp => Publish.Count == 0 && Unpublish.Count == 0;
+
+    /// <summary>
+    /// What the claim says while the recreate is in flight: <see cref="NextManaged"/> <em>plus</em> the
+    /// ports being released.
+    /// </summary>
+    /// <remarks>
+    /// The claim has to be written before the coordinator is spawned, because the coordinator ends this
+    /// process and there is no "after" — so it is written against an outcome that has not happened yet.
+    /// Writing <see cref="NextManaged"/> alone would be right only if the recreate always succeeded: a
+    /// rollback (the new port is held by another process, so the create or start fails and the old
+    /// container is restarted still binding it) would leave the port bound with the claim already gone,
+    /// and since the startup reconcile only ever <em>prunes</em> claims, nothing could ever adopt it
+    /// again — a bound, unmanaged port with no in-app way to release it.
+    /// <para>
+    /// Keeping the released ports in the claim is safe in the direction that matters: a claim is only
+    /// ever acted on for a port that is also currently bound, so once the release really lands the
+    /// startup prune (<c>managed ∩ bound</c>) drops it on its own.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<int> ClaimedThroughTheRecreate =>
+        [.. new SortedSet<int>(NextManaged.Concat(Unpublish))];
 }
 
 /// <summary>One port route's listen port, as the Watchtower container currently publishes it (or not).</summary>

@@ -118,6 +118,21 @@ public sealed class SelfPortPublishTests {
         Assert.Equal([9001], plan.NextManaged);
     }
 
+    /// <summary>
+    /// What is claimed <em>while</em> the recreate is in flight is not the same set as what is claimed
+    /// after it. The recreate may roll back — the new port is held by another process, the start fails and
+    /// the old container comes back still binding the released port — and the startup reconcile only ever
+    /// prunes claims, so a port dropped from the claim in advance could never be adopted again.
+    /// </summary>
+    [Fact]
+    public void ThePreSpawnClaim_KeepsThePortsTheRecreateIsAboutToRelease() {
+        var plan = SelfPortPublishService.ComputePlan(desired: [9002], bound: [9001], managed: [9001]);
+
+        Assert.Equal([9001], plan.Unpublish);
+        Assert.Equal([9002], plan.NextManaged);
+        Assert.Equal([9001, 9002], plan.ClaimedThroughTheRecreate);
+    }
+
     // ── Reading the container's bindings ─────────────────────────────────────
 
     [Fact]
@@ -140,6 +155,25 @@ public sealed class SelfPortPublishTests {
         });
 
         Assert.Equal([9001], SelfPortPublishService.BoundHostPorts(inspect).Order());
+    }
+
+    /// <summary>
+    /// The protocol is part of the key, and a port route serves HTTPS. Reading a <c>9001/udp</c> binding
+    /// as satisfying a route on 9001 would leave the route permanently unreachable while the page
+    /// reported the port as published — and no apply would ever add the TCP binding, because the plan
+    /// would see nothing to publish.
+    /// </summary>
+    [Fact]
+    public void BoundHostPorts_IgnoresABindingOnAnotherProtocol() {
+        var inspect = InspectJson(bindings: new JsonObject {
+            ["9001/udp"] = new JsonArray(new JsonObject { ["HostPort"] = "9001" }),
+            ["9002/sctp"] = new JsonArray(new JsonObject { ["HostPort"] = "9002" }),
+            // No suffix is tcp — the same reading the daemon gives a bare port number.
+            ["9003"] = new JsonArray(new JsonObject { ["HostPort"] = "9003" }),
+            ["9004/tcp"] = new JsonArray(new JsonObject { ["HostPort"] = "9004" }),
+        });
+
+        Assert.Equal([9003, 9004], SelfPortPublishService.BoundHostPorts(inspect).Order());
     }
 
     [Fact]
@@ -189,6 +223,55 @@ public sealed class SelfPortPublishTests {
                 "--unpublish-ports", "",
             ],
             create["Cmd"]!.AsArray().Select(n => n!.GetValue<string>()));
+    }
+
+    /// <summary>
+    /// The release half, and the claim it leaves behind. The claim is written before the coordinator
+    /// exists, so it has to describe a recreate that may never happen: a rollback leaves 9001 bound, and a
+    /// claim already dropped could never be picked up again — the startup reconcile only prunes. So the
+    /// port stays claimed until it is genuinely gone, at which point <c>managed ∩ bound</c> drops it.
+    /// </summary>
+    [Fact]
+    public async Task ApplyingARelease_KeepsClaimingThePortUntilTheRecreateHasHappened() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting(published: [9001]);
+        using var host = PortHost(estate);
+        // Watchtower published 9001 for a route that has since been deleted.
+        await SetManagedPortsAsync(host, "9001");
+
+        var result = await ApplyAsync(host);
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.True(result.Value.Restarting);
+        Assert.Equal([9001], result.Value.Unpublished);
+        Assert.Equal("9001", await ManagedPortsAsync(host));
+
+        var create = await WaitForCoordinatorAsync(estate);
+        Assert.Equal(
+            [
+                "--self-update",
+                "--container-id", SelfId,
+                "--image", "registry.invalid/watchtower:latest",
+                "--publish-ports", "",
+                "--unpublish-ports", "9001",
+            ],
+            create["Cmd"]!.AsArray().Select(n => n!.GetValue<string>()));
+    }
+
+    /// <summary>
+    /// …and the next start is what ends the claim, once the port really is gone. This is the half that
+    /// makes keeping it safe rather than permanent.
+    /// </summary>
+    [Fact]
+    public async Task Startup_AfterTheReleaseLanded_DropsTheClaim() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        await SetManagedPortsAsync(host, "9001");
+
+        await host.Services.GetRequiredService<SelfPortPublishService>().StartAsync(Ct);
+
+        Assert.True(string.IsNullOrEmpty(await ManagedPortsAsync(host)));
     }
 
     /// <summary>
@@ -319,6 +402,72 @@ public sealed class SelfPortPublishTests {
         Assert.Contains("nothing to apply", result.Value.Message, StringComparison.Ordinal);
         // No recreate, so no coordinator and no audit row about one.
         Assert.DoesNotContain(estate.Default.Requests, r => r.Contains("/containers/create"));
+    }
+
+    /// <summary>
+    /// And a no-op apply is what finally clears an error a failed one recorded. Without this the message
+    /// is permanent: the operator publishes the port by hand, the plan has nothing left to do, and this
+    /// branch returns before any stage is written — so the Routes page keeps reporting a failure about a
+    /// world that no longer exists.
+    /// </summary>
+    [Fact]
+    public async Task ANoOpApply_ClearsTheErrorAPreviousOneRecorded() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting(published: [9001]);
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+        await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
+            ApplyStage = "error", ApplyError = "Publishing the host ports failed (exit 1)",
+        });
+
+        var result = await ApplyAsync(host);
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.False(result.Value.Restarting);
+        var runtime = await RuntimeAsync(host);
+        Assert.Equal("idle", runtime.ApplyStage);
+        Assert.Null(runtime.ApplyError);
+    }
+
+    /// <summary>
+    /// The same clear on the way in, because the button that would trigger a no-op apply is not offered
+    /// once every routed port is bound — so without this, an operator who fixed the ports by hand would
+    /// read the old failure until the settings row was edited.
+    /// </summary>
+    [Fact]
+    public async Task Startup_ClearsAnApplyErrorEveryRoutedPortHasOutlived() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting(published: [9001]);
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+        await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
+            ApplyStage = "error", ApplyError = "Publishing the host ports failed (exit 1)",
+        });
+
+        await host.Services.GetRequiredService<SelfPortPublishService>().StartAsync(Ct);
+
+        var runtime = await RuntimeAsync(host);
+        Assert.Equal("idle", runtime.ApplyStage);
+        Assert.Null(runtime.ApplyError);
+    }
+
+    /// <summary>And it stays where a routed port is still unpublished — the failure has not been resolved.</summary>
+    [Fact]
+    public async Task Startup_KeepsAnApplyErrorWhileAPortIsStillMissing() {
+        using var hostname = HostnameEnvironment.Set(SelfId);
+        using var estate = SelfInspecting();
+        using var host = PortHost(estate);
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+        await SetRuntimeAsync(host, SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime {
+            ApplyStage = "error", ApplyError = "Publishing the host ports failed (exit 1)",
+        });
+
+        await host.Services.GetRequiredService<SelfPortPublishService>().StartAsync(Ct);
+
+        Assert.Equal("error", (await RuntimeAsync(host)).ApplyStage);
     }
 
     /// <summary>Outside a container there is nothing to recreate, so the operator is told what to do instead.</summary>
@@ -559,6 +708,13 @@ public sealed class SelfPortPublishTests {
         }
         Assert.Fail("The coordinator container was never created.");
         return [];
+    }
+
+    /// <summary>This service's apply record, read the way another instance would read it.</summary>
+    private static async Task<SelfPortPublishRuntime> RuntimeAsync(AuthTestHost host) {
+        await using var scope = host.Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<ISettingsManager>().GetAsync(
+            SelfPortPublishService.KeyRuntime, new SelfPortPublishRuntime(), SettingsScope.Global, Ct);
     }
 
     /// <summary>Seeds one of the two apply records, for the cross-guard tests.</summary>

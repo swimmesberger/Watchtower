@@ -107,9 +107,14 @@ public static class WatchtowerSettingPaths {
     /// and a pin that names none makes every port Watchtower published unremovable. Do not pin it.
     /// <para>
     /// Written <em>before</em> the coordinator is spawned, because there is no "after" — the coordinator
-    /// stops this process. That is safe in the direction that matters: a claim is only ever acted on for
-    /// a port that is <em>also</em> currently bound, so a recreate that failed and rolled back leaves a
-    /// claim that can remove nothing, and the startup reconcile prunes it back out.
+    /// stops this process. What is written is the plan's
+    /// <see cref="Services.PortBindingPlan.ClaimedThroughTheRecreate"/>: the set that survives the
+    /// recreate <em>plus</em> the ports it is about to release. Both halves are claimed because the
+    /// recreate may not happen at all — a rollback leaves the released port still bound, and dropping the
+    /// claim in advance would strand it, since the startup reconcile only ever prunes. Erring towards
+    /// claiming is the safe direction: a claim is only ever acted on for a port that is <em>also</em>
+    /// currently bound, so a claim on a port nothing binds can remove nothing, and the
+    /// <c>managed ∩ bound</c> prune on every start drops it once the release really lands.
     /// </para>
     /// </summary>
     public const string ProxyYarpManagedHostPorts = "Watchtower:Proxy:Yarp:ManagedHostPorts";

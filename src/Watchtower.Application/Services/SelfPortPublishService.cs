@@ -136,12 +136,19 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
         try {
             var runtime = await LoadRuntimeAsync(linked.Token);
-            if (runtime is { ApplyStage: "restarting", CoordinatorId: { } coordinatorId })
+            var resolvedACoordinator = false;
+            if (runtime is { ApplyStage: "restarting", CoordinatorId: { } coordinatorId }) {
                 await ReconcileCoordinatorAsync(coordinatorId, _startupReconcileTimeout, linked.Token);
-            else if (runtime.ApplyStage == "restarting")
+                resolvedACoordinator = true;
+            } else if (runtime.ApplyStage == "restarting") {
                 await SetStageAsync("idle", error: null, linked.Token);
+            }
 
             await ReconcileManagedPortsAsync(linked.Token);
+            // Not when a coordinator was just reconciled above: that reconcile is what writes the current
+            // verdict, and an unpublish-only recreate that failed leaves every routed port bound — which
+            // is exactly the shape the clear below reads as "resolved".
+            if (!resolvedACoordinator) await ClearResolvedApplyErrorAsync(linked.Token);
         } catch (OperationCanceledException) {
             // Shutting down before the reconcile finished; the next start picks it up.
         } catch (Exception ex) {
@@ -179,6 +186,9 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     ///   <item>the next managed set keeps the claims that are still true and adds the ports about to be
     ///     published.</item>
     /// </list>
+    /// <see cref="PortBindingPlan.NextManaged"/> is the set that holds <em>once the recreate has
+    /// happened</em>; what is written before it is <see cref="PortBindingPlan.ClaimedThroughTheRecreate"/>,
+    /// which keeps the released ports until the release actually lands.
     /// </remarks>
     public static PortBindingPlan ComputePlan(
         IReadOnlyCollection<int> desired, IReadOnlyCollection<int> bound, IReadOnlyCollection<int> managed) {
@@ -209,13 +219,21 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     /// Tolerant in the same way <see cref="PortRouteListeners.Parse"/> is, and for the same reason: an
     /// entry it cannot read costs that entry and nothing else. An empty <c>HostPort</c> — Docker's "give
     /// me any free port" — is not a port anything can be addressed at, so it is dropped too.
+    /// <para>
+    /// Only the TCP half of the map counts. A binding's key carries the protocol
+    /// (<c>9001/tcp</c>, <c>9001/udp</c>), and a port route serves HTTPS — so a container publishing
+    /// <c>9001/udp</c> publishes nothing this feature can use. Reading it as satisfied would leave the
+    /// route permanently unreachable with the page reporting the port as published, and no apply would
+    /// ever add the TCP binding. The same rule <see cref="ContainerCloneSpec"/> writes with.
+    /// </para>
     /// </remarks>
     internal static IReadOnlySet<int> BoundHostPorts(JsonObject inspect) {
         ArgumentNullException.ThrowIfNull(inspect);
         var ports = new HashSet<int>();
         if (inspect["HostConfig"]?["PortBindings"] is not JsonObject bindings) return ports;
 
-        foreach (var (_, value) in bindings) {
+        foreach (var (key, value) in bindings) {
+            if (!IsTcp(key)) continue;
             if (value is not JsonArray entries) continue;
             foreach (var entry in entries) {
                 if (HostPortText(entry?["HostPort"]) is not { } text) continue;
@@ -223,6 +241,15 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             }
         }
         return ports;
+    }
+
+    /// <summary>
+    /// Whether a <c>PortBindings</c> key names a TCP port. A key with no suffix at all is tcp, which is
+    /// what the daemon assumes for a bare port number too.
+    /// </summary>
+    private static bool IsTcp(string key) {
+        var slash = key.IndexOf('/', StringComparison.Ordinal);
+        return slash < 0 || key.AsSpan(slash + 1).Equals("tcp", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Docker writes the host port as a string; a number is accepted rather than refused.</summary>
@@ -296,7 +323,14 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
 
         var desired = (await DesiredRoutesAsync(ct)).Select(r => r.Port).ToList();
         var plan = ComputePlan(desired, BoundHostPorts(inspect.Inspect), await LoadManagedPortsAsync(ct));
-        if (plan.IsNoOp) return plan;
+        if (plan.IsNoOp) {
+            // The container is already in the state the button asks for, so an error a previous apply
+            // recorded is about a world that no longer exists — usually an operator who added the -p by
+            // hand afterwards. Cleared here because nothing else would: this branch returns before the
+            // stage write, and once every port is bound the page stops offering the apply at all.
+            await ClearApplyErrorAsync(ct);
+            return plan;
+        }
 
         lock (_applyLock) {
             if (_applyReserved || (_applyTask is not null && !_applyTask.IsCompleted))
@@ -307,9 +341,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
 
         try {
             // Inside the accepted branch, and still before the spawn — the coordinator ends this process,
-            // so there is no "after". See the setting's own documentation for why claiming a port the
-            // recreate might not reach is the safe direction to be wrong in.
-            await SaveManagedPortsAsync(plan.NextManaged, ct);
+            // so there is no "after". The ports about to be released stay in the claim rather than being
+            // dropped in advance: a recreate that rolls back leaves them bound, and the startup prune
+            // only ever removes claims, so dropping them here would strand a bound port with nothing able
+            // to adopt it. See PortBindingPlan.ClaimedThroughTheRecreate.
+            await SaveManagedPortsAsync(plan.ClaimedThroughTheRecreate, ct);
             // Published before the task exists, and that ordering is the point: this stage is what the
             // self-update's guard reads, so writing it from inside the task — after that task's first
             // await — would leave both paths able to pass their guard and spawn a coordinator each.
@@ -514,6 +550,30 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             "Host ports {Dropped} are no longer published on this container; releasing Watchtower's claim on them.",
             string.Join(", ", managed.Where(p => !bound.Contains(p))));
         await SaveManagedPortsAsync(kept, ct);
+    }
+
+    /// <summary>
+    /// Drops a recorded apply error once every routed port is published — whatever the failed apply was
+    /// going to do has happened by other means. Read before written, so a deployment with nothing to
+    /// clear costs one settings read on start and no write at all.
+    /// </summary>
+    private async Task ClearResolvedApplyErrorAsync(CancellationToken ct) {
+        var runtime = await LoadRuntimeAsync(ct);
+        if (runtime is { ApplyStage: not "error", ApplyError: null }) return;
+        if (await TryInspectSelfRawAsync(ct) is not { } self) return;
+
+        var bound = BoundHostPorts(self.Inspect);
+        // Only the publishes: a claim still waiting to be released is a pending apply, not a failure the
+        // operator has resolved, and the page offers a button for it.
+        if (!(await DesiredRoutesAsync(ct)).All(r => bound.Contains(r.Port))) return;
+        await SetStageAsync("idle", error: null, ct);
+    }
+
+    /// <summary>Clears a recorded apply error, writing nothing when there is none.</summary>
+    private async Task ClearApplyErrorAsync(CancellationToken ct) {
+        var runtime = await LoadRuntimeAsync(ct);
+        if (runtime is { ApplyStage: not "error", ApplyError: null }) return;
+        await SetStageAsync("idle", error: null, ct);
     }
 
     /// <summary>
