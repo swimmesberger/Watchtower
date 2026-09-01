@@ -147,6 +147,17 @@ function parseLanNames(raw: string | undefined): string[] {
 }
 
 /**
+ * A LAN name as it goes into a URL authority. An IPv6 literal has to be bracketed — `fd00::10:9001` is
+ * not an authority a browser can parse, `[fd00::10]:9001` is — and a zone suffix (`fe80::1%3`) names an
+ * interface on the host that typed it, which no URL carries. Hostnames and IPv4 pass through untouched,
+ * and a name the operator already bracketed is not bracketed twice.
+ */
+function authorityHost(name: string): string {
+  if (!name.includes(':')) return name
+  return `[${name.replace(/^\[|\]$/g, '').replace(/%.*$/, '')}]`
+}
+
+/**
  * How a route is named in a message, a tooltip or an aria-label: its hostname where there is one, and
  * the port otherwise — a port route has no name of its own (ADR-0033). Mirrors `Route.DisplayAddress`
  * on the server, so the two never call the same row different things.
@@ -162,7 +173,8 @@ function routeLabel(r: Route): string {
  */
 function routeUrl(r: Route, lanNames: string[], https: boolean): string | null {
   if (r.binding === 'port') {
-    return lanNames.length > 0 ? `https://${lanNames[0]}:${r.listenPort}` : null
+    const first = lanNames[0]
+    return first ? `https://${authorityHost(first)}:${r.listenPort}` : null
   }
   return r.domain ? `${https ? 'https' : 'http'}://${r.domain}` : null
 }
@@ -308,6 +320,9 @@ export function RoutesPage() {
   })
   const proxyConfig = proxyConfigQuery.data
   const lanNames = useMemo(() => parseLanNames(proxyConfig?.yarp.lanNames), [proxyConfig])
+  // The name that stands in for the rest wherever one address is shown: every configured name reaches a
+  // port route, and the tooltip beside it lists the others.
+  const firstLanName = lanNames[0]
   // "None configured" is a claim about an answer, not about the absence of one: while the query is in
   // flight or after it failed there are no names either, and telling the operator to go set them —
   // then refusing the submit — would be sending them after something that may already be there.
@@ -599,6 +614,27 @@ export function RoutesPage() {
   }
 
   /**
+   * What the tooltip beside a port route's address says. Four states, and only one of them is a failure:
+   * names to list, a read that came back empty, a read that failed, and no read at all — the last while
+   * the provider is still being fetched, or under a provider that has no port listener to describe.
+   */
+  const portAddressNote = (r: Route) => {
+    if (lanNames.length > 0)
+      return `Also reachable on ${lanNames.map((n) => `${authorityHost(n)}:${r.listenPort}`).join(', ')} — the certificate carries every LAN name.`
+    // Same distinction the form makes: no names and no answer are different states, and sending an
+    // operator to configure what may already be there is the wrong one to guess.
+    if (lanNamesKnown)
+      return 'Set the LAN names under Settings → Reverse proxy to give this port an address.'
+    if (lanNamesUnavailable)
+      return 'The proxy settings could not be read, so the address this port is reached at cannot be shown.'
+    // Nothing failed here: the settings were never asked for. Saying they could not be read would
+    // report a fault at first paint, and would stand permanently under Caddy or the tunnel.
+    if (!supportsPortRoutes)
+      return `Port ${r.listenPort}. Port routes are served by the built-in provider only, so the current provider has no address to give this one.`
+    return `Port ${r.listenPort}. The address it is reached at is not known until the proxy settings load.`
+  }
+
+  /**
    * The route's address, as a link where one can be built. A port route is shown as
    * `https://{first LAN name}:{port}`; the tooltip names the rest, because every configured LAN name
    * reaches it and the certificate carries all of them.
@@ -607,8 +643,8 @@ export function RoutesPage() {
     const href = routeUrl(r, lanNames, servesHttps(r))
     const label =
       r.binding === 'port'
-        ? lanNames.length > 0
-          ? `${lanNames[0]}:${r.listenPort}`
+        ? firstLanName
+          ? `${authorityHost(firstLanName)}:${r.listenPort}`
           : `port ${r.listenPort}`
         : (r.domain ?? routeLabel(r))
     const link = href ? (
@@ -627,21 +663,7 @@ export function RoutesPage() {
     )
 
     if (r.binding !== 'port') return link
-    return (
-      <Tooltip
-        label={
-          lanNames.length > 0
-            ? `Also reachable on ${lanNames.map((n) => `${n}:${r.listenPort}`).join(', ')} — the certificate carries every LAN name.`
-            : // Same distinction the form makes: no names and no answer are different states, and
-              // sending an operator to configure what may already be there is the wrong one to guess.
-              lanNamesKnown
-              ? 'Set the LAN names under Settings → Reverse proxy to give this port an address.'
-              : 'The proxy settings could not be read, so the address this port is reached at cannot be shown.'
-        }
-      >
-        {link}
-      </Tooltip>
-    )
+    return <Tooltip label={portAddressNote(r)}>{link}</Tooltip>
   }
 
   /**
@@ -1114,8 +1136,8 @@ export function RoutesPage() {
                   label="Listen port"
                   required
                   hint={
-                    lanNames.length > 0
-                      ? `Reached at https://${lanNames[0]}:{port} — and on every other LAN name you configured.`
+                    firstLanName
+                      ? `Reached at https://${authorityHost(firstLanName)}:${form.listenPort || '9001'} — and on every other LAN name you configured.`
                       : 'The host port this route answers on.'
                   }
                 >
