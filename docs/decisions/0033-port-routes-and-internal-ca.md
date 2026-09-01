@@ -405,6 +405,15 @@ untouched, and nobody re-imports anything, because the root did not change.
   same devices, without telling anyone), and it means the key-protection secret is now backup material
   with a manual recovery step behind it. The operator documentation says so in all three places it
   describes the secret.
+- **Rolling back past this ADR requires deleting the port routes first, and Caddy is where that bites.**
+  A domain-less route row is a shape no earlier build knows: the pre-0033 `ProxySiteProjection` reads
+  `Domain` off every row unconditionally and emits a site with none, which `CaddyConfigBuilder` then
+  renders as a block with no address — and a Caddyfile Caddy refuses is refused whole, so one unserved
+  route stops every domain that was working. Nothing gates creation on the provider either (a port route
+  under Caddy or Cloudflare is marked `Error` as unsupported and left in the table), so the deployment
+  most exposed to this is one that never served a port route at all. Gating creation would not fix the
+  rollback and would cost the ability to prepare routes before switching provider, so this is documented
+  in `docs/upgrading.md` rather than enforced.
 - **Certificate scope is narrow on purpose.** The internal CA serves port routes and nothing else;
   domain routes stay on ACME, and the internal leaf's store key never enters the ACME desired set. The
   seam for a per-route certificate source — an uploaded certificate, a second CA — is left open by the

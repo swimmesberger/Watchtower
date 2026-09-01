@@ -88,3 +88,15 @@ There is no downgrade path in the tooling. If you need to go back, redeploy the 
 old `WATCHTOWER__DBPATH`, the `/data/watchtower.db` you kept, and the `/data/auth-keys` and
 `/data/proxy-certs` directories the imports left untouched — which is the reason the clean-up above
 comes last. Anything you changed after the import will not be in them.
+
+**Delete every port route before you redeploy an image older than
+[ADR-0033](decisions/0033-port-routes-and-internal-ca.md).** A port route is a route row with no domain,
+which is a shape the older code has never heard of: its projection reads `Domain` off every row and hands
+the empty result on as a site like any other. Under the built-in proxy that is a route the old build
+cannot serve; under **Caddy** it is worse, because the site is rendered into the generated Caddyfile as a
+block with no address, and a Caddyfile Caddy refuses is refused whole — no route change reaches the proxy
+after that, and a Caddy container started fresh on that file does not come up. One route that was never
+Caddy's to serve takes every domain that was working down with it. (The current image does not stop you creating that
+route: a port route under Caddy or Cloudflare is marked `Error` as unsupported and left in the table, so
+a Caddy deployment can be holding port routes without ever having served one.) Delete them from the
+Routes page first, then roll back.

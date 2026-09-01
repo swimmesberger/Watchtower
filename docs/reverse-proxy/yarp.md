@@ -22,9 +22,11 @@ you create — and the split is load-bearing rather than tidy.
 | 8443 (default) | `ProxyHttps` | **Ingress, TLS** — the routed traffic, one certificate per SNI name. Setting: **Ingress HTTPS port**. | `443:8443` |
 | one per port route | `ProxyPort{n}` | **Ingress, TLS, one service** — a LAN address with no domain, certified by Watchtower's own CA. Comes and goes with the route, no restart. See [port routes](#https-on-a-lan-without-a-domain-port-routes). | `{n}:{n}` |
 
-A port route's listener is **ingress** like the other two: an unknown host gets nothing there, and the
-management plane is never served on it. What it does *not* share is the host lookup — it serves exactly
-one route, chosen by the port the connection arrived on.
+A port route's listener is **ingress** in the sense the split cares about: Watchtower's management plane
+is never served on it. What it does *not* share is the host lookup — the `Host` header decides
+nothing there, so the listener serves its own route and only its own route, whatever name the client
+wrote in. The one time it answers 404 is the moment after a deletion, when the route is gone and the
+socket is not yet unbound.
 
 The two ingress listeners are **reverse-proxy settings, not image configuration**: they exist only
 while the built-in provider is enabled, and their container ports are editable under **Settings →
@@ -83,9 +85,10 @@ name you will type.
 
 ### 2. Create the port route
 
-**Routes → Add route → Port.** Pick the stack, the compose service, its container port, and the **listen
-port** — the number on this host clients will address it by (`9001`). The port has to be free: the
-management port, the two ingress ports and any other port route are all refused, with the reason.
+**Routes → New route**, and pick **Port (LAN only, internal CA)** as the binding. Then the stack, the
+compose service, its container port, and the **listen port** — the number on this host clients will
+address it by (`9001`). The port has to be free: the management port, the two ingress ports and any
+other port route are all refused, with the reason.
 
 The route goes `Active` as soon as the certificate is issued, which is immediate — the instance you are
 talking to issues it itself rather than waiting for a background pass.
@@ -118,9 +121,11 @@ it added itself, and only when the route that asked for them is gone.
 
 ### 4. Download and import the root certificate
 
-**Settings → Reverse proxy**, or the **Internal CA** block on the Routes page: *Download CA certificate*
-(`/api/proxy/internal-ca.crt`, PEM; add `?format=der` for the binary form some import dialogs insist
-on). Then install it as a trusted root on every device that should reach these addresses:
+The **Internal CA** block on the Routes page has a **Download root** button; **Settings → Reverse proxy**
+has the same thing as a *Download the internal CA root* link under the LAN names. Both fetch
+`/api/proxy/internal-ca.crt` (PEM; add `?format=der` for the binary form some import dialogs insist on),
+and neither appears until the CA exists — which is the first port route, not the first LAN name. Then
+install it as a trusted root on every device that should reach these addresses:
 
 | Client | Where |
 | --- | --- |
@@ -200,7 +205,9 @@ of Settings → Reverse proxy, or `WATCHTOWER__PROXY__YARP__HTTPPORT` / `__HTTPS
 listener off — HTTPS off is what you want when something else terminates TLS in front of Watchtower,
 HTTP off when nothing publishes 80 (no certificate will be issued then). With **both** off there is no
 ingress at all, and the single remaining endpoint serves routes and the UI together, as it did before
-the split.
+the split — but only while there are no **port routes**. A port route's listener is ingress in its own
+right, so creating one gives the deployment ingress again and undoes that collapse: a routed domain goes
+back to being refused on 8080 with a bare 404, on an endpoint that was serving it a moment earlier.
 
 ### Switching at runtime
 
@@ -443,14 +450,20 @@ port** to `0` — since nothing reaches it.
 ## Watching it work
 
 The **Routes** page (`/routes`) shows a **Certificates** card under this provider: one row per host
-the proxy wants a certificate for — routed domains, realm login hosts, and any orphan whose route is
-gone but whose certificate has not expired — with its state, expiry, last error and next scheduled
-attempt. It refreshes every 30 seconds while the page is open.
+the proxy wants a certificate for — routed domains, realm login hosts, any orphan whose route is gone
+but whose certificate has not expired, and, once a port route exists, the internal CA's shared LAN leaf
+(`internal-lan.watchtower.invalid`, source **Internal CA**) that every port route is served with — each
+with its state, expiry, last error and next scheduled attempt. It refreshes every 30 seconds while the
+page is open. The leaf's host name is a store key, not an address anybody types: the certificate is
+chosen by listening port, and the names you reach it on are the LAN names in its SANs.
 
 **Renew now** (`proxy.renewCertificate`) orders immediately, ignoring both the renewal window and any
 backoff rung. It is the escape hatch for "I have just fixed the DNS and do not want to wait six
 hours". It only accepts hosts the proxy already wants a certificate for, and only on the instance
-holding the `acme-issuer` lease — elsewhere it answers with a conflict naming that instance.
+holding the `acme-issuer` lease — elsewhere it answers with a conflict naming that instance. The LAN
+leaf's row carries no button at all, and the RPC refuses it by name if you reach for it directly: that
+certificate comes from Watchtower's internal CA rather than from a public one over ACME, and it reissues
+itself when the LAN names change or it nears expiry.
 
 ## Troubleshooting
 
