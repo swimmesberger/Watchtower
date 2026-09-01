@@ -160,15 +160,29 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             if (selfRoutes.Count > 0)
                 await SetRouteStatusAsync(selfRoutes.Select(r => r.Id), RouteStatus.Error, SelfRouteUnsupported, ct);
 
-            var routes = all.Where(r => r.Target == RouteTarget.Service).ToList();
+            // Port routes (ADR-0033) get the same treatment for a related reason: a tunnel publishes
+            // hostnames, and a route addressed by a port on Watchtower's own host has none to publish —
+            // there is nothing here to route it by. Excluded and told to say so.
+            var portRoutes = all.Where(r => r.Binding == RouteBinding.Port).ToList();
+            if (portRoutes.Count > 0)
+                await SetRouteStatusAsync(
+                    portRoutes.Select(r => r.Id), RouteStatus.Error,
+                    ProxySiteProjection.PortRouteUnsupported, ct);
+
+            var routes = all
+                .Where(r => r.Target == RouteTarget.Service && r.Binding == RouteBinding.Domain)
+                .ToList();
+            // The hostnames of those routes, which is what every call below is keyed by. Projected once
+            // so "a service route has a hostname" is stated in one place rather than at each use.
+            var domains = routes.Select(r => r.Domain).OfType<string>().ToList();
             // Merge, don't replace: rules the operator made in the dashboard (hostnames Watchtower's
             // route table doesn't know) are preserved verbatim — the configurations endpoint is a
             // whole-config PUT, so without this a fresh Watchtower pointed at an existing tunnel
             // would wipe every public hostname it didn't create. Foreign rules can be adopted from
             // the Routes page (proxy.listCloudflareForeignRoutes), which moves them under the table.
             var existing = await _api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct);
-            var foreign = ForeignIngressRules(existing, routes.Select(r => r.Domain));
-            var ingress = MergeIngress(existing, ProjectIngress(routes), routes.Select(r => r.Domain));
+            var foreign = ForeignIngressRules(existing, domains);
+            var ingress = MergeIngress(existing, ProjectIngress(routes), domains);
             // Skip the PUT (and its audit row) when the remote configuration already matches — a
             // reconcile that changed nothing is not a write.
             if (!ingress.SequenceEqual(existing)) {
@@ -190,7 +204,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             // CNAME points at the tunnel, Error with Cloudflare's own words when it does not — instead of
             // sitting at Pending with the reason only in the audit trail.
             var target = $"{tunnel.Id}.cfargotunnel.com";
-            foreach (var domain in routes.Select(r => r.Domain).Distinct(StringComparer.OrdinalIgnoreCase)) {
+            foreach (var domain in domains.Distinct(StringComparer.OrdinalIgnoreCase)) {
                 var routeIds = routes.Where(r => string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).Select(r => r.Id);
                 try {
                     var upsert = await _api.UpsertDnsCnameAsync(cf.ZoneId!, domain, target, cf.ApiToken!, ct);
@@ -512,6 +526,10 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         var apps = new List<AccessAppSpec>();
         var warnings = new List<string>();
         foreach (var route in routes.Where(r => r.AccessMode != AccessMode.Public).OrderBy(r => r.Domain, StringComparer.Ordinal)) {
+            // An Access application is attached to a hostname, so a route without one cannot have one.
+            // Unreachable in practice — ck_routes_binding stores a port route as Public — and skipped
+            // rather than thrown about, because this is a projection.
+            if (route.Domain is not { } domain) continue;
             string[] emails;
             string[] emailDomains;
             string[] groupIds;
@@ -530,7 +548,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             }
             if (emails.Length == 0 && emailDomains.Length == 0 && groupIds.Length == 0 && reusablePolicyIds.Length == 0) {
                 warnings.Add(
-                    $"Route {route.Domain} is {route.AccessMode} but nobody could pass its Access policy — " +
+                    $"Route {domain} is {route.AccessMode} but nobody could pass its Access policy — " +
                     (route.AccessMode == AccessMode.Authenticated
                         ? "configure allowed emails, email domains, an Access group id or a reusable policy id in the proxy settings. "
                         : "grant users (or groups with members) that have an email address. ") +
@@ -538,8 +556,8 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 continue;
             }
             apps.Add(new AccessAppSpec(
-                route.Domain,
-                AccessAppNamePrefix + route.Domain,
+                domain,
+                AccessAppNamePrefix + domain,
                 emails.OrderBy(e => e, StringComparer.OrdinalIgnoreCase).ToArray(),
                 emailDomains.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToArray(),
                 groupIds.OrderBy(g => g, StringComparer.OrdinalIgnoreCase).ToArray(),

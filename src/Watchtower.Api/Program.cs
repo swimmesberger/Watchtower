@@ -127,6 +127,9 @@ var proxyIngressWarnings = new ProxyIngressWarnings();
 builder.Services.AddSingleton(proxyIngressWarnings);
 var proxyIngressKestrelSection =
     ProxyIngressKestrelConfiguration.Build(builder.Configuration, proxyIngressWarnings);
+// …and registered, so the request path can settle a disagreement between its cached reading of the
+// listeners and what Kestrel was actually handed. Same object, so the two cannot drift.
+builder.Services.AddSingleton(new ProxyIngressSection(proxyIngressKestrelSection));
 
 // The in-process reverse proxy's TLS listener (ADR-0022): a Kestrel endpoint that picks its certificate
 // per connection from the SNI name. Wired unconditionally — whether it exists at any given moment is the

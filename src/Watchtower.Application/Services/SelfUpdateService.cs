@@ -27,7 +27,12 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private static readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
 
     private const string KeyConfig = "self.config";
-    private const string KeyRuntime = "self.runtime";
+
+    /// <summary>
+    /// Where the apply state lives. Internal because the port-publish path has to read it before
+    /// spawning a coordinator of its own — see <see cref="CoordinatorContainers.OtherRecreateInFlightAsync"/>.
+    /// </summary>
+    internal const string KeyRuntime = "self.runtime";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
@@ -64,6 +69,15 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private readonly TimeSpan _applyWatchTimeout;
     private Task? _applyTask;
 
+    /// <summary>
+    /// Held from passing the apply mutex until <see cref="_applyTask"/> exists, so the apply stage can be
+    /// written in between. It has to be written there rather than inside the task: the stage is what the
+    /// <em>other</em> recreate path's guard reads, and a task that writes it after its first await leaves
+    /// a window in which both paths pass their guard and both spawn a coordinator. Read and written only
+    /// under <see cref="_applyLock"/>.
+    /// </summary>
+    private bool _applyReserved;
+
     public SelfUpdateService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
@@ -72,20 +86,31 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
         : this(scopeFactory, docker, options, logger, StartupReconcileTimeout, ApplyWatchTimeout) { }
 
     /// <summary>Test seam: the two ceilings are injectable so a test need not wait out the real ones.</summary>
+    /// <param name="beforeVerify">
+    /// Awaited between this path claiming its own apply stage and re-reading the other path's. It is the
+    /// only way to stand inside the window the claim-then-verify guard closes: in production the other
+    /// path writes its stage there of its own accord, and a test cannot make two applies interleave on
+    /// demand.
+    /// </param>
     internal SelfUpdateService(
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         IOptions<WatchtowerOptions> options,
         ILogger<SelfUpdateService> logger,
         TimeSpan startupReconcileTimeout,
-        TimeSpan applyWatchTimeout) {
+        TimeSpan applyWatchTimeout,
+        Func<CancellationToken, Task>? beforeVerify = null) {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _options = options.Value;
         _logger = logger;
         _startupReconcileTimeout = startupReconcileTimeout;
         _applyWatchTimeout = applyWatchTimeout;
+        _beforeVerify = beforeVerify;
     }
+
+    /// <inheritdoc cref="SelfUpdateService(IServiceScopeFactory, DockerEngineClient, IOptions{WatchtowerOptions}, ILogger{SelfUpdateService}, TimeSpan, TimeSpan, Func{CancellationToken, Task})" path="/param[@name='beforeVerify']"/>
+    private readonly Func<CancellationToken, Task>? _beforeVerify;
 
     public async Task StartAsync(CancellationToken cancellationToken) {
         // Reconcile any coordinator left behind by an apply that the previous process instance
@@ -136,12 +161,13 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
             if (details.State?.Status == "running") {
                 _logger.LogInformation("Coordinator {Id} is still running; waiting for it to exit", coordinatorId[..12]);
-                if (!await TryWaitForExitAsync(coordinatorId, waitTimeout, ct)) return;
+                if (!await CoordinatorContainers.TryWaitForExitAsync(_docker, _logger, coordinatorId, waitTimeout, ct))
+                    return;
                 details = await _docker.InspectContainerAsync(coordinatorId, ct);
             }
 
             var exitCode = details.State?.ExitCode ?? -1;
-            var logs = await CollectCoordinatorLogsAsync(coordinatorId, ct);
+            var logs = await CoordinatorContainers.CollectLogsAsync(_docker, coordinatorId, ct);
 
             if (exitCode == 0) {
                 _logger.LogInformation("Coordinator {Id} exited successfully — self-update applied", coordinatorId[..12]);
@@ -161,39 +187,6 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             _logger.LogDebug(ex, "Could not inspect coordinator container {Id}; assuming update completed", coordinatorId[..12]);
             await SetStageAsync(SelfUpdateApplyStage.Idle, ct: CancellationToken.None);
             await UpdateRuntimeAsync(r => r with { CoordinatorId = null }, CancellationToken.None);
-        }
-    }
-
-    /// <summary>
-    /// Waits for the coordinator to exit under a ceiling of its own, since the wait itself is
-    /// unbounded (the daemon holds the response until the container stops, on the untimed client).
-    /// Returns false when the ceiling won — the caller then leaves the apply stage and CoordinatorId
-    /// untouched for a later reconcile, exactly as a cancellation would.
-    /// </summary>
-    private async Task<bool> TryWaitForExitAsync(string coordinatorId, TimeSpan waitTimeout, CancellationToken ct) {
-        // The ceiling gets its own source so "the ceiling won" is read off it directly rather than
-        // inferred from ct, which a shutdown landing in the same instant would falsify.
-        using var ceiling = new CancellationTokenSource(waitTimeout);
-        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, ceiling.Token);
-        try {
-            await _docker.WaitContainerAsync(coordinatorId, bounded.Token);
-            return true;
-        } catch (OperationCanceledException) when (ceiling.IsCancellationRequested) {
-            _logger.LogWarning(
-                "Coordinator {Id} had not exited after {Timeout}; leaving the apply stage to be reconciled later",
-                coordinatorId[..12], waitTimeout);
-            return false;
-        }
-    }
-
-    private async Task<string> CollectCoordinatorLogsAsync(string containerId, CancellationToken ct) {
-        try {
-            var sb = new System.Text.StringBuilder();
-            await foreach (var line in _docker.StreamLogsAsync(containerId, tail: 50, follow: false, ct))
-                sb.AppendLine(line);
-            return sb.ToString();
-        } catch {
-            return "(logs unavailable)";
         }
     }
 
@@ -320,13 +313,63 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
             throw new InvalidOperationException(
                 "Self-update requires Watchtower to be running as a Docker container. Running outside Docker is not supported.");
 
+        // The other path to a container recreate has a mutex and a stage of its own, and neither of them
+        // is this one — but the container both would recreate is the same. This reading is the cheap
+        // refusal, not the guard: a credential lookup and the apply mutex come between it and the spawn,
+        // and the guard that actually holds is the claim-then-verify below.
+        if (await CoordinatorContainers.OtherRecreateInFlightAsync(
+                _scopeFactory, CoordinatorContainers.CoordinatorKind.SelfUpdate, ct) is { } busy)
+            throw new InvalidOperationException(busy);
+
         var (username, token) = await ResolveCredentialAsync(config, ct);
 
-        // Guard against concurrent applies, then flip to "pulling" before releasing the lock.
+        // Guard against concurrent applies, then publish the stage before the task exists. The order is
+        // the point: the stage is what the port-publish path's guard reads, so writing it from inside
+        // the task — after that task's first await — would leave both paths able to pass their guard and
+        // spawn a coordinator each. A failure to write it releases the reservation and spawns nothing.
         lock (_applyLock) {
-            if (_applyTask is not null && !_applyTask.IsCompleted)
+            if (_applyReserved || (_applyTask is not null && !_applyTask.IsCompleted))
                 throw new InvalidOperationException("A self-update is already in progress. Wait for the current pull to finish.");
-            _applyTask = PullAndSpawnAsync(detected.ImageName, detected.ContainerId, username, token, actor, _cts.Token);
+            _applyReserved = true;
+        }
+
+        try {
+            // Read before the claim overwrites it. A lost race has to put this record back the way it
+            // found it — writing a flat Idle would quietly resolve an error a previous update recorded,
+            // and the operator would lose the only account of why the update did not land.
+            var priorRuntime = await LoadRuntimeAsync(ct);
+
+            await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
+
+            // Only for a test, which is the only way to stand inside the window below. Null in production.
+            if (_beforeVerify is not null) await _beforeVerify(ct);
+
+            // Claim, then verify — the mirror of the port-publish path. The refusal above was read
+            // several round trips ago, and the port path reads *this* record somewhere in that gap;
+            // without the second look both would pass their guard and both would spawn a coordinator over
+            // one container id. Whichever path writes its stage last sees the other's and stands down,
+            // and both standing down in a true tie is the correct outcome — nothing was started.
+            if (await CoordinatorContainers.OtherRecreateInFlightAsync(
+                    _scopeFactory, CoordinatorContainers.CoordinatorKind.SelfUpdate, ct) is { } racing) {
+                // Back to exactly what was there before the claim. Not an error of its own — nothing
+                // failed — and not a blank Idle either, which would erase a previous update's recorded
+                // failure; a stage left at "pulling" would block the path that won for as long as this
+                // process lives. The cached check result is untouched by construction, since only the two
+                // apply fields are written back.
+                await UpdateRuntimeAsync(r => r with {
+                    ApplyStage = priorRuntime.ApplyStage,
+                    ApplyError = priorRuntime.ApplyError,
+                }, ct);
+                throw new InvalidOperationException(racing);
+            }
+
+            lock (_applyLock) {
+                _applyTask = PullAndSpawnAsync(
+                    detected.ImageName, detected.ContainerId, username, token, actor, _cts.Token);
+            }
+        } finally {
+            // Released once the task itself is the mutex — or once the attempt has failed without one.
+            lock (_applyLock) { _applyReserved = false; }
         }
 
         // The start is the only success this process can record — on a successful apply the
@@ -348,8 +391,8 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
     private async Task PullAndSpawnAsync(
         string imageName, string containerId, string? username, string? token, string? actor, CancellationToken ct) {
         try {
-            await SetStageAsync(SelfUpdateApplyStage.Pulling, ct: ct);
-
+            // The "pulling" stage is already published — ApplyUpdateAsync writes it before this task
+            // exists, so the other recreate path's guard cannot read a stale "idle".
             _logger.LogInformation("Pulling image {Image} before self-update", imageName);
             await _docker.PullImageAsync(imageName, username, token, ct);
             await VerifyPullLandedAsync(imageName, ct);
@@ -368,20 +411,11 @@ public sealed class SelfUpdateService : IHostedService, IDisposable {
 
             var coordinatorName = $"watchtower-coordinator-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
 
-            // The coordinator runs from the just-pulled image, so it executes the newest code. It
-            // only needs the Docker socket — the recreate is a pure Docker API operation.
-            var coordinatorId = await _docker.CreateContainerAsync(new DockerCreateContainerBody {
-                Image = imageName,
-                Cmd = ["--self-update", "--container-id", containerId, "--image", imageName],
-                Env = [$"WATCHTOWER__DOCKERAPIVERSION={_options.DockerApiVersion}"],
-                HostConfig = new DockerCreateHostConfig {
-                    Binds = ["/var/run/docker.sock:/var/run/docker.sock"],
-                    NetworkMode = "none",
-                    GroupAdd = HostSupplementaryGroups.Current(),
-                },
-            }, coordinatorName, ct);
-
-            await _docker.StartContainerAsync(coordinatorId, ct);
+            // The coordinator runs from the just-pulled image, so it executes the newest code.
+            var coordinatorId = await CoordinatorContainers.SpawnAsync(
+                _docker, imageName,
+                ["--self-update", "--container-id", containerId, "--image", imageName],
+                _options.DockerApiVersion, coordinatorName, ct);
             await UpdateRuntimeAsync(r => r with { CoordinatorId = coordinatorId }, ct);
 
             _logger.LogInformation(

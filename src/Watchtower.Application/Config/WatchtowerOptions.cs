@@ -682,6 +682,20 @@ public sealed record YarpProxyOptions {
     /// speaks HTTPS to the client — redirecting again would loop.
     /// </summary>
     public bool RedirectHttpToHttps { get; init; } = true;
+
+    /// <summary>
+    /// The addresses this deployment is reached on from the local network — host names and IPs,
+    /// separated by commas or newlines (<c>nas.lan, 192.168.1.10</c>). They become the subject
+    /// alternative names of the one certificate Watchtower's internal CA issues, which is what makes
+    /// HTTPS on a LAN address possible at all: no public CA will issue for a name that does not resolve
+    /// on the internet.
+    /// </summary>
+    /// <remarks>
+    /// Empty by default, and empty means the internal CA is simply unused. Both forms matter — a
+    /// browser asked for a host name matches a DNS entry and one asked for a bare address matches only
+    /// an IP entry — so list every address anyone actually types.
+    /// </remarks>
+    public string LanNames { get; init; } = "";
 }
 
 /// <summary>

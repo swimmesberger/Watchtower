@@ -34,6 +34,7 @@ public sealed class GetProxyConfig(
         WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId,
         WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey,
         WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps,
+        WatchtowerSettingPaths.ProxyYarpLanNames,
         WatchtowerSettingPaths.ProxyCloudflareAccountId,
         WatchtowerSettingPaths.ProxyCloudflareZoneId,
         WatchtowerSettingPaths.ProxyCloudflareApiToken,
@@ -78,6 +79,7 @@ public sealed record ProxyConfigDto(
             AcmeEabKeyId: proxy.Yarp.AcmeEabKeyId,
             HasAcmeEabHmacKey: !string.IsNullOrWhiteSpace(proxy.Yarp.AcmeEabHmacKey),
             RedirectHttpToHttps: proxy.Yarp.RedirectHttpToHttps,
+            LanNames: proxy.Yarp.LanNames,
             HttpsListenerBound: httpsListenerBound),
         Cloudflare: new ProxyCloudflareConfigDto(
             AccountId: proxy.Cloudflare.AccountId,
@@ -103,6 +105,9 @@ public sealed record ProxyConfigDto(
 /// <paramref name="HttpsListenerBound"/> is runtime state rather than configuration: it reports whether
 /// TLS ingress is currently bound at all, which is what lets the Settings page say "enabled, but nothing
 /// is terminating TLS" instead of looking healthy while every route is served over plain HTTP.
+/// <paramref name="LanNames"/> is the raw text an operator typed — host names and IPs, comma- or
+/// newline-separated — echoed rather than reformatted so the field they edit is the value that was
+/// stored.
 /// </summary>
 /// <remarks>
 /// There is no certificate directory any more: certificates are rows (ADR-0024), so the field the card
@@ -116,6 +121,7 @@ public sealed record ProxyYarpConfigDto(
     string? AcmeEabKeyId,
     bool HasAcmeEabHmacKey,
     bool RedirectHttpToHttps,
+    string LanNames,
     bool HttpsListenerBound);
 
 /// <summary>Cloudflare Tunnel connection values for the config surface (token reduced to a flag).</summary>

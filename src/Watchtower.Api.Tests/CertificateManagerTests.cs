@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 using Xunit;
 
@@ -236,6 +237,51 @@ public sealed class CertificateManagerTests {
 
         await estate.Certificates.RenewNowAsync("other.example.invalid", Ct);
         Assert.Null(await ProviderDetailAsync(estate));
+    }
+
+    /// <summary>
+    /// Watchtower's own CA runs on this loop too (ADR-0033), and deliberately outside the issuer lease:
+    /// that lease protects a rate-limited remote resource, while issuing here is local, free and
+    /// row-race-guarded — and the instance an operator is talking to has to be able to make the port
+    /// route they just created work rather than wait for whichever node holds a lease that exists for a
+    /// different reason.
+    /// </summary>
+    [Fact]
+    public async Task TheInternalCertificate_IsIssuedByANonHolderToo() {
+        await using var estate = await AcmeEstate.StartAsync(
+            settings: ("Watchtower:Proxy:Yarp:LanNames", "nas.lan, 192.168.1.10"));
+        await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
+        estate.Factory.IssuerLease.IsHeld = false;
+        estate.Factory.IssuerLease.CurrentHolder = "node-b:abc";
+        estate.Ca.ForgetRequests();
+
+        await estate.Certificates.ReconcileAsync(Ct);
+
+        Assert.NotNull(estate.Store.Find(InternalCaNames.SharedLeafHost));
+        // Local issuance, so nothing was asked of the CA — the lease's whole purpose is untouched.
+        Assert.Empty(estate.Ca.Requests);
+    }
+
+    /// <summary>
+    /// And the internal leaf's host never enters the ACME <em>desired</em> set. It is a store key, not a
+    /// domain, and no public authority would issue for it — an order would be a refusal on a rate-limited
+    /// endpoint, every pass. It is still listed, because it is held and served; what it is not is wanted.
+    /// </summary>
+    [Fact]
+    public async Task TheInternalLeafsHost_IsHeldButNeverDesired() {
+        await using var estate = await AcmeEstate.StartAsync(
+            settings: ("Watchtower:Proxy:Yarp:LanNames", "nas.lan"));
+        await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
+        await estate.AddRouteAsync(Host);
+
+        await estate.Certificates.ReconcileAsync(Ct);
+
+        var internalLeaf = estate.State(InternalCaNames.SharedLeafHost);
+        Assert.False(internalLeaf.Desired);
+        Assert.Contains("Watchtower Internal CA", internalLeaf.Issuer ?? "", StringComparison.Ordinal);
+        // The routed domain is the only thing this instance would ever open an order for.
+        Assert.Equal(
+            [Host], estate.Certificates.Snapshot().Where(s => s.Desired).Select(s => s.Host).ToArray());
     }
 
     private static async Task<string?> ProviderDetailAsync(AcmeEstate estate) {

@@ -56,10 +56,13 @@ import type {
   DockerConfigStatus,
   Group,
   HostMetrics,
+  InternalCaInfo,
   MetricsConfig,
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
+  PortBindingsApplied,
+  PortBindingsStatus,
   Product,
   ProductDetail,
   CreateReleaseRequest,
@@ -113,6 +116,13 @@ import type {
  * Admin-only, and authenticated by the same session cookie every other request carries.
  */
 export const BUNDLE_DOWNLOAD_URL = `${apiBase}/api/instance/bundle`
+
+/**
+ * Where the internal CA's root certificate is fetched from (ADR-0033), for importing into an OS or
+ * browser trust store. A plain link for the same reason the bundle is one: the browser's own download
+ * handling should own the file, and the session cookie authenticates it like every other request.
+ */
+export const INTERNAL_CA_DOWNLOAD_URL = `${apiBase}/api/proxy/internal-ca.crt`
 
 /** Where an operator's bundle is uploaded for a restore. Admin-only; see {@link uploadRestoreBundle}. */
 const BUNDLE_UPLOAD_URL = `${apiBase}/api/instance/restore/bundle`
@@ -461,6 +471,8 @@ export const api = {
         target: data.target ?? null,
         realmId: data.realmId ?? null,
         makeLoginRoute: data.makeLoginRoute ?? null,
+        binding: data.binding ?? null,
+        listenPort: data.listenPort ?? null,
       })).route as Route,
     updateRoute: async (id: number, data: UpdateRouteRequest) =>
       (await rpc('proxy.updateRoute', {
@@ -472,6 +484,8 @@ export const api = {
         isPrimary: data.isPrimary,
         kind: data.kind ?? null,
         makeLoginRoute: data.makeLoginRoute ?? null,
+        binding: data.binding ?? null,
+        listenPort: data.listenPort ?? null,
       })).route as Route,
     // Returns the server's response rather than swallowing it: deleting a realm's login host succeeds
     // and carries a `warning` the caller has to show (ADR-0023).
@@ -483,6 +497,16 @@ export const api = {
       (await rpc('proxy.listCertificates', {})).certificates as CertificateInfo[],
     renewCertificate: async (host: string) =>
       (await rpc('proxy.renewCertificate', { host })).certificate as CertificateInfo,
+    // Read-only in the strong sense: asking never mints a root. `present: false` means nothing has
+    // needed a LAN certificate yet, which is why the Routes page shows the block only once it is there.
+    getInternalCa: async () => (await rpc('proxy.getInternalCa', {})).ca as InternalCaInfo,
+    // Whether each port route's host port is actually published on Watchtower's container (ADR-0033).
+    // Its own call rather than part of getStatus: answering it inspects the Docker daemon, and the
+    // status badge is polled from every page.
+    getPortBindings: async () => (await rpc('proxy.getPortBindings', {})) as PortBindingsStatus,
+    // Recreates Watchtower's own container to publish the pending ports. Answers before the restart
+    // lands — the coordinator waits three seconds precisely so this response gets through.
+    applyPortBindings: async () => (await rpc('proxy.applyPortBindings', {})) as PortBindingsApplied,
     getStatus: async () => (await rpc('proxy.getStatus', {})) as ProxyStatus,
     listCloudflareForeignRoutes: async () =>
       (await rpc('proxy.listCloudflareForeignRoutes', {})) as {
@@ -503,6 +527,7 @@ export const api = {
         yarpAcmeEabKeyId: data.yarpAcmeEabKeyId ?? null,
         yarpAcmeEabHmacKey: data.yarpAcmeEabHmacKey ?? null,
         yarpRedirectHttpToHttps: data.yarpRedirectHttpToHttps ?? null,
+        yarpLanNames: data.yarpLanNames ?? null,
         cloudflareAccountId: data.cloudflareAccountId ?? null,
         cloudflareZoneId: data.cloudflareZoneId ?? null,
         cloudflareApiToken: data.cloudflareApiToken ?? null,

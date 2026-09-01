@@ -4,9 +4,12 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Elarion.Abstractions.Identity;
 using Elarion.Settings;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
+using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Modules.Proxy.Handlers;
@@ -29,7 +32,8 @@ public sealed class UpdateProxyConfig(
     EnvironmentSettingPins pins,
     AuditLog audit,
     ICurrentUser currentUser,
-    YarpListenerState listener)
+    YarpListenerState listener,
+    WatchtowerDbContext db)
     : IHandler<UpdateProxyConfig.Command, Result<UpdateProxyConfig.Response>> {
     public sealed record Command(
         bool Enabled,
@@ -43,6 +47,7 @@ public sealed class UpdateProxyConfig(
         string? YarpAcmeEabKeyId = null,
         string? YarpAcmeEabHmacKey = null,
         bool? YarpRedirectHttpToHttps = null,
+        string? YarpLanNames = null,
         string? CloudflareAccountId = null,
         string? CloudflareZoneId = null,
         string? CloudflareApiToken = null,
@@ -83,6 +88,7 @@ public sealed class UpdateProxyConfig(
         var acmeEabKeyId = Coalesce(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId);
         var acmeEabHmacKey = Coalesce(command.YarpAcmeEabHmacKey, yarp.AcmeEabHmacKey);
         var redirectHttpToHttps = command.YarpRedirectHttpToHttps ?? yarp.RedirectHttpToHttps;
+        var lanNames = Coalesce(command.YarpLanNames, yarp.LanNames) ?? "";
         var httpPort = command.YarpHttpPort ?? yarp.HttpPort;
         var httpsPort = command.YarpHttpsPort ?? yarp.HttpsPort;
 
@@ -98,9 +104,16 @@ public sealed class UpdateProxyConfig(
         // switches the in-process provider on, because that is the moment Kestrel is asked to bind them.
         // Unlike the ACME values these are cheap to check and cannot rot underneath us, but the rule is kept
         // the same so "disable the proxy" never fails on a value it is about to stop acting on.
-        if ((command.YarpHttpPort is not null || command.YarpHttpsPort is not null || enablingYarp)
-            && ValidateIngressPorts(httpPort, httpsPort, listener.ManagementPort) is { } portError)
-            return AppError.Validation(portError);
+        if (command.YarpHttpPort is not null || command.YarpHttpsPort is not null || enablingYarp) {
+            if (ValidateIngressPorts(httpPort, httpsPort, listener.ManagementPort) is { } portError)
+                return AppError.Validation(portError);
+            // The other direction of the check proxy.createRoute makes: there it is a new listen port
+            // against the stored ingress ports, here a new ingress port against the stored listen ports.
+            // Whichever of the two is written second is refused, so neither order can reach the collision
+            // — where it would surface as two Kestrel endpoints asked for one socket.
+            if (await PortRouteCollisionAsync(httpPort, httpsPort, ct) is { } clash)
+                return AppError.Validation(clash);
+        }
 
         if ((command.YarpAcmeDirectoryUrl is not null || enablingYarp)
             && !IsAcceptableAcmeDirectoryUrl(acmeDirectoryUrl))
@@ -116,6 +129,15 @@ public sealed class UpdateProxyConfig(
         if ((command.YarpAcmeEabKeyId is not null || command.YarpAcmeEabHmacKey is not null || enablingYarp)
             && ValidateAcmeEab(acmeEabKeyId, acmeEabHmacKey) is { } eabError)
             return AppError.Validation(eabError);
+
+        // Same rule as the ports: checked when supplied, and when this save switches the in-process
+        // provider on, because that is the moment the internal CA starts issuing for these names. Empty
+        // is valid and means the internal CA is unused — a deployment with no LAN addresses to serve.
+        if ((command.YarpLanNames is not null || enablingYarp)
+            && !InternalCaNames.TryParseLanNames(lanNames, out _, out _, out var lanReason))
+            return AppError.Validation(
+                $"{lanReason} List the host names and IP addresses this deployment is reached on, "
+                + "separated by commas or newlines.");
 
         // Effective cloudflare values after this update: supplied value, else what is already configured.
         var accountId = Coalesce(command.CloudflareAccountId, cf.AccountId);
@@ -160,6 +182,7 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId, Changed(command.YarpAcmeEabKeyId, yarp.AcmeEabKeyId));
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey is not null);
         Check(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps != yarp.RedirectHttpToHttps);
+        Check(WatchtowerSettingPaths.ProxyYarpLanNames, Changed(command.YarpLanNames, yarp.LanNames));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccountId, Changed(command.CloudflareAccountId, cf.AccountId));
         Check(WatchtowerSettingPaths.ProxyCloudflareZoneId, Changed(command.CloudflareZoneId, cf.ZoneId));
         Check(WatchtowerSettingPaths.ProxyCloudflareApiToken, command.CloudflareApiToken is not null);
@@ -226,6 +249,8 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey.Trim(), ct);
         if (command.YarpRedirectHttpToHttps is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps ? "true" : "false", ct);
+        if (command.YarpLanNames is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyYarpLanNames, command.YarpLanNames.Trim(), ct);
         if (command.CloudflareAccountId is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccountId, command.CloudflareAccountId.Trim(), ct);
         if (command.CloudflareZoneId is not null)
@@ -268,7 +293,10 @@ public sealed class UpdateProxyConfig(
                 // the ingress ports, because changing one rebinds a listener facing the internet.
                 ProxyProviderNames.Yarp =>
                     $" · acme {AcmeHost(acmeDirectoryUrl)}"
-                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}",
+                    + $" · ingress http {PortLabel(httpPort)}, https {PortLabel(httpsPort)}"
+                    // Named because they decide what the internal CA issues for, and a name added or
+                    // removed here changes which devices can reach this deployment over TLS.
+                    + $" · lan names {(lanNames.Length > 0 ? lanNames : "none")}",
                 _ => $" · image {image}",
             })
             + (secretsUpdated.Count > 0 ? $" · secrets updated: {string.Join(", ", secretsUpdated)}" : ""),
@@ -289,6 +317,7 @@ public sealed class UpdateProxyConfig(
                 AcmeEabKeyId = string.IsNullOrWhiteSpace(acmeEabKeyId) ? null : acmeEabKeyId,
                 AcmeEabHmacKey = string.IsNullOrWhiteSpace(acmeEabHmacKey) ? null : acmeEabHmacKey,
                 RedirectHttpToHttps = redirectHttpToHttps,
+                LanNames = lanNames,
             },
             Cloudflare = cf with {
                 AccountId = accountId,
@@ -323,6 +352,32 @@ public sealed class UpdateProxyConfig(
             return $"An ingress port must not be the management port ({management}) — "
                 + "that is the listener Watchtower's own UI and API are served on.";
         return null;
+    }
+
+    /// <summary>
+    /// Checks the two ingress ports against the ports the existing port routes already listen on
+    /// (ADR-0033), returning the operator-facing message naming the route in the way, or null.
+    /// </summary>
+    /// <remarks>
+    /// The projection drops a port-route listener whose port collides with an ingress one, so without
+    /// this the route would keep its row, quietly stop being served, and read as healthy on the Routes
+    /// page. Off is never a collision: a listener that is not bound cannot take anything.
+    /// </remarks>
+    private async ValueTask<string?> PortRouteCollisionAsync(int httpPort, int httpsPort, CancellationToken ct) {
+        var wanted = new List<int>();
+        if (httpPort != 0) wanted.Add(httpPort);
+        if (httpsPort != 0) wanted.Add(httpsPort);
+        if (wanted.Count == 0) return null;
+
+        var clash = await db.Routes.AsNoTracking()
+            .Where(r => r.ListenPort != null && wanted.Contains(r.ListenPort.Value))
+            .Select(r => new { r.Id, r.ListenPort, r.ServiceName })
+            .FirstOrDefaultAsync(ct);
+        if (clash is null) return null;
+
+        var which = clash.ListenPort == httpPort ? "HTTP" : "HTTPS";
+        return $"The {which} ingress port {clash.ListenPort} is route {clash.Id}'s listen port "
+            + $"({clash.ServiceName}). Move that port route first, or choose another ingress port.";
     }
 
     /// <summary>A port for the audit line, with <c>0</c> spelled out as what it means.</summary>

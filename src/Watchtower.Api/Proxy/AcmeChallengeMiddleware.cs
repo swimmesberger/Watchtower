@@ -1,5 +1,6 @@
 using System.Text;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Api.Proxy;
 
@@ -23,13 +24,40 @@ namespace Watchtower.Api.Proxy;
 /// turn into database load.
 /// </para>
 /// </remarks>
-public sealed class AcmeChallengeMiddleware(RequestDelegate next, AcmeHttpChallengeStore store) {
+public sealed class AcmeChallengeMiddleware(
+    RequestDelegate next,
+    AcmeHttpChallengeStore store,
+    YarpListenerState listener,
+    ProxyIngressSection section) {
     /// <summary>The well-known prefix from RFC 8555 §8.3; the one remaining segment is the token.</summary>
     private static readonly PathString ChallengePrefix = new("/.well-known/acme-challenge");
+
+    /// <summary>
+    /// Whether <paramref name="localPort"/> carries a port route's own listener — the snapshot's answer
+    /// or the projected section's, the same two readings the host dispatcher uses.
+    /// </summary>
+    private bool IsPortRouteListener(int localPort) =>
+        listener.PortRoutePorts.Contains(localPort)
+        || section.BoundPortRoutePorts().Contains(localPort);
 
     public async Task InvokeAsync(HttpContext context) {
         ArgumentNullException.ThrowIfNull(context);
         if (!context.Request.Path.StartsWithSegments(ChallengePrefix, out var remaining)) {
+            await next(context);
+            return;
+        }
+
+        // Not on a port route's own listener (ADR-0033). "Every host the process serves" is what makes
+        // this middleware correct on the shared ingress ports, where a CA may arrive for any domain; a
+        // port route's listener serves exactly one upstream, over TLS, on a LAN address no CA validates.
+        // Answering here would hold a path an upstream is entitled to serve itself, and would do it for
+        // a challenge that could never have been aimed at this address.
+        //
+        // Both readings, exactly as YarpHostDispatchMiddleware.IsPortRouteListener does it: the snapshot
+        // lags the projection by a reload callback, so a listener that has just come up is a port route's
+        // listener the section already knows about and the snapshot does not. One definition of the
+        // question, or the two middlewares disagree about the same socket for the length of a reload.
+        if (IsPortRouteListener(context.Connection.LocalPort)) {
             await next(context);
             return;
         }

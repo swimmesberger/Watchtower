@@ -69,6 +69,15 @@ public sealed class SetAccess(
                 "Watchtower routes use Watchtower's own login; route access control does not apply.");
         }
 
+        // The same refusal for the same reason, one axis over (ADR-0033): a port route has no hostname,
+        // so an anonymous visitor sent to a login page would have nowhere to be sent back to — and the
+        // check constraint refuses anything but Public anyway.
+        if (route.Binding == RouteBinding.Port) {
+            return AppError.Validation(
+                "A port route is always public. It has no hostname for a login redirect to return to, so "
+                + "route access control does not apply.");
+        }
+
         // Reject an undefined enum value before touching anything — an unknown value must not be persisted
         // and read back later as something the switch statements cannot map. Both enums are guarded, fail-
         // closed and symmetric; an omitted identity header mode defaults to the safe JWT-only None.
@@ -224,8 +233,8 @@ public sealed class SetAccess(
         db.AuditEvents.Add(new AuditEvent {
             Category = AuthEventKinds.CategoryOf(AuthEventKinds.RouteAccessChanged),
             Action = AuthEventKinds.RouteAccessChanged,
-            Target = route.Domain,
-            Detail = $"actor={actorId}; route={route.Domain}#{route.Id}; mode={mode}",
+            Target = route.DisplayAddress,
+            Detail = $"actor={actorId}; route={route.DisplayAddress}#{route.Id}; mode={mode}",
             Actor = await AuditLog.ResolveActorAsync(db, currentUser.UserId),
             Success = true,
             CreatedAt = time.GetUtcNow(),

@@ -1,8 +1,9 @@
 namespace Watchtower.Application.Entities;
 
 /// <summary>
-/// Where a certificate came from: an ACME order this deployment placed, or a PEM pair carried in from
-/// the pre-ADR-0024 <c>/data/proxy-certs</c> volume by the one-shot file import.
+/// Where a certificate came from: an ACME order this deployment placed, one Watchtower's own internal
+/// CA signed, or a PEM pair carried in from the pre-ADR-0024 <c>/data/proxy-certs</c> volume by the
+/// one-shot file import.
 /// </summary>
 public static class ProxyCertificateSources {
     /// <summary>Issued by the CA through <c>CertificateIssuer</c>.</summary>
@@ -10,6 +11,12 @@ public static class ProxyCertificateSources {
 
     /// <summary>Imported once from the legacy certificate directory.</summary>
     public const string FileImport = "file-import";
+
+    /// <summary>
+    /// Signed by Watchtower's own internal CA for the LAN names an operator configured — no ACME, no
+    /// public domain. Never part of the ACME desired set, which is why the prune skips it.
+    /// </summary>
+    public const string Internal = "internal-ca";
 }
 
 /// <summary>

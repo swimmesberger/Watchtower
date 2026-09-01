@@ -21,6 +21,7 @@ using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application;
@@ -151,6 +152,14 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<SelfUpdateService>();
         services.AddHostedService(sp => sp.GetRequiredService<SelfUpdateService>());
 
+        // The same coordinator, pointed at this container's host ports instead of its image (ADR-0033):
+        // publishing a port route's listen port is a recreate, because Docker cannot add a binding to a
+        // running container. Singleton + hosted for the same two reasons as the self-update — an
+        // interrupted apply is reconciled on startup, and that is also where the record of which ports
+        // Watchtower published is pruned back to what the container actually has.
+        services.AddSingleton<SelfPortPublishService>();
+        services.AddHostedService(sp => sp.GetRequiredService<SelfPortPublishService>());
+
         // Reverse proxy — ADR-0015, extended by ADR-0022 for the third provider, which is also the
         // default. Three of them behind one runtime router, mirroring the metrics backend (ADR-0007):
         // the in-process proxy (Watchtower binds 80/443 itself, no sibling container), Caddy (a sibling
@@ -220,6 +229,12 @@ public static class WatchtowerServiceCollectionExtensions {
         // like the rest of the proxy services; filled by WatchtowerStateInitializer before Kestrel
         // serves, because the handshake path cannot wait for a query.
         services.AddSingleton<CertificateStore>();
+
+        // Watchtower's own CA and the one LAN certificate it signs: how a service reached at a LAN
+        // address gets TLS at all, where no public CA would issue. Singletons alongside the ACME pair
+        // above, and inert until something asks for a LAN certificate.
+        services.AddSingleton<InternalCaStore>();
+        services.AddSingleton<InternalCertificateService>();
 
         services.AddSingleton<StackUpdateService>();
         // Clears cached update flags for stacks an operator updated by hand, off the read path and

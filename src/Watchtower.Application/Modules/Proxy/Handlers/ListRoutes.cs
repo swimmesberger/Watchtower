@@ -11,10 +11,17 @@ public sealed class ListRoutes(WatchtowerDbContext db)
     public sealed record Response(IReadOnlyList<RouteDto> Routes);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
+        // Domain first, then port, then id. The tie-breaks are not cosmetic: a port route's domain is
+        // NULL (ADR-0033), so every one of them ties on the first key, and PostgreSQL is then free to
+        // return them in whatever order the heap happens to hold — which the five-minute certificate
+        // status write reshuffles, because an update relocates the tuple. Without them the port rows swap
+        // places between two polls of the same unchanged table.
         var routes = await db.Routes.AsNoTracking()
             .Include(r => r.Stack)
             .Include(r => r.Realm)
             .OrderBy(r => r.Domain)
+            .ThenBy(r => r.ListenPort)
+            .ThenBy(r => r.Id)
             .ToListAsync(ct);
 
         // One query for the whole table rather than a navigation per row: "is this route a realm's login

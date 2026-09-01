@@ -212,6 +212,24 @@ public sealed class UpdateProxyConfigYarpValidationTests {
             "RoutesVersion", System.Text.Json.JsonSerializer.Serialize(result.Value.Config));
     }
 
+    /// <summary>
+    /// The port-route listen ports are the same kind of key (ADR-0033): derived from the route rows by
+    /// <c>YarpProxyProvider.ApplyAsync</c>, never typed. An environment pin on it would freeze the set of
+    /// listeners, so every port route created or deleted afterwards would silently never gain or lose one.
+    /// </summary>
+    [Fact]
+    public async Task ThePortRoutePortsAreNotPartOfTheProxyCard() {
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, GetProxyConfig.ProxyPaths);
+
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { Provider = ProxyProviderNames.Yarp });
+
+        Assert.True(result.IsSuccess);
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, result.Value.Config.PinnedPaths);
+        Assert.DoesNotContain(
+            "PortRoutePorts", System.Text.Json.JsonSerializer.Serialize(result.Value.Config));
+    }
+
     [Fact]
     public async Task SavingTheInProcessProvider_RecordsTheCaAndTheSecretUpdate() {
         using var host = AuthTestHost.Start();
@@ -353,6 +371,57 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         Assert.Contains(WatchtowerSettingPaths.ProxyYarpHttpsPort, GetProxyConfig.ProxyPaths);
     }
 
+    /// <summary>
+    /// The other direction of the check <c>proxy.createRoute</c> makes (ADR-0033). Without it the
+    /// projection would drop the port route's listener as colliding, and the route would keep its row,
+    /// quietly stop being served, and go on reading as healthy on the Routes page.
+    /// </summary>
+    [Theory]
+    [InlineData(9001, 18443, "HTTP ingress port 9001")]
+    [InlineData(18081, 9001, "HTTPS ingress port 9001")]
+    public async Task AnIngressPortAPortRouteHolds_IsRefused_AndNamesTheRoute(
+        int http, int https, string expected) {
+        using var host = AuthTestHost.Start();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001, serviceName: "jellyfin");
+
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = http, YarpHttpsPort = https });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(expected, result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains($"route {routeId}", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("jellyfin", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A listener turned off holds no port, so it cannot be in a port route's way.</summary>
+    [Fact]
+    public async Task AnIngressPortTurnedOff_NeverCollidesWithAPortRoute() {
+        using var host = AuthTestHost.Start();
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await SaveAsync(host, Command() with { YarpHttpPort = 0, YarpHttpsPort = 0 });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    /// <summary>
+    /// Switching the in-process provider on is the moment the stored ingress ports start being bound, so
+    /// the collision is checked then too — even though this request supplied neither port.
+    /// </summary>
+    [Fact]
+    public async Task EnablingTheProvider_ChecksTheStoredPortsAgainstThePortRoutes() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:Yarp:HttpsPort", "9001"));
+        var stackId = await host.AddStackAsync("media");
+        await host.AddPortRouteAsync(stackId, 9001);
+
+        var result = await SaveAsync(
+            host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("HTTPS ingress port 9001", result.Error.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>The audit line names the ports, because changing one moves a listener facing the internet.</summary>
     [Fact]
     public async Task TheAuditLineNamesTheIngressPorts() {
@@ -366,6 +435,87 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         var row = await db.AuditEvents.SingleAsync(Ct);
         Assert.Contains("ingress http 18081, https off", row.Detail, StringComparison.Ordinal);
+    }
+
+    // ── LAN names (the internal CA's subject alternative names) ──────────────
+
+    [Fact]
+    public async Task TheLanNamesArePersisted_AsTyped() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpLanNames = " nas.lan, 192.168.1.10 " });
+
+        Assert.True(result.IsSuccess);
+        // Echoed verbatim rather than reformatted: the field an operator edits is the value that was
+        // stored, and the parser is what turns it into subject alternative names.
+        Assert.Equal("nas.lan, 192.168.1.10", result.Value.Config.Yarp.LanNames);
+        var settings = host.Services.GetRequiredService<ISettingsManager>();
+        Assert.Equal("nas.lan, 192.168.1.10",
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpLanNames, SettingsScope.Global, Ct));
+    }
+
+    /// <summary>Empty means the internal CA is unused — and has to stay a way to clear the field.</summary>
+    [Fact]
+    public async Task NoLanNames_IsAccepted() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpLanNames = "" });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("", result.Value.Config.Yarp.LanNames);
+    }
+
+    [Theory]
+    [InlineData("nas.lan, nas.lan:9001", "nas.lan:9001")]
+    [InlineData("https://nas.lan", "https://nas.lan")]
+    [InlineData("*.lan", "*.lan")]
+    public async Task AJunkLanName_IsRefused_AndNamed(string lanNames, string offender) {
+        // Checked here because the alternative is a certificate that silently covers four names out of
+        // five, discovered weeks later as one device that cannot reach the service.
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { YarpLanNames = lanNames });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(offender, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Switching the in-process provider on is the moment the internal CA starts issuing for these
+    /// names, so a stored value that could not be issued for is refused then too.
+    /// </summary>
+    [Fact]
+    public async Task EnablingTheProvider_ChecksTheStoredLanNames() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:Yarp:LanNames", "nas .lan"));
+        var result = await SaveAsync(
+            host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("nas .lan", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task APinnedLanNamesValueIsRefused() {
+        using var host = AuthTestHost.Start();
+        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__YARP__LANNAMES"]);
+
+        var result = await SaveAsync(host, Command() with { YarpLanNames = "nas.lan" }, pins: pins);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("WATCHTOWER__PROXY__YARP__LANNAMES", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(WatchtowerSettingPaths.ProxyYarpLanNames, GetProxyConfig.ProxyPaths);
+    }
+
+    /// <summary>They decide which devices can reach this deployment over TLS, so the trail names them.</summary>
+    [Fact]
+    public async Task TheAuditLineNamesTheLanNames() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with {
+            Provider = ProxyProviderNames.Yarp, YarpLanNames = "nas.lan, 192.168.1.10",
+        });
+        Assert.True(result.IsSuccess);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuditEvents.SingleAsync(Ct);
+        Assert.Contains("lan names nas.lan, 192.168.1.10", row.Detail, StringComparison.Ordinal);
     }
 
     // ── Wiring ───────────────────────────────────────────────────────────────

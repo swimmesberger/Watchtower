@@ -1,3 +1,6 @@
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Globalization;
+
 namespace Watchtower.Application.Entities;
 
 /// <summary>Provisioning state of a route's public domain (chiefly its TLS certificate).</summary>
@@ -79,6 +82,28 @@ public enum RouteTarget {
 }
 
 /// <summary>
+/// How a route is addressed (ADR-0033). A route is reached either by the hostname a visitor types or by
+/// the port a listener of its own is bound to, and the two are different rows with different required
+/// columns — which is what <c>ck_routes_binding</c> makes structural.
+/// </summary>
+public enum RouteBinding {
+    /// <summary>
+    /// A public hostname, matched from the <c>Host</c> header on the shared ingress listeners and given a
+    /// certificate by ACME. The original kind, and the default.
+    /// </summary>
+    Domain,
+    /// <summary>
+    /// A dedicated TLS port on this host, with no hostname at all: a LAN address a client reaches by
+    /// number sends no usable SNI, so the listener is what identifies the service and the certificate
+    /// comes from Watchtower's own internal CA rather than from a public one. Always a
+    /// <see cref="RouteTarget.Service"/> route, always <see cref="AccessMode.Public"/>, always TLS —
+    /// there is no hostname for a login redirect to come back to, and a plain-HTTP port route would be a
+    /// second, weaker way into an app that has one.
+    /// </summary>
+    Port,
+}
+
+/// <summary>
 /// A public domain the reverse proxy terminates TLS for. A <see cref="RouteTarget.Service"/> route
 /// forwards it to a service inside a <see cref="Stack"/>; a <see cref="RouteTarget.Watchtower"/>
 /// route is served by Watchtower itself (ADR-0023). The set of routes is the authoritative source
@@ -93,6 +118,13 @@ public sealed class Route : IHasXmin {
     /// between them in place would mean silently re-pointing a live hostname at something else.
     /// </summary>
     public RouteTarget Target { get; set; } = RouteTarget.Service;
+
+    /// <summary>
+    /// Whether this route is addressed by hostname or by a port of its own. Immutable after creation, for
+    /// the same reason <see cref="Target"/> is: the two kinds fill different columns, and switching one in
+    /// place would move a live address rather than edit it.
+    /// </summary>
+    public RouteBinding Binding { get; set; } = RouteBinding.Domain;
 
     /// <summary>
     /// The stack whose service this route targets. Null exactly for a
@@ -111,8 +143,24 @@ public sealed class Route : IHasXmin {
     public int? RealmId { get; set; }
     public Realm? Realm { get; set; }
 
-    /// <summary>The public hostname, e.g. <c>app.example.com</c>. Unique across all routes.</summary>
-    public required string Domain { get; set; }
+    /// <summary>
+    /// The public hostname, e.g. <c>app.example.com</c>. Unique across all routes that have one; null
+    /// exactly for a <see cref="RouteBinding.Port"/> route, which is addressed by port instead — the
+    /// check constraint <c>ck_routes_binding</c> is what makes "exactly" true.
+    /// </summary>
+    public string? Domain { get; set; }
+
+    /// <summary>
+    /// The host port this route's own TLS listener is bound to, unique across all routes that have one.
+    /// Set exactly for a <see cref="RouteBinding.Port"/> route.
+    /// </summary>
+    /// <remarks>
+    /// One port per route rather than one shared port with virtual hosting: a client reaching a bare
+    /// address sends no SNI and no meaningful <c>Host</c>, so the port is the only thing that can say
+    /// which service a connection wants. The port has to be published on Watchtower's own container as
+    /// well — nothing here can do that, and a route whose port is not published simply never accepts.
+    /// </remarks>
+    public int? ListenPort { get; set; }
     /// <summary>
     /// The compose service within the stack to forward to (its container is joined to the edge
     /// network). Empty on a <see cref="RouteTarget.Watchtower"/> route, which forwards nowhere.
@@ -165,4 +213,17 @@ public sealed class Route : IHasXmin {
     /// bookkeeping rather than part of what this entity means.
     /// </remarks>
     public uint Xmin { get; private set; }
+
+    /// <summary>
+    /// How this route is named in an audit target, a log line or an error message. The hostname where
+    /// there is one, and <c>port {n}</c> otherwise — a port route has no name of its own, and the number
+    /// is the only thing an operator would recognise it by.
+    /// </summary>
+    /// <remarks>
+    /// Not mapped: it is a rendering of two stored columns, and a route is looked up by whichever of them
+    /// its binding fills rather than by this.
+    /// </remarks>
+    [NotMapped]
+    public string DisplayAddress =>
+        Domain ?? (ListenPort is { } port ? $"port {port.ToString(CultureInfo.InvariantCulture)}" : $"route {Id}");
 }

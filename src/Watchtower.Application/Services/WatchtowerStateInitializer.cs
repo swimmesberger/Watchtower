@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Application.Services;
 
@@ -32,6 +33,18 @@ public static class WatchtowerStateInitializer {
             await scope.ServiceProvider.GetRequiredService<FileStateImport>().RunAsync(ct);
 
         await services.GetRequiredService<CertificateStore>().InitializeAsync(ct);
+        // An internal CA key written before the operator adopted a key-protection secret is encrypted
+        // here rather than whenever a leaf next happens to be reissued — which, on a converged
+        // deployment, is once every eight months. The operator documentation says the stored keys become
+        // encrypted "on the next start", and for this one that is only true because of this line. It
+        // creates nothing: with no CA row there is nothing to encrypt, and minting a root nobody asked
+        // for is what ADR-0033 decision 6 refuses to do.
+        await services.GetRequiredService<InternalCaStore>().ReprotectStoredKeyAsync(ct);
+        // Immediately after the store is filled, and before anything is served: a LAN certificate that
+        // is missing or no longer names what it should is issued here rather than a background pass
+        // later, so the first connection after a restart already gets it. A no-op — not even a CA is
+        // created — while nothing wants one.
+        await services.GetRequiredService<InternalCertificateService>().EnsureAsync(ct);
         await services.GetRequiredService<AuthTokenSigner>().InitializeAsync(ct);
     }
 }

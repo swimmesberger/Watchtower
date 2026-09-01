@@ -66,13 +66,17 @@ your next convenient restart.
   [docs/reverse-proxy/yarp.md](reverse-proxy/yarp.md#switching-at-runtime).
 - **Private keys in the database can be encrypted at rest.** Set
   `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase and keep it out of the database
-  and out of your database backups. It covers the certificate keys, the ACME account key, the
-  identity-assertion signing key and the data-protection key ring. Optional so the upgrade stays one
-  decision; without it, all four are stored exactly as the files were and the host logs one warning at
-  startup. You can set it later, and nothing needs migrating — but it is not retroactive in one go:
-  the signing key and the ACME account key are encrypted on the next start, certificates as they
-  renew, and the key ring only for keys generated from then on (earlier ring elements stay plaintext
-  and keep loading). Losing it once set invalidates sessions and forces certificate reissuance.
+  and out of your database backups. It covers the certificate keys, the ACME account key, the internal
+  CA's signing key, the identity-assertion signing key and the data-protection key ring. Optional so the
+  upgrade stays one decision; without it, all five are stored exactly as the files were and the host logs
+  one warning at startup. You can set it later, and nothing needs migrating — but it is not retroactive
+  in one go: the signing key, the ACME account key and the internal CA are encrypted on the next start,
+  certificates as they renew, and the key ring only for keys generated from then on (earlier ring
+  elements stay plaintext and keep loading). Losing it once set invalidates sessions and forces
+  certificate reissuance — automatic for ACME, but **not** for the internal CA if you use port routes:
+  that key is never silently replaced, so recovery means deleting the `internal_cas` row and re-importing
+  the new root on every device that trusted the old one
+  ([ADR-0033](decisions/0033-port-routes-and-internal-ca.md)).
 - **More than one instance is now possible for the proxy/auth plane.** Every instance serves every
   routed host from the same tables; exactly one holds the `acme-issuer` lease and orders certificates;
   route, realm and certificate changes reach the others over PostgreSQL `LISTEN/NOTIFY`. Nothing about
@@ -84,3 +88,15 @@ There is no downgrade path in the tooling. If you need to go back, redeploy the 
 old `WATCHTOWER__DBPATH`, the `/data/watchtower.db` you kept, and the `/data/auth-keys` and
 `/data/proxy-certs` directories the imports left untouched — which is the reason the clean-up above
 comes last. Anything you changed after the import will not be in them.
+
+**Delete every port route before you redeploy an image older than
+[ADR-0033](decisions/0033-port-routes-and-internal-ca.md).** A port route is a route row with no domain,
+which is a shape the older code has never heard of: its projection reads `Domain` off every row and hands
+the empty result on as a site like any other. Under the built-in proxy that is a route the old build
+cannot serve; under **Caddy** it is worse, because the site is rendered into the generated Caddyfile as a
+block with no address, and a Caddyfile Caddy refuses is refused whole — no route change reaches the proxy
+after that, and a Caddy container started fresh on that file does not come up. One route that was never
+Caddy's to serve takes every domain that was working down with it. (The current image does not stop you creating that
+route: a port route under Caddy or Cloudflare is marked `Error` as unsupported and left in the table, so
+a Caddy deployment can be holding port routes without ever having served one.) Delete them from the
+Routes page first, then roll back.

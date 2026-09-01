@@ -23,6 +23,9 @@ public sealed record DockerConfigStatus(bool Exists, string Path, string Source)
 [JsonSerializable(typeof(SelfUpdateStatus))]
 [JsonSerializable(typeof(SelfUpdateConfig))]
 [JsonSerializable(typeof(SelfUpdateRuntime))]
+// Not this module's state, and read by it all the same: before spawning a coordinator the self-update
+// checks whether the port-publish path already has one in flight over the same container (ADR-0033).
+[JsonSerializable(typeof(SelfPortPublishRuntime))]
 [JsonSerializable(typeof(DockerConfigStatus))]
 [JsonSerializable(typeof(GetSelf.Query), TypeInfoPropertyName = "GetSelfQuery")]
 [JsonSerializable(typeof(GetSelf.Response), TypeInfoPropertyName = "GetSelfResponse")]

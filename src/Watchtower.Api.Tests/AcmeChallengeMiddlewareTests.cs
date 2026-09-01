@@ -158,6 +158,37 @@ public sealed class AcmeChallengeMiddlewareTests {
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Challenge(Token), Ct)).StatusCode);
     }
 
+    /// <summary>
+    /// Not on a port route's listener (ADR-0033). "Any host" is what makes this middleware correct on the
+    /// shared ingress ports, where a CA may arrive for any domain — but a port route's listener serves one
+    /// upstream, over TLS, on a LAN address no CA validates. Answering there would take a path away from
+    /// an application entitled to serve it, for a challenge that could not have been aimed at that
+    /// address.
+    /// </summary>
+    [Fact]
+    public async Task AKnownToken_IsNotAnsweredOnAPortRoutesListener() {
+        using var factory = WatchtowerApiFactory.WithIngress(("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"));
+        using var client = factory.CreateApiClient(9001);
+        await factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+        await using var published = await PublishAsync(factory);
+
+        var response = await client.GetAsync($"http://nas.lan{Challenge(Token)}", Ct);
+
+        // Forwarded to the upstream, like any other path on that listener.
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(RecordingHttpForwarder.MarkerBody, await response.Content.ReadAsStringAsync(Ct));
+        Assert.Equal(
+            $"http://media-jellyfin:8096{Challenge(Token)}",
+            factory.Forwarder.Single().RequestUri?.ToString());
+
+        // …and the ingress listener still answers it, which is the half that must not have moved.
+        using var ingress = factory.CreateApiClient(8081);
+        var onIngress = await ingress.GetAsync($"http://{AppDomain}{Challenge(Token)}", Ct);
+        Assert.Equal(HttpStatusCode.OK, onIngress.StatusCode);
+        Assert.Equal(KeyAuthorization, await onIngress.Content.ReadAsStringAsync(Ct));
+    }
+
     private static Task<IAsyncDisposable> PublishAsync(WatchtowerApiFactory factory) =>
         factory.Services.GetRequiredService<AcmeHttpChallengeStore>()
             .PublishAsync(Token, KeyAuthorization, "app.example.invalid", ct: Ct);

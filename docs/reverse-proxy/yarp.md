@@ -12,14 +12,21 @@ For what all three providers share, start at [README.md](README.md).
 
 ## Ports: ingress is not the management plane
 
-Watchtower binds **three** listeners when the built-in proxy is on, and the split is load-bearing
-rather than tidy.
+Watchtower binds **three** listeners when the built-in proxy is on — plus one more for each port route
+you create — and the split is load-bearing rather than tidy.
 
 | Container port | Endpoint | What it is | Publish it as |
 | --- | --- | --- | --- |
 | 8080 | `Http` | **Management plane** — Watchtower's own UI, `/rpc` and `/api/*`. Answers for every host name. Set in the image (`Kestrel__Endpoints__Http__Url`). | `127.0.0.1:8080:8080` — a private interface, never the internet |
 | 8081 (default) | `ProxyHttp` | **Ingress, plain HTTP** — ACME HTTP-01 validation and the plain half of the proxy. Setting: **Ingress HTTP port**. | `80:8081` |
 | 8443 (default) | `ProxyHttps` | **Ingress, TLS** — the routed traffic, one certificate per SNI name. Setting: **Ingress HTTPS port**. | `443:8443` |
+| one per port route | `ProxyPort{n}` | **Ingress, TLS, one service** — a LAN address with no domain, certified by Watchtower's own CA. Comes and goes with the route, no restart. See [port routes](#https-on-a-lan-without-a-domain-port-routes). | `{n}:{n}` |
+
+A port route's listener is **ingress** in the sense the split cares about: Watchtower's management plane
+is never served on it. What it does *not* share is the host lookup — the `Host` header decides
+nothing there, so the listener serves its own route and only its own route, whatever name the client
+wrote in. The one time it answers 404 is the moment after a deletion, when the route is gone and the
+socket is not yet unbound.
 
 The two ingress listeners are **reverse-proxy settings, not image configuration**: they exist only
 while the built-in provider is enabled, and their container ports are editable under **Settings →
@@ -38,6 +45,123 @@ That is the invariant the Caddy provider had for free (a request with no matchin
 nothing) and it is why 8080 is a separate listener now: published straight to the internet, a shared
 endpoint serves `http://<your-ip>/` the login page with authentication on, and the whole UI with it
 off.
+
+## HTTPS on a LAN, without a domain: port routes
+
+A route is normally a **domain**. On a box with no domain and no public DNS — a NAS on `nas.lan` at
+`192.168.1.10` — no CA will ever issue for it, and there is nothing in a TLS handshake from a bare
+address to tell one service from another: a browser dialling an IP sends no SNI name at all. So the
+built-in proxy offers a second kind of route ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md)):
+
+> A **port route** gives one stack service a **TLS port of its own** on this host — `https://nas.lan:9001`
+> — with a certificate from a certificate authority Watchtower generates for itself and you import once.
+
+The service still needs no `ports:` of its own; the proxy reaches it over the stack's ingress network,
+exactly as it reaches a routed domain. A port route is always **public** (there is no hostname for a
+login redirect to return anyone to), always **TLS**, and always points at a **stack service** — never at
+Watchtower itself. It is served by the built-in provider only: under Caddy or Cloudflare such a route
+shows `Error` and says so.
+
+The whole workflow, once:
+
+### 1. Set the LAN names
+
+**Settings → Reverse proxy → LAN names.** List every address anyone will actually type, separated by
+commas or newlines:
+
+```
+nas.lan, 192.168.1.10
+```
+
+Both forms matter and neither substitutes for the other — a browser asked for `https://nas.lan:9001`
+matches a DNS entry, and one asked for `https://192.168.1.10:9001` matches only an IP entry. These
+become the subject alternative names of the one certificate Watchtower issues for **all** port routes,
+so adding a name later reissues it for every route at once. Pinnable as
+`WATCHTOWER__PROXY__YARP__LANNAMES`.
+
+Leave it empty and the internal CA is simply unused — nothing is generated until something needs it.
+Creating a port route with no LAN names configured is refused, because the certificate has to carry the
+name you will type.
+
+### 2. Create the port route
+
+**Routes → New route**, and pick **Port (LAN only, internal CA)** as the binding. Then the stack, the
+compose service, its container port, and the **listen port** — the number on this host clients will
+address it by (`9001`). The port has to be free: the management port, the two ingress ports and any
+other port route are all refused, with the reason.
+
+The route goes `Active` as soon as the certificate is issued, which is immediate — the instance you are
+talking to issues it itself rather than waiting for a background pass.
+
+### 3. Publish the host port on the Watchtower container
+
+The proxy is now listening on 9001 *inside* its container. Docker cannot add a published port to a
+running container, so the Routes page offers to do the only thing that can: **Publish ports & restart
+Watchtower (~5 s)**. Confirm it and Watchtower recreates its own container with `9001:9001` added,
+keeping every other binding, volume and network it already had. The page — and any deploy or backup
+running at that moment — is interrupted for a few seconds.
+
+The manual equivalent, which is what you want on a bare-process install, on a multi-instance deployment
+(each node has its own container), or in a compose file:
+
+```yaml
+services:
+  watchtower:
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "9001:9001"           # one line per port route
+```
+
+**If Watchtower is compose-managed, add the line to the compose file even after using the button.** A
+later `docker compose up -d` rebuilds the container from that file and drops anything the recreate
+added; the routes then report "host port not published" again and the button comes back.
+
+A port you published yourself is never adopted and never taken away — Watchtower only removes bindings
+it added itself, and only when the route that asked for them is gone.
+
+### 4. Download and import the root certificate
+
+The **Internal CA** block on the Routes page has a **Download root** button; **Settings → Reverse proxy**
+has the same thing as a *Download the internal CA root* link under the LAN names. Both fetch
+`/api/proxy/internal-ca.crt` (PEM; add `?format=der` for the binary form some import dialogs insist on),
+and neither appears until the CA exists — which is the first port route, not the first LAN name. Then
+install it as a trusted root on every device that should reach these addresses:
+
+| Client | Where |
+| --- | --- |
+| macOS | Keychain Access → System → drag the file in → open it → **Trust → Always Trust** |
+| Windows | Double-click → Install Certificate → Local Machine → **Trusted Root Certification Authorities** |
+| Linux (Debian, Ubuntu) | Copy to `/usr/local/share/ca-certificates/watchtower-internal-ca.crt`, then `sudo update-ca-certificates` |
+| Linux (RHEL, Fedora, CentOS) | Copy to `/etc/pki/ca-trust/source/anchors/`, then `sudo update-ca-trust` |
+| Linux (Arch) | Copy to `/etc/ca-certificates/trust-source/anchors/`, then `sudo trust extract-compat` |
+| Firefox | Has its own store, on every platform: Settings → Privacy & Security → Certificates → View Certificates → Authorities → **Import**, tick "identify websites" |
+| Android | Settings → Security & privacy → More security settings → Encryption & credentials → Install a certificate → **CA certificate** (the path is shorter on Android 11 and older; use the `?format=der` download). **Browsers will trust it; apps will not** — see below |
+| iOS | Install the profile, then Settings → General → About → **Certificate Trust Settings** and enable it |
+
+**Android caveat.** Since Android 7 a user-installed CA is trusted by Chrome and the other browsers but
+**not by apps**, unless an app ships a `network_security_config` that opts into the user store. So a
+port route works in a phone's browser and a native client of the same service may still refuse it, with
+a certificate error that looks identical. There is no fix from Watchtower's side; the answers are to use
+the browser, to use an app that opts in, or to put that service on a real domain with an ACME
+certificate instead.
+
+**Getting the file onto a phone or tablet.** The download sits behind the management-plane login, like
+the volume download — so either sign in to Watchtower from that device and download it there, or fetch
+it once on a desktop and transfer it out of band (AirDrop, a file share, a USB cable). There is no
+anonymous URL to point a device at.
+
+The root is valid for ten years and is never rotated automatically, so this is genuinely once per
+device. It carries no secret: the signing key stays in the database and is never part of the download.
+
+### 5. Browse it
+
+`https://nas.lan:9001` — a normal padlock, no warning, no exception to click through.
+
+### 6. Removing one
+
+Deleting a port route unbinds its listener straight away. The host port stays published until you apply
+the change; the Routes page then offers **Release ports & restart Watchtower**, which recreates the
+container without the ports Watchtower itself added.
 
 ## Enabling it
 
@@ -81,7 +205,9 @@ of Settings → Reverse proxy, or `WATCHTOWER__PROXY__YARP__HTTPPORT` / `__HTTPS
 listener off — HTTPS off is what you want when something else terminates TLS in front of Watchtower,
 HTTP off when nothing publishes 80 (no certificate will be issued then). With **both** off there is no
 ingress at all, and the single remaining endpoint serves routes and the UI together, as it did before
-the split.
+the split — but only while there are no **port routes**. A port route's listener is ingress in its own
+right, so creating one gives the deployment ingress again and undoes that collapse: a routed domain goes
+back to being refused on 8080 with a bare 404, on an endpoint that was serving it a moment earlier.
 
 ### Switching at runtime
 
@@ -108,7 +234,7 @@ pinned and read-only until the variable is removed.
                     │  Kestrel ingress (ProxyHttp/ProxyHttps)  │
                     └────────────────────┬────────────────────┘
                                          ▼
-                    /.well-known/acme-challenge/*  ──► answered from the challenge store, always
+                    /.well-known/acme-challenge/*  ──► answered from the challenge store
                                          │              (never forwarded, never redirected)
                                          ▼
                          Host in the route table?  ── no ──►  404, and nothing else
@@ -137,8 +263,17 @@ Watchtower's literal endpoints (`/rpc`, `/api/*`, the SPA fallback) would otherw
 catch-all and swallow the tenant's paths.
 
 The management endpoint (8080) runs the same middleware with the branches reversed: an unknown host is
-Watchtower's own UI, and a *routed* host is the 404. Only the challenge responder behaves identically
-on every port, because the CA does not get to choose which listener it reaches.
+Watchtower's own UI, and a *routed* host is the 404. The challenge responder behaves identically on
+both of them, because the CA does not get to choose which listener it reaches.
+
+**A port route's listener takes a much shorter path**, and the diagram above does not apply to it. There
+is no host lookup — the port decides the route, and the `Host` header decides nothing — so there is no
+404 branch, no `/.watchtower/*` handling, no HTTP→HTTPS upgrade (the listener is TLS and there is no
+plain leg) and no access check (a port route is public by construction). The identity-header strip is
+the one step it keeps: nothing a client sends under those names reaches an upstream, on any listener.
+**ACME challenges are not answered on a port-route listener either** — such a listener serves exactly
+one upstream on a LAN address no CA validates, so answering there would hold a path the application is
+entitled to serve itself, for a challenge that could never have been aimed at that address.
 
 ### Watchtower routes
 
@@ -183,15 +318,24 @@ host with the same certificate, whichever instance obtained it. A file on one no
 
 **Encryption at rest is optional and worth turning on.** Set
 `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` to a long random passphrase and the private keys —
-certificates, the ACME account, the identity-assertion signing key — are stored AES-256-GCM encrypted
-under a key derived from it. Keep it out of the database (that is the entire point) and out of your
-backups of the database. It covers the certificate keys, the ACME account key, the identity-assertion
-signing key and the ASP.NET data-protection key ring. Left unset, all four are stored exactly as the
-files on the data volume were — unencrypted — and the host says so once at startup. Setting it later
-works: certificates are re-encrypted as they renew, the signing key and the ACME account on the next
-start, and the key ring for keys generated from then on. Losing a configured secret invalidates sessions
-and forces every certificate to be reissued, which is the same blast radius losing the key directory
-always had.
+certificates, the ACME account, the internal CA, the identity-assertion signing key — are stored
+AES-256-GCM encrypted under a key derived from it. Keep it out of the database (that is the entire
+point) and out of your backups of the database. It covers the certificate keys, the ACME account key,
+**the internal CA's signing key**, the identity-assertion signing key and the ASP.NET data-protection
+key ring. Left unset, all five are stored exactly as the files on the data volume were — unencrypted —
+and the host says so once at startup. Setting it later works: certificates are re-encrypted as they
+renew, the signing key, the ACME account and the internal CA on the next start, and the key ring for
+keys generated from then on.
+
+**Losing a configured secret is worse than it used to be, in exactly one place.** Sessions are
+invalidated and every ACME certificate is reissued automatically — that much is the blast radius losing
+the key directory always had, and it resolves itself. The **internal CA does not**: an unreadable CA key
+is treated as fatal to issuance rather than silently replaced, because minting a fresh root would
+abandon the one every LAN client was told to trust and the failure would surface on those clients
+instead of here. Issuance stops, the port routes go to `Error`, and recovery is manual — restore the
+secret the row was written with, or delete the `internal_cas` row to generate a new CA and then
+**re-import the new root on every device that trusted the old one**, a step per laptop and per phone. If
+you use port routes, back the secret up accordingly.
 
 ### Which instance orders
 
@@ -236,6 +380,21 @@ onboarded in a week from a standing start.
   implemented today, so step-ca is the available one.
 - Failed *validations* are limited separately (five per hostname per hour), which is why the backoff
   is deliberately slow for those.
+
+### Two kinds of "internal CA", and they are different things
+
+Both are supported, they compose, and neither replaces the other.
+
+- **Watchtower *is* a CA** — the one above, for **port routes** only. It generates its own root, signs
+  one certificate covering the LAN names, and you import that root by hand. It exists because no ACME CA
+  of any kind can issue for `nas.lan` or a bare IP. Its root, the LAN names it covers and the current
+  certificate's expiry are shown in the **Internal CA** block on the Routes page.
+- **Watchtower *talks to* a CA** — the section below, for **domain routes**. Point the ACME directory
+  URL at an on-premises CA such as step-ca and every ordinary domain route gets its certificate from
+  there over RFC 8555, exactly as it would from Let's Encrypt.
+
+A deployment can do both at once: domains over ACME, LAN ports from the built-in CA. What Watchtower
+signs itself is never offered to a domain route, and never enters the ACME desired set.
 
 ### An internal CA (step-ca, ZeroSSL, …)
 
@@ -291,14 +450,20 @@ port** to `0` — since nothing reaches it.
 ## Watching it work
 
 The **Routes** page (`/routes`) shows a **Certificates** card under this provider: one row per host
-the proxy wants a certificate for — routed domains, realm login hosts, and any orphan whose route is
-gone but whose certificate has not expired — with its state, expiry, last error and next scheduled
-attempt. It refreshes every 30 seconds while the page is open.
+the proxy wants a certificate for — routed domains, realm login hosts, any orphan whose route is gone
+but whose certificate has not expired, and, once a port route exists, the internal CA's shared LAN leaf
+(`internal-lan.watchtower.invalid`, source **Internal CA**) that every port route is served with — each
+with its state, expiry, last error and next scheduled attempt. It refreshes every 30 seconds while the
+page is open. The leaf's host name is a store key, not an address anybody types: the certificate is
+chosen by listening port, and the names you reach it on are the LAN names in its SANs.
 
 **Renew now** (`proxy.renewCertificate`) orders immediately, ignoring both the renewal window and any
 backoff rung. It is the escape hatch for "I have just fixed the DNS and do not want to wait six
 hours". It only accepts hosts the proxy already wants a certificate for, and only on the instance
-holding the `acme-issuer` lease — elsewhere it answers with a conflict naming that instance.
+holding the `acme-issuer` lease — elsewhere it answers with a conflict naming that instance. The LAN
+leaf's row carries no button at all, and the RPC refuses it by name if you reach for it directly: that
+certificate comes from Watchtower's internal CA rather than from a public one over ACME, and it reissues
+itself when the LAN names change or it nears expiry.
 
 ## Troubleshooting
 
@@ -350,6 +515,39 @@ are served on the ingress ports only.
 Tunnel to it (`ssh -L 8080:127.0.0.1:8080 you@host`), or enable authentication, set
 `WATCHTOWER__AUTH__HOST` to a hostname pointed at this host, and use it over 443 — that login host is
 the one name ingress serves Watchtower itself on.
+
+**A port route's address refuses the connection entirely.** The host port is not published on
+Watchtower's container. The Routes page says so per row (*host port not published*) and offers to
+publish it; `docker port watchtower` is the check from a terminal. Inside the container the listener is
+already up — that half is a route change, not a restart — so nothing else needs fixing.
+
+**A port route says "not published" again after a `docker compose up -d`.** That is the expected
+behaviour, not a regression: compose rebuilt the container from the compose file and dropped the port
+Watchtower added, and the startup reconcile noticed. Press the button again, and this time add
+`- "9001:9001"` to the compose file so the next `up` keeps it.
+
+**The browser does not trust a port route's certificate.** Two causes, and the error message
+distinguishes them.
+
+- *"Not trusted" / "unknown authority"* — the root has not been imported on this device, or was imported
+  without the trust flag (macOS and Firefox both need that second step). Download it again from the
+  Routes page and re-check step 4 above.
+- *"The name does not match" / `NET::ERR_CERT_COMMON_NAME_INVALID`* — the address you typed is not in
+  **LAN names**. Add it under Settings → Reverse proxy; the certificate is reissued immediately and no
+  device has to re-import anything, because the root did not change. A host name and its IP are two
+  different entries: listing `nas.lan` does not make `https://192.168.1.10:9001` work.
+
+**A port route is `Active` but its listener never came up.** The projection refuses to bind a port-route
+listener whose port is the management port or one of the two ingress ports, and warns in the log rather
+than touching the row. The route validation refuses those at create time, so this only happens when an
+*ingress* port moved onto an existing route's port afterwards — which the Settings page also refuses,
+unless the value came from the environment, where nothing checks it. Move one of the two.
+
+**"A container recreate started by … is still in progress."** The self-update and the port publish both
+recreate Watchtower's own container, and they refuse to run at the same time — two coordinators racing
+over one container id is how you get a stopped container with no rollback. Wait for the other one to
+finish. If it is genuinely wedged, the message names its container: remove that container and restart
+Watchtower. This is deliberately not cleared on a timer.
 
 **Validation keeps failing and you want to see why, locally.** Run [Pebble](https://github.com/letsencrypt/pebble),
 a deliberately pedantic test CA:

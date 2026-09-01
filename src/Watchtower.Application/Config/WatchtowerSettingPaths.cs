@@ -83,6 +83,41 @@ public static class WatchtowerSettingPaths {
     public const string ProxyYarpAcmeEabKeyId = "Watchtower:Proxy:Yarp:AcmeEabKeyId";
     public const string ProxyYarpAcmeEabHmacKey = "Watchtower:Proxy:Yarp:AcmeEabHmacKey";
     public const string ProxyYarpRedirectHttpToHttps = "Watchtower:Proxy:Yarp:RedirectHttpToHttps";
+    public const string ProxyYarpLanNames = "Watchtower:Proxy:Yarp:LanNames";
+
+    /// <summary>
+    /// Internal marker: the listen ports of the port-bound routes (ADR-0033), written by
+    /// <see cref="Services.Yarp.YarpProxyProvider.ApplyAsync"/> from the projected route table and read
+    /// back by <see cref="Services.Yarp.ProxyIngressKestrelConfiguration"/> to emit one Kestrel endpoint
+    /// per port. Not a user setting — never offered in the UI and never listed among the proxy card's
+    /// paths, so it is never offered as a pin either. Setting
+    /// <c>WATCHTOWER__PROXY__YARP__PORTROUTEPORTS</c> in the environment <em>would</em> take effect, since
+    /// environment configuration layers above the settings store (ADR-0014) — and it would break the
+    /// feature: the pinned value would become the permanent set of listeners, and every port route created
+    /// or deleted afterwards would silently never gain or lose one. Do not pin it.
+    /// </summary>
+    public const string ProxyYarpPortRoutePorts = "Watchtower:Proxy:Yarp:PortRoutePorts";
+
+    /// <summary>
+    /// Internal marker: the host ports <see cref="Services.SelfPortPublishService"/> itself published on
+    /// the Watchtower container (ADR-0033), so that removing one later can be told apart from removing a
+    /// binding the operator declared. Not a user setting — never offered in the UI, never listed among
+    /// the proxy card's paths, and pinning it would be actively harmful in both directions: a pin that
+    /// names a port makes Watchtower believe it owns an operator's binding and offer to take it away,
+    /// and a pin that names none makes every port Watchtower published unremovable. Do not pin it.
+    /// <para>
+    /// Written <em>before</em> the coordinator is spawned, because there is no "after" — the coordinator
+    /// stops this process. What is written is the plan's
+    /// <see cref="Services.PortBindingPlan.ClaimedThroughTheRecreate"/>: the set that survives the
+    /// recreate <em>plus</em> the ports it is about to release. Both halves are claimed because the
+    /// recreate may not happen at all — a rollback leaves the released port still bound, and dropping the
+    /// claim in advance would strand it, since the startup reconcile only ever prunes. Erring towards
+    /// claiming is the safe direction: a claim is only ever acted on for a port that is <em>also</em>
+    /// currently bound, so a claim on a port nothing binds can remove nothing, and the
+    /// <c>managed ∩ bound</c> prune on every start drops it once the release really lands.
+    /// </para>
+    /// </summary>
+    public const string ProxyYarpManagedHostPorts = "Watchtower:Proxy:Yarp:ManagedHostPorts";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";
     public const string ProxyCloudflareZoneId = "Watchtower:Proxy:Cloudflare:ZoneId";
     public const string ProxyCloudflareApiToken = "Watchtower:Proxy:Cloudflare:ApiToken";

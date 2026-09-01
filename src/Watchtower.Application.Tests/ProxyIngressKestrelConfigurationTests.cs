@@ -271,6 +271,163 @@ public sealed class ProxyIngressKestrelConfigurationTests {
         Assert.Equal(0, reloads);
     }
 
+    // ── Port routes (ADR-0033) ────────────────────────────────────────────────
+
+    /// <summary>
+    /// One TLS endpoint per port route, named after its port. The name is what makes the listener set a
+    /// function of the route set: a port that goes away takes its endpoint with it.
+    /// </summary>
+    [Fact]
+    public void EachPortRoutePort_BecomesAnEndpointOfItsOwn() {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001,9002")));
+
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
+        Assert.Equal("https://+:9002", section["Endpoints:ProxyPort9002:Url"]);
+    }
+
+    /// <summary>
+    /// A deployment that serves nothing but port routes: both ingress ports off, and the listeners still
+    /// exist. Gating them on "is there ingress?" would make exactly that deployment impossible — and the
+    /// management endpoint still has to be promoted out of the hosting URLs, because adding any endpoint
+    /// overrides them.
+    /// </summary>
+    [Fact]
+    public void WithBothIngressPortsOff_ThePortRoutesStillBind() {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Watchtower:Proxy:Yarp:HttpPort", "0"),
+            ("Watchtower:Proxy:Yarp:HttpsPort", "0"),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"),
+            ("urls", "http://localhost:5080")));
+
+        Assert.Null(section["Endpoints:ProxyHttp:Url"]);
+        Assert.Null(section["Endpoints:ProxyHttps:Url"]);
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
+        Assert.Equal("http://localhost:5080", section["Endpoints:Http:Url"]);
+    }
+
+    /// <summary>Same gate as the ingress ports: under another provider nothing serves them.</summary>
+    [Theory]
+    [InlineData("false", "yarp")]
+    [InlineData("true", "caddy")]
+    [InlineData("true", "cloudflare")]
+    public void WithoutTheInProcessProvider_ThereAreNoPortRouteEndpoints(string enabled, string provider) {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", enabled),
+            ("Watchtower:Proxy:Provider", provider),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001")));
+
+        Assert.Null(section["Endpoints:ProxyPort9001:Url"]);
+    }
+
+    /// <summary>
+    /// A port route's endpoint keys are derived too, so an operator's stale <c>ProxyPort*</c> key is
+    /// masked — and the masking rule tells the three prefixes apart in both directions.
+    /// </summary>
+    [Fact]
+    public void StrayPortRouteEndpointKeys_AreMasked() {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"),
+            ("Kestrel:Endpoints:ProxyPort9001:Url", "https://+:1234"),
+            ("Kestrel:Endpoints:ProxyPort4242:Url", "https://+:4242"),
+            ("Kestrel:Endpoints:ProxyPort9001:SslProtocols:0", "Tls12")));
+
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
+        Assert.Null(section["Endpoints:ProxyPort4242:Url"]);
+        Assert.Null(section["Endpoints:ProxyPort9001:SslProtocols:0"]);
+    }
+
+    /// <summary>
+    /// <c>ProxyPort</c> is not <c>ProxyHttp</c>, and an endpoint an operator happened to name something
+    /// beginning with the same letters is theirs. The masking is on the whole endpoint name because the
+    /// port routes' names end in a number.
+    /// </summary>
+    [Fact]
+    public void AnEndpointThatMerelyLooksLikeAPortRoutes_PassesThrough() {
+        var section = ProxyIngressKestrelConfiguration.Build(Root(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Kestrel:Endpoints:ProxyPortal:Url", "https://+:7000"),
+            ("Kestrel:Endpoints:ProxyPort:Url", "https://+:7001")));
+
+        Assert.Equal("https://+:7000", section["Endpoints:ProxyPortal:Url"]);
+        Assert.Equal("https://+:7001", section["Endpoints:ProxyPort:Url"]);
+    }
+
+    /// <summary>
+    /// A port route on a port something else already listens to is dropped with a warning rather than
+    /// bound. Create-time validation refuses these, so reaching here means the ingress ports moved
+    /// underneath an existing route — and the answer must not be a duplicate bind.
+    /// </summary>
+    [Fact]
+    public void APortRouteOnTheManagementOrIngressPort_IsRefused() {
+        var reported = new List<string>();
+        var warnings = new ProxyIngressWarnings();
+        warnings.UseLogger(new CollectingLogger(reported));
+
+        var section = ProxyIngressKestrelConfiguration.Build(
+            Root(
+                ("Watchtower:Proxy:Enabled", "true"),
+                ("Watchtower:Proxy:Provider", "yarp"),
+                ("Watchtower:Proxy:Yarp:HttpPort", "8081"),
+                ("Watchtower:Proxy:Yarp:HttpsPort", "8443"),
+                ("Watchtower:Proxy:Yarp:PortRoutePorts", "8080,8443,9001"),
+                ("Kestrel:Endpoints:Http:Url", "http://+:8080")),
+            warnings);
+
+        Assert.Null(section["Endpoints:ProxyPort8080:Url"]);
+        Assert.Null(section["Endpoints:ProxyPort8443:Url"]);
+        // One bad port is not a reason to take the others down.
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
+        Assert.Equal(2, reported.Count);
+    }
+
+    /// <summary>
+    /// The listeners follow the setting at runtime, and only when it moves. This is the whole mechanism:
+    /// a route created or deleted rewrites the setting, the projection re-runs, Kestrel rebinds.
+    /// </summary>
+    [Fact]
+    public void AddingAPortRoutePort_RaisesTheProjectionsReloadTokenOnce() {
+        var settings = new ReloadableSettings(("Watchtower:Proxy:Enabled", "true"));
+        var section = ProxyIngressKestrelConfiguration.Build(
+            new ConfigurationBuilder().Add(settings).Build());
+        var reloads = 0;
+        ChangeToken.OnChange(section.GetReloadToken, () => reloads++);
+
+        settings.Publish(
+            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"));
+        Assert.Equal(1, reloads);
+        Assert.Equal("https://+:9001", section["Endpoints:ProxyPort9001:Url"]);
+
+        // Re-written in another spelling: the same set of ports, so no rebind.
+        settings.Publish(
+            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Yarp:PortRoutePorts", " 9001 , "));
+        Assert.Equal(1, reloads);
+
+        settings.Publish(("Watchtower:Proxy:Enabled", "true"));
+        Assert.Equal(2, reloads);
+        Assert.Null(section["Endpoints:ProxyPort9001:Url"]);
+    }
+
+    [Fact]
+    public void DerivePortRoutePorts_IsTheSameDecision() {
+        Assert.Equal(
+            [9001, 9002],
+            ProxyIngressKestrelConfiguration.DerivePortRoutePorts(Root(
+                ("Watchtower:Proxy:Enabled", "true"),
+                ("Watchtower:Proxy:Yarp:PortRoutePorts", "9002,9001"))));
+        Assert.Empty(
+            ProxyIngressKestrelConfiguration.DerivePortRoutePorts(Root(
+                ("Watchtower:Proxy:Enabled", "false"),
+                ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"))));
+    }
+
     [Fact]
     public void DerivePorts_IsTheSameDecision() {
         Assert.Equal(

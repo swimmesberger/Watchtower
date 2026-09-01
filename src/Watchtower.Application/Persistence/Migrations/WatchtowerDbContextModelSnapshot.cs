@@ -666,6 +666,77 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("group_members", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.InternalCa", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CertificatePem")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("certificate_pem");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<DateTimeOffset>("NotAfter")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("not_after");
+
+                    b.Property<DateTimeOffset>("NotBefore")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("not_before");
+
+                    b.Property<byte[]>("PrivateKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("private_key");
+
+                    b.Property<string>("Protection")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("protection");
+
+                    b.Property<DateTimeOffset?>("RetiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("subject");
+
+                    b.Property<string>("Thumbprint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("thumbprint");
+
+                    b.Property<uint>("Xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id")
+                        .HasName("pk_internal_cas");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_internal_cas_name");
+
+                    b.ToTable("internal_cas", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.LoginCode", b =>
                 {
                     b.Property<int>("Id")
@@ -1225,6 +1296,13 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasDefaultValue("Public")
                         .HasColumnName("access_mode");
 
+                    b.Property<string>("Binding")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("Domain")
+                        .HasColumnName("binding");
+
                     b.Property<string>("BypassPaths")
                         .HasColumnType("text")
                         .HasColumnName("bypass_paths");
@@ -1242,7 +1320,6 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasColumnName("created_at");
 
                     b.Property<string>("Domain")
-                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("domain");
 
@@ -1261,6 +1338,10 @@ namespace Watchtower.Application.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("kind");
+
+                    b.Property<int?>("ListenPort")
+                        .HasColumnType("integer")
+                        .HasColumnName("listen_port");
 
                     b.Property<int?>("RealmId")
                         .HasColumnType("integer")
@@ -1306,7 +1387,13 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.HasIndex("Domain")
                         .IsUnique()
-                        .HasDatabaseName("ix_routes_domain");
+                        .HasDatabaseName("ix_routes_domain")
+                        .HasFilter("\"domain\" IS NOT NULL");
+
+                    b.HasIndex("ListenPort")
+                        .IsUnique()
+                        .HasDatabaseName("ix_routes_listen_port")
+                        .HasFilter("\"listen_port\" IS NOT NULL");
 
                     b.HasIndex("RealmId")
                         .HasDatabaseName("ix_routes_realm_id");
@@ -1316,6 +1403,8 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.ToTable("routes", null, t =>
                         {
+                            t.HasCheckConstraint("ck_routes_binding", "(\"binding\" = 'Domain' AND \"domain\" IS NOT NULL AND \"listen_port\" IS NULL)\nOR (\"binding\" = 'Port' AND \"domain\" IS NULL AND \"listen_port\" BETWEEN 1 AND 65535\n    AND \"target\" = 'Service' AND \"access_mode\" = 'Public' AND \"tls_enabled\")");
+
                             t.HasCheckConstraint("ck_routes_target", "(\"target\" = 'Watchtower' AND \"stack_id\" IS NULL AND \"realm_id\" IS NOT NULL AND \"access_mode\" = 'Public')\nOR (\"target\" = 'Service' AND \"stack_id\" IS NOT NULL AND \"realm_id\" IS NULL)");
                         });
                 });

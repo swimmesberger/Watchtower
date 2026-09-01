@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Watchtower.Api.Authentication;
@@ -6,6 +8,7 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.InternalCa;
 
 namespace Watchtower.Api.Endpoints;
 
@@ -19,9 +22,10 @@ public static class WatchtowerHttpEndpoints {
 
     /// <summary>
     /// Maps the non-RPC surfaces: the deploy webhook, the two SSE streams, the volume archive download,
-    /// the proxy TLS gate, the public App API, and <c>/health</c>. With <paramref name="authEnabled"/> the
-    /// two SSE streams and the volume download — which carry deploy output, container logs and raw volume
-    /// data, i.e. exactly the data the JSON-RPC handlers now protect — require a login session too;
+    /// the internal CA download, the proxy TLS gate, the public App API, and <c>/health</c>. With
+    /// <paramref name="authEnabled"/> the two SSE streams, the volume download and the CA download —
+    /// which carry deploy output, container logs, raw volume data and this deployment's own trust
+    /// anchor, i.e. exactly the data the JSON-RPC handlers now protect — require a login session too;
     /// <c>EventSource</c> and same-origin navigation send cookies, so the UI is unaffected.
     /// </summary>
     /// <remarks>
@@ -39,6 +43,7 @@ public static class WatchtowerHttpEndpoints {
         Protect(MapDeployOutputStream(app), authEnabled);
         Protect(MapContainerLogStream(app), authEnabled);
         Protect(MapVolumeDownload(app), authEnabled);
+        Protect(MapInternalCaDownload(app), authEnabled);
         MapProxyAsk(app);
         // Public, token-authenticated surface for deployed applications (see AppApiEndpoints). The flag is
         // passed down for its one identity-dependent endpoint: the tenant switcher needs a forwarded
@@ -245,6 +250,41 @@ public static class WatchtowerHttpEndpoints {
                 await archiveService.WriteArchiveAsync(
                     [name], manifestJson: null, gzip, options.CurrentValue.Backup.HelperImage, ct);
             return Results.Empty;
+        });
+
+    /// <summary>
+    /// Hands out Watchtower's internal CA root — the certificate an operator imports into a client's
+    /// trust store so LAN addresses served by the in-process proxy validate. PEM by default,
+    /// <c>?format=der</c> for the binary form Windows and Android import dialogs prefer.
+    /// </summary>
+    /// <remarks>
+    /// A download and nothing else: it never creates the CA, so a request for a deployment that has
+    /// never needed one is a 404 rather than the moment a root springs into existence.
+    /// <para>
+    /// Behind the same session requirement as the volume download. The root certificate carries no
+    /// secret — its private key stays in the database — but who is asking still says something about
+    /// the deployment, and there is no caller for it but an operator's browser.
+    /// </para>
+    /// </remarks>
+    private static RouteHandlerBuilder MapInternalCaDownload(WebApplication app) =>
+        app.MapGet(InternalCaNames.DownloadPath, async (
+            string? format, WatchtowerDbContext db, CancellationToken ct) => {
+            var pem = await db.InternalCas.AsNoTracking()
+                .Where(c => c.Name == InternalCaNames.CaRowName)
+                .Select(c => c.CertificatePem)
+                .FirstOrDefaultAsync(ct);
+            if (pem is null) return Results.NotFound();
+
+            if (!string.Equals(format, "der", StringComparison.OrdinalIgnoreCase))
+                return Results.File(
+                    Encoding.UTF8.GetBytes(pem), "application/x-pem-file",
+                    InternalCaNames.DownloadFileName);
+
+            using var certificate = X509Certificate2.CreateFromPem(pem);
+            // Under its own extension: an import dialog that asked for DER decides what it is looking
+            // at by the file name, and refuses binary arriving as .crt.
+            return Results.File(
+                certificate.RawData, "application/pkix-cert", InternalCaNames.DownloadFileNameDer);
         });
 
     /// <summary>Streams container logs as Server-Sent Events. Query: tail (default 100), follow (default true).</summary>

@@ -80,6 +80,30 @@ internal static class TenancyTestEstate {
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
     }
 
+    /// <summary>
+    /// Adds a port-bound route for a stack (ADR-0033): no hostname, a listener of its own, and the shape
+    /// <c>ck_routes_binding</c> insists on — a service target, public, TLS. Returns its id.
+    /// </summary>
+    public static async Task<int> AddPortRouteAsync(
+        this AuthTestHost host, int stackId, int listenPort, string serviceName = "web", int containerPort = 8080) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var route = new Entities.Route {
+            Binding = RouteBinding.Port,
+            StackId = stackId,
+            Domain = null,
+            ListenPort = listenPort,
+            ServiceName = serviceName,
+            ContainerPort = containerPort,
+            TlsEnabled = true,
+            AccessMode = AccessMode.Public,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Routes.Add(route);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return route.Id;
+    }
+
     /// <summary>Adds a deploy event in a given state — the in-flight ones are what teardown refuses under.</summary>
     public static async Task AddDeployEventAsync(this AuthTestHost host, int stackId, string status) {
         await using var scope = host.Services.CreateAsyncScope();

@@ -80,20 +80,40 @@ public static class ProxyIngressKestrelConfiguration {
     /// </remarks>
     public static (int? HttpPort, int? HttpsPort) DerivePorts(IConfiguration root) {
         ArgumentNullException.ThrowIfNull(root);
-
-        // Not GetValue<bool>: that throws on a value it cannot convert, and this runs before the host
-        // exists — a typo'd WATCHTOWER__PROXY__ENABLED would be a stack trace at startup rather than a
-        // proxy that stays off.
-        if (!bool.TryParse(root["Watchtower:Proxy:Enabled"], out var enabled) || !enabled) return (null, null);
-
-        // Resolved through ProxyOptions so "unknown or blank means yarp" is stated once, next to the
-        // provider names, rather than re-derived here where it could drift.
-        var provider = new ProxyOptions { Provider = root["Watchtower:Proxy:Provider"] ?? "" }.ResolveProvider();
-        if (provider != ProxyProviderKind.Yarp) return (null, null);
+        if (!IsInProcessProxyActive(root)) return (null, null);
 
         return (
             Port(root, WatchtowerSettingPaths.ProxyYarpHttpPort, YarpProxyOptions.DefaultHttpPort),
             Port(root, WatchtowerSettingPaths.ProxyYarpHttpsPort, YarpProxyOptions.DefaultHttpsPort));
+    }
+
+    /// <summary>
+    /// The listen ports of the port-bound routes (ADR-0033) — one dedicated TLS listener each, on the
+    /// same gate as the ingress ports and empty whenever another provider is serving. Pure, like
+    /// <see cref="DerivePorts"/>, and blind to collisions for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// Read straight from the setting rather than from the route table: this runs before the host and its
+    /// database exist, and <see cref="YarpProxyProvider.ApplyAsync"/> is the one writer that keeps the
+    /// setting in step with the rows.
+    /// </remarks>
+    public static IReadOnlyList<int> DerivePortRoutePorts(IConfiguration root) {
+        ArgumentNullException.ThrowIfNull(root);
+        if (!IsInProcessProxyActive(root)) return [];
+        return PortRouteListeners.Parse(root[WatchtowerSettingPaths.ProxyYarpPortRoutePorts]);
+    }
+
+    /// <summary>Whether the in-process proxy is the one serving — the gate every derived listener is behind.</summary>
+    private static bool IsInProcessProxyActive(IConfiguration root) {
+        // Not GetValue<bool>: that throws on a value it cannot convert, and this runs before the host
+        // exists — a typo'd WATCHTOWER__PROXY__ENABLED would be a stack trace at startup rather than a
+        // proxy that stays off.
+        if (!bool.TryParse(root["Watchtower:Proxy:Enabled"], out var enabled) || !enabled) return false;
+
+        // Resolved through ProxyOptions so "unknown or blank means yarp" is stated once, next to the
+        // provider names, rather than re-derived here where it could drift.
+        var provider = new ProxyOptions { Provider = root["Watchtower:Proxy:Provider"] ?? "" }.ResolveProvider();
+        return provider == ProxyProviderKind.Yarp;
     }
 
     /// <summary>
@@ -123,7 +143,10 @@ public static class ProxyIngressKestrelConfiguration {
         }
 
         var (httpPort, httpsPort) = DerivePorts(root);
-        if (httpPort is null && httpsPort is null) return projected;
+        var portRoutePorts = DerivePortRoutePorts(root);
+        // A deployment that serves nothing but port routes runs with both ingress ports off, so the port
+        // routes count towards "this host has ingress" on their own.
+        if (httpPort is null && httpsPort is null && portRoutePorts.Count == 0) return projected;
 
         // From here on this host has ingress, which makes the management endpoint's own URL load-bearing
         // in two ways.
@@ -167,6 +190,42 @@ public static class ProxyIngressKestrelConfiguration {
             projected[$"Endpoints:{HttpsEndpointName}:Url"] =
                 string.Create(CultureInfo.InvariantCulture, $"https://+:{httpsBind}");
 
+        // One TLS listener per port route (ADR-0033), named after its port so the set of endpoints is a
+        // function of the set of ports and a route that goes away takes its endpoint with it. The
+        // certificate is not named here: these endpoints carry no Certificate section at all and are made
+        // TLS by the endpoint defaults, which is what lets an endpoint appear at runtime under a name
+        // nobody registered a callback for. Not by ConfigureHttpsDefaults — that was the approach this
+        // one replaced, and naming it here is how a reader would reconstruct it.
+        foreach (var port in portRoutePorts) {
+            // A route's port that is already somebody's listener is dropped rather than bound: a second
+            // endpoint on one port is a duplicate bind, and the two collisions worth naming separately are
+            // the management plane (which would stop being reachable) and the ingress ports (where the
+            // route would be shadowed by the host dispatcher's own listener). Create-time validation
+            // refuses these, so reaching here means the ports moved underneath an existing route.
+            //
+            // These drops are load-bearing twice over, and neither reason may be simplified away.
+            // Dispatch: YarpHostDispatchMiddleware decides "is this a port route's listener?" from the
+            // endpoints projected here, so a port left in would let one route capture the management or
+            // ingress listener wholesale. TLS: ProxyHttpsEndpoint's endpoint-defaults hook keys on the
+            // port alone, so a port-route port equal to a *plain-HTTP* endpoint's would convert that
+            // listener to TLS. Today the duplicate bind fails the host first, which hides both — but the
+            // reasoning has to outlive that accident.
+            if (port == managementPort) {
+                warnings?.Warn(
+                    $"Port route listener {port} is the management port; it is not bound. Move the route "
+                    + "to a port of its own.");
+                continue;
+            }
+            if (port == httpPort || port == httpsPort) {
+                warnings?.Warn(
+                    $"Port route listener {port} is an ingress port; it is not bound. Move the route to a "
+                    + "port of its own.");
+                continue;
+            }
+            projected[$"Endpoints:{PortRouteListeners.EndpointName(port)}:Url"] =
+                string.Create(CultureInfo.InvariantCulture, $"https://+:{port}");
+        }
+
         return projected;
     }
 
@@ -182,13 +241,29 @@ public static class ProxyIngressKestrelConfiguration {
     /// <summary>
     /// Whether a <c>Kestrel</c>-relative key belongs to one of the derived endpoints. The trailing colon
     /// matters: without it <c>Endpoints:ProxyHttp</c> would also swallow <c>Endpoints:ProxyHttps:Url</c>.
+    /// The port routes' endpoints are matched on the whole name instead — their names end in a number, so
+    /// a prefix rule would be the same trap one level down.
     /// </summary>
     private static bool IsProxyEndpointKey(string key) =>
-        IsUnder(key, $"Endpoints:{HttpEndpointName}") || IsUnder(key, $"Endpoints:{HttpsEndpointName}");
+        IsUnder(key, $"Endpoints:{HttpEndpointName}")
+        || IsUnder(key, $"Endpoints:{HttpsEndpointName}")
+        || PortRouteListeners.IsPortEndpointName(EndpointNameOf(key));
 
     private static bool IsUnder(string key, string prefix) =>
         key.Equals(prefix, StringComparison.OrdinalIgnoreCase)
         || key.StartsWith($"{prefix}:", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The endpoint name a <c>Kestrel</c>-relative key names, or null when the key is not under
+    /// <c>Endpoints</c> at all — <c>Endpoints:ProxyPort9001:Url</c> is <c>ProxyPort9001</c>.
+    /// </summary>
+    private static string? EndpointNameOf(string key) {
+        const string prefix = "Endpoints:";
+        if (!key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        var rest = key.AsSpan(prefix.Length);
+        var colon = rest.IndexOf(':');
+        return (colon < 0 ? rest : rest[..colon]).ToString();
+    }
 
     private sealed class ProjectedSource(IConfiguration root, ProxyIngressWarnings? warnings)
         : IConfigurationSource {

@@ -212,6 +212,7 @@ public sealed class RealmAccessPolicyTests {
 
         var realms = sp.GetRequiredService<RealmResolver>();
         var acmeRealm = await db.Realms.SingleAsync(r => r.Id == acme, Ct);
+        Assert.NotNull(route.Domain);
         var mintedForAcme = signer.Mint(user, route.Domain, await realms.IdentityForAsync(acmeRealm, Ct));
         Assert.Equal(carol, await discovery.ResolveAssertionSubjectAsync(stackId, mintedForAcme, Ct));
 
@@ -241,6 +242,7 @@ public sealed class RealmAccessPolicyTests {
 
         // Defence in depth: the issuer is the calling realm's, but the account named by `sub` is not in it.
         // One key pair signs every realm, so the subject has to be re-checked, not inferred from the issuer.
+        Assert.NotNull(route.Domain);
         var token = signer.Mint(user, route.Domain, await realms.IdentityForAsync(acmeRealm, Ct));
         Assert.Null(await discovery.ResolveAssertionSubjectAsync(stackId, token, Ct));
     }

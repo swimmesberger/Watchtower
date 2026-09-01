@@ -92,9 +92,52 @@ public sealed class YarpForwardingEndToEndTests {
         Assert.Equal("second\n", rest);
     }
 
+    /// <summary>
+    /// The same round trip on a port-bound route's listener (ADR-0033). Its forward path is a separate
+    /// branch of the dispatcher — no access check, no reserved prefix, no upgrade — so "the bytes still
+    /// travel" has to be proven there too rather than inherited from the host path.
+    /// </summary>
+    [Fact]
+    public async Task APortRoute_RoundTripsThroughTheRealForwarder() {
+        await using var upstream = await EchoUpstream.StartAsync();
+        // WithIngress's shape, spelled out because the real forwarder has to be selected with it.
+        using var factory = new WatchtowerApiFactory(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001")) {
+            UseRealProxyProvider = true,
+            HasIngress = true,
+            UseRealForwarder = true,
+        };
+        using var client = factory.CreateApiClient(9001);
+        SeedLoopbackPortRoute(factory, upstream.Port);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "https://nas.lan/echo?q=1") {
+            Content = new StringContent("hello upstream", Encoding.UTF8, "text/plain"),
+        };
+        var response = await client.SendAsync(request, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("yes", Assert.Single(response.Headers.GetValues("X-Echo")));
+        var body = await response.Content.ReadAsStringAsync(Ct);
+        Assert.Contains("method=POST", body, StringComparison.Ordinal);
+        Assert.Contains("query=?q=1", body, StringComparison.Ordinal);
+        Assert.Contains("body=hello upstream", body, StringComparison.Ordinal);
+        // The address the client dialled, echoed back — the route has no hostname to substitute — and
+        // https, because this listener terminates TLS and does nothing else.
+        Assert.Contains("host=nas.lan", body, StringComparison.Ordinal);
+        Assert.Contains("x-forwarded-host=nas.lan", body, StringComparison.Ordinal);
+        Assert.Contains("x-forwarded-proto=https", body, StringComparison.Ordinal);
+    }
+
     // ── Estate ────────────────────────────────────────────────────────────────
 
     private const string Domain = "e2e.example.invalid";
+
+    /// <summary>The port-route counterpart of <see cref="SeedLoopbackRoute"/>, for the same reason.</summary>
+    private static void SeedLoopbackPortRoute(WatchtowerApiFactory factory, int port) =>
+        factory.Services.GetRequiredService<ProxyRouteTable>().Replace(
+            ProxyRouteTable.From([], [new ProxyPortSite(9001, "127.0.0.1", port, RouteId: 1)]));
 
     /// <summary>
     /// Points the routing table at the loopback upstream directly, rather than seeding a route and letting

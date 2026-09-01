@@ -227,7 +227,22 @@ public sealed class CertificateStore : IDisposable {
     /// </summary>
     /// <param name="pemChain">The issued chain, leaf first, as concatenated PEM blocks.</param>
     /// <param name="privateKey">The key the leaf was issued for. Not taken ownership of.</param>
-    public async Task InstallAsync(string host, string pemChain, ECDsa privateKey, CancellationToken ct) {
+    public Task InstallAsync(string host, string pemChain, ECDsa privateKey, CancellationToken ct) =>
+        InstallAsync(host, pemChain, privateKey, ProxyCertificateSources.Acme, ct);
+
+    /// <summary>
+    /// Stores a certificate Watchtower's own internal CA signed. Differs from <see cref="InstallAsync"/>
+    /// only in what it records as the source — which is what keeps it out of the ACME machinery's
+    /// desired set and out of the prune.
+    /// </summary>
+    /// <param name="pemChain">The issued chain, leaf first, as concatenated PEM blocks.</param>
+    /// <param name="privateKey">The key the leaf was issued for. Not taken ownership of.</param>
+    public Task InstallInternalAsync(
+        string host, string pemChain, ECDsa privateKey, CancellationToken ct) =>
+        InstallAsync(host, pemChain, privateKey, ProxyCertificateSources.Internal, ct);
+
+    private async Task InstallAsync(
+        string host, string pemChain, ECDsa privateKey, string source, CancellationToken ct) {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(pemChain);
         ArgumentNullException.ThrowIfNull(privateKey);
@@ -236,8 +251,7 @@ public sealed class CertificateStore : IDisposable {
         // Parse before writing, so material that could never be served does not reach the table at all.
         var described = DescribeChain(name, pemChain);
         await UpsertAsync(
-            name, pemChain, privateKey.ExportPkcs8PrivateKeyPem(), described,
-            ProxyCertificateSources.Acme, ct);
+            name, pemChain, privateKey.ExportPkcs8PrivateKeyPem(), described, source, ct);
 
         // Re-read from the row rather than from the arguments: what is served is then provably what a
         // restart would load, instead of two code paths that can disagree.
@@ -402,7 +416,11 @@ public sealed class CertificateStore : IDisposable {
         await using (var scope = _scopeFactory.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             candidates = await db.ProxyCertificates.AsNoTracking()
-                .Where(c => c.NotAfter < cutoff)
+                // A certificate from the internal CA is never in the ACME desired set — nothing routes
+                // to its host name, which is a store key rather than a domain — so it would look
+                // undesired to every pass and be deleted thirty days after it expired, on a deployment
+                // where reissuing it costs nothing and is nobody's decision to make.
+                .Where(c => c.NotAfter < cutoff && c.Source != ProxyCertificateSources.Internal)
                 .Select(c => c.Host)
                 .ToListAsync(ct);
         }
