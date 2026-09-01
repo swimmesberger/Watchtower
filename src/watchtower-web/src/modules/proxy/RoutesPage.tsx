@@ -368,19 +368,36 @@ export function RoutesPage() {
     staleTime: 15_000,
   })
   const portBindings = portBindingsQuery.data
+  // Everything below is a claim about what the container publishes, and there is an answer to that only
+  // when the container could be inspected. Where it could not, the server reports every port as unbound —
+  // which is the absence of an answer, not the answer "no". Reading it as "no" would mark every port
+  // route on a bare-metal install broken while it is serving perfectly, and would do the same to a
+  // healthy deployment for as long as the Docker socket hiccups.
+  const portsKnown = portBindings?.containerDetected === true
+  const knownPorts = useMemo(
+    () => (portsKnown ? (portBindings?.ports ?? []) : []),
+    [portBindings, portsKnown],
+  )
   const bindingByPort = useMemo(
-    () => new Map((portBindings?.ports ?? []).map((p) => [p.port, p])),
-    [portBindings],
+    () => new Map(knownPorts.map((p) => [p.port, p])),
+    [knownPorts],
   )
-  const pendingPorts = useMemo(
-    () => (portBindings?.ports ?? []).filter((p) => !p.bound),
-    [portBindings],
-  )
+  const portRoutes = useMemo(() => routes.filter((r) => r.binding === 'port'), [routes])
+  const pendingPorts = useMemo(() => knownPorts.filter((p) => !p.bound), [knownPorts])
   // Ports Watchtower published for a route that has since been deleted. No row of their own — the route
   // that named them is gone — so the banner is the only place they can be mentioned at all.
-  const stalePorts = portBindings?.pendingUnpublish ?? []
+  const stalePorts = portsKnown ? (portBindings?.pendingUnpublish ?? []) : []
   const firstPending = pendingPorts[0]
   const hasPendingPorts = pendingPorts.length > 0 || stalePorts.length > 0
+  // The same restart does both, so the label names whichever half is actually pending — "publish" over a
+  // banner that is only going to release a leftover port would promise something it does not do.
+  const publishActionLabel =
+    pendingPorts.length === 0
+      ? 'Release ports & restart Watchtower (~5 s)'
+      : 'Publish ports & restart Watchtower (~5 s)'
+  // The other state worth a word, and a different one: there are port routes and whether their ports are
+  // reachable is simply not knowable from here. Said as that, without a verdict on the routes.
+  const portsUnknown = portBindings != null && !portsKnown && portRoutes.length > 0
   // Publishing restarts the management plane, so it is never automatic and never a single click.
   const [confirmPublish, setConfirmPublish] = useState(false)
   const publishPorts = useMutation({
@@ -627,12 +644,16 @@ export function RoutesPage() {
   }
 
   /**
-   * Whether this row is a port route whose host port the container does not publish. Only ever true on
-   * a positive answer: while the query is loading, or where the container cannot be inspected at all,
-   * nothing is claimed — an unadorned row is better than one accused of being broken.
+   * Whether this row is a port route whose host port the container does not publish. Only ever true on a
+   * positive answer — hence the `portsKnown` gate, which is not redundant with the lookup below so much
+   * as the statement of the rule: while the query is loading, and wherever Watchtower cannot see its own
+   * container, nothing is claimed about this row. An unadorned row beats one accused of being broken.
    */
   const isUnpublished = (r: Route) =>
-    r.binding === 'port' && r.listenPort != null && bindingByPort.get(r.listenPort)?.bound === false
+    portsKnown &&
+    r.binding === 'port' &&
+    r.listenPort != null &&
+    bindingByPort.get(r.listenPort)?.bound === false
 
   const unpublishedBadge = (r: Route) =>
     isUnpublished(r) ? (
@@ -835,6 +856,21 @@ export function RoutesPage() {
         </Banner>
       )}
 
+      {/* Not a verdict on the routes — an admission that there is none to give. A bare-metal install
+          publishes nothing and works perfectly; so does a container whose Docker socket is momentarily
+          unreadable. Both land here, and neither is told its routes are broken. */}
+      {portsUnknown && (
+        <Banner tone="info" title="Watchtower cannot see its own container">
+          So it cannot tell whether the host ports these routes listen on are published, and it cannot
+          publish them for you. Make sure each port route's port reaches this process from the network —
+          in a container that means a matching{' '}
+          <span className="font-mono">
+            -p {portRoutes[0]?.listenPort ?? 9001}:{portRoutes[0]?.listenPort ?? 9001}
+          </span>{' '}
+          and a recreate.
+        </Banner>
+      )}
+
       {/* The gap between "the route exists" and "the route is reachable": Watchtower is already
           listening on the port inside its container, and Docker cannot publish a host port on a running
           container — only on a new one. So the fix is a recreate, which is a Watchtower restart, which
@@ -850,22 +886,21 @@ export function RoutesPage() {
                 : `${pendingPorts.length} host ports are not published`
           }
           action={
-            portBindings?.containerDetected && !portBindings.unavailableReason ? (
+            portBindings?.unavailableReason == null ? (
               <Button variant="link" onClick={() => setConfirmPublish(true)}>
-                Publish ports &amp; restart Watchtower (~5 s)
+                {publishActionLabel}
               </Button>
             ) : (
               // Disabled rather than hidden: the operator is looking at a route that does not work and
               // should be told why the obvious remedy is not on offer here.
-              <Tooltip
-                label={
-                  portBindings?.unavailableReason ??
-                  'Watchtower can only republish its own ports when it runs as the container it ships as.'
-                }
-              >
-                <Button variant="link" disabled>
-                  Publish ports &amp; restart Watchtower (~5 s)
-                </Button>
+              <Tooltip label={portBindings.unavailableReason}>
+                {/* A disabled button swallows pointer events and can't take focus, so the wrapping span
+                    is the trigger — made focusable so keyboard users get the reason too. */}
+                <span className="inline-flex" tabIndex={0}>
+                  <Button variant="link" disabled>
+                    {publishActionLabel}
+                  </Button>
+                </span>
               </Tooltip>
             )
           }
@@ -1427,7 +1462,7 @@ export function RoutesPage() {
           if (!open && !publishPorts.isPending) setConfirmPublish(false)
         }}
         title="Restart Watchtower to publish these ports?"
-        description="Watchtower recreates its own container with the ports added. It — this page included — is unreachable for a few seconds, then comes back with the routes working. Running deploys and backups are not interrupted; they are resumed after the restart."
+        description="Watchtower recreates its own container with the ports added. It — this page included — is unreachable for a few seconds, then comes back with the routes working. A deploy or backup running right now is cancelled by the restart."
         extra={
           <Banner tone="info" title="Compose-managed installs">
             A later <span className="font-mono">docker compose up -d</span> rebuilds the container from
