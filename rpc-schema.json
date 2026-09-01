@@ -7896,6 +7896,40 @@
         ]
       }
     },
+    "proxy.applyPortBindings": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "restarting": {
+            "type": "boolean"
+          },
+          "published": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "unpublished": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "restarting",
+          "published",
+          "unpublished",
+          "message"
+        ]
+      }
+    },
     "proxy.checkDns": {
       "params": {
         "type": "object",
@@ -8456,6 +8490,74 @@
         },
         "required": [
           "ca"
+        ]
+      }
+    },
+    "proxy.getPortBindings": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "containerDetected": {
+            "type": "boolean"
+          },
+          "unavailableReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "port": {
+                  "type": "integer"
+                },
+                "routeId": {
+                  "type": "integer"
+                },
+                "serviceName": {
+                  "type": "string"
+                },
+                "bound": {
+                  "type": "boolean"
+                },
+                "managed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "port",
+                "routeId",
+                "serviceName",
+                "bound",
+                "managed"
+              ]
+            }
+          },
+          "pendingUnpublish": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "containerDetected",
+          "unavailableReason",
+          "lastError",
+          "ports",
+          "pendingUnpublish"
         ]
       }
     },
