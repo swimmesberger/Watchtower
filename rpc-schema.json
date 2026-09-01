@@ -8534,6 +8534,12 @@
                 },
                 "managed": {
                   "type": "boolean"
+                },
+                "blockedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -8541,7 +8547,8 @@
                 "routeId",
                 "serviceName",
                 "bound",
-                "managed"
+                "managed",
+                "blockedBy"
               ]
             }
           },
