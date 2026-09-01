@@ -106,6 +106,39 @@ public sealed class InternalCaStore(
     }
 
     /// <summary>
+    /// Encrypts an existing CA row that predates the key-protection secret, without creating one and
+    /// without touching a row that is already encrypted. Run at startup, next to everything else that
+    /// brings the key material into line with the configured secret.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="LoadOrCreateAsync"/> re-encrypts too, but it only runs when a leaf is actually being
+    /// reissued — which on a converged deployment is once every eight months. An operator who sets
+    /// <c>WATCHTOWER__AUTH__KEYPROTECTIONSECRET</c> and restarts is told the stored keys become encrypted
+    /// on the next start, and this is what makes that true for the CA key as well.
+    /// <para>
+    /// The query names the <em>unprotected</em> row, so a deployment that is already encrypted costs one
+    /// indexed lookup that returns nothing and reads no key material at all; a deployment that has never
+    /// needed a CA has no row and this creates none, since minting a root nobody asked for is precisely
+    /// what decision 6 refuses to do.
+    /// </para>
+    /// </remarks>
+    public async Task ReprotectStoredKeyAsync(CancellationToken ct = default) {
+        if (!protector.IsEncrypting) return;
+        try {
+            if (await ReadUnprotectedAsync(ct) is not { } row) return;
+            // The row's own marker says None, so this is the stored bytes verbatim — reading it needs no
+            // secret and cannot be the failure this method has to survive.
+            var pem = protector.UnprotectText(row.PrivateKey, row.Protection, InternalCaNames.KeyPurpose);
+            await ReprotectAsync(row, pem, ct);
+        } catch (OperationCanceledException) {
+            throw;
+        } catch (Exception ex) {
+            // Never fatal to startup: the key is readable either way, and the next start tries again.
+            logger.LogWarning(ex, "Could not encrypt the stored internal CA key at rest.");
+        }
+    }
+
+    /// <summary>
     /// Encrypts a row that was written before a key-protection secret existed. On load rather than by a
     /// migration pass, because this is the only moment the plaintext is in hand anyway — and because an
     /// operator who adopts the secret expects the keys to become encrypted without a separate step.
@@ -156,6 +189,15 @@ public sealed class InternalCaStore(
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.InternalCas.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Name == InternalCaNames.CaRowName, ct);
+    }
+
+    /// <summary>The CA row only while its key is still stored in the clear; null in every other case.</summary>
+    private async Task<InternalCaRow?> ReadUnprotectedAsync(CancellationToken ct) {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.InternalCas.AsNoTracking()
+            .FirstOrDefaultAsync(
+                c => c.Name == InternalCaNames.CaRowName && c.Protection == KeyProtector.None, ct);
     }
 
     /// <summary>

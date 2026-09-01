@@ -4,6 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Persistence;
+using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.InternalCa;
 using Xunit;
@@ -195,6 +196,73 @@ public sealed class InternalCaIssuerTests {
         Assert.Equal(mine.Thumbprint, row.Thumbprint);
         // And the loser signs with the winner's key, not merely with its certificate.
         Assert.True(theirs.Certificate.HasPrivateKey);
+    }
+
+    // ── Encrypting the stored key at rest ────────────────────────────────────
+
+    /// <summary>The passphrase the two tests below adopt; long enough for the protector to accept it.</summary>
+    private const string ProtectionSecret = "a-long-enough-passphrase-for-a-test";
+
+    /// <summary>
+    /// The claim the operator documentation makes: set the key-protection secret, restart, and the
+    /// stored private keys are encrypted. For the CA key that used to be true only in the sense that a
+    /// <em>reissue</em> would re-encrypt it — and a converged deployment reissues its LAN leaf once every
+    /// eight months, so a plaintext CA key could sit in the database for most of a year after the
+    /// operator believed they had encrypted it.
+    /// </summary>
+    [Fact]
+    public async Task AdoptingTheSecretLater_EncryptsTheStoredCaKeyAtStartup() {
+        using var plain = AuthTestHost.Start();
+        string thumbprint;
+        using (var root = await Ca(plain).LoadOrCreateAsync(Ct)) thumbprint = root.Thumbprint;
+        Assert.Equal(KeyProtector.None, (await RowAsync(plain)).Protection);
+
+        // The restart is the whole test: the provider's constructor runs the same state initialiser the
+        // host runs after migrating, and nothing here asks for a certificate.
+        using var encrypting = plain.Restart(("Watchtower:Auth:KeyProtectionSecret", ProtectionSecret));
+
+        Assert.Equal(KeyProtector.AesGcmV1, (await RowAsync(encrypting)).Protection);
+        // And it is still the same CA, still openable — an encrypted row nobody can read would be worse
+        // than the plain one it replaced.
+        using var reloaded = await Ca(encrypting).LoadOrCreateAsync(Ct);
+        Assert.Equal(thumbprint, reloaded.Thumbprint);
+        Assert.True(reloaded.Certificate.HasPrivateKey);
+    }
+
+    /// <summary>
+    /// And a row that is already encrypted is not rewritten on every start. Asserted through <c>xmin</c>,
+    /// the transaction id PostgreSQL stamps on the physical tuple: an update relocates the tuple and
+    /// changes it, so "unchanged" is evidence that no write happened rather than that the columns still
+    /// look the same afterwards.
+    /// </summary>
+    [Fact]
+    public async Task AnAlreadyEncryptedCaKey_IsLeftAloneOnTheNextStart() {
+        using var first = AuthTestHost.Start(("Watchtower:Auth:KeyProtectionSecret", ProtectionSecret));
+        using (var _ = await Ca(first).LoadOrCreateAsync(Ct)) { }
+        var before = await RowVersionAsync(first);
+
+        using var second = first.Restart(("Watchtower:Auth:KeyProtectionSecret", ProtectionSecret));
+
+        Assert.Equal(before, await RowVersionAsync(second));
+        Assert.Equal(KeyProtector.AesGcmV1, (await RowAsync(second)).Protection);
+    }
+
+    private static async Task<Entities.InternalCa> RowAsync(AuthTestHost host) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.InternalCas.AsNoTracking()
+            .SingleAsync(c => c.Name == InternalCaNames.CaRowName, Ct);
+    }
+
+    /// <summary>The CA tuple's <c>xmin</c>, as text so no client-side xid mapping is involved.</summary>
+    private static async Task<string> RowVersionAsync(AuthTestHost host) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var versions = await db.Database.SqlQueryRaw<string>(
+                "SELECT xmin::text AS \"Value\" FROM internal_cas WHERE name = {0}",
+                InternalCaNames.CaRowName)
+            .ToListAsync(Ct);
+        return Assert.Single(versions);
     }
 
     // ── The LAN-name parser ──────────────────────────────────────────────────
