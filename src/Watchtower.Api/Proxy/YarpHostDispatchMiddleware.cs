@@ -178,10 +178,12 @@ public sealed class YarpHostDispatchMiddleware(
         // The one reading of "which host is this?", derived once and used for the lookup, the redirect, the
         // access decision and everything the upstream is told — three slightly different renderings of the
         // same name is how a request ends up authorised as one host and forwarded as another. Kestrel has
-        // already split the port off; the trailing dot of a fully-qualified name is dropped because a
-        // browser sending `app.example.invalid.` means the very same host, and leaving it on would miss the
-        // table and quietly hand the tenant's domain to Watchtower's own pipeline. Case needs no work — the
-        // table is case-insensitive.
+        // already split the port off into `Host.Port`, which is what the route table is keyed by; a port
+        // route has no table entry to match, so <see cref="ForwardPortRouteAsync"/> re-joins the two halves
+        // instead. The trailing dot of a fully-qualified name is dropped because a browser sending
+        // `app.example.invalid.` means the very same host, and leaving it on would miss the table and
+        // quietly hand the tenant's domain to Watchtower's own pipeline. Case needs no work — the table is
+        // case-insensitive.
         var host = request.Host.Host.TrimEnd('.');
 
         // Which listener did this arrive on? The Host header cannot answer this and neither can the
@@ -396,16 +398,22 @@ public sealed class YarpHostDispatchMiddleware(
 
         // The host is echoed from the request rather than taken from the route, because the route has
         // none: whatever the client dialled is what an application building absolute URLs has to hear
-        // back. The scheme is https unconditionally — this listener terminates TLS and does nothing else.
-        // No identity headers: there is no identity, and passing an empty list says so rather than
-        // leaving it to be inferred.
+        // back. `Host.Value` and not `Host.Host` — the whole address of a port route is `host:port`, and
+        // Kestrel has already split the port into its own property. Handing the upstream the bare name
+        // would have Jellyfin, Nextcloud, Grafana or anything else that builds a redirect out of `Host`
+        // send the browser to `https://nas.lan/`, an address this deployment does not answer on. The
+        // scheme is https unconditionally — this listener terminates TLS and does nothing else. No
+        // identity headers: there is no identity, and passing an empty list says so rather than leaving it
+        // to be inferred.
         var error = await forwarder.SendAsync(
             context,
             $"http://{row.UpstreamHost}:{row.UpstreamPort}",
             client.Invoker,
             ProxyForwardHttpClient.RequestConfig,
             new WatchtowerForwarderTransformer(
-                request.Host.Host, "https", context.Connection.RemoteIpAddress?.ToString(),
+                // Null only when the request carried no authority at all, where `Host.Host` would have
+                // been the empty string just the same.
+                request.Host.Value ?? "", "https", context.Connection.RemoteIpAddress?.ToString(),
                 identityHeaders: []));
 
         if (error == ForwarderError.None) return;

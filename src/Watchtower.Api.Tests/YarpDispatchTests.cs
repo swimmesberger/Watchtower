@@ -620,6 +620,36 @@ public sealed class YarpDispatchTests {
     }
 
     /// <summary>
+    /// The address of a port route is <c>host:port</c>, and the port is the half Kestrel has already split
+    /// off into <c>Host.Port</c> by the time the dispatcher runs. Forwarding the bare name would tell every
+    /// upstream that builds absolute URLs out of <c>Host</c> — Jellyfin, Nextcloud, Grafana, Home Assistant
+    /// — that it is answering on <c>https://nas.lan/</c>, which is not an address this deployment serves,
+    /// so the first redirect a visitor followed would leave the service behind.
+    /// </summary>
+    /// <remarks>
+    /// A bare IP is the second case rather than a nicety: it is the address a LAN client with no resolver
+    /// uses, and it is the one the shared leaf's IP SAN exists for.
+    /// </remarks>
+    [Theory]
+    [InlineData("nas.lan")]
+    [InlineData("192.168.1.10")]
+    public async Task ThePortIsKeptInTheHostAPortRoutesUpstreamIsTold(string host) {
+        using var factory = PortRouteEstate();
+        using var client = factory.CreateApiClient(PortRoutePort);
+        await factory.AddPortRouteAsync(PortRoutePort, serviceName: "jellyfin", containerPort: 8096);
+        await factory.ApplyProxyAsync();
+
+        var response = await client.GetAsync($"https://{host}:{PortRoutePort}/web/", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var forwarded = factory.Forwarder.Single();
+        // Both, because an upstream reads whichever of the two it was written against, and the two
+        // disagreeing is how a redirect lands on the wrong authority.
+        Assert.Equal($"{host}:{PortRoutePort}", forwarded.Host);
+        Assert.Equal($"{host}:{PortRoutePort}", forwarded.Header("X-Forwarded-Host"));
+    }
+
+    /// <summary>
     /// The strip is not one of the things a port route skips. Nothing a client sent under an identity
     /// header's name reaches an upstream, on any listener — and on this one there is no identity to
     /// replace it with, so a smuggled header would be the only thing the application saw.
