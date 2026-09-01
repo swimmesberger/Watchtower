@@ -279,10 +279,11 @@ onboarded in a week from a standing start.
 
 Both are supported, they compose, and neither replaces the other.
 
-- **Watchtower *is* a CA** — the one above, for **port routes** only. It generates its own root, signs
-  one certificate covering the LAN names, and you import that root by hand. It exists because no ACME CA
-  of any kind can issue for `nas.lan` or a bare IP. Its root, the LAN names it covers and the current
-  certificate's expiry are shown in the **Internal CA** block on the Routes page.
+- **Watchtower *is* a CA** — for **port routes**, under every provider
+  ([README.md → Port routes](README.md#port-routes-https-on-a-lan-with-any-provider)). It generates its
+  own root, signs one certificate covering the LAN names, and you import that root by hand. It exists
+  because no ACME CA of any kind can issue for `nas.lan` or a bare IP. Its root, the LAN names it covers
+  and the current certificate's expiry are shown in the **Internal CA** card on the Routes page.
 - **Watchtower *talks to* a CA** — the section below, for **domain routes**. Point the ACME directory
   URL at an on-premises CA such as step-ca and every ordinary domain route gets its certificate from
   there over RFC 8555, exactly as it would from Let's Encrypt.
@@ -438,16 +439,9 @@ behaviour, not a regression: compose rebuilt the container from the compose file
 Watchtower added, and the startup reconcile noticed. Press the button again, and this time add
 `- "9001:9001"` to the compose file so the next `up` keeps it.
 
-**The browser does not trust a port route's certificate.** Two causes, and the error message
-distinguishes them.
-
-- *"Not trusted" / "unknown authority"* — the root has not been imported on this device, or was imported
-  without the trust flag (macOS and Firefox both need that second step). Download it again from the
-  Routes page and re-check step 4 above.
-- *"The name does not match" / `NET::ERR_CERT_COMMON_NAME_INVALID`* — the address you typed is not in
-  **LAN names**. Add it under Settings → Reverse proxy; the certificate is reissued immediately and no
-  device has to re-import anything, because the root did not change. A host name and its IP are two
-  different entries: listing `nas.lan` does not make `https://192.168.1.10:9001` work.
+**The browser does not trust a port route's certificate.** Not specific to this provider — see
+[README.md → Download and import the root certificate](README.md#4-download-and-import-the-root-certificate),
+which distinguishes the untrusted-root case from the wrong-name one.
 
 **A port route is `Active` but its listener never came up.** The projection refuses to bind a port-route
 listener whose port is the management port or one of the two ingress ports, and warns in the log rather

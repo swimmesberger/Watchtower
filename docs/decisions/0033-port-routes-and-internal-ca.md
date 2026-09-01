@@ -524,6 +524,17 @@ enter the settings store, so `WATCHTOWER__PROXY__YARP__LANNAMES` simply stops ma
 is warned about on *every* start (not once behind the sentinel — the condition is a line in a compose file
 that stays true until somebody edits it).
 
+The database copy runs in `InitializeDatabaseAsync`, which is after the synchronous boot snapshot
+(ADR-0014 decision 2) has already been read and after Kestrel's projection has already been built — so on
+the first start after the upgrade the new keys would read as unset, costing that boot its `ProxyPort{n}`
+endpoints and stamping every port route `Error: no LAN names`. `WithLegacyAliases` is the boot-time half:
+a pure function over the snapshot that adds `(new key, value of old key)` for each pair whose new key is
+absent. It shadows nothing — a stored new key wins, and the environment still layers above the whole
+snapshot.
+
+[Throughout the body of this ADR, wherever it says `Proxy:Yarp:{LanNames, PortRoutePorts,
+ManagedHostPorts}`, read `Proxy:PortRoutes:{LanNames, Ports, ManagedHostPorts}`.]
+
 ### Consequences
 
 - **Watchtower's own container now joins the ingress network of a port-routed stack under any provider.**
