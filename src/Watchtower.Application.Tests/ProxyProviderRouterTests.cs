@@ -1,6 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 using Xunit;
 
@@ -67,9 +70,76 @@ public sealed class ProxyProviderRouterTests {
         Assert.False(host.Services.GetRequiredService<YarpProxyProvider>().Enabled);
     }
 
+    // ── The port plane rides alongside, not instead (ADR-0033 addendum) ───────
+
+    /// <summary>
+    /// The two operations that mean "the route table changed" and "this stack's containers moved" reach
+    /// the port plane as well as the selected provider — under every provider, because a port route's
+    /// listener is on Watchtower's own container. Routing them to the provider alone is what left a
+    /// Caddy or Cloudflare deployment's port routes unserved.
+    /// </summary>
+    [Theory]
+    [InlineData(ProxyProviderNames.Yarp)]
+    [InlineData(ProxyProviderNames.Caddy)]
+    [InlineData(ProxyProviderNames.Cloudflare)]
+    public async Task ApplyAndConnectStack_ReachTheProviderAndThePortPlane(string provider) {
+        var plane = new RecordingPortRoutePlane();
+        using var host = AuthTestHost.Start(
+            services => services.AddSingleton<PortRoutePlane>(plane),
+            ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", provider));
+        var router = host.Services.GetRequiredService<IProxyProvider>();
+
+        await router.ApplyAsync(Ct);
+        await router.ConnectStackAsync(42, Ct);
+
+        Assert.Equal(1, plane.Applies);
+        Assert.Equal([42], plane.ConnectedStacks);
+    }
+
     /// <summary>A host whose certificate manager is the recording double — registered last, so it wins.</summary>
     private static AuthTestHost Start(RecordingProxyCertificateManager certs, string provider) =>
         AuthTestHost.Start(
             services => services.AddSingleton<IProxyCertificateManager>(certs),
             ("Watchtower:Proxy:Enabled", "true"), ("Watchtower:Proxy:Provider", provider));
+
+    /// <summary>
+    /// A plane that records rather than projects. Substituted at the concrete type the router resolves,
+    /// which is also the assertion that the router resolves it per call rather than capturing one.
+    /// </summary>
+    private sealed class RecordingPortRoutePlane() : PortRoutePlane(
+        NullScopeFactory.Instance,
+        networks: null!,
+        table: new ProxyRouteTable(),
+        internalCerts: null!,
+        signal: null!,
+        options: new StaticWatchtowerOptions(),
+        logger: NullLogger<PortRoutePlane>.Instance) {
+        public int Applies { get; private set; }
+        public List<int> ConnectedStacks { get; } = [];
+
+        public override Task ApplyAsync(CancellationToken ct = default) {
+            Applies++;
+            return Task.CompletedTask;
+        }
+
+        public override Task ConnectStackAsync(int stackId, CancellationToken ct = default) {
+            ConnectedStacks.Add(stackId);
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>A scope factory the recording plane never uses — it overrides everything that would.</summary>
+    private sealed class NullScopeFactory : IServiceScopeFactory {
+        public static readonly NullScopeFactory Instance = new();
+
+        public IServiceScope CreateScope() => throw new NotSupportedException();
+    }
+
+    private sealed class StaticWatchtowerOptions : IOptionsMonitor<WatchtowerOptions> {
+        public WatchtowerOptions CurrentValue { get; } = new();
+
+        public WatchtowerOptions Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<WatchtowerOptions, string?> listener) => null;
+    }
 }
