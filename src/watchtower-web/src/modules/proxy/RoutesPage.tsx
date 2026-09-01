@@ -1444,10 +1444,11 @@ export function RoutesPage() {
         />
       )}
 
-      {/* Two different questions, and they used to be one. The ACME table is the built-in provider's
-          — Caddy and Cloudflare hold their own certificates and Watchtower has none to list — while the
+      {/* Two different questions, and they used to be one. The ACME table is the built-in provider's —
+          Caddy and Cloudflare hold their own certificates and Watchtower has none to list — while the
           internal CA belongs to the port routes, which every provider serves. */}
-      {status?.enabled === true && <CertificatesCard acme={status.provider === 'yarp'} />}
+      {status?.provider === 'yarp' && <CertificatesCard />}
+      {status?.enabled === true && <InternalCaCard />}
 
       <ConfirmDialog
         open={pendingDelete != null}
@@ -1576,13 +1577,13 @@ function humanizeSpan(ms: number): string {
 }
 
 /**
- * The certificate plane, in two halves that answer to different things. The ACME table is what the
- * in-process provider holds per host — it issues for login hosts as well as routes, and keeps a
- * certificate that outlived its route until it expires, neither of which the route list above can
- * show — and it is rendered only under that provider, since Caddy and the tunnel hold their own.
- * The internal CA is the port routes' and is rendered whatever the provider is (ADR-0033 addendum).
+ * What the in-process provider holds, per host. It is the only view of the ACME plane there is: the
+ * provider issues for login hosts as well as routes, and keeps a certificate that outlived its route
+ * until it expires — neither of which the route list above can show. Rendered only under that provider,
+ * since Caddy and the tunnel hold their own certificates and Watchtower has none to list; the internal
+ * CA is a separate card because it answers to something else entirely (ADR-0033 addendum).
  */
-function CertificatesCard({ acme }: { acme: boolean }) {
+function CertificatesCard() {
   const qc = useQueryClient()
   const { data: certificates = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ['proxy-certificates'],
@@ -1590,15 +1591,6 @@ function CertificatesCard({ acme }: { acme: boolean }) {
     // Issuance takes tens of seconds and renewal happens on its own schedule, so the card is worth
     // keeping fresh while it is open — and cheap: the answer is the manager's in-memory snapshot.
     refetchInterval: 30_000,
-    enabled: acme,
-  })
-
-  // Also read here, not only in the block below (react-query serves both from one fetch): with no ACME
-  // table to show, a card whose only content is a CA that does not exist yet is a heading and nothing
-  // else. Under Caddy or the tunnel that is the ordinary state until the first port route is created.
-  const { data: ca } = useQuery({
-    queryKey: ['proxy', 'internal-ca'],
-    queryFn: api.proxy.getInternalCa,
   })
 
   const renew = useMutation({
@@ -1699,21 +1691,14 @@ function CertificatesCard({ acme }: { acme: boolean }) {
     </div>
   )
 
-  if (!acme && ca?.present !== true) return null
-
   return (
     <Card>
       <CardContent>
         <SectionHeader
           title="Certificates"
-          description={
-            acme
-              ? 'Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then.'
-              : "Watchtower's own CA, for the port routes it serves on this container. The domains above are the selected provider's to certify."
-          }
+          description="Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then."
         />
-        <InternalCaBlock />
-        {!acme ? null : isError ? (
+        {isError ? (
           <Banner
             tone="danger"
             title="Couldn’t load certificates"
@@ -1749,9 +1734,13 @@ function CertificatesCard({ acme }: { acme: boolean }) {
 /**
  * Watchtower's own certificate authority (ADR-0033), shown only once it exists — which happens the
  * first time a port route needs a LAN certificate. Reading it never mints a root, so an operator with
- * no port routes never sees an invitation to import something nothing uses.
+ * no port routes never sees an invitation to import something nothing uses, and the card is simply
+ * absent until then.
+ *
+ * Its own card rather than a block inside the ACME one: it belongs to the port routes, which every
+ * provider serves (ADR-0033 addendum), while the ACME table belongs to the built-in provider alone.
  */
-function InternalCaBlock() {
+function InternalCaCard() {
   const { data: ca } = useQuery({
     queryKey: ['proxy', 'internal-ca'],
     queryFn: api.proxy.getInternalCa,
@@ -1759,39 +1748,41 @@ function InternalCaBlock() {
   if (!ca?.present) return null
 
   return (
-    <div className="mb-4 rounded-md border border-border bg-surface-2 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-4 text-brand" />
-            <span className="font-medium text-text">Internal CA</span>
-          </div>
-          <p className="font-mono text-[13px] text-text-2">{ca.subject}</p>
-          <p className="text-xs text-text-3">
-            Root expires <span title={absoluteTitle(ca.notAfter)}>{relativeTime(ca.notAfter)}</span>
-            {ca.leafNotAfter && (
-              <>
-                {' '}· LAN certificate expires{' '}
-                <span title={absoluteTitle(ca.leafNotAfter)}>{relativeTime(ca.leafNotAfter)}</span>
-              </>
-            )}
-          </p>
-          {ca.subjectAltNames.length > 0 && (
+    <Card>
+      <CardContent>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="size-4 text-brand" />
+              <span className="font-medium text-text">Internal CA</span>
+            </div>
+            <p className="font-mono text-[13px] text-text-2">{ca.subject}</p>
             <p className="text-xs text-text-3">
-              Valid for <span className="font-mono">{ca.subjectAltNames.join(', ')}</span>
+              Root expires <span title={absoluteTitle(ca.notAfter)}>{relativeTime(ca.notAfter)}</span>
+              {ca.leafNotAfter && (
+                <>
+                  {' '}· LAN certificate expires{' '}
+                  <span title={absoluteTitle(ca.leafNotAfter)}>{relativeTime(ca.leafNotAfter)}</span>
+                </>
+              )}
             </p>
-          )}
+            {ca.subjectAltNames.length > 0 && (
+              <p className="text-xs text-text-3">
+                Valid for <span className="font-mono">{ca.subjectAltNames.join(', ')}</span>
+              </p>
+            )}
+          </div>
+          <Button size="sm" variant="secondary" asChild>
+            <a href={INTERNAL_CA_DOWNLOAD_URL} download>
+              <Download /> Download root
+            </a>
+          </Button>
         </div>
-        <Button size="sm" variant="secondary" asChild>
-          <a href={INTERNAL_CA_DOWNLOAD_URL} download>
-            <Download /> Download root
-          </a>
-        </Button>
-      </div>
-      <p className="mt-3 text-xs text-text-3">
-        Import this into your OS or browser trust store so LAN addresses validate.
-      </p>
-    </div>
+        <p className="mt-3 text-xs text-text-3">
+          Import this into your OS or browser trust store so LAN addresses validate.
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 
