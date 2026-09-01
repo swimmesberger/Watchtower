@@ -304,10 +304,11 @@ export function RoutesPage() {
   const isCloudflare = status?.provider === 'cloudflare'
   const servesHttps = (r: Route) => isCloudflare || r.tlsEnabled
 
-  // Port routes are the in-process provider's alone — Caddy and the tunnel have no listener to give
-  // one, and both mark such a row as an error. Offering the choice elsewhere would be offering a route
-  // that cannot be served.
-  const supportsPortRoutes = status?.provider === 'yarp'
+  // Port routes need only the proxy to be on (ADR-0033 addendum). Their listener is on Watchtower's
+  // own container and their certificate comes from Watchtower's own CA, so which provider terminates
+  // the public domains has nothing to say about them — they are offered alongside Caddy and the tunnel
+  // exactly as they are under the built-in provider.
+  const supportsPortRoutes = status?.enabled === true
   // The LAN names the internal CA issues for. Needed for two things at once: the addresses the table
   // renders for port routes, and whether creating one is possible at all.
   // The key is the Settings page's, deliberately: saving the proxy card invalidates ['proxy'], and a
@@ -319,7 +320,7 @@ export function RoutesPage() {
     enabled: supportsPortRoutes,
   })
   const proxyConfig = proxyConfigQuery.data
-  const lanNames = useMemo(() => parseLanNames(proxyConfig?.yarp.lanNames), [proxyConfig])
+  const lanNames = useMemo(() => parseLanNames(proxyConfig?.portRoutes.lanNames), [proxyConfig])
   // The name that stands in for the rest wherever one address is shown: every configured name reaches a
   // port route, and the tooltip beside it lists the others.
   const firstLanName = lanNames[0]
@@ -635,9 +636,9 @@ export function RoutesPage() {
     if (lanNamesUnavailable)
       return 'The proxy settings could not be read, so the address this port is reached at cannot be shown.'
     // Nothing failed here: the settings were never asked for. Saying they could not be read would
-    // report a fault at first paint, and would stand permanently under Caddy or the tunnel.
+    // report a fault at first paint, and would stand permanently while the proxy is off.
     if (!supportsPortRoutes)
-      return `Port ${r.listenPort}. Port routes are served by the built-in provider only, so the current provider has no address to give this one.`
+      return `Port ${r.listenPort}. The reverse proxy is off, so nothing is listening on it.`
     return `Port ${r.listenPort}. The address it is reached at is not known until the proxy settings load.`
   }
 
@@ -1443,7 +1444,10 @@ export function RoutesPage() {
         />
       )}
 
-      {status?.provider === 'yarp' && <CertificatesCard />}
+      {/* Two different questions, and they used to be one. The ACME table is the built-in provider's
+          — Caddy and Cloudflare hold their own certificates and Watchtower has none to list — while the
+          internal CA belongs to the port routes, which every provider serves. */}
+      {status?.enabled === true && <CertificatesCard acme={status.provider === 'yarp'} />}
 
       <ConfirmDialog
         open={pendingDelete != null}
@@ -1572,11 +1576,13 @@ function humanizeSpan(ms: number): string {
 }
 
 /**
- * What the in-process provider holds, per host. It is the only view of the certificate plane there
- * is: the provider issues for login hosts as well as routes, and keeps a certificate that outlived
- * its route until it expires — neither of which the route list above can show.
+ * The certificate plane, in two halves that answer to different things. The ACME table is what the
+ * in-process provider holds per host — it issues for login hosts as well as routes, and keeps a
+ * certificate that outlived its route until it expires, neither of which the route list above can
+ * show — and it is rendered only under that provider, since Caddy and the tunnel hold their own.
+ * The internal CA is the port routes' and is rendered whatever the provider is (ADR-0033 addendum).
  */
-function CertificatesCard() {
+function CertificatesCard({ acme }: { acme: boolean }) {
   const qc = useQueryClient()
   const { data: certificates = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ['proxy-certificates'],
@@ -1584,6 +1590,15 @@ function CertificatesCard() {
     // Issuance takes tens of seconds and renewal happens on its own schedule, so the card is worth
     // keeping fresh while it is open — and cheap: the answer is the manager's in-memory snapshot.
     refetchInterval: 30_000,
+    enabled: acme,
+  })
+
+  // Also read here, not only in the block below (react-query serves both from one fetch): with no ACME
+  // table to show, a card whose only content is a CA that does not exist yet is a heading and nothing
+  // else. Under Caddy or the tunnel that is the ordinary state until the first port route is created.
+  const { data: ca } = useQuery({
+    queryKey: ['proxy', 'internal-ca'],
+    queryFn: api.proxy.getInternalCa,
   })
 
   const renew = useMutation({
@@ -1684,15 +1699,21 @@ function CertificatesCard() {
     </div>
   )
 
+  if (!acme && ca?.present !== true) return null
+
   return (
     <Card>
       <CardContent>
         <SectionHeader
           title="Certificates"
-          description="Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then."
+          description={
+            acme
+              ? 'Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then.'
+              : "Watchtower's own CA, for the port routes it serves on this container. The domains above are the selected provider's to certify."
+          }
         />
         <InternalCaBlock />
-        {isError ? (
+        {!acme ? null : isError ? (
           <Banner
             tone="danger"
             title="Couldn’t load certificates"

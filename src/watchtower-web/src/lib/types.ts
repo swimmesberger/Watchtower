@@ -862,14 +862,22 @@ export interface ProxyYarpConfig {
   /** True when an EAB HMAC key is stored — the UI sends a new one only to replace it. */
   hasAcmeEabHmacKey: boolean
   redirectHttpToHttps: boolean
-  /**
-   * The host names and IP addresses this deployment is reached on over the LAN, comma- or
-   * newline-separated, as the operator typed them (ADR-0033). Every port-route certificate the internal
-   * CA issues carries all of them, so a name missing here is one no browser will trust.
-   */
-  lanNames: string
   /** Runtime state: false means nothing is terminating TLS and routes are served in the clear. */
   httpsListenerBound: boolean
+}
+
+/**
+ * Port-route values (ADR-0033). Their own block rather than part of the yarp one, and read under every
+ * provider: a port route's listener is on Watchtower's own container, so which backend terminates the
+ * public domains has nothing to say about it (ADR-0033 addendum).
+ */
+export interface ProxyPortRoutesConfig {
+  /**
+   * The host names and IP addresses this deployment is reached on over the LAN, comma- or
+   * newline-separated, as the operator typed them. Every port-route certificate the internal CA issues
+   * carries all of them, so a name missing here is one no browser will trust.
+   */
+  lanNames: string
 }
 
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
@@ -904,6 +912,7 @@ export interface ProxyConfig {
   adminEmail: string | null
   caddyImage: string
   yarp: ProxyYarpConfig
+  portRoutes: ProxyPortRoutesConfig
   cloudflare: ProxyCloudflareConfig
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
@@ -922,8 +931,11 @@ export interface UpdateProxyConfigRequest {
   yarpAcmeEabKeyId?: string | null
   yarpAcmeEabHmacKey?: string | null
   yarpRedirectHttpToHttps?: boolean | null
-  /** Comma- or newline-separated LAN host names and IPs the internal CA issues port-route leaves for. */
-  yarpLanNames?: string | null
+  /**
+   * Comma- or newline-separated LAN host names and IPs the internal CA issues port-route leaves for.
+   * Sent under every provider, unlike the yarp fields above.
+   */
+  portRoutesLanNames?: string | null
   cloudflareAccountId?: string | null
   cloudflareZoneId?: string | null
   cloudflareApiToken?: string | null
