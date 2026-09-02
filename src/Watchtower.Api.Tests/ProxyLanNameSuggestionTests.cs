@@ -5,8 +5,8 @@ using Xunit;
 namespace Watchtower.Api.Tests;
 
 /// <summary>
-/// <c>proxy.suggestLanNames</c> over the wire — the LAN-name chips the Settings page offers
-/// (ADR-0033 decision 6).
+/// <c>proxy.suggestLanNames</c> over the wire — the LAN-name chips the Settings page offers for the LAN
+/// names setting of ADR-0033 decision 6.
 /// </summary>
 /// <remarks>
 /// Through the JSON-RPC pipeline rather than against the handler directly, because the two things that
@@ -15,44 +15,68 @@ namespace Watchtower.Api.Tests;
 /// <para>
 /// Only the DNS seam is substituted. The Docker source is left as it is and asserted around rather than
 /// pinned, for the reason <c>MgmtApiTests</c> gives: <c>DockerEngineClient</c> hard-codes its socket
-/// path, so whether a daemon answers depends on the machine — and the property under test here is one
-/// that holds whatever the daemon says, since a value the setting already names is excluded no matter
-/// which source found it. Its being fail-open is covered where it can be made deterministic, in
+/// path, so whether a daemon answers depends on the machine — and the properties under test here hold
+/// whatever the daemon says, since a value already in the setting is excluded no matter which source
+/// found it. The rules themselves are covered where they can be made deterministic, in
 /// <c>LanNameSuggestionsTests</c>.
 /// </para>
 /// </remarks>
 public sealed class ProxyLanNameSuggestionTests {
+    /// <summary>
+    /// The address the browser arrived on leads the list, because it is the one the operator is looking
+    /// at — and it is the server that says so, rather than a client synthesising a chip of its own.
+    /// </summary>
     [Fact]
-    public async Task TheAddressTheBrowserUsed_IsOfferedAsTheNameItAnswersTo() {
-        using var factory = ProxyHost("nas.lan");
+    public async Task TheAddressTheBrowserUsed_LeadsAndItsReverseNameFollows() {
+        using var factory = ProxyHost(lanNames: "");
         factory.Dns.ReverseTo("192.168.1.10", "nas.lan", "media.lan");
         using var client = factory.CreateApiClient();
 
         var candidates = await SuggestAsync(client, hint: "192.168.1.10");
 
-        // The reverse name that is not already in the setting is offered…
-        var candidate = Assert.Single(candidates, c => Value(c) == "media.lan");
-        Assert.Equal("hostname", candidate.GetProperty("kind").GetString());
-        Assert.Equal("reverse-dns", candidate.GetProperty("source").GetString());
-        Assert.False(string.IsNullOrWhiteSpace(candidate.GetProperty("detail").GetString()));
-        // …and the one that is, is not — whichever source found it.
-        Assert.DoesNotContain("nas.lan", candidates.Select(Value));
+        Assert.Equal("192.168.1.10", Value(candidates[0]));
+        Assert.Equal("browser", candidates[0].GetProperty("source").GetString());
+        Assert.Equal("ip", candidates[0].GetProperty("kind").GetString());
+        Assert.True(candidates[0].GetProperty("verified").GetBoolean());
+
+        var name = Assert.Single(candidates, c => Value(c) == "media.lan");
+        Assert.Equal("hostname", name.GetProperty("kind").GetString());
+        Assert.Equal("reverse-dns", name.GetProperty("source").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(name.GetProperty("detail").GetString()));
     }
 
-    /// <summary>
-    /// The hint is the one address known to work, and the client offers it itself — so a server that
-    /// echoed it back would produce a duplicate chip next to the certain one.
-    /// </summary>
     [Fact]
-    public async Task TheHintItself_IsNotAmongTheCandidates() {
-        using var factory = ProxyHost(lanNames: "");
-        factory.Dns.ReverseTo("192.168.1.10", "nas.lan");
+    public async Task WhatTheSettingAlreadyHolds_IsNotOfferedAgain() {
+        using var factory = ProxyHost(lanNames: "nas.lan, 192.168.1.10");
+        factory.Dns.ReverseTo("192.168.1.10", "nas.lan", "media.lan");
         using var client = factory.CreateApiClient();
 
         var candidates = await SuggestAsync(client, hint: "192.168.1.10");
 
-        Assert.Contains("nas.lan", candidates.Select(Value));
+        // Both configured values are gone — the hint included, which is what makes a clicked chip
+        // disappear instead of coming back on the next refetch.
+        Assert.DoesNotContain("nas.lan", candidates.Select(Value));
         Assert.DoesNotContain("192.168.1.10", candidates.Select(Value));
+        Assert.Contains("media.lan", candidates.Select(Value));
+    }
+
+    /// <summary>
+    /// A browser can hold an address a certificate cannot name. The client renders what it is sent
+    /// without judging it, so the judging happens here: an excluded or unparseable hint is silently
+    /// absent rather than offered as a chip whose click makes the Save fail.
+    /// </summary>
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    [InlineData("host.docker.internal")]
+    [InlineData("my_nas")]
+    public async Task AHintTheCertificateCouldNotName_IsSilentlyAbsent(string hint) {
+        using var factory = ProxyHost(lanNames: "");
+        using var client = factory.CreateApiClient();
+
+        var candidates = await SuggestAsync(client, hint);
+
+        Assert.DoesNotContain(hint, candidates.Select(Value));
     }
 
     /// <summary>
