@@ -139,8 +139,8 @@ Four things move out of Watchtower:
 2. **Ingress-network membership of Watchtower's own container.** This one needs no recreate at all:
    `network connect` and `network disconnect` work on a running container, and Watchtower has been doing
    exactly that to *itself* at every reconcile. The supervisor does it instead, from the networks
-   Watchtower declares. It also creates and holds one network of its own, `watchtower-supervisor`, for
-   the reason decision 6 gives.
+   Watchtower declares. It also creates and holds one network of its own, `watchtower-supervisor`,
+   carrying Watchtower and the database, for the two reasons decision 6 gives.
 3. **Postgres provisioning and the health wait** — compose's `depends_on: service_healthy`, performed by
    a process rather than a file.
 4. **Secret generation.** `POSTGRES_PASSWORD` and `WATCHTOWER__AUTH__KEYPROTECTIONSECRET` are generated
@@ -270,8 +270,14 @@ explicit `Watchtower:Backup:SelfPostgresContainer` setting, else the Postgres-im
 Watchtower's own compose project, else every running Postgres-imaged container on the daemon
 (`SelfPostgresLocator.cs:40-43`, implemented at `:149-153`). A supervised install has no compose project
 label — decision 7 strips it — so it takes the third source, which is the one that already exists for
-`docker run` installs and which logs that it is doing so. Naming the bundled container after the
-connection string's host is therefore the entire integration.
+`docker run` installs and which logs that it is doing so.
+
+Making the connection string's `Host` resolve is therefore the whole integration, and it has two cases.
+On a **fresh bundled** install the supervisor names the container after that host and the locator matches
+by name. On an **adopted compose** install the container is called something else and the host was a
+Compose service alias, so the supervisor sets that alias on the bridge (decision 6) and the locator
+matches its one unnamed candidate — "a service aliased differently from the host is ordinary"
+(ADR-0027 §3).
 
 **Major-version upgrades are a supervisor operation, in a later slice.** Dump, new container, restore, on
 ADR-0027's existing `pg_dumpall` machinery. It is the right owner — the supervisor is the only process
@@ -287,13 +293,31 @@ closed. `docker exec` is out: the image purges `curl` after using it to add Dock
 (`CoordinatorContainers.cs:126`) reaches nothing at all — right for a process that only spoke to the
 socket, impossible for one that has to ask a question over HTTP.
 
-**So the supervisor creates one user-defined bridge, `watchtower-supervisor`, joined by itself and
-Watchtower's container and nothing else.** Readiness is `GET http://watchtower:8080/health` over it, on
-Docker's own DNS. One network, two members, traffic in one direction.
+**So the supervisor creates one user-defined bridge, `watchtower-supervisor`, joined by three members
+and nothing else: itself, Watchtower's container, and the database.** Readiness is
+`GET http://watchtower:{management}/health` over it, on Docker's own DNS, where `{management}` is
+`desired.json`'s `listen.management` rather than a hardcoded 8080 — the port is Watchtower's to move
+(decision 3), and a probe that assumed the default would report a healthy instance dead the moment
+someone moved it.
 
-It then keeps the previous container, stopped and renamed aside, until the new one answers. That is the
-coordinator's rename-aside trick (`CoordinatorMode.cs:68-69`) with a real readiness check instead of
-"the start call returned", which is the one thing the coordinator could never afford: it had to exit.
+The database is the third member because of what adoption takes away. The shipped connection string
+names `Host=postgres` (`docker-compose.yml:81`) while the container is `watchtower-postgres` (`:119`):
+`postgres` was never the container's name, it was Compose's *service alias* on the project network, and
+decision 7 abandons that network. Left alone, Watchtower would come back from the ownership recreate
+unable to resolve its own database.
+
+**So the supervisor attaches the database with a network alias equal to the host the connection string
+names** — `postgres` for an adopted compose install, and set on a fresh bundled one too even though the
+container already carries that name, because a deployment whose two halves are configured differently is
+one where only half gets tested. The mechanism is the one the codebase already uses to give stack
+services their stable upstream names: `ConnectContainerAsync` sends `EndpointConfig.Aliases` to
+`POST /networks/{id}/connect` (`DockerEngineClient.cs:617-632`), as
+`ProxyIngressNetworks.ConnectServiceAsync` does at `:62`.
+
+The supervisor then keeps the previous container, stopped and renamed aside, until the new one answers.
+That is the coordinator's rename-aside trick (`CoordinatorMode.cs:68-69`) with a real readiness check
+instead of "the start call returned", which is the one thing the coordinator could never afford: it had
+to exit.
 
 A failed start rolls back automatically and records it in `status.json` with the daemon's own error text,
 not a paraphrase.
@@ -361,9 +385,8 @@ migration guide references it by tag.
 
 ## Worked examples
 
-**An operator adds a port route.** They create the route; `YarpProxyProvider.ApplyAsync` binds the
-listener and issues the internal-CA leaf as it does today — through the port-route plane that PR #78
-moves this out into, as an addendum to ADR-0033 decisions 2 and 6. Then, instead of
+**An operator adds a port route.** They create the route; the port-route plane (PR #78's addendum to
+ADR-0033) binds the listener and issues the internal-CA leaf, as it does today. Then, instead of
 a confirmation dialog that spawns a coordinator, Watchtower writes `desired.json` with `9001` added to
 `publishPorts` and generation 8. The supervisor notices within a second, composes the spec, and recreates
 the container with `-p 9001:9001`. Watchtower comes back, reads `status.json`, sees
@@ -404,7 +427,9 @@ pass it recreates both containers once under its own ownership, and three things
 - every `com.docker.compose.*` label is **removed** and `com.watchtower.supervised=true` added, which is
   what makes step 5 safe;
 - both join the private `watchtower-supervisor` network, and the compose project's own network is left
-  behind — nothing that runs is on it any more;
+  behind — nothing that runs is on it any more. The database joins **under the alias your connection
+  string names** (`postgres`, in the shipped file), which is what the project network used to provide
+  and what lets Watchtower reach its database on the way back up;
 - the secrets the supervisor can derive from the running configuration move into `/data/self/`.
 
 Postgres is recreated too, on its existing volume, with no data touched. That pair of recreates is the
@@ -425,9 +450,13 @@ docker compose -f /srv/watchtower/docker-compose.yml down
 After step 3 the project has no containers left in it, because the labels that made them its containers
 are gone, so this removes the leftover network and nothing that runs. **No `--remove-orphans`**: with
 the labels stripped there are no orphans to find, and that flag is precisely the one that would have
-removed the live containers had step 3 not run first. **Run it from where you ran `up`**, too — without
-a top-level `name:` compose derives the project name from the directory, so `down` from anywhere else
-addresses a project that does not exist and reports success having done nothing.
+removed the live containers had step 3 not run first.
+
+**Use the same project name you used at `up`.** With an explicit `-f`, Compose derives the name from the
+*file's* directory, not your shell's, and `-p`, `COMPOSE_PROJECT_NAME` or a top-level `name:` overrides
+that anyway — an install from a checkout of `deploy/docker/` was project `docker`. `docker compose ls`
+shows the name; pass `-p <name>` if it differs from the file's directory. Address the wrong project and
+`down` reports success having done nothing.
 
 **Do not run `docker compose down -v`.** The `-v` deletes named volumes, and `watchtower-pg` is the
 database. There is no recovery from that except a restore from a backup bundle (ADR-0027), and the
@@ -473,12 +502,13 @@ the pre-migration tag is possible and is not a supported path.
   tenant's ingress network, so a compromised tenant reaches the process holding the Docker socket, the
   database and every credential. That process also held the authority to recreate itself. The supervisor
   is on **no tenant network**, and on exactly one network of its own — the private
-  `watchtower-supervisor` bridge it shares with Watchtower's container and nothing else. On that bridge
-  it listens for nothing: it is the client of `/health`, never a server, which non-goal 9 keeps true by
-  giving it no HTTP surface to expose. So nothing reachable from a tenant network can reach it, and the
-  two privileges now sit on different sides of a network boundary. The supervisor holds the Docker
-  socket, which is not a new exposure: Watchtower already holds it, and anyone who owns the socket owns
-  the host.
+  `watchtower-supervisor` bridge it shares with Watchtower's container and its database, and nothing
+  else. Neither of those two is a tenant, so the argument is unchanged by the third member. On that
+  bridge the supervisor listens for nothing: it is the client of `/health`, never a server, which
+  non-goal 9 keeps true by giving it no HTTP surface to expose. So nothing reachable from a tenant
+  network can reach it, and the two privileges now sit on different sides of a network boundary. The
+  supervisor holds the Docker socket, which is not a new exposure: Watchtower already holds it, and
+  anyone who owns the socket owns the host.
 - **The restore coordinator does not simply move, and this needs care.** ADR-0027 §5's coordinator
   deliberately stops and starts Watchtower rather than recreating it: "That is deliberate: the
   container's filesystem survives, and with it the marker file the restarted Watchtower reads to find
