@@ -24,6 +24,7 @@ import type {
   UpdateSelfConfigRequest,
 } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
+import { lanNameKey, parseLanNames } from '@/lib/lanNames'
 import { absoluteTitle, formatBytes, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { ContainerLogs } from '@/components/container-logs'
 import { Badge } from '@/components/ui/badge'
@@ -731,18 +732,16 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
   }
 }
 
-// ── LAN name suggestions (ADR-0033) ───────────────────────────────────────────
+// ── LAN name suggestions ──────────────────────────────────────────────────────
 // A comma-separated list of addresses is a thing an operator has to know before they can type it, and
-// on a home LAN the answer is sitting in three places nobody thinks to look. So they are offered as
-// chips. Nothing is ever saved by a click — the value lands in the field and the ordinary Save writes it.
-
-/** The entries a LAN names field holds, in the spelling the suggestions are compared against. */
-function lanNameEntries(raw: string): string[] {
-  return raw
-    .split(/[\n,]/)
-    .map(entry => entry.trim().replace(/\.$/, '').toLowerCase())
-    .filter(entry => entry.length > 0)
-}
+// on a home LAN the answer is sitting in places nobody thinks to look. So they are offered as chips
+// for the LAN names setting of ADR-0033 decision 6. Nothing is ever saved by a click — the value lands
+// in the field and the ordinary Save writes it.
+//
+// Every rule about what may be suggested lives on the server, this side renders what it is sent. That
+// includes the address in the address bar: it is sent up as the hint and comes back as a candidate, so
+// a browser holding `host.docker.internal` or `my_nas` — both legal there, neither nameable by a
+// certificate — produces no chip rather than one whose click makes the Save fail.
 
 /** Appends one name to the field, comma-separated, leaving what is already typed exactly as typed. */
 function appendLanName(raw: string, name: string): string {
@@ -751,22 +750,18 @@ function appendLanName(raw: string, name: string): string {
 }
 
 /**
- * The host in the address bar, without the brackets an IPv6 authority is written in. It is the one
- * address certain to work — the operator is looking at a page served over it — which is why it is
- * offered first, and offered by the client rather than asked for.
+ * The host in the address bar, without the brackets an IPv6 authority is written in — the hint the
+ * server turns into candidates. Host only: a port is not part of any name a certificate carries.
  */
 function browserHost(): string {
   const host = typeof window === 'undefined' ? '' : window.location.hostname
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
 }
 
-/** Addresses that name the machine doing the asking, so they are true of nobody else on the LAN. */
-const OWN_MACHINE = new Set(['localhost', '127.0.0.1', '::1'])
-
 /**
  * The suggestion chips under the LAN names field. Renders nothing at all while the query is in flight
  * or after it fails: this is a convenience, and a convenience that could not be computed has nothing to
- * say. The client-side chip does not wait for any of that.
+ * say — least of all a banner over a field somebody is typing in.
  */
 function LanNameSuggestionChips({
   value,
@@ -786,20 +781,10 @@ function LanNameSuggestionChips({
     refetchOnWindowFocus: false,
   })
 
-  const listed = new Set(lanNameEntries(value))
-  const chips: { value: string; verified: boolean; detail: string }[] = []
-  if (hint && !OWN_MACHINE.has(hint.toLowerCase()) && !listed.has(hint.toLowerCase())) {
-    chips.push({
-      value: hint,
-      verified: true,
-      detail: 'How you reached this page, so it is an address that works.',
-    })
-  }
-  for (const candidate of data ?? []) {
-    const key = candidate.value.toLowerCase()
-    if (listed.has(key) || chips.some(chip => chip.value.toLowerCase() === key)) continue
-    chips.push({ value: candidate.value, verified: candidate.verified, detail: candidate.detail })
-  }
+  // The server excludes what the *saved* setting holds; this drops what the operator has typed since,
+  // so a chip disappears the moment it is clicked rather than at the next save.
+  const listed = new Set(parseLanNames(value).map(lanNameKey))
+  const chips = (data ?? []).filter(candidate => !listed.has(lanNameKey(candidate.value)))
   if (chips.length === 0) return null
 
   return (

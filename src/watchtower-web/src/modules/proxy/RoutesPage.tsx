@@ -16,6 +16,7 @@ import type {
 } from '@/lib/types'
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { absoluteTitle, timeAgo } from '@/lib/format'
+import { parseLanNames } from '@/lib/lanNames'
 import { useRealms } from '@/hooks/use-realms'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -137,14 +138,6 @@ const ROUTE_BINDINGS: { value: RouteBinding; label: string; description: string 
 ]
 
 const MANUAL = '__manual__'
-
-/** The LAN names as a list — the raw setting is comma- or newline-separated, as the operator typed it. */
-function parseLanNames(raw: string | undefined): string[] {
-  return (raw ?? '')
-    .split(/[,\n\r]+/)
-    .map((n) => n.trim())
-    .filter(Boolean)
-}
 
 /**
  * A LAN name as it goes into a URL authority. An IPv6 literal has to be bracketed — `fd00::10:9001` is
@@ -1110,8 +1103,7 @@ export function RoutesPage() {
                 <Banner tone="warn" title="No LAN names configured">
                   A port route's certificate is issued for the names and IPs you type in the browser, so
                   there has to be at least one. Add them under Settings → Reverse proxy (“LAN names”),
-                  then come back. Suggestions are offered under Settings → Reverse proxy → LAN port
-                  routes, so you may not have to type them.
+                  where suggestions are offered, so you may not have to type them.
                 </Banner>
               )}
 

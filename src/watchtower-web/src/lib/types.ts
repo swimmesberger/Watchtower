@@ -882,15 +882,26 @@ export interface ProxyPortRoutesConfig {
 
 /**
  * One address the server thinks this deployment answers on, offered under the LAN names field as a chip
- * (ADR-0033). Advisory only: nothing is saved until the operator clicks one and then saves.
+ * (the LAN names setting of ADR-0033 decision 6). Advisory only: nothing is saved until the operator
+ * clicks one and then saves.
+ *
+ * Every rule about what may be offered is the server's — the exclusions, the certificate's own parser,
+ * the deduplication — including for the address this page was reached on, which is sent up as a hint and
+ * comes back as a candidate like any other. So this list is rendered as received.
  */
 export interface LanNameCandidate {
   /** The value to append to the setting, verbatim — already in a spelling the Save accepts. */
   value: string
   kind: 'hostname' | 'ip'
-  /** Where it was learned: `reverse-dns`, `forward-dns`, `docker-host` or `docker-search-domain`. */
+  /**
+   * Where it was learned: `browser` (the address this page was reached on, always offered first),
+   * `reverse-dns`, `forward-dns`, `docker-host` or `docker-search-domain`.
+   */
   source: string
-  /** Whether forward and reverse resolution agree about it. */
+  /**
+   * Whether the address is confirmed. For `browser` that is a certainty — a page was served over it —
+   * and for the rest it means forward and reverse resolution agree.
+   */
   verified: boolean
   /** One sentence saying where it came from — the chip's tooltip. */
   detail: string

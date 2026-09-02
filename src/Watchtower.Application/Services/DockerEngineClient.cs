@@ -1300,8 +1300,8 @@ public sealed record DockerEngineInfo {
     /// <summary>
     /// The daemon host's hostname (the API's <c>Name</c> field) — the box Watchtower's container runs
     /// on, not the container. Null when the daemon left it off. It is the one name we can learn about
-    /// the host from inside a container, which is why the LAN-name suggestions (ADR-0033) read it: on a
-    /// home LAN it is very often exactly what the operator types in the browser.
+    /// the host from inside a container, which is why the LAN-name suggestions of ADR-0033 decision 6
+    /// read it: on a home LAN it is very often exactly what the operator types in the browser.
     /// </summary>
     public string? Name { get; init; }
 

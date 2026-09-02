@@ -25,7 +25,7 @@ public sealed record LanNameCandidateDto(
 
 /// <summary>
 /// Suggests the LAN names this deployment appears to answer on, so a hobby operator gets a working
-/// certificate without typing addresses by hand (ADR-0033 decision 6).
+/// certificate without typing addresses into the LAN names setting of ADR-0033 decision 6.
 /// </summary>
 /// <remarks>
 /// Read-only and advisory in the strong sense: nothing is saved, nothing is created, and a candidate is
@@ -44,8 +44,9 @@ public sealed class SuggestLanNames(
     : IHandler<SuggestLanNames.Query, Result<SuggestLanNames.Response>> {
     /// <param name="Hint">
     /// The host the browser reached this page with, without its port — the one address known for certain
-    /// to work, and the only thing the server cannot find out for itself. Never echoed back as a
-    /// candidate: the client already offers it directly.
+    /// to work, and the only thing the server cannot find out for itself. It comes back as a candidate
+    /// like any other, first in the list and held to the same rules, so a client never has to decide for
+    /// itself whether an address it can display is one a certificate can name.
     /// </param>
     public sealed record Query(string? Hint);
 
