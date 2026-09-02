@@ -9232,6 +9232,60 @@
         ]
       }
     },
+    "proxy.suggestLanNames": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "hint"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "verified": {
+                  "type": "boolean"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "kind",
+                "source",
+                "verified",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "candidates"
+        ]
+      }
+    },
     "proxy.updateConfig": {
       "params": {
         "type": "object",
