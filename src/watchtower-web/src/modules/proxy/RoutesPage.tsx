@@ -304,10 +304,11 @@ export function RoutesPage() {
   const isCloudflare = status?.provider === 'cloudflare'
   const servesHttps = (r: Route) => isCloudflare || r.tlsEnabled
 
-  // Port routes are the in-process provider's alone — Caddy and the tunnel have no listener to give
-  // one, and both mark such a row as an error. Offering the choice elsewhere would be offering a route
-  // that cannot be served.
-  const supportsPortRoutes = status?.provider === 'yarp'
+  // Port routes need only the proxy to be on (ADR-0033 addendum). Their listener is on Watchtower's
+  // own container and their certificate comes from Watchtower's own CA, so which provider terminates
+  // the public domains has nothing to say about them — they are offered alongside Caddy and the tunnel
+  // exactly as they are under the built-in provider.
+  const supportsPortRoutes = status?.enabled === true
   // The LAN names the internal CA issues for. Needed for two things at once: the addresses the table
   // renders for port routes, and whether creating one is possible at all.
   // The key is the Settings page's, deliberately: saving the proxy card invalidates ['proxy'], and a
@@ -319,7 +320,7 @@ export function RoutesPage() {
     enabled: supportsPortRoutes,
   })
   const proxyConfig = proxyConfigQuery.data
-  const lanNames = useMemo(() => parseLanNames(proxyConfig?.yarp.lanNames), [proxyConfig])
+  const lanNames = useMemo(() => parseLanNames(proxyConfig?.portRoutes.lanNames), [proxyConfig])
   // The name that stands in for the rest wherever one address is shown: every configured name reaches a
   // port route, and the tooltip beside it lists the others.
   const firstLanName = lanNames[0]
@@ -408,6 +409,13 @@ export function RoutesPage() {
   // pending — from the banner's button through to the confirmation it opens. "Publish" in front of a
   // recreate that is only going to give a leftover port back describes the opposite of what happens.
   const releaseOnly = pendingPorts.length === 0
+  // Every port the button would publish is already held by another container, so the recreate it starts
+  // could only fail to start and roll back. Offering it anyway would cost a restart to learn nothing.
+  // A mix is left enabled: the publishable half is still worth a recreate.
+  const allPendingBlocked = pendingPorts.length > 0 && pendingPorts.every((p) => p.blockedBy != null)
+  // One reason, whichever applies — the button is disabled with exactly one explanation attached.
+  const publishRefusal =
+    portBindings?.unavailableReason ?? (allPendingBlocked ? (pendingPorts[0]?.blockedBy ?? null) : null)
   const publishActionLabel = releaseOnly
     ? 'Release ports & restart Watchtower (~5 s)'
     : 'Publish ports & restart Watchtower (~5 s)'
@@ -628,9 +636,9 @@ export function RoutesPage() {
     if (lanNamesUnavailable)
       return 'The proxy settings could not be read, so the address this port is reached at cannot be shown.'
     // Nothing failed here: the settings were never asked for. Saying they could not be read would
-    // report a fault at first paint, and would stand permanently under Caddy or the tunnel.
+    // report a fault at first paint, and would stand permanently while the proxy is off.
     if (!supportsPortRoutes)
-      return `Port ${r.listenPort}. Port routes are served by the built-in provider only, so the current provider has no address to give this one.`
+      return `Port ${r.listenPort}. The reverse proxy is off, so nothing is listening on it.`
     return `Port ${r.listenPort}. The address it is reached at is not known until the proxy settings load.`
   }
 
@@ -678,12 +686,23 @@ export function RoutesPage() {
     r.listenPort != null &&
     bindingByPort.get(r.listenPort)?.bound === false
 
+  // Why the port cannot be published, when the answer is another container holding it. The server
+  // phrases it — it is the same sentence the publish and the route form refuse with — so the row, the
+  // button and the validation message never tell three different stories about one port.
+  const blockedBy = (r: Route) =>
+    (r.listenPort != null ? bindingByPort.get(r.listenPort)?.blockedBy : null) ?? null
+
   const unpublishedBadge = (r: Route) =>
     isUnpublished(r) ? (
       <Tooltip
-        label={`Watchtower listens on ${r.listenPort} inside its container, but the container does not publish that host port — nothing on the network can reach this route yet.`}
+        label={
+          blockedBy(r) ??
+          `Watchtower listens on ${r.listenPort} inside its container, but the container does not publish that host port — nothing on the network can reach this route yet.`
+        }
       >
-        <Badge tone="warn">host port not published</Badge>
+        <Badge tone="warn">
+          {blockedBy(r) ? 'host port held by another container' : 'host port not published'}
+        </Badge>
       </Tooltip>
     ) : null
 
@@ -909,14 +928,14 @@ export function RoutesPage() {
                 : `${pendingPorts.length} host ports are not published`
           }
           action={
-            portBindings?.unavailableReason == null ? (
+            publishRefusal == null ? (
               <Button variant="link" onClick={() => setConfirmPublish(true)}>
                 {publishActionLabel}
               </Button>
             ) : (
               // Disabled rather than hidden: the operator is looking at a route that does not work and
               // should be told why the obvious remedy is not on offer here.
-              <Tooltip label={portBindings.unavailableReason}>
+              <Tooltip label={publishRefusal}>
                 {/* A disabled button swallows pointer events and can't take focus, so the wrapping span
                     is the trigger — made focusable so keyboard users get the reason too. */}
                 <span className="inline-flex" tabIndex={0}>
@@ -1425,7 +1444,11 @@ export function RoutesPage() {
         />
       )}
 
+      {/* Two different questions, and they used to be one. The ACME table is the built-in provider's —
+          Caddy and Cloudflare hold their own certificates and Watchtower has none to list — while the
+          internal CA belongs to the port routes, which every provider serves. */}
       {status?.provider === 'yarp' && <CertificatesCard />}
+      {status?.enabled === true && <InternalCaCard />}
 
       <ConfirmDialog
         open={pendingDelete != null}
@@ -1554,9 +1577,11 @@ function humanizeSpan(ms: number): string {
 }
 
 /**
- * What the in-process provider holds, per host. It is the only view of the certificate plane there
- * is: the provider issues for login hosts as well as routes, and keeps a certificate that outlived
- * its route until it expires — neither of which the route list above can show.
+ * What the in-process provider holds, per host. It is the only view of the ACME plane there is: the
+ * provider issues for login hosts as well as routes, and keeps a certificate that outlived its route
+ * until it expires — neither of which the route list above can show. Rendered only under that provider,
+ * since Caddy and the tunnel hold their own certificates and Watchtower has none to list; the internal
+ * CA is a separate card because it answers to something else entirely (ADR-0033 addendum).
  */
 function CertificatesCard() {
   const qc = useQueryClient()
@@ -1673,7 +1698,6 @@ function CertificatesCard() {
           title="Certificates"
           description="Issued by Watchtower itself over ACME and renewed at a third of their lifetime. A host has no certificate until its DNS points here and the first order completes — HTTPS fails for it until then."
         />
-        <InternalCaBlock />
         {isError ? (
           <Banner
             tone="danger"
@@ -1710,9 +1734,13 @@ function CertificatesCard() {
 /**
  * Watchtower's own certificate authority (ADR-0033), shown only once it exists — which happens the
  * first time a port route needs a LAN certificate. Reading it never mints a root, so an operator with
- * no port routes never sees an invitation to import something nothing uses.
+ * no port routes never sees an invitation to import something nothing uses, and the card is simply
+ * absent until then.
+ *
+ * Its own card rather than a block inside the ACME one: it belongs to the port routes, which every
+ * provider serves (ADR-0033 addendum), while the ACME table belongs to the built-in provider alone.
  */
-function InternalCaBlock() {
+function InternalCaCard() {
   const { data: ca } = useQuery({
     queryKey: ['proxy', 'internal-ca'],
     queryFn: api.proxy.getInternalCa,
@@ -1720,39 +1748,41 @@ function InternalCaBlock() {
   if (!ca?.present) return null
 
   return (
-    <div className="mb-4 rounded-md border border-border bg-surface-2 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-4 text-brand" />
-            <span className="font-medium text-text">Internal CA</span>
-          </div>
-          <p className="font-mono text-[13px] text-text-2">{ca.subject}</p>
-          <p className="text-xs text-text-3">
-            Root expires <span title={absoluteTitle(ca.notAfter)}>{relativeTime(ca.notAfter)}</span>
-            {ca.leafNotAfter && (
-              <>
-                {' '}· LAN certificate expires{' '}
-                <span title={absoluteTitle(ca.leafNotAfter)}>{relativeTime(ca.leafNotAfter)}</span>
-              </>
-            )}
-          </p>
-          {ca.subjectAltNames.length > 0 && (
+    <Card>
+      <CardContent>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="size-4 text-brand" />
+              <span className="font-medium text-text">Internal CA</span>
+            </div>
+            <p className="font-mono text-[13px] text-text-2">{ca.subject}</p>
             <p className="text-xs text-text-3">
-              Valid for <span className="font-mono">{ca.subjectAltNames.join(', ')}</span>
+              Root expires <span title={absoluteTitle(ca.notAfter)}>{relativeTime(ca.notAfter)}</span>
+              {ca.leafNotAfter && (
+                <>
+                  {' '}· LAN certificate expires{' '}
+                  <span title={absoluteTitle(ca.leafNotAfter)}>{relativeTime(ca.leafNotAfter)}</span>
+                </>
+              )}
             </p>
-          )}
+            {ca.subjectAltNames.length > 0 && (
+              <p className="text-xs text-text-3">
+                Valid for <span className="font-mono">{ca.subjectAltNames.join(', ')}</span>
+              </p>
+            )}
+          </div>
+          <Button size="sm" variant="secondary" asChild>
+            <a href={INTERNAL_CA_DOWNLOAD_URL} download>
+              <Download /> Download root
+            </a>
+          </Button>
         </div>
-        <Button size="sm" variant="secondary" asChild>
-          <a href={INTERNAL_CA_DOWNLOAD_URL} download>
-            <Download /> Download root
-          </a>
-        </Button>
-      </div>
-      <p className="mt-3 text-xs text-text-3">
-        Import this into your OS or browser trust store so LAN addresses validate.
-      </p>
-    </div>
+        <p className="mt-3 text-xs text-text-3">
+          Import this into your OS or browser trust store so LAN addresses validate.
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 

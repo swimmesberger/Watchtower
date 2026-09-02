@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using Watchtower.Application.Config;
 using Watchtower.Application.Services;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Api;

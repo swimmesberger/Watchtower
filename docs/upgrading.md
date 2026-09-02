@@ -96,7 +96,50 @@ the empty result on as a site like any other. Under the built-in proxy that is a
 cannot serve; under **Caddy** it is worse, because the site is rendered into the generated Caddyfile as a
 block with no address, and a Caddyfile Caddy refuses is refused whole — no route change reaches the proxy
 after that, and a Caddy container started fresh on that file does not come up. One route that was never
-Caddy's to serve takes every domain that was working down with it. (The current image does not stop you creating that
-route: a port route under Caddy or Cloudflare is marked `Error` as unsupported and left in the table, so
-a Caddy deployment can be holding port routes without ever having served one.) Delete them from the
-Routes page first, then roll back.
+Caddy's to serve takes every domain that was working down with it. (Since the ADR-0033 addendum a Caddy or Cloudflare deployment can be
+*serving* port routes rather than merely holding unserved ones, so this now applies to those deployments
+in earnest.) Delete them from the Routes page first, then roll back.
+
+## Port routes work with every provider (ADR-0033 addendum)
+
+Port routes — a stack service on a dedicated TLS port with a certificate from Watchtower's own CA — used
+to be the built-in provider's alone; under Caddy or Cloudflare such a route was marked `Error` as
+unsupported. It never should have been gated that way: the listener is on Watchtower's own container and
+has nothing to do with which backend terminates your public domains. From this image on, a port route is
+served whenever the reverse proxy is enabled, under all three providers. See
+[docs/reverse-proxy/README.md → Port routes](reverse-proxy/README.md#port-routes-https-on-a-lan-with-any-provider).
+
+Two things to know before upgrading.
+
+**Watchtower joins the ingress network of every stack it port-routes.** That has always been true under
+the built-in provider; a Caddy or Cloudflare deployment now gets it too, for exactly the stacks that have
+a port route and no others. Nothing changes for a deployment with no port routes.
+
+**Three settings are renamed.** They carried `Yarp` in their names, which is precisely the conflation
+being removed:
+
+| Before | Now |
+| --- | --- |
+| `Watchtower:Proxy:Yarp:LanNames` (`WATCHTOWER__PROXY__YARP__LANNAMES`) | `Watchtower:Proxy:PortRoutes:LanNames` (`WATCHTOWER__PROXY__PORTROUTES__LANNAMES`) |
+| `Watchtower:Proxy:Yarp:PortRoutePorts` (internal) | `Watchtower:Proxy:PortRoutes:Ports` |
+| `Watchtower:Proxy:Yarp:ManagedHostPorts` (internal) | `Watchtower:Proxy:PortRoutes:ManagedHostPorts` |
+
+**A value you saved in the UI is carried across for you**, once, on the first start after the upgrade —
+copied to the new name and logged, with a row in the audit trail under `proxy` / `config.migrate`. The
+old rows are left in place so a rollback still finds them, and a value already stored under the new name
+is never overwritten.
+
+**A value you pinned with an environment variable is not, and cannot be.** Environment values never enter
+the settings store, so there is nothing for the copy to read — `WATCHTOWER__PROXY__YARP__LANNAMES` simply
+stops having any effect. Watchtower says so on every start until you act on it:
+
+```
+warn: WATCHTOWER__PROXY__YARP__LANNAMES is set but no longer has any effect: the setting is now
+      Watchtower:Proxy:PortRoutes:LanNames (WATCHTOWER__PROXY__PORTROUTES__LANNAMES). Environment values
+      are invisible to the settings store, so nothing copied it across — set the new variable (or remove
+      the old one and use Settings → Reverse proxy).
+```
+
+Rename the variable in your compose file (or drop it and set the LAN names under **Settings → Reverse
+proxy → LAN port routes**). Until you do, the internal CA has no names to issue for and every port route
+reports `Error`.

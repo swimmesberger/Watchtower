@@ -325,18 +325,12 @@ public class CaddyManager : IHostedService, IProxyProvider, IDisposable {
             .Include(r => r.Stack)
             .ToListAsync(ct);
 
-        // A port route (ADR-0033) asks for a TLS listener on Watchtower's own host, and Caddy is a
-        // sibling container with no way to lend it one. The projection already leaves them out, so
-        // without this they would sit at Pending forever with no reason given — the same problem, and
-        // the same answer, as a Watchtower route under the Cloudflare provider.
-        var portRoutes = routes.Where(r => r.Binding == RouteBinding.Port).Select(r => r.Id).ToList();
-        if (portRoutes.Count > 0)
-            await _routeStatus.RecordPortRoutesAsync(
-                portRoutes, RouteStatus.Error, ProxySiteProjection.PortRouteUnsupported, notAfter: null, ct);
-
         // Watchtower's own hostnames are rows in that table like any other (ADR-0023); the projection
         // points them at `watchtower:8080` on the control network, which is where Caddy already sends the
-        // forward-auth and callback traffic of every protected site.
+        // forward-auth and callback traffic of every protected site. It also leaves the port-bound rows
+        // out, which is the whole of this provider's involvement with them in either direction: their
+        // listeners are on Watchtower's own container, PortRoutePlane serves them alongside Caddy, and
+        // their status is the internal CA's to write (ADR-0033 addendum).
         return ProxySiteProjection.Project(routes, _options.CurrentValue.Auth);
     }
 

@@ -24,7 +24,8 @@ public sealed class CreateRoute(
     WatchtowerDbContext db,
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
-    YarpListenerState listener)
+    YarpListenerState listener,
+    HostPortOccupancy hostPorts)
     : IHandler<CreateRoute.Command, Result<CreateRoute.Response>> {
     /// <param name="Domain">
     /// The hostname to serve. Required for a <c>domain</c> route and refused on a <c>port</c> one, which
@@ -239,16 +240,22 @@ public sealed class CreateRoute(
             return AppError.Validation(
                 "A port route needs a listen port — the port on this host clients will address it by.");
         }
-        var yarp = options.CurrentValue.Proxy.Yarp;
+        var proxyOptions = options.CurrentValue.Proxy;
+        var yarp = proxyOptions.Yarp;
         if (PortRouteRules.ValidateListenPort(listenPort, listener.ManagementPort, yarp) is { } portError)
             return AppError.Validation(portError);
         if (await PortRouteRules.TakenByAsync(db, listenPort, exceptRouteId: null, ct) is { } clash)
             return AppError.Validation(clash);
+        // …and the same question asked of the host rather than of the route table: the listener is on
+        // Watchtower's own container, so a stack that publishes this port takes it away from us.
+        if (await hostPorts.PublishedByAnotherContainerAsync(
+                listenPort, selfContainerId: null, ct) is { } held)
+            return AppError.Validation(held);
 
         // The certificate for a port route comes from the internal CA and is issued for the LAN names,
         // nothing else — so with none configured there is no name a browser could be pointed at that the
         // certificate would answer for, and the route would come up permanently untrusted.
-        if (!PortRouteRules.HasLanNames(yarp))
+        if (!PortRouteRules.HasLanNames(proxyOptions.PortRoutes))
             return AppError.Validation(PortRouteRules.NoLanNames);
 
         if (!await db.Stacks.AnyAsync(s => s.Id == command.StackId, ct))

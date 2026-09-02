@@ -129,6 +129,22 @@ Only Caddy publishes host ports; your services never need `ports:` in their comp
   so a route may show `pending` after it is in fact being served. This is not going to be fixed here
   — the built-in provider issues the certificates itself and reports real state ([yarp.md](yarp.md)).
 
+## LAN port routes work alongside Caddy
+
+A **port route** — a stack service on a dedicated TLS port of Watchtower's own, with a certificate from
+Watchtower's own CA — is not Caddy's business in either direction, and is not refused. Its listener is
+inside the Watchtower container, so Caddy can hold 80/443 for your domains while `https://nas.lan:9001`
+is served on the LAN by Watchtower itself.
+
+What joins which network: the **`watchtower-caddy`** container joins the ingress network of every stack
+with a *domain* route, and **Watchtower's own container** joins the ingress network of every stack with a
+*port* route. A stack with both gets both, on the one network it already had. Pick a listen port Caddy is
+not on — 80 and 443 are the host's, and the ports Caddy publishes are refused by the create-time check
+that names the container holding them.
+
+The full walkthrough — LAN names, publishing the host port, importing the root — is in
+[README.md → Port routes](README.md#port-routes-https-on-a-lan-with-any-provider).
+
 ## Multi-tenancy
 
 Use the **Templates** UI (`/templates`) to run the same stack once per tenant, each on its own

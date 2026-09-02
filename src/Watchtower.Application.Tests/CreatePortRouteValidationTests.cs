@@ -2,6 +2,8 @@ using Elarion.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Modules.Proxy.Handlers;
 using Watchtower.Application.Persistence;
@@ -23,8 +25,15 @@ namespace Watchtower.Application.Tests;
 /// two endpoints on one socket. They are worth asserting because the alternative to a message is a
 /// route that exists and is never served.
 /// </remarks>
+[Collection(HostnameEnvironment.Name)]
 public sealed class CreatePortRouteValidationTests {
     private const string LanNames = "nas.lan, 192.168.1.10";
+
+    /// <summary>
+    /// What Watchtower's <c>HOSTNAME</c> is in these tests: a custom one, not the short container id, which
+    /// is the shape a compose <c>hostname:</c> produces and the one a prefix match would get wrong.
+    /// </summary>
+    private const string SelfHostname = "watchtower";
 
     private static readonly Action<IServiceCollection> WithRouteHandlers = services => {
         services.AddCreateRoute();
@@ -244,6 +253,195 @@ public sealed class CreatePortRouteValidationTests {
         Assert.Contains("jellyfin", result.Error.Message, StringComparison.Ordinal);
     }
 
+    // ── Create: the port another container holds ─────────────────────────────
+
+    /// <summary>
+    /// The listener is published on Watchtower's own container, so a stack that publishes the same host
+    /// port takes it: whichever container the daemon starts second fails with "port is already
+    /// allocated". Refused here rather than discovered then — the publish recreates Watchtower, the new
+    /// container never starts, the recreate rolls back, and the route reports "host port not published"
+    /// with nothing naming what holds the port.
+    /// </summary>
+    [Fact]
+    public async Task AListenPortAStackContainerPublishes_IsRefused_AndNamesTheContainer() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(Jellyfin(9001));
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+        Assert.Equal(
+            "Host port 9001 is already published by container media-jellyfin-1 (stack media, service "
+            + "jellyfin). A port route needs that port for Watchtower's own listener — remove that "
+            + "ports: entry from the stack or choose another port.",
+            result.Error.Message);
+    }
+
+    /// <summary>
+    /// Containers in any state count, the way the exposure map reads them: a stopped stack whose desired
+    /// state is running comes back and takes the port with it, and a route created in the gap would be
+    /// the thing that then fails.
+    /// </summary>
+    [Fact]
+    public async Task AListenPortAStoppedContainerPublishes_IsRefusedToo() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(Jellyfin(9001) with { State = "exited" });
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("already published by container media-jellyfin-1", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A container with no compose labels is named on its own — there is no stack to blame.</summary>
+    [Fact]
+    public async Task AListenPortAnUnlabelledContainerPublishes_IsRefused_WithoutInventingAStack() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(new ListedContainer(OtherId, "some-daemon", PublicPort: 9001));
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("published by container some-daemon.", result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("(stack", result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("(service", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Watchtower's own container is where the listener lives, so a port it already publishes is the
+    /// state the whole feature is trying to reach — it is the documented manual path (add
+    /// <c>- "9001:9001"</c> yourself, then create the route), and refusing it would be a refusal naming
+    /// Watchtower itself.
+    /// </summary>
+    /// <remarks>
+    /// The container here carries a custom <c>hostname:</c>, which is the case that broke the first
+    /// version: <c>HOSTNAME</c> was compared against container ids as a prefix, and "watchtower" is a
+    /// prefix of no id, so Watchtower's own binding read as somebody else's. Self is now resolved the way
+    /// the self-update resolves it — HOSTNAME → inspect → the authoritative long id — and matched exactly.
+    /// </remarks>
+    [Fact]
+    public async Task AListenPortWatchtowersOwnContainerPublishes_IsAccepted_EvenWithACustomHostname() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(new ListedContainer(SelfId, "watchtower", PublicPort: 9001));
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.True(result.IsSuccess, Describe(result));
+    }
+
+    /// <summary>
+    /// A port route serves HTTPS, so a UDP binding on the same number is not in its way — refusing it
+    /// would take a port away from a route that could have had it.
+    /// </summary>
+    [Fact]
+    public async Task AListenPortPublishedOverUdpOnly_IsAccepted() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(new ListedContainer(
+            OtherId, "media-wireguard-1", PublicPort: 9001, Protocol: "udp"));
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.True(result.IsSuccess, Describe(result));
+    }
+
+    /// <summary>
+    /// Fail-open, and deliberately: the check is a convenience against a footgun, not a boundary, so a
+    /// daemon that cannot answer must not be what stops an operator creating a route. It is a warning,
+    /// though — the reason the next step may fail is worth having in the log.
+    /// </summary>
+    /// <remarks>
+    /// Asked twice through <em>one</em> instance, because the point of the latch is that a steady-state
+    /// failure does not put a line in the log per route form an operator opens.
+    /// </remarks>
+    [Fact]
+    public async Task AListenPortCheckedAgainstADaemonThatCannotAnswer_IsAccepted_AndWarnsOnce() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = EmptyDocker();
+        docker.FailsTheContainerList();
+        var logger = new CapturingLogger<HostPortOccupancy>();
+        var hostPorts = HostPorts(docker, logger);
+
+        var first = await CreateAsync(host, PortCommand(stackId, 9001), hostPorts: hostPorts);
+        var second = await CreateAsync(host, PortCommand(stackId, 9002), hostPorts: hostPorts);
+
+        Assert.True(first.IsSuccess, Describe(first));
+        Assert.True(second.IsSuccess, Describe(second));
+        var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+        Assert.Contains("collision check is skipped", warning.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And the other half of failing open, which matters more: with no way to tell which container is
+    /// Watchtower's own, every answer is one that might be Watchtower's own binding — so nothing is
+    /// refused and the list is not even asked for.
+    /// </summary>
+    /// <remarks><inheritdoc cref="AListenPortCheckedAgainstADaemonThatCannotAnswer_IsAccepted_AndWarnsOnce" path="/remarks"/></remarks>
+    [Fact]
+    public async Task AListenPortCheckedWhenWatchtowerCannotIdentifyItself_IsAccepted_AndWarnsOnce() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(Jellyfin(9001));
+        docker.FailsSelfInspection();
+        var logger = new CapturingLogger<HostPortOccupancy>();
+        var hostPorts = HostPorts(docker, logger);
+
+        var first = await CreateAsync(host, PortCommand(stackId, 9001), hostPorts: hostPorts);
+        var second = await CreateAsync(host, PortCommand(stackId, 9002), hostPorts: hostPorts);
+
+        Assert.True(first.IsSuccess, Describe(first));
+        Assert.True(second.IsSuccess, Describe(second));
+        var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+        Assert.Contains("own container", warning.Message, StringComparison.Ordinal);
+        // And it did not even ask: with our own container unidentifiable, every row the list could
+        // return is one that might be ours.
+        Assert.DoesNotContain(docker.Default.Requests, r => r.EndsWith("/containers/json?all=true", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// No <c>HOSTNAME</c> is not the same failure as an unidentifiable one: there is no container of ours
+    /// to mistake for a stranger's, and a bare process binds host ports directly — so a container
+    /// publishing 9001 really does take it, and the check runs with nothing excluded.
+    /// </summary>
+    [Fact]
+    public async Task AListenPortAContainerPublishes_IsRefusedOnABareProcessToo() {
+        using var hostname = HostnameEnvironment.Set("");
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(Jellyfin(9001));
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("already published by container media-jellyfin-1", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>And with nothing holding the port, the same bare process is told nothing at all.</summary>
+    [Fact]
+    public async Task AFreeListenPortOnABareProcess_IsAccepted() {
+        using var hostname = HostnameEnvironment.Set("");
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        using var docker = DockerWith(Jellyfin(9002));
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001), docker: docker);
+
+        Assert.True(result.IsSuccess, Describe(result));
+    }
+
     /// <summary>
     /// Without a LAN name the internal CA has nothing to issue for, so the route would come up on a
     /// listener no browser would trust — a failure discovered only at the first visit.
@@ -252,7 +450,7 @@ public sealed class CreatePortRouteValidationTests {
     [InlineData("")]
     [InlineData("   ")]
     public async Task APortRouteWithNoLanNamesConfigured_IsRefused(string lanNames) {
-        using var host = AuthTestHost.Start(WithRouteHandlers, ("Watchtower:Proxy:Yarp:LanNames", lanNames));
+        using var host = AuthTestHost.Start(WithRouteHandlers, ("Watchtower:Proxy:PortRoutes:LanNames", lanNames));
         var stackId = await host.AddStackAsync("media");
 
         var result = await CreateAsync(host, PortCommand(stackId, 9001));
@@ -406,6 +604,41 @@ public sealed class CreatePortRouteValidationTests {
 
         Assert.False(result.IsSuccess);
         Assert.Contains(expected, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The move is checked against the host the same way a creation is, and for the same reason.</summary>
+    [Fact]
+    public async Task APortRouteMovedOntoAPortAStackContainerPublishes_IsRefused() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+        using var docker = DockerWith(Jellyfin(9002));
+
+        var result = await UpdateAsync(host, PortEdit(routeId) with { ListenPort = 9002 }, docker: docker);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(
+            "Host port 9002 is already published by container media-jellyfin-1 (stack media, service jellyfin)",
+            result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And an edit that leaves the port where it is asks nothing: the container that publishes 9001 is
+    /// this route's own concern only when the port moves onto it.
+    /// </summary>
+    [Fact]
+    public async Task APortRouteEditedWithoutMovingItsPort_IsNotCheckedAgainstTheHost() {
+        using var hostname = HostnameEnvironment.Set(SelfHostname);
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+        var routeId = await host.AddPortRouteAsync(stackId, 9001);
+        using var docker = DockerWith(Jellyfin(9001));
+
+        var result = await UpdateAsync(host, PortEdit(routeId) with { ServiceName = "jellyfin" }, docker: docker);
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.DoesNotContain(docker.Default.Requests, r => r.Contains("/containers/json"));
     }
 
     /// <summary>The edit side of the same race the create path guards; staged the same way.</summary>
@@ -614,7 +847,7 @@ public sealed class CreatePortRouteValidationTests {
 
     /// <summary>A host with LAN names configured — the precondition for creating a port route at all.</summary>
     private static AuthTestHost LanHost(params (string Key, string? Value)[] settings) =>
-        AuthTestHost.Start(WithRouteHandlers, [("Watchtower:Proxy:Yarp:LanNames", LanNames), .. settings]);
+        AuthTestHost.Start(WithRouteHandlers, [("Watchtower:Proxy:PortRoutes:LanNames", LanNames), .. settings]);
 
     private static CreateRoute.Command PortCommand(int stackId, int listenPort) =>
         new(StackId: stackId, Domain: null, ServiceName: "web", ContainerPort: 8080, TlsEnabled: true,
@@ -625,20 +858,71 @@ public sealed class CreatePortRouteValidationTests {
         new(routeId, Domain: null, ServiceName: "web", ContainerPort: 8080, TlsEnabled: true,
             IsPrimary: false, Binding: "port");
 
+    /// <summary>
+    /// Runs the create handler against a Docker double rather than the machine's own daemon. Never
+    /// against the registered client: the port branch asks Docker which containers publish the listen
+    /// port, and a test that let that reach a real socket would answer differently on every machine.
+    /// </summary>
+    /// <param name="hostPorts">
+    /// The collision check to use, for the tests that need <em>one</em> instance across two calls — its
+    /// warn-once latches are the thing under test there. Left null it is built per call over
+    /// <paramref name="docker"/>.
+    /// </param>
     private static async Task<Result<CreateRoute.Response>> CreateAsync(
-        AuthTestHost host, CreateRoute.Command command, YarpListenerState? listener = null) {
+        AuthTestHost host, CreateRoute.Command command, YarpListenerState? listener = null,
+        DockerClientEstate? docker = null, HostPortOccupancy? hostPorts = null) {
+        using var owned = docker is null && hostPorts is null ? EmptyDocker() : null;
         await using var scope = host.Services.CreateAsyncScope();
-        object[] overrides = [.. new object?[] { listener }.OfType<object>()];
+        object[] overrides = [
+            .. new object?[] { listener, hostPorts ?? HostPorts(docker ?? owned!, null) }.OfType<object>(),
+        ];
         var handler = ActivatorUtilities.CreateInstance<CreateRoute>(scope.ServiceProvider, overrides);
         return await handler.HandleAsync(command, Ct);
     }
 
+    /// <summary><inheritdoc cref="CreateAsync" path="/summary"/></summary>
     private static async Task<Result<UpdateRoute.Response>> UpdateAsync(
-        AuthTestHost host, UpdateRoute.Command command, YarpListenerState? listener = null) {
+        AuthTestHost host, UpdateRoute.Command command, YarpListenerState? listener = null,
+        DockerClientEstate? docker = null) {
+        using var owned = docker is null ? EmptyDocker() : null;
         await using var scope = host.Services.CreateAsyncScope();
-        object[] overrides = [.. new object?[] { listener }.OfType<object>()];
+        object[] overrides = [.. new object?[] { listener, HostPorts(docker ?? owned!, null) }.OfType<object>()];
         var handler = ActivatorUtilities.CreateInstance<UpdateRoute>(scope.ServiceProvider, overrides);
         return await handler.HandleAsync(command, Ct);
+    }
+
+    private static HostPortOccupancy HostPorts(DockerClientEstate estate, ILogger<HostPortOccupancy>? logger) =>
+        new(estate.Client, logger ?? NullLogger<HostPortOccupancy>.Instance);
+
+    /// <summary>The id the double's self-inspect answers with — what HOSTNAME resolves to here.</summary>
+    private static string SelfId => RecordingHandler.CreatedContainerId;
+
+    /// <summary>Any other container's id; distinct from <see cref="SelfId"/> in every character.</summary>
+    private const string OtherId = "9e100000000000000000000000000000";
+
+    private static ListedContainer Jellyfin(int publicPort) =>
+        new(OtherId, "media-jellyfin-1", publicPort, Project: "media", Service: "jellyfin");
+
+    /// <summary>A daemon with no containers at all — the default for every test not about collisions.</summary>
+    private static DockerClientEstate EmptyDocker() =>
+        DockerClientEstate.Create(pruneTimeout: TimeSpan.FromMinutes(30));
+
+    /// <summary>A daemon reporting exactly these containers.</summary>
+    private static DockerClientEstate DockerWith(params ListedContainer[] containers) {
+        var estate = EmptyDocker();
+        estate.ListsContainers(containers);
+        return estate;
+    }
+
+    /// <summary>Captures what the collision check logged, so its fail-open warnings are observable.</summary>
+    private sealed class CapturingLogger<T> : ILogger<T> {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 
     /// <summary>

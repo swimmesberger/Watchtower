@@ -11,6 +11,7 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Application.Services;
@@ -35,7 +36,7 @@ namespace Watchtower.Application.Services;
 /// </para>
 /// <para>
 /// Only ports Watchtower itself published are ever taken away again — that is what
-/// <see cref="WatchtowerSettingPaths.ProxyYarpManagedHostPorts"/> is for, and why the plan never
+/// <see cref="WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts"/> is for, and why the plan never
 /// contains an unpublish for a port the operator declared.
 /// </para>
 /// </remarks>
@@ -55,6 +56,7 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DockerEngineClient _docker;
     private readonly SelfUpdateService _self;
+    private readonly HostPortOccupancy _hostPorts;
     private readonly IRoleLease _issuerLease;
     private readonly WatchtowerOptions _options;
     private readonly ILogger<SelfPortPublishService> _logger;
@@ -76,10 +78,11 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         SelfUpdateService self,
+        HostPortOccupancy hostPorts,
         [FromKeyedServices(CertificateManager.IssuerRole)] IRoleLease issuerLease,
         IOptions<WatchtowerOptions> options,
         ILogger<SelfPortPublishService> logger)
-        : this(scopeFactory, docker, self, issuerLease, options, logger,
+        : this(scopeFactory, docker, self, hostPorts, issuerLease, options, logger,
             StartupReconcileTimeout, ApplyWatchTimeout) { }
 
     /// <summary>
@@ -102,6 +105,7 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         IServiceScopeFactory scopeFactory,
         DockerEngineClient docker,
         SelfUpdateService self,
+        HostPortOccupancy hostPorts,
         IRoleLease issuerLease,
         IOptions<WatchtowerOptions> options,
         ILogger<SelfPortPublishService> logger,
@@ -112,6 +116,7 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         _scopeFactory = scopeFactory;
         _docker = docker;
         _self = self;
+        _hostPorts = hostPorts;
         _issuerLease = issuerLease;
         _options = options.Value;
         _logger = logger;
@@ -121,10 +126,10 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         _beforeVerify = beforeVerify;
     }
 
-    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task}, Func{CancellationToken, Task})" path="/param[@name='beforeSpawn']"/>
+    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, HostPortOccupancy, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task}, Func{CancellationToken, Task})" path="/param[@name='beforeSpawn']"/>
     private readonly Func<CancellationToken, Task>? _beforeSpawn;
 
-    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task}, Func{CancellationToken, Task})" path="/param[@name='beforeVerify']"/>
+    /// <inheritdoc cref="SelfPortPublishService(IServiceScopeFactory, DockerEngineClient, SelfUpdateService, HostPortOccupancy, IRoleLease, IOptions{WatchtowerOptions}, ILogger{SelfPortPublishService}, TimeSpan, TimeSpan, Func{CancellationToken, Task}, Func{CancellationToken, Task})" path="/param[@name='beforeVerify']"/>
     private readonly Func<CancellationToken, Task>? _beforeVerify;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -135,7 +140,7 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
     /// </summary>
     /// <remarks>
     /// The reconcile is what makes the pre-spawn write of the managed set safe (see
-    /// <see cref="WatchtowerSettingPaths.ProxyYarpManagedHostPorts"/>). Two things produce a claim on a
+    /// <see cref="WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts"/>). Two things produce a claim on a
     /// port that is not bound, and both are ordinary: a recreate that failed and rolled back, and an
     /// operator running <c>docker compose up -d</c>, which rebuilds the container from the compose file
     /// and drops whatever this service added. Pruning the claim in both cases is what puts the port back
@@ -289,7 +294,8 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
                 ContainerDetected: false,
                 UnavailableReason: NotContainerised,
                 LastError: runtime.ApplyError,
-                Ports: [.. routes.Select(r => new HostPortBinding(r.Port, r.RouteId, r.ServiceName, false, false))],
+                Ports: [.. routes.Select(r => new HostPortBinding(
+                    r.Port, r.RouteId, r.ServiceName, false, false, BlockedBy: null))],
                 PendingUnpublish: []);
         }
 
@@ -298,12 +304,18 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         // The releases come off the plan rather than being recomputed here, so the banner can never
         // offer something the apply would not do.
         var plan = ComputePlan([.. routes.Select(r => r.Port)], bound, managed);
+        // Only the ports an apply would try to publish are worth asking Docker about: a port already
+        // bound here is not blocked by definition. Once a deployment is converged the plan is empty and
+        // this costs no call; while a port is pending it is one GET /containers/json?all=true per status
+        // poll, which the page makes every 15 s and only for as long as the port is unpublished.
+        var blocked = await _hostPorts.PublishedByOtherContainersAsync(plan.Publish, inspect.Value.ContainerId, ct);
         return new SelfPortPublishStatus(
             ContainerDetected: true,
             UnavailableReason: MultiInstanceRefusal(),
             LastError: runtime.ApplyError,
             Ports: [.. routes.Select(r => new HostPortBinding(
-                r.Port, r.RouteId, r.ServiceName, bound.Contains(r.Port), managed.Contains(r.Port)))],
+                r.Port, r.RouteId, r.ServiceName, bound.Contains(r.Port), managed.Contains(r.Port),
+                blocked.TryGetValue(r.Port, out var holder) ? holder : null))],
             PendingUnpublish: plan.Unpublish);
     }
 
@@ -343,6 +355,14 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
             await ClearApplyErrorAsync(ct);
             return plan;
         }
+
+        // Refused here rather than discovered by the daemon. Recreating this container with a port
+        // another container already publishes fails at start, rolls back, and the operator is left with
+        // "host port not published" and a rolled-back restart — where what they need is the name of the
+        // container holding the port. Fail-open: an unreachable daemon refuses nothing.
+        var blocked = await _hostPorts.PublishedByOtherContainersAsync(plan.Publish, inspect.ContainerId, ct);
+        if (blocked.Count > 0)
+            throw new InvalidOperationException(blocked.OrderBy(e => e.Key).First().Value);
 
         lock (_applyLock) {
             if (_applyReserved || (_applyTask is not null && !_applyTask.IsCompleted))
@@ -648,14 +668,14 @@ public sealed class SelfPortPublishService : IHostedService, IDisposable {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var settings = scope.ServiceProvider.GetRequiredService<ISettingsManager>();
         return PortRouteListeners.Parse(
-            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpManagedHostPorts, SettingsScope.Global, ct));
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts, SettingsScope.Global, ct));
     }
 
     private async Task SaveManagedPortsAsync(IReadOnlyList<int> ports, CancellationToken ct) {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var settings = scope.ServiceProvider.GetRequiredService<ISettingsManager>();
         await settings.SetStringAsync(
-            WatchtowerSettingPaths.ProxyYarpManagedHostPorts, PortRouteListeners.Format(ports),
+            WatchtowerSettingPaths.ProxyPortRoutesManagedHostPorts, PortRouteListeners.Format(ports),
             SettingsScope.Global, expectedVersion: null, ct);
     }
 

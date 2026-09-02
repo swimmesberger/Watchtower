@@ -588,9 +588,10 @@ public sealed class DockerEngineClient : IDisposable {
     }
 
     /// <summary>
-    /// Creates a user-defined bridge network via <c>POST /networks/create</c> and returns its ID.
-    /// Callers should check <see cref="ListNetworksAsync"/> first for idempotency — this method does
-    /// not guard against duplicate names.
+    /// Creates a user-defined bridge network via <c>POST /networks/create</c> and returns its ID — or
+    /// the name it was asked for, when the daemon answers 409 because the network is already there.
+    /// Callers should still check <see cref="ListNetworksAsync"/> first; the 409 rule covers the race
+    /// between that check and this call, not the ordinary case.
     /// </summary>
     public async Task<string> CreateNetworkAsync(
         string name, IReadOnlyDictionary<string, string>? labels = null, CancellationToken ct = default) {
@@ -602,6 +603,13 @@ public sealed class DockerEngineClient : IDisposable {
         var json = JsonSerializer.Serialize(body, DockerJsonContext.Default.DockerCreateNetworkBody);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
         var response = await _client.PostAsync($"{_apiBase}/networks/create", content, ct);
+        // 409 = a network of that name already exists; treat it as already-created, the same rule
+        // ConnectContainerAsync applies to the 403 for an endpoint that is already attached. Callers
+        // check ListNetworksAsync first, so reaching here means two of them raced between the check and
+        // the create — which is the ordinary shape now that the domain provider and the port-route plane
+        // each run their own startup reconcile over the same per-stack ingress networks. Losing that race
+        // used to throw and cost that stack its upstream hop for the whole pass.
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return name;
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         var result = await JsonSerializer.DeserializeAsync(stream, DockerJsonContext.Default.DockerCreateNetworkResponse, ct)

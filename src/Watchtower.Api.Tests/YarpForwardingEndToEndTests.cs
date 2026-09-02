@@ -104,7 +104,7 @@ public sealed class YarpForwardingEndToEndTests {
         using var factory = new WatchtowerApiFactory(
             ("Watchtower:Proxy:Enabled", "true"),
             ("Watchtower:Proxy:Provider", "yarp"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", "9001")) {
+            ("Watchtower:Proxy:PortRoutes:Ports", "9001")) {
             UseRealProxyProvider = true,
             HasIngress = true,
             UseRealForwarder = true,
@@ -136,8 +136,8 @@ public sealed class YarpForwardingEndToEndTests {
 
     /// <summary>The port-route counterpart of <see cref="SeedLoopbackRoute"/>, for the same reason.</summary>
     private static void SeedLoopbackPortRoute(WatchtowerApiFactory factory, int port) =>
-        factory.Services.GetRequiredService<ProxyRouteTable>().Replace(
-            ProxyRouteTable.From([], [new ProxyPortSite(9001, "127.0.0.1", port, RouteId: 1)]));
+        factory.Services.GetRequiredService<ProxyRouteTable>().PublishPortRoutes(
+            [new ProxyPortSite(9001, "127.0.0.1", port, RouteId: 1)]);
 
     /// <summary>
     /// Points the routing table at the loopback upstream directly, rather than seeding a route and letting
@@ -151,8 +151,8 @@ public sealed class YarpForwardingEndToEndTests {
     /// no database at request time.
     /// </remarks>
     private static void SeedLoopbackRoute(WatchtowerApiFactory factory, int port) =>
-        factory.Services.GetRequiredService<ProxyRouteTable>().Replace(
-            ProxyRouteTable.From([new ProxySite(Domain, "127.0.0.1", port, Tls: false)]));
+        factory.Services.GetRequiredService<ProxyRouteTable>().PublishHostRoutes(
+            [new ProxySite(Domain, "127.0.0.1", port, Tls: false)]);
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 

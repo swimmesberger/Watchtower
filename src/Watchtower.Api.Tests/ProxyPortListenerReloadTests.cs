@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Watchtower.Api.Proxy;
 using Watchtower.Application.Services.InternalCa;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 using Watchtower.Application.Tests;
 using Xunit;
@@ -82,7 +83,7 @@ public sealed class ProxyPortListenerReloadTests {
         // when the server was configured.
         settings.Publish(
             ("Watchtower:Proxy:Enabled", "true"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", Text(routePort)));
+            ("Watchtower:Proxy:PortRoutes:Ports", Text(routePort)));
         Assert.True(await Eventually(() => Accepts(routePort)));
 
         // …and it is Watchtower's own certificate that is served there, with the chain we assembled: the
@@ -130,7 +131,7 @@ public sealed class ProxyPortListenerReloadTests {
 
         var settings = new ReloadableSettings(
             ("Watchtower:Proxy:Enabled", "true"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", Text(routePort)));
+            ("Watchtower:Proxy:PortRoutes:Ports", Text(routePort)));
         var app = Host(
             settings,
             managementPort,
@@ -172,7 +173,7 @@ public sealed class ProxyPortListenerReloadTests {
 
         var settings = new ReloadableSettings(
             ("Watchtower:Proxy:Enabled", "true"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", Text(routePort)));
+            ("Watchtower:Proxy:PortRoutes:Ports", Text(routePort)));
         var app = Host(
             settings,
             managementPort,
@@ -218,7 +219,7 @@ public sealed class ProxyPortListenerReloadTests {
 
         var settings = new ReloadableSettings(
             ("Watchtower:Proxy:Enabled", "true"),
-            ("Watchtower:Proxy:Yarp:PortRoutePorts", Text(routePort)));
+            ("Watchtower:Proxy:PortRoutes:Ports", Text(routePort)));
         var app = Host(
             settings,
             managementPort,

@@ -219,13 +219,13 @@ public sealed class UpdateProxyConfigYarpValidationTests {
     /// </summary>
     [Fact]
     public async Task ThePortRoutePortsAreNotPartOfTheProxyCard() {
-        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, GetProxyConfig.ProxyPaths);
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyPortRoutesPorts, GetProxyConfig.ProxyPaths);
 
         using var host = AuthTestHost.Start();
         var result = await SaveAsync(host, Command() with { Provider = ProxyProviderNames.Yarp });
 
         Assert.True(result.IsSuccess);
-        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, result.Value.Config.PinnedPaths);
+        Assert.DoesNotContain(WatchtowerSettingPaths.ProxyPortRoutesPorts, result.Value.Config.PinnedPaths);
         Assert.DoesNotContain(
             "PortRoutePorts", System.Text.Json.JsonSerializer.Serialize(result.Value.Config));
     }
@@ -442,25 +442,25 @@ public sealed class UpdateProxyConfigYarpValidationTests {
     [Fact]
     public async Task TheLanNamesArePersisted_AsTyped() {
         using var host = AuthTestHost.Start();
-        var result = await SaveAsync(host, Command() with { YarpLanNames = " nas.lan, 192.168.1.10 " });
+        var result = await SaveAsync(host, Command() with { PortRoutesLanNames = " nas.lan, 192.168.1.10 " });
 
         Assert.True(result.IsSuccess);
         // Echoed verbatim rather than reformatted: the field an operator edits is the value that was
         // stored, and the parser is what turns it into subject alternative names.
-        Assert.Equal("nas.lan, 192.168.1.10", result.Value.Config.Yarp.LanNames);
+        Assert.Equal("nas.lan, 192.168.1.10", result.Value.Config.PortRoutes.LanNames);
         var settings = host.Services.GetRequiredService<ISettingsManager>();
         Assert.Equal("nas.lan, 192.168.1.10",
-            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyYarpLanNames, SettingsScope.Global, Ct));
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyPortRoutesLanNames, SettingsScope.Global, Ct));
     }
 
     /// <summary>Empty means the internal CA is unused — and has to stay a way to clear the field.</summary>
     [Fact]
     public async Task NoLanNames_IsAccepted() {
         using var host = AuthTestHost.Start();
-        var result = await SaveAsync(host, Command() with { YarpLanNames = "" });
+        var result = await SaveAsync(host, Command() with { PortRoutesLanNames = "" });
 
         Assert.True(result.IsSuccess);
-        Assert.Equal("", result.Value.Config.Yarp.LanNames);
+        Assert.Equal("", result.Value.Config.PortRoutes.LanNames);
     }
 
     [Theory]
@@ -471,7 +471,7 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         // Checked here because the alternative is a certificate that silently covers four names out of
         // five, discovered weeks later as one device that cannot reach the service.
         using var host = AuthTestHost.Start();
-        var result = await SaveAsync(host, Command() with { YarpLanNames = lanNames });
+        var result = await SaveAsync(host, Command() with { PortRoutesLanNames = lanNames });
 
         Assert.False(result.IsSuccess);
         Assert.Contains(offender, result.Error.Message, StringComparison.Ordinal);
@@ -483,7 +483,7 @@ public sealed class UpdateProxyConfigYarpValidationTests {
     /// </summary>
     [Fact]
     public async Task EnablingTheProvider_ChecksTheStoredLanNames() {
-        using var host = AuthTestHost.Start(("Watchtower:Proxy:Yarp:LanNames", "nas .lan"));
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:PortRoutes:LanNames", "nas .lan"));
         var result = await SaveAsync(
             host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
 
@@ -494,13 +494,13 @@ public sealed class UpdateProxyConfigYarpValidationTests {
     [Fact]
     public async Task APinnedLanNamesValueIsRefused() {
         using var host = AuthTestHost.Start();
-        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__YARP__LANNAMES"]);
+        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__PORTROUTES__LANNAMES"]);
 
-        var result = await SaveAsync(host, Command() with { YarpLanNames = "nas.lan" }, pins: pins);
+        var result = await SaveAsync(host, Command() with { PortRoutesLanNames = "nas.lan" }, pins: pins);
 
         Assert.False(result.IsSuccess);
-        Assert.Contains("WATCHTOWER__PROXY__YARP__LANNAMES", result.Error.Message, StringComparison.Ordinal);
-        Assert.Contains(WatchtowerSettingPaths.ProxyYarpLanNames, GetProxyConfig.ProxyPaths);
+        Assert.Contains("WATCHTOWER__PROXY__PORTROUTES__LANNAMES", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(WatchtowerSettingPaths.ProxyPortRoutesLanNames, GetProxyConfig.ProxyPaths);
     }
 
     /// <summary>They decide which devices can reach this deployment over TLS, so the trail names them.</summary>
@@ -508,7 +508,7 @@ public sealed class UpdateProxyConfigYarpValidationTests {
     public async Task TheAuditLineNamesTheLanNames() {
         using var host = AuthTestHost.Start();
         var result = await SaveAsync(host, Command() with {
-            Provider = ProxyProviderNames.Yarp, YarpLanNames = "nas.lan, 192.168.1.10",
+            Provider = ProxyProviderNames.Yarp, PortRoutesLanNames = "nas.lan, 192.168.1.10",
         });
         Assert.True(result.IsSuccess);
 

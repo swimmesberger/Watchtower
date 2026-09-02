@@ -7,7 +7,8 @@
   targets, where this adds how it is addressed),
   [ADR-0024](0024-postgresql-only-and-state-in-the-database.md) (certificates and the signing key are
   rows, which is why the CA is one too),
-  [docs/reverse-proxy/yarp.md](../reverse-proxy/yarp.md) (the operator guide).
+  [docs/reverse-proxy/README.md](../reverse-proxy/README.md#port-routes-https-on-a-lan-with-any-provider)
+  (the operator guide, moved there by the addendum below).
 
 ## Context
 
@@ -78,6 +79,11 @@ Port routes are **yarp only**. `CaddyManager` and `CloudflareTunnelProvider` set
 one shared constant, `ProxySiteProjection.PortRouteUnsupported` — the ADR-0023 pattern, for the same
 reason: a sibling container and a tunnel have no way to lend Watchtower a listener on Watchtower's own
 host, and a row that is silently skipped sits at `Pending` forever with the reason nowhere.
+
+> **Superseded** by the [addendum](#addendum-2026-09-01-port-routes-are-provider-independent) below.
+> The premise was wrong: nobody was being asked to lend Watchtower a listener, because the listener was
+> always Watchtower's own. Port routes are gated on `Proxy:Enabled` alone and the constant is gone. The
+> paragraph is left as written — it is what the rest of this decision was reasoned against.
 
 ### 2. One dedicated HTTPS listener per port route, bound at runtime
 
@@ -394,6 +400,24 @@ untouched, and nobody re-imports anything, because the root did not change.
   fatal at startup, survivable-but-stale on a reload. Create-time validation refuses a listen port that
   collides with Watchtower's own ports, but nothing can refuse an unrelated host process holding 9001 on
   bare metal, and that still wedges startup.
+- **A listen port another container already publishes is refused, naming that container.** Asked of the
+  Docker daemon at route creation, at an edit that moves the port, and again before the publish recreates
+  this container — the message carries the container's name and its compose project and service, because
+  the alternative is a recreate the daemon refuses to allocate the port to, which rolls back and reports
+  "host port not published" with nothing pointing at what holds it. Note that this is *not* the bind
+  conflict above: in a bridge-networked deployment Kestrel binds inside its own namespace and cannot
+  collide with another container at all; what collides is the host-port allocation, and the loser is
+  whichever container is started second. Containers in any state count (a stopped desired-state stack
+  comes back) and only TCP does. The check fails open in both directions — an unreachable daemon refuses
+  nothing, and so does a self whose container id cannot be resolved, since Watchtower's own published
+  port is the state the feature is trying to reach and a false refusal naming it is worse than a missed
+  one. That is also why self is resolved as `HOSTNAME` → inspect → the authoritative id and matched
+  exactly: `HOSTNAME` is a custom name whenever the container carries one, and a prefix match on it
+  refused the operator's own binding. What this deliberately does *not* do is inspect a routed service's
+  `ports:` on the deploy path — a stack is still free to publish the ingress or management ports, and the
+  collision surfaces when one of the two containers next starts. That belongs to
+  [ADR-0029](0029-blue-green-stack-deploys.md), which is still Proposed; the contract itself is written
+  down in [docs/reverse-proxy/README.md](../reverse-proxy/README.md#what-a-routed-stack-must-not-do).
 - **Losing `KeyProtectionSecret` is no longer a self-healing failure.** ADR-0024 could say that losing
   it invalidates sessions and forces every certificate to be reissued — a blast radius that resolves
   itself, because ACME simply orders again. The CA key breaks that property: decision 6 treats an
@@ -429,6 +453,115 @@ untouched, and nobody re-imports anything, because the root did not change.
   the state is a default (`TestServer`, the unit hosts) or has not caught up. The port-route path no
   longer depends on it — decision 4's second reading is what removed that dependency — so this is
   recorded here rather than fixed as a side effect of this work.
+
+## Addendum (2026-09-01): port routes are provider-independent
+
+### Context
+
+Decision 1 ends with three sentences that were never true. A port route was gated on
+`Provider == yarp` everywhere — `DerivePortRoutePorts` returned nothing under another provider so no
+listener was projected, `InternalCertificateService` returned on the same gate so no certificate was
+issued, the whole port plane lived inside `YarpProxyProvider` and therefore never ran, and Caddy and
+Cloudflare marked the rows `Error: PortRouteUnsupported`. The Routes page hid the Port binding unless
+`status.provider === 'yarp'`.
+
+The reason given was that "a sibling container and a tunnel have no way to lend Watchtower a listener on
+Watchtower's own host". Read again, that sentence answers itself: nothing was being lent. A port route is
+a socket Watchtower binds inside its own container and forwards over the stack's ingress network. Which
+backend terminates the *public domains* has no bearing on it — and the deployments most likely to have no
+domain at all are exactly the ones behind a Cloudflare Tunnel (a NAS on a CGNAT connection) or on a
+legacy Caddy install. The gate excluded the users the feature was designed for.
+
+The conflation was written into the setting names as well: `Proxy:Yarp:LanNames`,
+`Proxy:Yarp:PortRoutePorts`, `Proxy:Yarp:ManagedHostPorts`.
+
+### Decision
+
+**Port routes are gated on `Proxy:Enabled` and on nothing else, under every provider.**
+
+**1. A Watchtower-native port-route plane.** `Services/PortRoutes/PortRoutePlane` is a singleton hosted
+service registered *alongside* the three providers rather than among them. It is not an `IProxyProvider`
+and is not selected by `Proxy:Provider` — there is nothing to select between. It owns everything a port
+route needs, which is four things that are one statement made in four places: the port half of the route
+table (`ProxySiteProjection.ProjectPortRoutes`), the listener setting the Kestrel projection reads, the
+internal certificate those listeners present, and Watchtower's own container's membership of the ingress
+network of each port-routed stack. Its public surface is `ApplyAsync`, `ConnectStackAsync` and
+`IHostedService`. Its shape is `YarpProxyProvider`'s — one transition lock, a background reconcile off
+the startup path because joining networks talks to the Docker daemon, and its own `ProxyChangeSignal`
+subscription, taken the same way the provider takes its own: two independent debounced watchers on one
+key, rather than one watcher that has to know about both. `YarpProxyProvider` is domain routes only now,
+with no forwarding shims left behind.
+
+**2. The route table has two writers and one snapshot.** `ProxyRouteTable` was written wholesale by
+`YarpProxyProvider`; under Caddy or Cloudflare that provider is inactive and never writes, so the port
+plane has to own its half independently. `PublishHostRoutes(sites)` and `PublishPortRoutes(portSites)`
+each recompute one combined immutable `ProxyRouteTableSnapshot` from both halves held internally and
+volatile-swap it. The dispatcher still reads exactly one snapshot per request and knows nothing about the
+split, and `TlsHosts` — the ACME desired set — derives from the host half alone, so a port route still
+cannot enter it. When yarp is inactive its half is simply empty.
+
+**3. The gates.** `ProxyIngressKestrelConfiguration.DerivePortRoutePorts` reads `Proxy:Enabled` (parsed
+the same defensive way as before — this runs before the host exists) and not the provider;
+`IsInProcessProxyActive` stays for the 8081/8443 endpoints. The projection's early return already handled
+"no yarp ports, some port-route ports", which is the port-routes-only shape decision 4 was built around;
+under Caddy the yarp ports are null, so of the two collision drops only the management-port one can fire.
+`InternalCertificateService` is gated on `Proxy:Enabled` alone. `ProxyProviderRouter.ApplyAsync` and
+`ConnectStackAsync` drive the selected provider and then the plane; `Enabled`, `IsRunningAsync` and
+`ForgetDomainAsync` remain statements about the domain provider and stay with it. `PortRouteUnsupported`
+and both call sites are deleted; `CloudflareTunnelProvider.SelfRouteUnsupported` is untouched.
+
+**4. The settings are renamed, and a migration carries the stored values.**
+`Watchtower:Proxy:PortRoutes:{LanNames, Ports, ManagedHostPorts}`, with `ProxyOptions.PortRoutes` binding
+a new `PortRouteOptions` and `YarpProxyOptions.LanNames` deleted. `PortRouteSettingsMigration` mirrors
+`ProxyProviderMigration`: it runs once from `Program.InitializeDatabaseAsync`, guarded by the sentinel
+`Watchtower:Proxy:PortRoutes:Migrated`, copies each old key's **stored** value to the new key when the new
+key is unset, logs, and audits under `proxy` / `config.migrate`. The old rows are left in place so a
+rollback still finds them, which is also why the sentinel is load-bearing: without it every restart would
+re-copy them over whatever the operator has since typed.
+
+An environment pin on an old name cannot be carried across and is not silently dropped: env values never
+enter the settings store, so `WATCHTOWER__PROXY__YARP__LANNAMES` simply stops mapping to anything, and it
+is warned about on *every* start (not once behind the sentinel — the condition is a line in a compose file
+that stays true until somebody edits it).
+
+The database copy runs in `InitializeDatabaseAsync`, which is after the synchronous boot snapshot
+(ADR-0014 decision 2) has already been read and after Kestrel's projection has already been built — so on
+the first start after the upgrade the new keys would read as unset, costing that boot its `ProxyPort{n}`
+endpoints and stamping every port route `Error: no LAN names`. `WithLegacyAliases` is the boot-time half:
+a pure function over the snapshot that adds `(new key, value of old key)` for each pair whose new key is
+absent. It shadows nothing — a stored new key wins, and the environment still layers above the whole
+snapshot.
+
+[Throughout the body of this ADR, wherever it says `Proxy:Yarp:{LanNames, PortRoutePorts,
+ManagedHostPorts}`, read `Proxy:PortRoutes:{LanNames, Ports, ManagedHostPorts}`.]
+
+### Consequences
+
+- **Watchtower's own container now joins the ingress network of a port-routed stack under any provider.**
+  ADR-0022's exposure — Watchtower on the same L2 segment as a tenant's containers — is what Caddy and
+  Cloudflare deployments were spared by not running the in-process proxy at all. It now reaches exactly
+  the stacks they port-route, and no others: the plane's sweep and its `ConnectStackAsync` are both
+  narrowed to `Binding == Port` rows, so a stack with only domain routes is untouched. A deployment with
+  no port routes is unchanged in every respect. The double join under yarp costs nothing —
+  `ConnectContainerAsync` reads the daemon's "endpoint already exists" 403 as success.
+- **The renamed settings, and the env-pin caveat.** A stored value moves itself; a pinned one does not
+  and cannot, and the deployment loses what it stated until the variable is renamed. This is the second
+  place a settings rename has met ADR-0014's precedence order, and the answer is the same one: say so,
+  loudly, on every start. `docs/upgrading.md` carries the table and the log line.
+- **The ACME and ingress listeners remain yarp-only.** 8081, 8443, HTTP-01 and the SNI certificate map
+  are the in-process provider's and are still gated on it. What moved is only the plane that was never
+  its own to begin with. `GetProxyStatus.ProviderDetail` reflects the split: the ingress caveats are
+  reported under yarp, the port-listener line under every provider.
+- **A Caddy or Cloudflare deployment can now hold *served* port routes, which makes the ADR-0033 rollback
+  hazard real for it.** Before this, such a deployment could only hold port routes it had never served;
+  the pre-0033 projection's crash on a domain-less row was therefore a trap nobody had a reason to walk
+  into. Now they are a working feature, and `docs/upgrading.md`'s "delete every port route before rolling
+  back past ADR-0033" applies to those deployments in earnest.
+- **`proxy.getConfig` grew a `portRoutes` block and `proxy.updateConfig` renamed one field**
+  (`yarpLanNames` → `portRoutesLanNames`), which is a wire change in the generated client. The Settings
+  page's LAN names moved out of the yarp block into their own "LAN port routes" section, and the Routes
+  page's Certificates card split: the ACME table under yarp, the Internal CA block whenever the proxy is
+  on.
 
 ## Rejected alternatives
 

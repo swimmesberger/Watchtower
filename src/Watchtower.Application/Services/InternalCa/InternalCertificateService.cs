@@ -13,8 +13,8 @@ using Watchtower.Application.Services.Acme;
 namespace Watchtower.Application.Services.InternalCa;
 
 /// <summary>
-/// Keeps the one LAN certificate the in-process proxy serves on port routes in line with the configured
-/// LAN names — the internal CA's counterpart to <see cref="CertificateManager"/>.
+/// Keeps the one LAN certificate the port routes are served over in line with the configured LAN names
+/// — the internal CA's counterpart to <see cref="CertificateManager"/>.
 /// </summary>
 /// <remarks>
 /// Idempotent and cheap: every call decides whether the held leaf still says what it should, and does
@@ -30,6 +30,11 @@ namespace Watchtower.Application.Services.InternalCa;
 /// Nor on <see cref="Services.Yarp.YarpListenerState.HttpsBound"/>. A deployment that serves nothing but
 /// port routes runs with the HTTPS ingress port off, and gating on it would mean exactly that deployment
 /// never gets a certificate.
+/// </para>
+/// <para>
+/// Nor on <c>Proxy:Provider</c> any more (ADR-0033 addendum): a port route's listener belongs to
+/// <see cref="Services.PortRoutes.PortRoutePlane"/> and exists under Caddy and Cloudflare too, so the
+/// only gate left is whether the proxy is enabled.
 /// </para>
 /// </remarks>
 public sealed class InternalCertificateService(
@@ -78,20 +83,22 @@ public sealed class InternalCertificateService(
     internal async Task EnsureCoreAsync(
         Func<CancellationToken, ValueTask<IReadOnlyList<int>>> portRoutes, CancellationToken ct) {
         var proxy = options.CurrentValue.Proxy;
-        // The same gate the certificate manager applies: these certificates are served by the in-process
-        // proxy's listeners, and under any other provider there is nothing to serve them.
+        // The proxy's own gate, and only that (ADR-0033 addendum). These certificates are served on the
+        // port routes' listeners, which are on Watchtower's own container whichever provider terminates
+        // the public domains — so gating on `yarp` here meant a Caddy or Cloudflare deployment could
+        // create a port route, get a listener, and have nothing to present on it.
         //
         // Both early returns clear the suppression, which is the point of clearing it here rather than
-        // only on the way past the refusals below: an operator who switches the provider away and back,
-        // or deletes their last port route and makes another, is starting again, and the refusal they hit
+        // only on the way past the refusals below: an operator who switches the proxy off and on, or
+        // deletes their last port route and makes another, is starting again, and the refusal they hit
         // the first time is worth saying again rather than being swallowed as "already logged".
-        if (!proxy.Enabled || proxy.ResolveProvider() != ProxyProviderKind.Yarp) {
+        if (!proxy.Enabled) {
             _lastRefusal = null;
             return;
         }
-        // Read once, before the gate below it and after the provider gate above it: under another
-        // provider nothing here runs at all, and past this line the same list answers "is a leaf wanted?"
-        // and "whose rows does the outcome go on?".
+        // Read once, before the gate below it and after the enablement gate above it: with the proxy off
+        // nothing here runs at all, and past this line the same list answers "is a leaf wanted?" and
+        // "whose rows does the outcome go on?".
         var routeIds = await portRoutes(ct);
         if (routeIds.Count == 0) {
             _lastRefusal = null;
@@ -99,11 +106,12 @@ public sealed class InternalCertificateService(
         }
 
         if (!InternalCaNames.TryParseLanNames(
-                proxy.Yarp.LanNames, out var dnsNames, out var ips, out var reason)) {
+                proxy.PortRoutes.LanNames, out var dnsNames, out var ips, out var reason)) {
             // Refused at the point it was typed, so this is a value that arrived through the environment.
             if (FirstTime($"unreadable:{reason}"))
                 logger.LogWarning(
-                    "Not issuing a LAN certificate: Proxy:Yarp:LanNames could not be read — {Reason}", reason);
+                    "Not issuing a LAN certificate: Proxy:PortRoutes:LanNames could not be read — {Reason}",
+                    reason);
             await RecordPortRoutesAsync(
                 routeIds, RouteStatus.Error,
                 $"No LAN certificate: the configured LAN names could not be read — {reason}", null, ct);

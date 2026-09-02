@@ -23,7 +23,8 @@ itself over ACME — in its own process, with no sibling proxy container to run.
 unknown domain arriving there gets a 404 rather than Watchtower's own UI, which stays on 8080 for you
 to bind privately. No domain at all? A **port route** puts one service on a TLS port of its own
 (`https://nas.lan:9001`) with a certificate from an internal CA Watchtower generates and you import
-once — LAN HTTPS without ACME ([ADR-0033](docs/decisions/0033-port-routes-and-internal-ca.md)).
+once — LAN HTTPS without ACME ([ADR-0033](docs/decisions/0033-port-routes-and-internal-ca.md)), and it
+works with whichever provider serves your domains.
 A **Cloudflare Tunnel** provider is there for
 hosts that cannot open ports at all, and the older Caddy-container provider stays supported for
 existing installations. See [docs/reverse-proxy/](docs/reverse-proxy/README.md) and

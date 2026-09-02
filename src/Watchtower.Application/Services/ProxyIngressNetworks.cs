@@ -1,6 +1,8 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 
 namespace Watchtower.Application.Services;
@@ -68,12 +70,31 @@ public sealed class ProxyIngressNetworks(
     }
 
     /// <summary>Connects one stack's routed services (from the route table) to its ingress network.</summary>
-    public async Task ConnectStackServicesAsync(int stackId, string proxyContainer, CancellationToken ct) {
+    public Task ConnectStackServicesAsync(int stackId, string proxyContainer, CancellationToken ct) =>
+        ConnectStackAsync(stackId, proxyContainer, r => r.StackId == stackId, ct);
+
+    /// <summary>
+    /// The same for one stack's <em>port</em>-bound routes only — <see cref="PortRoutes.PortRoutePlane"/>'s
+    /// half (ADR-0033 addendum), joined by Watchtower's own container under every provider.
+    /// </summary>
+    /// <remarks>
+    /// Narrowed to the port rows on purpose. Under Caddy or Cloudflare a stack's domain routes are served
+    /// by that provider's container over the same network, and putting Watchtower on a network it has no
+    /// listener for would be exposure bought for nothing — the addendum's one new consequence is meant to
+    /// reach exactly the stacks that are port-routed and no others.
+    /// </remarks>
+    public Task ConnectStackPortRoutedServicesAsync(
+        int stackId, string proxyContainer, CancellationToken ct) =>
+        ConnectStackAsync(
+            stackId, proxyContainer, r => r.StackId == stackId && r.Binding == RouteBinding.Port, ct);
+
+    private async Task ConnectStackAsync(
+        int stackId, string proxyContainer, Expression<Func<Route, bool>> which, CancellationToken ct) {
         List<(string Project, string Service)> targets;
         await using (var scope = scopeFactory.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
             targets = await db.Routes.AsNoTracking()
-                .Where(r => r.StackId == stackId)
+                .Where(which)
                 .Include(r => r.Stack)
                 .Select(r => new { r.Stack!.ComposeProjectName, r.ServiceName })
                 .Distinct()
@@ -91,14 +112,26 @@ public sealed class ProxyIngressNetworks(
     /// every stack behind it in the list its upstream hop. A daemon that is unreachable altogether still
     /// fails every target — the caller decides what that means.
     /// </remarks>
-    public async Task ConnectAllRoutedContainersAsync(string proxyContainer, CancellationToken ct) {
+    public Task ConnectAllRoutedContainersAsync(string proxyContainer, CancellationToken ct) =>
+        // Service routes only: a Watchtower route has no stack and no container to join to anything —
+        // the proxy reaches Watchtower on the control network, not on a stack's ingress network.
+        ConnectAllAsync(proxyContainer, r => r.StackId != null, ct);
+
+    /// <summary>
+    /// The same sweep over the port-bound routes only — <see cref="PortRoutes.PortRoutePlane"/>'s startup
+    /// reconcile (ADR-0033 addendum). See <see cref="ConnectStackPortRoutedServicesAsync"/> for why it is
+    /// narrowed.
+    /// </summary>
+    public Task ConnectAllPortRoutedContainersAsync(string proxyContainer, CancellationToken ct) =>
+        ConnectAllAsync(proxyContainer, r => r.StackId != null && r.Binding == RouteBinding.Port, ct);
+
+    private async Task ConnectAllAsync(
+        string proxyContainer, Expression<Func<Route, bool>> which, CancellationToken ct) {
         List<(int StackId, string Project, string Service)> targets;
         await using (var scope = scopeFactory.CreateAsyncScope()) {
             var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-            // Service routes only: a Watchtower route has no stack and no container to join to anything —
-            // the proxy reaches Watchtower on the control network, not on a stack's ingress network.
             targets = await db.Routes.AsNoTracking()
-                .Where(r => r.StackId != null)
+                .Where(which)
                 .Include(r => r.Stack)
                 .Select(r => new { StackId = r.StackId!.Value, r.Stack!.ComposeProjectName, r.ServiceName })
                 .Distinct()

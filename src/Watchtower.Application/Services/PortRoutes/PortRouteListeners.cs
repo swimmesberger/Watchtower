@@ -1,7 +1,8 @@
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
+using Watchtower.Application.Services.Yarp;
 
-namespace Watchtower.Application.Services.Yarp;
+namespace Watchtower.Application.Services.PortRoutes;
 
 /// <summary>
 /// The vocabulary shared by the two ends of a port route's listener (ADR-0033): the setting value that
@@ -68,8 +69,9 @@ public static class PortRouteListeners {
 
     /// <summary>
     /// The ports as one setting value: ascending, deduplicated, comma-separated. Canonical, because
-    /// <see cref="YarpProxyProvider.ApplyAsync"/> compares the rendering against the stored one to decide
-    /// whether to write at all, and two spellings of the same set would make every pass a write.
+    /// <see cref="PortRoutePlane"/> compares the rendering against the stored one to decide whether to
+    /// write at all (see its <c>WriteListenerPortsAsync</c>), and two spellings of the same set would make
+    /// every pass a write.
     /// </summary>
     public static string Format(IEnumerable<int> ports) {
         ArgumentNullException.ThrowIfNull(ports);

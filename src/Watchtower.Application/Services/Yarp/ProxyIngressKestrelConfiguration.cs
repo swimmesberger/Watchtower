@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Primitives;
 using Watchtower.Application.Config;
+using Watchtower.Application.Services.PortRoutes;
 
 namespace Watchtower.Application.Services.Yarp;
 
@@ -18,6 +19,12 @@ namespace Watchtower.Application.Services.Yarp;
 /// and the two port settings. So the listeners follow the settings: enabling the proxy binds them,
 /// disabling it or switching to Caddy/Cloudflare unbinds them, moving a port rebinds it, all without a
 /// restart. A Caddy or Cloudflare deployment carries no idle TLS listener at all.
+/// </para>
+/// <para>
+/// The port-route listeners (ADR-0033) are projected here too, and they are <em>not</em> on the provider
+/// gate: <c>Proxy:Enabled</c> is the whole condition, because a port route's listener is on Watchtower's
+/// own container whatever terminates the public domains (ADR-0033 addendum). So a Caddy or Cloudflare
+/// deployment carries exactly the listeners its port routes ask for and no others.
 /// </para>
 /// <para>
 /// Masking the operator's own <c>Kestrel:Endpoints:ProxyHttp*</c> keys is the point of the exception, not
@@ -88,27 +95,45 @@ public static class ProxyIngressKestrelConfiguration {
     }
 
     /// <summary>
-    /// The listen ports of the port-bound routes (ADR-0033) — one dedicated TLS listener each, on the
-    /// same gate as the ingress ports and empty whenever another provider is serving. Pure, like
-    /// <see cref="DerivePorts"/>, and blind to collisions for the same reason.
+    /// The listen ports of the port-bound routes (ADR-0033) — one dedicated TLS listener each, gated on
+    /// <c>Proxy:Enabled</c> and on nothing else. Pure, like <see cref="DerivePorts"/>, and blind to
+    /// collisions for the same reason.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>Not on the provider</b> (ADR-0033 addendum). These listeners are on Watchtower's own container
+    /// and forward over the stack's ingress network; a sibling Caddy container and a Cloudflare Tunnel
+    /// terminate the public <em>domains</em> and have no say in it. Gating them on <c>yarp</c> is what
+    /// used to make "LAN HTTPS" and "which provider serves my domains" the same question, which they
+    /// never were.
+    /// </para>
+    /// <para>
     /// Read straight from the setting rather than from the route table: this runs before the host and its
-    /// database exist, and <see cref="YarpProxyProvider.ApplyAsync"/> is the one writer that keeps the
+    /// database exist, and <see cref="PortRoutes.PortRoutePlane"/> is the one writer that keeps the
     /// setting in step with the rows.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<int> DerivePortRoutePorts(IConfiguration root) {
         ArgumentNullException.ThrowIfNull(root);
-        if (!IsInProcessProxyActive(root)) return [];
-        return PortRouteListeners.Parse(root[WatchtowerSettingPaths.ProxyYarpPortRoutePorts]);
+        if (!IsProxyEnabled(root)) return [];
+        return PortRouteListeners.Parse(root[WatchtowerSettingPaths.ProxyPortRoutesPorts]);
     }
 
-    /// <summary>Whether the in-process proxy is the one serving — the gate every derived listener is behind.</summary>
+    /// <summary>
+    /// Whether the reverse proxy is on at all — the gate the port-route listeners are behind, and the
+    /// first half of the ingress gate.
+    /// </summary>
+    /// <remarks>
+    /// Not <c>GetValue&lt;bool&gt;</c>: that throws on a value it cannot convert, and this runs before
+    /// the host exists — a typo'd <c>WATCHTOWER__PROXY__ENABLED</c> would be a stack trace at startup
+    /// rather than a proxy that stays off.
+    /// </remarks>
+    private static bool IsProxyEnabled(IConfiguration root) =>
+        bool.TryParse(root["Watchtower:Proxy:Enabled"], out var enabled) && enabled;
+
+    /// <summary>Whether the in-process proxy is the one serving — the gate the ingress listeners are behind.</summary>
     private static bool IsInProcessProxyActive(IConfiguration root) {
-        // Not GetValue<bool>: that throws on a value it cannot convert, and this runs before the host
-        // exists — a typo'd WATCHTOWER__PROXY__ENABLED would be a stack trace at startup rather than a
-        // proxy that stays off.
-        if (!bool.TryParse(root["Watchtower:Proxy:Enabled"], out var enabled) || !enabled) return false;
+        if (!IsProxyEnabled(root)) return false;
 
         // Resolved through ProxyOptions so "unknown or blank means yarp" is stated once, next to the
         // provider names, rather than re-derived here where it could drift.

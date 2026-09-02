@@ -68,8 +68,14 @@ public sealed record PortBindingPlan(
 /// Whether Watchtower published it itself — and therefore whether it would take it away again when the
 /// route goes. False for a port the operator declared, which Watchtower never removes.
 /// </param>
+/// <param name="BlockedBy">
+/// Why this port cannot be published, naming the other container that already holds it, or null when
+/// nothing does. Only ever set for a port that is <em>not</em> <paramref name="Bound"/>: an apply that
+/// tried it would recreate this container, fail to start and roll back, so this is the difference
+/// between "not published yet" and "not publishable until something else lets go".
+/// </param>
 public sealed record HostPortBinding(
-    int Port, int RouteId, string ServiceName, bool Bound, bool Managed);
+    int Port, int RouteId, string ServiceName, bool Bound, bool Managed, string? BlockedBy);
 
 /// <summary>
 /// How the port routes' host ports stand on this instance's own container: what the Routes page needs to

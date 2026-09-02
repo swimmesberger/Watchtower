@@ -249,7 +249,7 @@ public sealed class CertificateManagerTests {
     [Fact]
     public async Task TheInternalCertificate_IsIssuedByANonHolderToo() {
         await using var estate = await AcmeEstate.StartAsync(
-            settings: ("Watchtower:Proxy:Yarp:LanNames", "nas.lan, 192.168.1.10"));
+            settings: ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan, 192.168.1.10"));
         await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
         estate.Factory.IssuerLease.IsHeld = false;
         estate.Factory.IssuerLease.CurrentHolder = "node-b:abc";
@@ -263,6 +263,31 @@ public sealed class CertificateManagerTests {
     }
 
     /// <summary>
+    /// The renewal driver, under a provider that does not run the ACME loop's own gate. The internal
+    /// ensure sits <em>above</em> <c>IsActive</c> for exactly this: below it, a converged Caddy or
+    /// Cloudflare deployment had no periodic driver at all — the leaf was issued at startup and on a
+    /// route change and then never looked at again, so a year later it served an expired one.
+    /// </summary>
+    [Theory]
+    [InlineData("caddy")]
+    [InlineData("cloudflare")]
+    public async Task TheInternalCertificate_IsIssuedUnderAnotherProviderToo(string provider) {
+        await using var estate = await AcmeEstate.StartAsync(
+            settings: [
+                ("Watchtower:Proxy:Provider", provider),
+                ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan"),
+            ]);
+        await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
+        estate.Ca.ForgetRequests();
+
+        await estate.Certificates.ReconcileAsync(Ct);
+
+        Assert.NotNull(estate.Store.Find(InternalCaNames.SharedLeafHost));
+        // The ACME half of the pass is still gated on the in-process provider, so nothing was ordered.
+        Assert.Empty(estate.Ca.Requests);
+    }
+
+    /// <summary>
     /// And the internal leaf's host never enters the ACME <em>desired</em> set. It is a store key, not a
     /// domain, and no public authority would issue for it — an order would be a refusal on a rate-limited
     /// endpoint, every pass. It is still listed, because it is held and served; what it is not is wanted.
@@ -270,7 +295,7 @@ public sealed class CertificateManagerTests {
     [Fact]
     public async Task TheInternalLeafsHost_IsHeldButNeverDesired() {
         await using var estate = await AcmeEstate.StartAsync(
-            settings: ("Watchtower:Proxy:Yarp:LanNames", "nas.lan"));
+            settings: ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan"));
         await estate.Factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
         await estate.AddRouteAsync(Host);
 

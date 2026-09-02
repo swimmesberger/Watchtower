@@ -160,14 +160,10 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             if (selfRoutes.Count > 0)
                 await SetRouteStatusAsync(selfRoutes.Select(r => r.Id), RouteStatus.Error, SelfRouteUnsupported, ct);
 
-            // Port routes (ADR-0033) get the same treatment for a related reason: a tunnel publishes
-            // hostnames, and a route addressed by a port on Watchtower's own host has none to publish —
-            // there is nothing here to route it by. Excluded and told to say so.
-            var portRoutes = all.Where(r => r.Binding == RouteBinding.Port).ToList();
-            if (portRoutes.Count > 0)
-                await SetRouteStatusAsync(
-                    portRoutes.Select(r => r.Id), RouteStatus.Error,
-                    ProxySiteProjection.PortRouteUnsupported, ct);
+            // Port routes (ADR-0033) are excluded from everything below — a tunnel publishes hostnames
+            // and a port route has none — but they are not an error here: their listeners are on
+            // Watchtower's own container and PortRoutePlane serves them alongside the tunnel (ADR-0033
+            // addendum), so their status is the internal CA's to write, not this provider's.
 
             var routes = all
                 .Where(r => r.Target == RouteTarget.Service && r.Binding == RouteBinding.Domain)

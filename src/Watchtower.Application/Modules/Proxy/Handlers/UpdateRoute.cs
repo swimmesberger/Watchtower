@@ -22,7 +22,8 @@ public sealed class UpdateRoute(
     WatchtowerDbContext db,
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
-    YarpListenerState listener)
+    YarpListenerState listener,
+    HostPortOccupancy hostPorts)
     : IHandler<UpdateRoute.Command, Result<UpdateRoute.Response>> {
     /// <param name="Domain">
     /// The hostname to serve. Required for a domain route; a port route has none, and sending one is
@@ -193,6 +194,11 @@ public sealed class UpdateRoute(
                 return AppError.Validation(portError);
             if (await PortRouteRules.TakenByAsync(db, listenPort, exceptRouteId: route.Id, ct) is { } clash)
                 return AppError.Validation(clash);
+            // The move has to land on a port nothing else on this host publishes, for the reason a
+            // creation does: the listener lives on Watchtower's own container.
+            if (await hostPorts.PublishedByAnotherContainerAsync(
+                    listenPort, selfContainerId: null, ct) is { } held)
+                return AppError.Validation(held);
         }
 
         route.ListenPort = listenPort;

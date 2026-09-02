@@ -680,8 +680,12 @@ interface ProxyDraft {
   /** Only sent when non-empty — an empty field keeps the stored key. */
   yarpAcmeEabHmacKey: string
   yarpRedirectHttpToHttps: boolean
-  /** Comma- or newline-separated LAN host names and IPs the internal CA issues port-route leaves for. */
-  yarpLanNames: string
+  /**
+   * Comma- or newline-separated LAN host names and IPs the internal CA issues port-route leaves for.
+   * Not a yarp field: a port route's listener is on Watchtower's own container whichever provider
+   * terminates the public domains (ADR-0033 addendum), so it is sent under every provider.
+   */
+  portRoutesLanNames: string
   cfAccountId: string
   cfZoneId: string
   /** Only sent when non-empty — an empty field keeps the stored token. */
@@ -710,7 +714,7 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     yarpAcmeEabKeyId: config.yarp.acmeEabKeyId ?? '',
     yarpAcmeEabHmacKey: '',
     yarpRedirectHttpToHttps: config.yarp.redirectHttpToHttps,
-    yarpLanNames: config.yarp.lanNames,
+    portRoutesLanNames: config.portRoutes.lanNames,
     cfAccountId: config.cloudflare.accountId ?? '',
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
@@ -746,7 +750,9 @@ function ProxyCard() {
   const { data: internalCa } = useQuery({
     queryKey: ['proxy', 'internal-ca'],
     queryFn: api.proxy.getInternalCa,
-    enabled: data?.provider === 'yarp',
+    // Whenever the proxy is on, not only under yarp: port routes — and therefore the root an operator
+    // has to import — exist alongside Caddy and the tunnel too.
+    enabled: data?.enabled === true,
     staleTime: 60_000,
   })
 
@@ -776,9 +782,11 @@ function ProxyCard() {
         yarpAcmeEabHmacKey:
           next.provider === 'yarp' ? next.yarpAcmeEabHmacKey.trim() || null : null,
         yarpRedirectHttpToHttps: next.provider === 'yarp' ? next.yarpRedirectHttpToHttps : null,
-        // Empty is a real value here — it means the internal CA is unused — so the field is sent as
-        // typed rather than coalesced away, and clearing it is a save like any other.
-        yarpLanNames: next.provider === 'yarp' ? next.yarpLanNames.trim() : null,
+        // Sent under every provider, unlike the yarp fields above: the LAN names decide what the
+        // internal CA issues for, and the port routes it issues for are served whichever provider
+        // terminates the domains. Empty is a real value here — it means the internal CA is unused — so
+        // the field is sent as typed rather than coalesced away, and clearing it is a save like any other.
+        portRoutesLanNames: next.portRoutesLanNames.trim(),
         cloudflareAccountId: next.cfAccountId.trim() || null,
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
@@ -865,7 +873,7 @@ function ProxyCard() {
 
             <Field
               label="Provider"
-              hint="The built-in provider terminates TLS in Watchtower's own process — publish 80:8081 and 443:8443 on this container's ingress endpoints (8080 stays the management plane and should be bound to a private interface). Caddy is deprecated and kept for existing installs; it runs as a sibling container holding the host's ports 80/443. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust."
+              hint="Which backend serves your public domains. The built-in provider terminates TLS in Watchtower's own process — publish 80:8081 and 443:8443 on this container's ingress endpoints (8080 stays the management plane and should be bound to a private interface). Caddy is deprecated and kept for existing installs; it runs as a sibling container holding the host's ports 80/443. Cloudflare Tunnel needs no open ports — TLS terminates at Cloudflare's edge and access can be gated by Zero Trust. LAN port routes work with all three."
             >
               {({ id }) => (
                 <>
@@ -1030,42 +1038,6 @@ function ProxyCard() {
                 </Field>
 
                 <Field
-                  label="LAN names"
-                  hint="The hostnames and IPs you type in the browser — every port-route certificate carries all of them (e.g. nas.lan, 192.168.1.10). Comma- or newline-separated. Leave empty if you have no LAN-only routes."
-                >
-                  {({ id }) => (
-                    <>
-                      <Input
-                        id={id}
-                        mono
-                        placeholder="nas.lan, 192.168.1.10"
-                        value={form.yarpLanNames}
-                        onChange={e => set('yarpLanNames', e.target.value)}
-                        disabled={isPinned('Watchtower:Proxy:Yarp:LanNames')}
-                      />
-                      {pinnedPath('Watchtower:Proxy:Yarp:LanNames') && (
-                        <PinnedNote path="Watchtower:Proxy:Yarp:LanNames" />
-                      )}
-                      {/* Only once the CA exists, which is the moment there is something to download:
-                          the root is minted on the first port route's behalf, and the endpoint 404s
-                          until then. */}
-                      {internalCa?.present === true && (
-                        <p className="mt-1.5 text-[13px] text-text-2">
-                          <a
-                            href={INTERNAL_CA_DOWNLOAD_URL}
-                            download
-                            className="text-brand hover:underline"
-                          >
-                            Download the internal CA root
-                          </a>{' '}
-                          and import it into each device's trust store, so these addresses validate.
-                        </p>
-                      )}
-                    </>
-                  )}
-                </Field>
-
-                <Field
                   label="ACME directory URL"
                   hint="Use https://acme-staging-v02.api.letsencrypt.org/directory while testing — staging certificates are untrusted but the rate limits are far higher. Any RFC 8555 CA works, including an on-premises step-ca."
                 >
@@ -1181,6 +1153,57 @@ function ProxyCard() {
                     aria-label="Redirect HTTP to HTTPS"
                   />
                 </label>
+              </div>
+            )}
+
+            {/* Its own section, and outside every provider block: a port route is a TLS listener on
+                Watchtower's own container, so it is served alongside Caddy and the tunnel exactly as it
+                is under the built-in provider (ADR-0033 addendum). Only the proxy being on gates it. */}
+            {form.enabled && (
+              <div className="flex flex-col gap-4">
+                <div>
+                  <h3 className="text-sm font-medium text-text">LAN port routes</h3>
+                  <p className="mt-1 text-[13px] text-text-2">
+                    Reach a service over HTTPS on a LAN address with no domain and no public DNS:
+                    Watchtower binds one port per route and presents a certificate from its own CA.
+                    Works with every provider above.
+                  </p>
+                </div>
+                <Field
+                  label="LAN names"
+                  hint="The hostnames and IPs you type in the browser — every port-route certificate carries all of them (e.g. nas.lan, 192.168.1.10). Comma- or newline-separated. Leave empty if you have no LAN-only routes."
+                >
+                  {({ id }) => (
+                    <>
+                      <Input
+                        id={id}
+                        mono
+                        placeholder="nas.lan, 192.168.1.10"
+                        value={form.portRoutesLanNames}
+                        onChange={e => set('portRoutesLanNames', e.target.value)}
+                        disabled={isPinned('Watchtower:Proxy:PortRoutes:LanNames')}
+                      />
+                      {pinnedPath('Watchtower:Proxy:PortRoutes:LanNames') && (
+                        <PinnedNote path="Watchtower:Proxy:PortRoutes:LanNames" />
+                      )}
+                      {/* Only once the CA exists, which is the moment there is something to download:
+                          the root is minted on the first port route's behalf, and the endpoint 404s
+                          until then. */}
+                      {internalCa?.present === true && (
+                        <p className="mt-1.5 text-[13px] text-text-2">
+                          <a
+                            href={INTERNAL_CA_DOWNLOAD_URL}
+                            download
+                            className="text-brand hover:underline"
+                          >
+                            Download the internal CA root
+                          </a>{' '}
+                          and import it into each device's trust store, so these addresses validate.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </Field>
               </div>
             )}
 

@@ -12,6 +12,7 @@ using Watchtower.Application.Config;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
 using Watchtower.Application.Services.Acme;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 using Watchtower.Application.Tests;
 using Xunit;
@@ -160,8 +161,16 @@ public sealed class WatchtowerApiFactory : WebApplicationFactory<Program> {
     /// startup reconcile does. Explicit because the factory drops the hosted services, so nothing calls it
     /// on its own — seed the estate first, then apply.
     /// </summary>
-    public Task ApplyProxyAsync() =>
-        Services.GetRequiredService<YarpProxyProvider>().ApplyAsync(TestContext.Current.CancellationToken);
+    /// <remarks>
+    /// Both halves, in the order <see cref="ProxyProviderRouter"/> drives them: the domain routes are the
+    /// in-process provider's and the port routes are <see cref="PortRoutePlane"/>'s, which serves them
+    /// under every provider (ADR-0033 addendum).
+    /// </remarks>
+    public async Task ApplyProxyAsync() {
+        var ct = TestContext.Current.CancellationToken;
+        await Services.GetRequiredService<YarpProxyProvider>().ApplyAsync(ct);
+        await Services.GetRequiredService<PortRoutePlane>().ApplyAsync(ct);
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder) {
         // Production, not Development: the development-only CORS policy would otherwise join the pipeline

@@ -32,9 +32,10 @@ public sealed record ProxySite(
     bool Local = false);
 
 /// <summary>
-/// One port-bound route the in-process proxy serves (ADR-0033): a dedicated TLS
-/// <paramref name="ListenPort"/> on this host forwarded to a stack service, with no hostname anywhere in
-/// it. Deliberately a separate shape from <see cref="ProxySite"/> rather than one with a nullable
+/// One port-bound route (ADR-0033): a dedicated TLS <paramref name="ListenPort"/> on Watchtower's own
+/// container forwarded to a stack service, with no hostname anywhere in it. Served by
+/// <see cref="PortRoutes.PortRoutePlane"/> under every provider (ADR-0033 addendum).
+/// Deliberately a separate shape from <see cref="ProxySite"/> rather than one with a nullable
 /// <c>Domain</c>: every field a site carries for a host — on-demand TLS, the access mode, the identity
 /// headers — is meaningless here, and the providers that build host-shaped configuration must not have to
 /// remember to skip these rows.
@@ -48,16 +49,6 @@ public sealed record ProxyPortSite(int ListenPort, string UpstreamHost, int Upst
 /// place regardless of which proxy is active.
 /// </summary>
 public static class ProxySiteProjection {
-    /// <summary>
-    /// What a <see cref="RouteBinding.Port"/> route's status says under a provider that cannot serve one
-    /// (ADR-0033) — a listener on Watchtower's own host is not something a sibling proxy container or a
-    /// tunnel has to lend. Stated once so both providers and their tests read the same sentence, the way
-    /// <c>CloudflareTunnelProvider.SelfRouteUnsupported</c> is.
-    /// </summary>
-    public const string PortRouteUnsupported =
-        "Port routes are served by the in-process (yarp) provider only. Switch the reverse proxy to the "
-        + "in-process provider under Settings, or give this service a domain instead.";
-
     /// <summary>DNS alias Watchtower itself answers on inside the container network.</summary>
     public const string SelfAlias = "watchtower";
     /// <summary>Port Watchtower listens on inside its container; where the proxy reaches it.</summary>
@@ -145,8 +136,9 @@ public static class ProxySiteProjection {
     }
 
     /// <summary>
-    /// Projects the port-bound routes (ADR-0033) onto the listeners the in-process proxy serves. The
-    /// counterpart to <see cref="Project"/> over the same table, and pure for the same reason.
+    /// Projects the port-bound routes (ADR-0033) onto the listeners Watchtower binds on its own
+    /// container. The counterpart to <see cref="Project"/> over the same table, and pure for the same
+    /// reason.
     /// </summary>
     /// <remarks>
     /// There is no access-control argument here and no <c>Protected</c> flag: <c>ck_routes_binding</c>

@@ -8311,9 +8311,6 @@
                   "redirectHttpToHttps": {
                     "type": "boolean"
                   },
-                  "lanNames": {
-                    "type": "string"
-                  },
                   "httpsListenerBound": {
                     "type": "boolean"
                   }
@@ -8326,8 +8323,18 @@
                   "acmeEabKeyId",
                   "hasAcmeEabHmacKey",
                   "redirectHttpToHttps",
-                  "lanNames",
                   "httpsListenerBound"
+                ]
+              },
+              "portRoutes": {
+                "type": "object",
+                "properties": {
+                  "lanNames": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "lanNames"
                 ]
               },
               "cloudflare": {
@@ -8410,6 +8417,7 @@
               "adminEmail",
               "caddyImage",
               "yarp",
+              "portRoutes",
               "cloudflare",
               "pinnedPaths"
             ]
@@ -8534,6 +8542,12 @@
                 },
                 "managed": {
                   "type": "boolean"
+                },
+                "blockedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -8541,7 +8555,8 @@
                 "routeId",
                 "serviceName",
                 "bound",
-                "managed"
+                "managed",
+                "blockedBy"
               ]
             }
           },
@@ -9285,7 +9300,7 @@
             ],
             "default": null
           },
-          "yarpLanNames": {
+          "portRoutesLanNames": {
             "type": [
               "string",
               "null"
@@ -9435,9 +9450,6 @@
                   "redirectHttpToHttps": {
                     "type": "boolean"
                   },
-                  "lanNames": {
-                    "type": "string"
-                  },
                   "httpsListenerBound": {
                     "type": "boolean"
                   }
@@ -9450,8 +9462,18 @@
                   "acmeEabKeyId",
                   "hasAcmeEabHmacKey",
                   "redirectHttpToHttps",
-                  "lanNames",
                   "httpsListenerBound"
+                ]
+              },
+              "portRoutes": {
+                "type": "object",
+                "properties": {
+                  "lanNames": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "lanNames"
                 ]
               },
               "cloudflare": {
@@ -9534,6 +9556,7 @@
               "adminEmail",
               "caddyImage",
               "yarp",
+              "portRoutes",
               "cloudflare",
               "pinnedPaths"
             ]

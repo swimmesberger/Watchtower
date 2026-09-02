@@ -167,7 +167,7 @@ public sealed class AcmeChallengeMiddlewareTests {
     /// </summary>
     [Fact]
     public async Task AKnownToken_IsNotAnsweredOnAPortRoutesListener() {
-        using var factory = WatchtowerApiFactory.WithIngress(("Watchtower:Proxy:Yarp:PortRoutePorts", "9001"));
+        using var factory = WatchtowerApiFactory.WithIngress(("Watchtower:Proxy:PortRoutes:Ports", "9001"));
         using var client = factory.CreateApiClient(9001);
         await factory.AddPortRouteAsync(9001, serviceName: "jellyfin", containerPort: 8096);
         await factory.ApplyProxyAsync();

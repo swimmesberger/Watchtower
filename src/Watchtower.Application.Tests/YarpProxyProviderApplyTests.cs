@@ -179,58 +179,7 @@ public sealed class YarpProxyProviderApplyTests {
         Assert.Empty(yarp.Certs.ForgottenHosts);
     }
 
-    // ── Port routes (ADR-0033) ────────────────────────────────────────────────
-
-    /// <summary>
-    /// The single funnel. Route CRUD, a stack delete cascading its rows away and the cross-instance
-    /// signal all arrive here, so this is the one place the listen ports are published — and it is what
-    /// makes "the rows say so" and "a socket is bound" the same statement.
-    /// </summary>
-    [Fact]
-    public async Task Apply_PublishesThePortRoutePorts_AndDropsThemWhenTheRoutesGo() {
-        using var host = AuthTestHost.Start();
-        var stackId = await host.AddStackAsync("media", composeProjectName: "media");
-        var routeId = await host.AddPortRouteAsync(stackId, 9002, serviceName: "jellyfin", containerPort: 8096);
-        await host.AddPortRouteAsync(stackId, 9001);
-
-        using var yarp = Build(host, EnabledYarp());
-        await yarp.Provider.ApplyAsync(Ct);
-
-        Assert.Equal("9001,9002", await ReadPortsAsync(host));
-
-        // …and the table the request path reads is the same set, keyed by port.
-        Assert.True(yarp.Table.Current.TryGetByPort(9002, out var row));
-        Assert.Equal(ProxyIngressNetworks.EdgeAlias("media", "jellyfin"), row.UpstreamHost);
-        Assert.Equal(8096, row.UpstreamPort);
-        Assert.Equal(routeId, row.RouteId);
-
-        await DeleteRouteAsync(host, routeId);
-        await yarp.Provider.ApplyAsync(Ct);
-
-        Assert.Equal("9001", await ReadPortsAsync(host));
-        Assert.False(yarp.Table.Current.TryGetByPort(9002, out _));
-    }
-
-    /// <summary>
-    /// Every instance runs this on every projection — on startup, on each route change, on each
-    /// cross-instance signal. A converged one writes nothing, or the settings store would take a write
-    /// per instance per pass for a value nobody moved.
-    /// </summary>
-    [Fact]
-    public async Task Apply_OnAConvergedInstance_WritesNothing() {
-        using var host = AuthTestHost.Start();
-        var stackId = await host.AddStackAsync("media", composeProjectName: "media");
-        await host.AddPortRouteAsync(stackId, 9001);
-
-        using var yarp = Build(host, EnabledYarp());
-        await yarp.Provider.ApplyAsync(Ct);
-        var first = await ReadSettingVersionAsync(host);
-
-        await yarp.Provider.ApplyAsync(Ct);
-        await yarp.Provider.ApplyAsync(Ct);
-
-        Assert.Equal(first, await ReadSettingVersionAsync(host));
-    }
+    // ── Port routes belong to PortRoutePlane (ADR-0033 addendum) ──────────────
 
     /// <summary>
     /// A port route's hostless certificate is the internal CA's, so its listener must never make its way
@@ -250,62 +199,38 @@ public sealed class YarpProxyProviderApplyTests {
     }
 
     /// <summary>
-    /// Under another provider the projection publishes nothing — and, just as importantly, does not wipe
-    /// what is stored: the routes are still there, and re-selecting the in-process provider has to bring
-    /// their listeners back. The Kestrel projection is gated on the provider too, so nothing binds
-    /// meanwhile.
+    /// The provider is the domain plane now. It publishes the host half of the route table and nothing
+    /// else: not the listener setting, not the port half, not the internal certificate — those are
+    /// <c>PortRoutePlane</c>'s, and it runs under Caddy and Cloudflare too, where this provider does not
+    /// run at all. A shim here would put the whole feature back behind the provider gate.
     /// </summary>
     [Fact]
-    public async Task Apply_UnderAnotherProvider_LeavesTheStoredPortsAlone() {
-        using var host = AuthTestHost.Start();
+    public async Task Apply_LeavesTheWholePortPlaneAlone() {
+        using var host = AuthTestHost.Start(
+            ("Watchtower:Proxy:Enabled", "true"),
+            ("Watchtower:Proxy:Provider", "yarp"),
+            ("Watchtower:Proxy:PortRoutes:LanNames", "nas.lan"));
         var stackId = await host.AddStackAsync("media", composeProjectName: "media");
         await host.AddPortRouteAsync(stackId, 9001);
+        await host.AddRouteAsync(stackId, "app.example.invalid");
 
-        var options = EnabledYarp();
-        using var yarp = Build(host, options);
-        await yarp.Provider.ApplyAsync(Ct);
-        Assert.Equal("9001", await ReadPortsAsync(host));
-
-        options.Value = With(options.Value, o => o with { Provider = ProxyProviderNames.Caddy });
+        using var yarp = Build(host, EnabledYarp());
         await yarp.Provider.ApplyAsync(Ct);
 
-        Assert.Equal("9001", await ReadPortsAsync(host));
-        Assert.Equal(0, yarp.Table.Current.Count);
+        Assert.True(yarp.Table.Current.TryGet("app.example.invalid", out _));
         Assert.Empty(yarp.Table.Current.PortRoutePorts);
+        Assert.Null(await ReadPortsAsync(host));
+        // Nor a certificate: minting a root nothing has asked this provider for is exactly the reach the
+        // addendum removed.
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        Assert.Null(await db.InternalCas.AsNoTracking().FirstOrDefaultAsync(Ct));
     }
 
     private static async Task<string?> ReadPortsAsync(AuthTestHost host) {
         await using var scope = host.Services.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<ISettingsManager>()
-            .GetStringAsync(WatchtowerSettingPaths.ProxyYarpPortRoutePorts, SettingsScope.Global, Ct);
-    }
-
-    /// <summary>
-    /// The stored row's version, straight out of the settings store's own table: it moves on a write and
-    /// only on a write, which is the thing "wrote nothing" has to be measured by. Read with SQL because
-    /// the settings API deliberately does not expose it.
-    /// </summary>
-    private static async Task<long> ReadSettingVersionAsync(AuthTestHost host) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var connection = db.Database.GetDbConnection();
-        await db.Database.OpenConnectionAsync(Ct);
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-            """SELECT version FROM elarion_settings WHERE kind = 'global' AND "key" = @key""";
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = "key";
-        parameter.Value = WatchtowerSettingPaths.ProxyYarpPortRoutePorts;
-        command.Parameters.Add(parameter);
-        var version = await command.ExecuteScalarAsync(Ct);
-        Assert.NotNull(version);
-        return Convert.ToInt64(version, System.Globalization.CultureInfo.InvariantCulture);
-    }
-
-    private static async Task DeleteRouteAsync(AuthTestHost host, int routeId) {
-        await using var scope = host.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        await db.Routes.Where(r => r.Id == routeId).ExecuteDeleteAsync(Ct);
+            .GetStringAsync(WatchtowerSettingPaths.ProxyPortRoutesPorts, SettingsScope.Global, Ct);
     }
 
     // ── Wiring ───────────────────────────────────────────────────────────────

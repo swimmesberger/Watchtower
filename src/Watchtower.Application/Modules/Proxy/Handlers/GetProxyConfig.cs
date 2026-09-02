@@ -34,7 +34,7 @@ public sealed class GetProxyConfig(
         WatchtowerSettingPaths.ProxyYarpAcmeEabKeyId,
         WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey,
         WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps,
-        WatchtowerSettingPaths.ProxyYarpLanNames,
+        WatchtowerSettingPaths.ProxyPortRoutesLanNames,
         WatchtowerSettingPaths.ProxyCloudflareAccountId,
         WatchtowerSettingPaths.ProxyCloudflareZoneId,
         WatchtowerSettingPaths.ProxyCloudflareApiToken,
@@ -63,6 +63,7 @@ public sealed record ProxyConfigDto(
     string? AdminEmail,
     string CaddyImage,
     ProxyYarpConfigDto Yarp,
+    ProxyPortRoutesConfigDto PortRoutes,
     ProxyCloudflareConfigDto Cloudflare,
     string[] PinnedPaths) {
     internal static ProxyConfigDto From(
@@ -79,8 +80,8 @@ public sealed record ProxyConfigDto(
             AcmeEabKeyId: proxy.Yarp.AcmeEabKeyId,
             HasAcmeEabHmacKey: !string.IsNullOrWhiteSpace(proxy.Yarp.AcmeEabHmacKey),
             RedirectHttpToHttps: proxy.Yarp.RedirectHttpToHttps,
-            LanNames: proxy.Yarp.LanNames,
             HttpsListenerBound: httpsListenerBound),
+        PortRoutes: new ProxyPortRoutesConfigDto(LanNames: proxy.PortRoutes.LanNames),
         Cloudflare: new ProxyCloudflareConfigDto(
             AccountId: proxy.Cloudflare.AccountId,
             ZoneId: proxy.Cloudflare.ZoneId,
@@ -105,13 +106,12 @@ public sealed record ProxyConfigDto(
 /// <paramref name="HttpsListenerBound"/> is runtime state rather than configuration: it reports whether
 /// TLS ingress is currently bound at all, which is what lets the Settings page say "enabled, but nothing
 /// is terminating TLS" instead of looking healthy while every route is served over plain HTTP.
-/// <paramref name="LanNames"/> is the raw text an operator typed — host names and IPs, comma- or
-/// newline-separated — echoed rather than reformatted so the field they edit is the value that was
-/// stored.
 /// </summary>
 /// <remarks>
 /// There is no certificate directory any more: certificates are rows (ADR-0024), so the field the card
 /// used to show — a read-only path an operator could do nothing with — has no counterpart to replace it.
+/// The LAN names left too, into <see cref="ProxyPortRoutesConfigDto"/>: they describe the port routes,
+/// which are served under every provider (ADR-0033 addendum).
 /// </remarks>
 public sealed record ProxyYarpConfigDto(
     int HttpPort,
@@ -121,8 +121,17 @@ public sealed record ProxyYarpConfigDto(
     string? AcmeEabKeyId,
     bool HasAcmeEabHmacKey,
     bool RedirectHttpToHttps,
-    string LanNames,
     bool HttpsListenerBound);
+
+/// <summary>
+/// Port-route values for the config surface (ADR-0033). Their own block rather than part of the yarp
+/// one, because the card renders them whenever the proxy is enabled: a port route's listener is on
+/// Watchtower's own container whichever provider terminates the public domains.
+/// <paramref name="LanNames"/> is the raw text an operator typed — host names and IPs, comma- or
+/// newline-separated — echoed rather than reformatted so the field they edit is the value that was
+/// stored.
+/// </summary>
+public sealed record ProxyPortRoutesConfigDto(string LanNames);
 
 /// <summary>Cloudflare Tunnel connection values for the config surface (token reduced to a flag).</summary>
 public sealed record ProxyCloudflareConfigDto(

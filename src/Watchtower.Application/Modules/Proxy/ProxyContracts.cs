@@ -200,9 +200,9 @@ internal static class PortRouteRules {
     /// that does not parse counts as none: <c>proxy.updateConfig</c> refuses such a value, so the only way
     /// to hold one is an environment pin, and issuance would fail on it the same way.
     /// </summary>
-    public static bool HasLanNames(YarpProxyOptions yarp) {
-        ArgumentNullException.ThrowIfNull(yarp);
-        return InternalCaNames.TryParseLanNames(yarp.LanNames, out var dnsNames, out var ips, out _)
+    public static bool HasLanNames(PortRouteOptions portRoutes) {
+        ArgumentNullException.ThrowIfNull(portRoutes);
+        return InternalCaNames.TryParseLanNames(portRoutes.LanNames, out var dnsNames, out var ips, out _)
             && (dnsNames.Count > 0 || ips.Count > 0);
     }
 

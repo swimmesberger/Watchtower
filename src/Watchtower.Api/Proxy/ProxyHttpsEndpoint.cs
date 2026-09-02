@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Watchtower.Application.Services.Acme;
 using Watchtower.Application.Services.InternalCa;
+using Watchtower.Application.Services.PortRoutes;
 using Watchtower.Application.Services.Yarp;
 
 namespace Watchtower.Api.Proxy;

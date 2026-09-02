@@ -527,7 +527,7 @@ export const api = {
         yarpAcmeEabKeyId: data.yarpAcmeEabKeyId ?? null,
         yarpAcmeEabHmacKey: data.yarpAcmeEabHmacKey ?? null,
         yarpRedirectHttpToHttps: data.yarpRedirectHttpToHttps ?? null,
-        yarpLanNames: data.yarpLanNames ?? null,
+        portRoutesLanNames: data.portRoutesLanNames ?? null,
         cloudflareAccountId: data.cloudflareAccountId ?? null,
         cloudflareZoneId: data.cloudflareZoneId ?? null,
         cloudflareApiToken: data.cloudflareApiToken ?? null,
