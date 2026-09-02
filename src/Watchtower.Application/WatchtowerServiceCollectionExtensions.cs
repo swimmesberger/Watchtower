@@ -223,6 +223,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // and ProxyProviderRouter drives it in addition to whichever one is selected.
         services.AddSingleton<PortRoutePlane>();
         services.AddHostedService(sp => sp.GetRequiredService<PortRoutePlane>());
+        // What the Settings page offers as LAN-name chips. Beside the plane because it answers a question
+        // about the same setting, and a singleton because it holds nothing per request — it asks the
+        // resolver and the daemon and forgets.
+        services.AddSingleton<LanNameSuggestions>();
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
         // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0022). Scoped because it
         // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.

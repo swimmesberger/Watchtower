@@ -24,6 +24,7 @@ import type {
   UpdateSelfConfigRequest,
 } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
+import { lanNameKey, parseLanNames } from '@/lib/lanNames'
 import { absoluteTitle, formatBytes, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { ContainerLogs } from '@/components/container-logs'
 import { Badge } from '@/components/ui/badge'
@@ -43,6 +44,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { RecoveryChecklistCard } from './RecoveryChecklist'
 
@@ -730,6 +732,80 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
   }
 }
 
+// ── LAN name suggestions ──────────────────────────────────────────────────────
+// A comma-separated list of addresses is a thing an operator has to know before they can type it, and
+// on a home LAN the answer is sitting in places nobody thinks to look. So they are offered as chips
+// for the LAN names setting of ADR-0033 decision 6. Nothing is ever saved by a click — the value lands
+// in the field and the ordinary Save writes it.
+//
+// Every rule about what may be suggested lives on the server, this side renders what it is sent. That
+// includes the address in the address bar: it is sent up as the hint and comes back as a candidate, so
+// a browser holding `host.docker.internal` or `my_nas` — both legal there, neither nameable by a
+// certificate — produces no chip rather than one whose click makes the Save fail.
+
+/** Appends one name to the field, comma-separated, leaving what is already typed exactly as typed. */
+function appendLanName(raw: string, name: string): string {
+  const existing = raw.trim().replace(/,+$/, '').trim()
+  return existing.length === 0 ? name : `${existing}, ${name}`
+}
+
+/**
+ * The host in the address bar, without the brackets an IPv6 authority is written in — the hint the
+ * server turns into candidates. Host only: a port is not part of any name a certificate carries.
+ */
+function browserHost(): string {
+  const host = typeof window === 'undefined' ? '' : window.location.hostname
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+}
+
+/**
+ * The suggestion chips under the LAN names field. Renders nothing at all while the query is in flight
+ * or after it fails: this is a convenience, and a convenience that could not be computed has nothing to
+ * say — least of all a banner over a field somebody is typing in.
+ */
+function LanNameSuggestionChips({
+  value,
+  onAdd,
+}: {
+  value: string
+  onAdd: (name: string) => void
+}) {
+  const hint = browserHost()
+  // Mounted only inside the proxy-enabled block, which is what gates the call. Kept a long time and
+  // not refetched on focus — the answer is about the shape of a LAN, which does not move while
+  // somebody edits a text field.
+  const { data } = useQuery({
+    queryKey: ['proxy', 'lan-name-suggestions', hint],
+    queryFn: () => api.proxy.suggestLanNames(hint || null),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  // The server excludes what the *saved* setting holds; this drops what the operator has typed since,
+  // so a chip disappears the moment it is clicked rather than at the next save.
+  const listed = new Set(parseLanNames(value).map(lanNameKey))
+  const chips = (data ?? []).filter(candidate => !listed.has(lanNameKey(candidate.value)))
+  if (chips.length === 0) return null
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[13px] text-text-2">Suggestions:</span>
+      {chips.map(chip => (
+        <Tooltip key={chip.value} label={chip.detail}>
+          <button
+            type="button"
+            onClick={() => onAdd(chip.value)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-text-2 hover:bg-surface-3 hover:text-text"
+          >
+            {chip.verified && <CheckCircle2 className="size-3 text-ok" aria-hidden />}
+            {chip.value}
+          </button>
+        </Tooltip>
+      ))}
+    </div>
+  )
+}
+
 /** A port field on the wire: an empty or unparseable field is the listener turned off. */
 function portValue(raw: string): number {
   const port = Number.parseInt(raw.trim(), 10)
@@ -1185,6 +1261,16 @@ function ProxyCard() {
                       />
                       {pinnedPath('Watchtower:Proxy:PortRoutes:LanNames') && (
                         <PinnedNote path="Watchtower:Proxy:PortRoutes:LanNames" />
+                      )}
+                      {/* Not offered when an environment variable pins the field: a chip whose click
+                          the input would refuse is an invitation to a dead end. */}
+                      {!isPinned('Watchtower:Proxy:PortRoutes:LanNames') && (
+                        <LanNameSuggestionChips
+                          value={form.portRoutesLanNames}
+                          onAdd={name =>
+                            set('portRoutesLanNames', appendLanName(form.portRoutesLanNames, name))
+                          }
+                        />
                       )}
                       {/* Only once the CA exists, which is the moment there is something to download:
                           the root is minted on the first port route's behalf, and the endpoint 404s
