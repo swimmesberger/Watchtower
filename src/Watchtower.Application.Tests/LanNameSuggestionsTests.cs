@@ -26,6 +26,15 @@ internal sealed class TableDnsPreflight : DnsPreflight {
     /// <summary>Makes every lookup wait for its own cancellation, and never answer.</summary>
     public bool Hangs { get; set; }
 
+    /// <summary>
+    /// Completes when the first hanging lookup has been entered — the moment a test can cancel *into*,
+    /// rather than before the call, which is the difference between exercising the entry guard and
+    /// exercising the catch filters.
+    /// </summary>
+    public Task Hanging => _hanging.Task;
+
+    private readonly TaskCompletionSource _hanging = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public override Task<IReadOnlyList<string>> ResolveAsync(string host, CancellationToken ct) {
         if (Throws) throw new InvalidOperationException("no resolver configured");
         if (Hangs) return HangAsync(ct);
@@ -40,7 +49,8 @@ internal sealed class TableDnsPreflight : DnsPreflight {
             Reverse.TryGetValue(address.ToString(), out var names) ? names : []);
     }
 
-    private static async Task<IReadOnlyList<string>> HangAsync(CancellationToken ct) {
+    private async Task<IReadOnlyList<string>> HangAsync(CancellationToken ct) {
+        _hanging.TrySetResult();
         await Task.Delay(Timeout.Infinite, ct);
         return [];
     }
@@ -294,10 +304,13 @@ public sealed class LanNameSuggestionsTests : IDisposable {
         var dns = new TableDnsPreflight();
         dns.Reverse["192.168.1.10"] = [excluded];
         dns.Forward[excluded] = ["192.168.1.10"];
-        using var docker = DockerHostNamed(excluded);
+        // Two estates because a Docker client is single-use here: one pass has the value as the hint,
+        // the other has it as something a source found, and both have to drop it.
+        using var asTheHint = DockerHostNamed(excluded);
+        using var asAFind = DockerHostNamed(excluded);
 
-        var fromTheBrowser = await Build(dns, docker).SuggestAsync(excluded, "", Ct);
-        var fromASource = await Build(dns, DockerHostNamed(excluded)).SuggestAsync("192.168.1.10", "", Ct);
+        var fromTheBrowser = await Build(dns, asTheHint).SuggestAsync(excluded, "", Ct);
+        var fromASource = await Build(dns, asAFind).SuggestAsync("192.168.1.10", "", Ct);
 
         Assert.Empty(fromTheBrowser);
         Assert.DoesNotContain(excluded, fromASource.Select(c => c.Value));
@@ -519,9 +532,11 @@ public sealed class LanNameSuggestionsTests : IDisposable {
         var candidates = await service.SuggestAsync("nas.lan", "", Ct);
         started.Stop();
 
+        // Under the budget rather than merely under the sum of the per-lookup caps: four hanging
+        // lookups at 1.5 s each is 6 s, so a 6 s bound would pass with no budget at all.
         Assert.True(
-            started.Elapsed < TimeSpan.FromSeconds(6),
-            $"The pass took {started.Elapsed}, so a hanging resolver is not bounded.");
+            started.Elapsed < TimeSpan.FromSeconds(5),
+            $"The pass took {started.Elapsed}, so the total budget is not holding.");
         // The hint and the Docker host's name survive — neither needs an answer — and nothing that
         // depended on one does.
         Assert.Equal(["nas.lan", "nas"], candidates.Select(c => c.Value));
@@ -541,6 +556,36 @@ public sealed class LanNameSuggestionsTests : IDisposable {
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => Build(dns, docker).SuggestAsync("192.168.1.10", "", cancelled.Token));
+    }
+
+    /// <summary>
+    /// The same thing, but cancelled while a lookup is in flight — which is the case that actually
+    /// happens, a browser navigating away from the Settings page mid-request.
+    /// </summary>
+    /// <remarks>
+    /// A different path from the test above, which never gets past the guard at the top of the pass.
+    /// <para>
+    /// What this pins is the behaviour, not one mechanism, and that is worth stating because it is easy
+    /// to assume otherwise: two things independently produce it — the lookups' catch filters, which
+    /// re-throw when it is the caller rather than the budget that cancelled, and the checks between the
+    /// source passes. Disabling either one on its own leaves this test passing (both were tried). So it
+    /// is a guard against the pair being lost, and the redundancy is deliberate rather than something
+    /// this asserts away.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ACallerCancelledMidLookup_IsToldSoRatherThanWaitingOutTheBudget() {
+        var dns = new TableDnsPreflight { Hangs = true };
+        using var docker = DockerHostNamed("nas");
+        using var caller = new CancellationTokenSource();
+
+        // Started, then cancelled once a lookup is demonstrably parked — a delay would be a race, and
+        // the race it would lose is the one that makes this assert the guard above instead.
+        var suggesting = Build(dns, docker).SuggestAsync("nas.lan", "", caller.Token);
+        await dns.Hanging.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        await caller.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => suggesting);
     }
 
     // ── Wiring ───────────────────────────────────────────────────────────────────────────────────
