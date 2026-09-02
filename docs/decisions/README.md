@@ -52,3 +52,4 @@ live here.
 - [ADR-0031: "Map host GPUs" is a per-service intent, resolved by probing the Docker host at deploy time](0031-host-gpu-passthrough-by-intent.md)
 - [ADR-0032: NVIDIA GPUs resolve the same intent through the container toolkit](0032-nvidia-gpu-passthrough.md)
 - [ADR-0033: A route can be bound to a port, and Watchtower is its own CA for those](0033-port-routes-and-internal-ca.md)
+- [ADR-0034: A supervisor owns Watchtower's deployment — Watchtower declares, the supervisor reconciles](0034-supervisor-owns-the-deployment.md) — *proposed*
