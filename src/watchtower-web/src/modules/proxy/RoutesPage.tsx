@@ -1110,7 +1110,8 @@ export function RoutesPage() {
                 <Banner tone="warn" title="No LAN names configured">
                   A port route's certificate is issued for the names and IPs you type in the browser, so
                   there has to be at least one. Add them under Settings → Reverse proxy (“LAN names”),
-                  then come back.
+                  then come back. Suggestions are offered under Settings → Reverse proxy → LAN port
+                  routes, so you may not have to type them.
                 </Banner>
               )}
 

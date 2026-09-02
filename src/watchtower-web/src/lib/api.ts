@@ -57,6 +57,7 @@ import type {
   Group,
   HostMetrics,
   InternalCaInfo,
+  LanNameCandidate,
   MetricsConfig,
   MetricsRange,
   NetworkInfo,
@@ -500,6 +501,11 @@ export const api = {
     // Read-only in the strong sense: asking never mints a root. `present: false` means nothing has
     // needed a LAN certificate yet, which is why the Routes page shows the block only once it is there.
     getInternalCa: async () => (await rpc('proxy.getInternalCa', {})).ca as InternalCaInfo,
+    // The LAN names this deployment looks like it answers on (ADR-0033). Advisory and read-only: the
+    // server never writes the setting, and `hint` is the address the browser reached this page with —
+    // the one thing it knows for certain and the server cannot find out for itself.
+    suggestLanNames: async (hint: string | null) =>
+      (await rpc('proxy.suggestLanNames', { hint })).candidates as LanNameCandidate[],
     // Whether each port route's host port is actually published on Watchtower's container (ADR-0033).
     // Its own call rather than part of getStatus: answering it inspects the Docker daemon, and the
     // status badge is polled from every page.

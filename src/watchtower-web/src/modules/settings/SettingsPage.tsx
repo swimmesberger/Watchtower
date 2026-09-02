@@ -43,6 +43,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { RecoveryChecklistCard } from './RecoveryChecklist'
 
@@ -730,6 +731,96 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
   }
 }
 
+// ── LAN name suggestions (ADR-0033) ───────────────────────────────────────────
+// A comma-separated list of addresses is a thing an operator has to know before they can type it, and
+// on a home LAN the answer is sitting in three places nobody thinks to look. So they are offered as
+// chips. Nothing is ever saved by a click — the value lands in the field and the ordinary Save writes it.
+
+/** The entries a LAN names field holds, in the spelling the suggestions are compared against. */
+function lanNameEntries(raw: string): string[] {
+  return raw
+    .split(/[\n,]/)
+    .map(entry => entry.trim().replace(/\.$/, '').toLowerCase())
+    .filter(entry => entry.length > 0)
+}
+
+/** Appends one name to the field, comma-separated, leaving what is already typed exactly as typed. */
+function appendLanName(raw: string, name: string): string {
+  const existing = raw.trim().replace(/,+$/, '').trim()
+  return existing.length === 0 ? name : `${existing}, ${name}`
+}
+
+/**
+ * The host in the address bar, without the brackets an IPv6 authority is written in. It is the one
+ * address certain to work — the operator is looking at a page served over it — which is why it is
+ * offered first, and offered by the client rather than asked for.
+ */
+function browserHost(): string {
+  const host = typeof window === 'undefined' ? '' : window.location.hostname
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+}
+
+/** Addresses that name the machine doing the asking, so they are true of nobody else on the LAN. */
+const OWN_MACHINE = new Set(['localhost', '127.0.0.1', '::1'])
+
+/**
+ * The suggestion chips under the LAN names field. Renders nothing at all while the query is in flight
+ * or after it fails: this is a convenience, and a convenience that could not be computed has nothing to
+ * say. The client-side chip does not wait for any of that.
+ */
+function LanNameSuggestionChips({
+  value,
+  onAdd,
+}: {
+  value: string
+  onAdd: (name: string) => void
+}) {
+  const hint = browserHost()
+  // Mounted only inside the proxy-enabled block, which is what gates the call. Kept a long time and
+  // not refetched on focus — the answer is about the shape of a LAN, which does not move while
+  // somebody edits a text field.
+  const { data } = useQuery({
+    queryKey: ['proxy', 'lan-name-suggestions', hint],
+    queryFn: () => api.proxy.suggestLanNames(hint || null),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const listed = new Set(lanNameEntries(value))
+  const chips: { value: string; verified: boolean; detail: string }[] = []
+  if (hint && !OWN_MACHINE.has(hint.toLowerCase()) && !listed.has(hint.toLowerCase())) {
+    chips.push({
+      value: hint,
+      verified: true,
+      detail: 'How you reached this page, so it is an address that works.',
+    })
+  }
+  for (const candidate of data ?? []) {
+    const key = candidate.value.toLowerCase()
+    if (listed.has(key) || chips.some(chip => chip.value.toLowerCase() === key)) continue
+    chips.push({ value: candidate.value, verified: candidate.verified, detail: candidate.detail })
+  }
+  if (chips.length === 0) return null
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[13px] text-text-2">Suggestions:</span>
+      {chips.map(chip => (
+        <Tooltip key={chip.value} label={chip.detail}>
+          <button
+            type="button"
+            onClick={() => onAdd(chip.value)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-text-2 hover:bg-surface-3 hover:text-text"
+          >
+            {chip.verified && <CheckCircle2 className="size-3 text-ok" aria-hidden />}
+            {chip.value}
+          </button>
+        </Tooltip>
+      ))}
+    </div>
+  )
+}
+
 /** A port field on the wire: an empty or unparseable field is the listener turned off. */
 function portValue(raw: string): number {
   const port = Number.parseInt(raw.trim(), 10)
@@ -1185,6 +1276,16 @@ function ProxyCard() {
                       />
                       {pinnedPath('Watchtower:Proxy:PortRoutes:LanNames') && (
                         <PinnedNote path="Watchtower:Proxy:PortRoutes:LanNames" />
+                      )}
+                      {/* Not offered when an environment variable pins the field: a chip whose click
+                          the input would refuse is an invitation to a dead end. */}
+                      {!isPinned('Watchtower:Proxy:PortRoutes:LanNames') && (
+                        <LanNameSuggestionChips
+                          value={form.portRoutesLanNames}
+                          onAdd={name =>
+                            set('portRoutesLanNames', appendLanName(form.portRoutesLanNames, name))
+                          }
+                        />
                       )}
                       {/* Only once the CA exists, which is the moment there is something to download:
                           the root is minted on the first port route's behalf, and the endpoint 404s

@@ -880,6 +880,22 @@ export interface ProxyPortRoutesConfig {
   lanNames: string
 }
 
+/**
+ * One address the server thinks this deployment answers on, offered under the LAN names field as a chip
+ * (ADR-0033). Advisory only: nothing is saved until the operator clicks one and then saves.
+ */
+export interface LanNameCandidate {
+  /** The value to append to the setting, verbatim — already in a spelling the Save accepts. */
+  value: string
+  kind: 'hostname' | 'ip'
+  /** Where it was learned: `reverse-dns`, `forward-dns`, `docker-host` or `docker-search-domain`. */
+  source: string
+  /** Whether forward and reverse resolution agree about it. */
+  verified: boolean
+  /** One sentence saying where it came from — the chip's tooltip. */
+  detail: string
+}
+
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
 export interface ProxyCloudflareConfig {
   accountId: string | null

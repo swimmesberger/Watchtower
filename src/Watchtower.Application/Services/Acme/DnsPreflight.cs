@@ -32,4 +32,33 @@ public class DnsPreflight {
             return [];
         }
     }
+
+    /// <summary>
+    /// The host names <paramref name="address"/> reverse-resolves to (its PTR records), or an empty list
+    /// when it reverse-resolves to nothing.
+    /// </summary>
+    /// <remarks>
+    /// The other direction of <see cref="ResolveAsync"/>, in the same shape and never throwing for the
+    /// same reason: a LAN with no reverse zone is the ordinary case rather than a fault to report. Added
+    /// for the LAN-name suggestions (ADR-0033), which turn an address the browser reached this page with
+    /// into the name that address answers to.
+    /// <para>
+    /// Asked through the string overload, which is the only one that takes a cancellation token, and the
+    /// resolver's habit of echoing the address back when nothing answered is filtered out here — a
+    /// caller asking "what is this address called" must not be told it is called 192.168.1.10.
+    /// </para>
+    /// </remarks>
+    public virtual async Task<IReadOnlyList<string>> ResolveNamesAsync(IPAddress address, CancellationToken ct) {
+        if (address is null) return [];
+        try {
+            var entry = await Dns.GetHostEntryAsync(address.ToString(), ct);
+            var name = entry.HostName;
+            if (string.IsNullOrWhiteSpace(name) || IPAddress.TryParse(name, out _)) return [];
+            return [name];
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception) {
+            return [];
+        }
+    }
 }

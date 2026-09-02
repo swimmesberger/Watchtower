@@ -1295,8 +1295,16 @@ internal sealed partial class DockerJsonContext : JsonSerializerContext;
 
 // ── Engine info DTOs ─────────────────────────────────────────────────────────
 
-/// <summary>Subset of GET /info — the registry configuration and the installed runtimes.</summary>
+/// <summary>Subset of GET /info — the daemon host's name, the registry configuration and the runtimes.</summary>
 public sealed record DockerEngineInfo {
+    /// <summary>
+    /// The daemon host's hostname (the API's <c>Name</c> field) — the box Watchtower's container runs
+    /// on, not the container. Null when the daemon left it off. It is the one name we can learn about
+    /// the host from inside a container, which is why the LAN-name suggestions (ADR-0033) read it: on a
+    /// home LAN it is very often exactly what the operator types in the browser.
+    /// </summary>
+    public string? Name { get; init; }
+
     public DockerRegistryConfig? RegistryConfig { get; init; }
 
     /// <summary>
