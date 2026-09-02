@@ -180,16 +180,20 @@ so adding a name later reissues it for every route at once. Pinnable as
 `WATCHTOWER__PROXY__PORTROUTES__LANNAMES`.
 
 You should not have to work these out by hand, so the field offers **suggestions** as chips under it,
-and clicking one appends it to the box. The first is the address you reached this page with, which the
-browser knows for certain. The rest come from the server: the Docker host's own name, its completion in
-whichever search domain this container resolves in, and the forward or reverse DNS counterpart of the
-address you arrived on — a name for the address you typed, or the address for the name. A chip carries a
-**check** when the address is confirmed: the one you arrived on always is, and for the others it means
-forward and reverse resolution agree. An unchecked chip resolved only one way, or not at all from inside
-the container, which says less than it sounds like — your laptop may resolve a name this container
-cannot. Nothing is added until you click, and nothing is saved until you save. Treat
-a suggestion as what it is: a name this deployment appears to answer on. Which names it *should* answer
-on is still yours to decide.
+and clicking one appends it to the box. First is the address you reached this page with, then the Docker
+host's own name, its completion in whichever search domain this container resolves in, and the forward
+or reverse DNS counterpart of the address you arrived on — a name for the address you typed, or the
+address for the name. A chip carries a **check** when the address is confirmed: the one you arrived on
+always is, since a page was served over it, and for the others it means forward and reverse resolution
+agree. An unchecked chip resolved only one way, or not at all from inside the container, which says less
+than it sounds like — your laptop may resolve a name this container cannot.
+
+Every suggestion is put through the same rules the field itself applies, the address you arrived on
+included, so a chip you click can never be a value the Save then refuses. That is also why the address
+bar sometimes produces no chip at all: `localhost`, a loopback or link-local address, and a name like
+`my_nas` are all things a browser will happily hold and a certificate cannot name. Nothing is added until
+you click, and nothing is saved until you save. Treat a suggestion as what it is: a name this deployment
+appears to answer on. Which names it *should* answer on is still yours to decide.
 
 Leave it empty and the internal CA is simply unused — nothing is generated until something needs it.
 Creating a port route with no LAN names configured is refused, because the certificate has to carry the
