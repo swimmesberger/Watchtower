@@ -59,7 +59,12 @@ public sealed class UpdateProxyConfig(
         string? CloudflareAccessAllowedEmails = null,
         string? CloudflareAccessAllowedEmailDomains = null,
         string? CloudflareAccessGroupIds = null,
-        string? CloudflareAccessReusablePolicyIds = null);
+        string? CloudflareAccessReusablePolicyIds = null,
+        // Appended last, and optional, for the reason every field below the first four is: a client that
+        // predates ADR-0035 omits it and keeps whatever is stored, instead of having its save rejected.
+        string? DefaultAccessMode = null,
+        // Appended after it for the same reason, one ADR later (ADR-0036).
+        string? PrimaryDomains = null);
 
     public sealed record Response(ProxyConfigDto Config);
 
@@ -79,6 +84,21 @@ public sealed class UpdateProxyConfig(
             return AppError.Validation("CaddyImage must be a single image reference.");
 
         var proxy = options.CurrentValue.Proxy;
+
+        // The default access mode for new routes, canonicalised the way the provider name is: what is
+        // stored is what the API surfaces. Checked only when this request supplies it — an unreadable
+        // stored value resolves to Authenticated (ProxyOptions.ResolveDefaultAccessMode), so refusing it
+        // here would block every unrelated save instead of failing closed where it matters.
+        var defaultAccessMode = command.DefaultAccessMode is null
+            ? proxy.DefaultAccessModeName()
+            : command.DefaultAccessMode.Trim().ToLowerInvariant();
+        if (command.DefaultAccessMode is not null
+            && !ProxyOptions.DefaultAccessModeNames.Contains(defaultAccessMode, StringComparer.Ordinal)) {
+            return AppError.Validation(
+                "The default access mode for new routes must be one of: "
+                + $"{string.Join(", ", ProxyOptions.DefaultAccessModeNames)}.");
+        }
+
         var cf = proxy.Cloudflare;
         var yarp = proxy.Yarp;
         var portRoutes = proxy.PortRoutes;
@@ -90,6 +110,7 @@ public sealed class UpdateProxyConfig(
         var acmeEabHmacKey = Coalesce(command.YarpAcmeEabHmacKey, yarp.AcmeEabHmacKey);
         var redirectHttpToHttps = command.YarpRedirectHttpToHttps ?? yarp.RedirectHttpToHttps;
         var lanNames = Coalesce(command.PortRoutesLanNames, portRoutes.LanNames) ?? "";
+        var primaryDomains = Coalesce(command.PrimaryDomains, proxy.PrimaryDomains) ?? "";
         var httpPort = command.YarpHttpPort ?? yarp.HttpPort;
         var httpsPort = command.YarpHttpsPort ?? yarp.HttpsPort;
 
@@ -141,6 +162,16 @@ public sealed class UpdateProxyConfig(
                 $"{lanReason} List the host names and IP addresses this deployment is reached on, "
                 + "separated by commas or newlines.");
 
+        // Gated exactly like the LAN names, and provider-independent for the same kind of reason: the
+        // base domains say what this deployment publishes under, which the create form and the route
+        // list read under every provider (ADR-0036). Empty is valid and means nothing is offered — the
+        // create form asks for whole hostnames, as it did before.
+        if ((command.PrimaryDomains is not null || command.Enabled)
+            && !PrimaryDomains.TryParse(primaryDomains, out _, out var domainReason))
+            return AppError.Validation(
+                $"{domainReason} List the base domains your routes live under, "
+                + "separated by commas or newlines.");
+
         // Effective cloudflare values after this update: supplied value, else what is already configured.
         var accountId = Coalesce(command.CloudflareAccountId, cf.AccountId);
         var zoneId = Coalesce(command.CloudflareZoneId, cf.ZoneId);
@@ -152,20 +183,38 @@ public sealed class UpdateProxyConfig(
 
         if (command.Enabled && provider == ProxyProviderNames.Cloudflare) {
             if (string.IsNullOrWhiteSpace(accountId)) return AppError.Validation("The Cloudflare account id is required for the cloudflare provider.");
-            if (string.IsNullOrWhiteSpace(zoneId)) return AppError.Validation("The Cloudflare zone id is required for the cloudflare provider.");
             if (string.IsNullOrWhiteSpace(apiToken)) return AppError.Validation("A Cloudflare API token is required for the cloudflare provider.");
             if (string.IsNullOrWhiteSpace(tunnelName)) return AppError.Validation("The tunnel name is required for the cloudflare provider.");
             if (string.IsNullOrWhiteSpace(cloudflaredImage) && managed) return AppError.Validation("The cloudflared image is required in managed mode.");
             // Probe the credentials before persisting so a typo'd token fails here with Cloudflare's own
             // words, not later as a background reconcile warning nobody is watching for. Both scopes:
-            // the account (tunnels) AND the zone (DNS records) — a token that can manage tunnels but not
-            // this zone's DNS leaves every route stuck with a failing CNAME upsert.
+            // the account (tunnels) AND the zones (DNS records) — a token that can manage tunnels but not
+            // a route's zone leaves every route stuck with a failing CNAME upsert.
             if (await cloudflare.ValidateAccessAsync(accountId!, apiToken!, ct) is { } reason)
                 return AppError.Validation($"Cloudflare rejected the credentials: {reason}");
-            if (await cloudflare.ValidateZoneAccessAsync(zoneId!, apiToken!, ct) is { } zoneReason)
+
+            // The Zone ID is optional since ADR-0036 — with Zone:Read the zones are discovered — but one
+            // of the two has to be there, or no route's DNS record has anywhere to go. The listing is
+            // asked of the API client directly rather than of CloudflareZoneCatalog: the catalog caches,
+            // and its cache would answer for the token this very save is replacing.
+            if (string.IsNullOrWhiteSpace(zoneId)) {
+                try {
+                    var zones = await cloudflare.ListZonesAsync(apiToken!, ct);
+                    if (zones.Count == 0)
+                        return AppError.Validation(
+                            "The Cloudflare API token can see no zones. Give it Zone → Zone → Read so "
+                            + "Watchtower can discover which zone each route domain lives in, or set the "
+                            + "Zone ID of the zone your route domains live under.");
+                } catch (HttpRequestException ex) {
+                    return AppError.Validation(
+                        $"Cloudflare could not list the token's zones: {ex.Message}. Give the token "
+                        + "Zone → Zone → Read, or set the Zone ID of the zone your route domains live under.");
+                }
+            } else if (await cloudflare.ValidateZoneAccessAsync(zoneId!, apiToken!, ct) is { } zoneReason) {
                 return AppError.Validation(
                     $"Cloudflare rejected the token for zone {zoneId}: {zoneReason}. The token needs "
                     + "Zone → DNS → Edit on the zone your route domains live under, and the Zone ID must be that zone's.");
+            }
         }
 
         // Reject changes to env-pinned paths (env wins — a stored row would silently not take effect).
@@ -175,6 +224,7 @@ public sealed class UpdateProxyConfig(
         }
         Check(WatchtowerSettingPaths.ProxyEnabled, command.Enabled != proxy.Enabled);
         Check(WatchtowerSettingPaths.ProxyProvider, provider != proxy.ProviderName());
+        Check(WatchtowerSettingPaths.ProxyDefaultAccessMode, defaultAccessMode != proxy.DefaultAccessModeName());
         Check(WatchtowerSettingPaths.ProxyAdminEmail, !string.Equals(email, proxy.AdminEmail?.Trim() ?? "", StringComparison.Ordinal));
         Check(WatchtowerSettingPaths.ProxyCaddyImage, !string.Equals(image, proxy.CaddyImage.Trim(), StringComparison.Ordinal));
         Check(WatchtowerSettingPaths.ProxyYarpHttpPort, httpPort != yarp.HttpPort);
@@ -185,6 +235,7 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey, command.YarpAcmeEabHmacKey is not null);
         Check(WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps, redirectHttpToHttps != yarp.RedirectHttpToHttps);
         Check(WatchtowerSettingPaths.ProxyPortRoutesLanNames, Changed(command.PortRoutesLanNames, portRoutes.LanNames));
+        Check(WatchtowerSettingPaths.ProxyPrimaryDomains, Changed(command.PrimaryDomains, proxy.PrimaryDomains));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccountId, Changed(command.CloudflareAccountId, cf.AccountId));
         Check(WatchtowerSettingPaths.ProxyCloudflareZoneId, Changed(command.CloudflareZoneId, cf.ZoneId));
         Check(WatchtowerSettingPaths.ProxyCloudflareApiToken, command.CloudflareApiToken is not null);
@@ -239,6 +290,8 @@ public sealed class UpdateProxyConfig(
             await WritePortsAsync();
         }
 
+        if (command.DefaultAccessMode is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyDefaultAccessMode, defaultAccessMode, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyAdminEmail, email, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCaddyImage, image, ct);
         if (command.YarpAcmeDirectoryUrl is not null)
@@ -254,6 +307,9 @@ public sealed class UpdateProxyConfig(
         if (command.PortRoutesLanNames is not null)
             await SetUnlessPinnedAsync(
                 WatchtowerSettingPaths.ProxyPortRoutesLanNames, command.PortRoutesLanNames.Trim(), ct);
+        if (command.PrimaryDomains is not null)
+            await SetUnlessPinnedAsync(
+                WatchtowerSettingPaths.ProxyPrimaryDomains, command.PrimaryDomains.Trim(), ct);
         if (command.CloudflareAccountId is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccountId, command.CloudflareAccountId.Trim(), ct);
         if (command.CloudflareZoneId is not null)
@@ -303,6 +359,12 @@ public sealed class UpdateProxyConfig(
             // internal CA issues for under every provider, and a name added or removed here changes which
             // devices can reach this deployment's port routes over TLS.
             + $" · lan names {(lanNames.Length > 0 ? lanNames : "none")}"
+            // Outside the switch for the same reason, and worth a line of its own: it decides whether the
+            // next hostname anyone adds is reachable by the internet or gated (ADR-0035).
+            + $" · new routes {defaultAccessMode}"
+            // Outside the switch too (ADR-0036): they decide which domains the create form offers and how
+            // the route list is grouped, under whichever provider serves them.
+            + $" · primary domains {(primaryDomains.Length > 0 ? primaryDomains : "none")}"
             + (secretsUpdated.Count > 0 ? $" · secrets updated: {string.Join(", ", secretsUpdated)}" : ""),
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
@@ -311,6 +373,7 @@ public sealed class UpdateProxyConfig(
         var echoed = proxy with {
             Enabled = command.Enabled,
             Provider = provider,
+            DefaultAccessMode = defaultAccessMode,
             AdminEmail = email.Length > 0 ? email : null,
             CaddyImage = image,
             Yarp = yarp with {
@@ -323,6 +386,7 @@ public sealed class UpdateProxyConfig(
                 RedirectHttpToHttps = redirectHttpToHttps,
             },
             PortRoutes = portRoutes with { LanNames = lanNames },
+            PrimaryDomains = primaryDomains,
             Cloudflare = cf with {
                 AccountId = accountId,
                 ZoneId = zoneId,

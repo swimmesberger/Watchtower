@@ -7,9 +7,11 @@ import type {
   CertificateInfo,
   CloudflareForeignRoute,
   CreateRouteRequest,
+  DomainKind,
   IdentityHeaderMode,
   Route,
   RouteAccess,
+  RouteAccessModeWire,
   RouteBinding,
   RouteStatus,
   RouteTarget,
@@ -17,6 +19,7 @@ import type {
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { absoluteTitle, timeAgo } from '@/lib/format'
 import { parseLanNames } from '@/lib/lanNames'
+import { bestPrimaryDomain, composeHost, splitHost, subdomainOf } from '@/lib/primaryDomains'
 import { useRealms } from '@/hooks/use-realms'
 import { Badge, type BadgeTone } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
@@ -78,6 +81,37 @@ const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] 
   },
 ]
 
+/**
+ * The Access badge, keyed on the lowercase mode `proxy.listRoutes` reports. `Public` is the warning one:
+ * since ADR-0035 a route is protected unless somebody chose otherwise, so an unguarded address is the
+ * exception worth spotting in the list, not the norm.
+ */
+const ACCESS_TONE: Record<RouteAccessModeWire, BadgeTone> = {
+  public: 'warn',
+  authenticated: 'ok',
+  restricted: 'ok',
+}
+
+const ACCESS_LABEL: Record<RouteAccessModeWire, string> = {
+  public: 'Public',
+  authenticated: 'Protected',
+  restricted: 'Restricted',
+}
+
+/**
+ * What the tooltip beside the badge says. Public gets a sentence of its own: the dialog's copy describes
+ * the choice ("no access control — every request is proxied") where a row has to answer "who gets in?".
+ */
+const ACCESS_DESCRIPTION: Record<RouteAccessModeWire, string> = {
+  public: 'Anyone can reach this route.',
+  authenticated: accessModeDescription('Authenticated'),
+  restricted: accessModeDescription('Restricted'),
+}
+
+function accessModeDescription(value: AccessMode): string {
+  return ACCESS_MODES.find((m) => m.value === value)?.description ?? ''
+}
+
 /** The identity-forwarding modes in menu order, with the label the Access dialog shows for each. */
 const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
   { value: 'None', label: 'JWT only (default)' },
@@ -96,11 +130,23 @@ const emptyForm = {
   realmId: '',
   makeLoginRoute: true,
   stackId: '',
+  // `domain` is still the hostname on the wire, and the only field the create request carries. With
+  // primary domains configured it is composed instead of typed: `subdomain` + `primaryDomain` spell the
+  // host, and an empty subdomain means the apex — a route on the primary domain itself. `customHostname`
+  // is the escape hatch back to typing `domain` in full, for a hostname no primary domain covers.
   domain: '',
+  subdomain: '',
+  primaryDomain: '',
+  customHostname: false,
   serviceName: '',
   containerPort: '',
   listenPort: '',
   tlsEnabled: true,
+  // The access policy to create the route under (ADR-0035). Empty means "untouched": the request carries
+  // no mode at all and the configured default decides, which is also the only shape a non-administrator
+  // may send. Naming one explicitly is admin-only, so an empty field is never a silent downgrade.
+  accessMode: '' as AccessMode | '',
+  bypassPaths: '',
   // True once the user opts out of the discovered-value dropdown to type a custom value.
   serviceManual: false,
   portManual: false,
@@ -281,10 +327,6 @@ function ComboField({
 export function RoutesPage() {
   const qc = useQueryClient()
   const { caps } = routesRoute.useRouteContext()
-  // Access policy is meaningless without auth (the proxy only emits forward_auth when it is on) and is an
-  // admin operation, so the affordance is shown only to an administrator on an auth-enabled deployment. The
-  // implicit local administrator (Auth:Enabled=false) reports the reserved `local` id — see auth.ts.
-  const canManageAccess = caps.hasRole('Admin') && caps.user.id !== LOCAL_USER_ID
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...emptyForm })
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
@@ -297,6 +339,15 @@ export function RoutesPage() {
   const isCloudflare = status?.provider === 'cloudflare'
   const servesHttps = (r: Route) => isCloudflare || r.tlsEnabled
 
+  // Access policy is an admin operation, so the affordance is shown only to an administrator — and, under
+  // the built-in and Caddy providers, only on an auth-enabled deployment, because there the policy is
+  // meaningless without auth (the proxy only emits forward_auth when it is on). The implicit local
+  // administrator (Auth:Enabled=false) reports the reserved `local` id — see auth.ts. Under Cloudflare the
+  // gate is a Zero Trust Access application, which Watchtower's own auth has no part in, so the local
+  // administrator gets the controls there: with routes protected by default (ADR-0035) they are how a
+  // route is made Public at all.
+  const canManageAccess = caps.hasRole('Admin') && (caps.user.id !== LOCAL_USER_ID || isCloudflare)
+
   // Port routes need only the proxy to be on (ADR-0033 addendum). Their listener is on Watchtower's
   // own container and their certificate comes from Watchtower's own CA, so which provider terminates
   // the public domains has nothing to say about them — they are offered alongside Caddy and the tunnel
@@ -307,10 +358,13 @@ export function RoutesPage() {
   // The key is the Settings page's, deliberately: saving the proxy card invalidates ['proxy'], and a
   // key of this page's own would leave the "no LAN names" banner up — and the submit button disabled —
   // for a staleTime after the operator went and configured exactly what it asked them to.
+  // Also fetched for the access half of the create form, which needs the default mode and the Cloudflare
+  // allow sources — and needs them whether or not the proxy is on, because a route can be created ahead
+  // of turning it on and would still be created protected.
   const proxyConfigQuery = useQuery({
     queryKey: ['proxy', 'config'],
     queryFn: api.proxy.getConfig,
-    enabled: supportsPortRoutes,
+    enabled: supportsPortRoutes || canManageAccess,
   })
   const proxyConfig = proxyConfigQuery.data
   const lanNames = useMemo(() => parseLanNames(proxyConfig?.portRoutes.lanNames), [proxyConfig])
@@ -322,6 +376,42 @@ export function RoutesPage() {
   // then refusing the submit — would be sending them after something that may already be there.
   const lanNamesKnown = proxyConfig != null
   const lanNamesUnavailable = proxyConfigQuery.isError
+
+  // What a new route starts under when the form doesn't say (ADR-0035). Protected while the settings are
+  // still loading: that is the shipped default, and showing "Public" first would misdescribe what the
+  // Create button is about to do.
+  const defaultAccessMode: AccessMode =
+    proxyConfig?.defaultAccessMode === 'public' ? 'Public' : 'Authenticated'
+  const formAccessMode = form.accessMode || defaultAccessMode
+  // Under Cloudflare a protected route's Access application needs somebody to let in. With all four allow
+  // sources blank the reconcile publishes deny-all, so the server refuses the create — say so before the
+  // operator fills the form in. Only once the settings actually answered: a query in flight is not an
+  // empty configuration.
+  const cfAllowSourceMissing =
+    isCloudflare &&
+    proxyConfig != null &&
+    proxyConfig.cloudflare.accessAllowedEmails.trim() === '' &&
+    proxyConfig.cloudflare.accessAllowedEmailDomains.trim() === '' &&
+    proxyConfig.cloudflare.accessGroupIds.trim() === '' &&
+    proxyConfig.cloudflare.accessReusablePolicyIds.trim() === ''
+
+  // The base domains routes live under (ADR-0036): the configured list merged with whatever zones the
+  // Cloudflare token can see. Two jobs at once — the create form's domain dropdown, and how the list
+  // below is grouped. Kept a long time and not refetched on focus: this answers what an operator
+  // publishes under, which does not move while they fill in a form. Never errors server-side, so an
+  // empty answer is simply "nothing configured" and the page falls back to the flat, type-it-in-full
+  // shape it had before.
+  const primaryDomainsQuery = useQuery({
+    queryKey: ['proxy', 'primary-domains'],
+    queryFn: api.proxy.listPrimaryDomains,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+  const primaryDomains = useMemo(() => primaryDomainsQuery.data ?? [], [primaryDomainsQuery.data])
+  const primaryNames = useMemo(() => primaryDomains.map((d) => d.name), [primaryDomains])
+  // The one an untouched dropdown stands on. Empty only where there are no primary domains at all,
+  // which is exactly where the composed control is not rendered and `composed` never reads it.
+  const firstPrimaryName = primaryNames[0] ?? ''
 
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
   // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
@@ -443,6 +533,15 @@ export function RoutesPage() {
   const formRealmId = form.realmId === '' ? systemRealmId : Number(form.realmId)
   const formRealm = realms.find((r) => r.id === formRealmId)
 
+  // The hostname the form is actually about, whichever way it was entered — the one value the DNS check
+  // and the create request both use. With no primary domains configured, or once the operator has opted
+  // into a custom hostname, that is the field they typed; otherwise it is the two halves spelled
+  // together, defaulting to the first primary domain so an untouched dropdown still names one.
+  const composed =
+    form.customHostname || primaryNames.length === 0
+      ? form.domain.trim()
+      : composeHost(form.subdomain, form.primaryDomain || firstPrimaryName)
+
   const selectedStack = stacks.find((s) => String(s.id) === form.stackId)
   const stackProject = selectedStack?.composeProjectName
 
@@ -497,9 +596,16 @@ export function RoutesPage() {
 
   /** Prefills the new-route form from a dashboard-made tunnel hostname and opens it. */
   function startImport(foreign: CloudflareForeignRoute) {
+    // The hostname exists already, so the form has to show it however it was spelled. Where a primary
+    // domain covers it the composed control can hold it and the operator sees the same shape they get
+    // for a new route; where none does, the custom field is the only place it fits.
+    const split = splitHost(primaryNames, foreign.hostname)
     setForm({
       ...emptyForm,
       domain: foreign.hostname,
+      subdomain: split?.subdomain ?? '',
+      primaryDomain: split?.primaryDomain ?? '',
+      customHostname: split === null,
       stackId: foreign.suggestedStackId != null ? String(foreign.suggestedStackId) : '',
       serviceName: foreign.suggestedServiceName ?? '',
       containerPort: foreign.suggestedContainerPort != null ? String(foreign.suggestedContainerPort) : '',
@@ -579,7 +685,13 @@ export function RoutesPage() {
       })
     }
 
-    if (!form.domain.trim()) return toast.error('Enter a domain.')
+    if (!composed) return toast.error('Enter a domain.')
+
+    // Which primary domain the hostname sits under, said as the route's kind (ADR-0036). Null while no
+    // primary domains are configured at all: with nothing to be covered by, `custom` would be a claim
+    // about a hostname nobody has classified, so the server's own default decides instead.
+    const kind: DomainKind | null =
+      primaryNames.length === 0 ? null : bestPrimaryDomain(primaryNames, composed) ? 'managed' : 'custom'
 
     // A Watchtower route has no stack, no service and no port — the server refuses them rather than
     // ignoring them, so they are not sent at all.
@@ -589,7 +701,8 @@ export function RoutesPage() {
         realmId: formRealmId,
         makeLoginRoute: form.makeLoginRoute,
         stackId: 0,
-        domain: form.domain.trim(),
+        domain: composed,
+        kind,
         serviceName: '',
         containerPort: 0,
         tlsEnabled: isCloudflare || form.tlsEnabled,
@@ -606,11 +719,18 @@ export function RoutesPage() {
     create.mutate({
       target: 'service',
       stackId,
-      domain: form.domain.trim(),
+      domain: composed,
+      kind,
       serviceName: form.serviceName.trim(),
       containerPort,
       tlsEnabled: isCloudflare || form.tlsEnabled,
       isPrimary: false,
+      // Naming a mode is admin-only and an untouched field means "use the configured default", so both
+      // stay null unless an administrator actually picked something. Bypass paths belong to a protected
+      // route; on a public one they would be text with nothing to exempt from.
+      accessMode: canManageAccess ? (form.accessMode || null) : null,
+      bypassPaths:
+        canManageAccess && formAccessMode !== 'Public' ? (form.bypassPaths.trim() || null) : null,
     })
   }
 
@@ -699,6 +819,67 @@ export function RoutesPage() {
       </Tooltip>
     ) : null
 
+  /**
+   * Who gets through this route. Shown on every row, port and Watchtower ones included: those are always
+   * Public and reading "Public" there is the truth, not an omission.
+   */
+  const accessBadge = (r: Route) => (
+    <Tooltip label={ACCESS_DESCRIPTION[r.accessMode]}>
+      <Badge tone={ACCESS_TONE[r.accessMode]}>{ACCESS_LABEL[r.accessMode]}</Badge>
+    </Tooltip>
+  )
+
+  /**
+   * The route list cut into sections, one per primary domain that has routes, then the domain routes no
+   * primary covers, then the LAN ports (ADR-0036). Grouping is by hostname suffix rather than by
+   * `Route.kind`: every row created before primary domains existed is `managed` whatever it is named, so
+   * kind would put a hostname under a heading its own name contradicts. Empty groups are dropped — a
+   * "LAN ports" heading over nothing describes a feature, not this deployment.
+   */
+  const groups = useMemo(() => {
+    const domainRoutes = routes.filter((r) => r.binding !== 'port')
+    const byPrimary = new Map<string, Route[]>()
+    const other: Route[] = []
+    for (const route of domainRoutes) {
+      const primary = route.domain ? bestPrimaryDomain(primaryNames, route.domain) : null
+      if (primary === null) {
+        other.push(route)
+        continue
+      }
+      const bucket = byPrimary.get(primary)
+      if (bucket) bucket.push(route)
+      else byPrimary.set(primary, [route])
+    }
+
+    const result: { key: string; title: string; subtitle?: string; routes: Route[] }[] = []
+    // The server's order, which is by name — so the sections do not reshuffle between renders.
+    for (const domain of primaryDomains) {
+      const inDomain = byPrimary.get(domain.name)
+      if (!inDomain || inDomain.length === 0) continue
+      result.push({
+        key: `primary:${domain.name}`,
+        title: domain.name,
+        // Only for a domain nobody typed: where it came from is the question a discovered zone raises
+        // and a configured one does not.
+        subtitle: domain.source === 'cloudflare-zone' ? domain.detail : undefined,
+        // Apex first — the domain itself is the heading's own row — then alphabetically by subdomain.
+        routes: [...inDomain].sort((a, b) => {
+          const subA = subdomainOf(domain.name, a.domain ?? '') ?? ''
+          const subB = subdomainOf(domain.name, b.domain ?? '') ?? ''
+          return subA.localeCompare(subB)
+        }),
+      })
+    }
+    if (other.length > 0) result.push({ key: 'other', title: 'Other domains', routes: other })
+    if (portRoutes.length > 0) result.push({ key: 'ports', title: 'LAN ports', routes: portRoutes })
+    return result
+  }, [routes, portRoutes, primaryDomains, primaryNames])
+
+  // One flat table below one heading is what a single group would render anyway, and it is the shape
+  // that carries the empty state and the loading skeleton — so the sections appear only once there is
+  // more than one, and never over a list that has not answered yet.
+  const grouped = primaryNames.length > 0 && groups.length > 1 && !isLoading && !isError
+
   const columns: DataListColumn<Route>[] = [
     {
       key: 'domain',
@@ -741,6 +922,11 @@ export function RoutesPage() {
             {r.serviceName}:{r.containerPort}
           </span>
         ),
+    },
+    {
+      key: 'access',
+      header: 'Access',
+      cell: (r) => accessBadge(r),
     },
     {
       key: 'tls',
@@ -806,6 +992,7 @@ export function RoutesPage() {
         <div className="flex flex-wrap items-center gap-1.5 text-[13px] text-text-2">
           <Badge tone="brand">Watchtower</Badge>
           {r.isLoginRoute && <Badge tone="ok">login host ({r.realmSlug ?? `realm ${r.realmId}`})</Badge>}
+          {accessBadge(r)}
           <span>· {servesHttps(r) ? 'HTTPS' : 'HTTP'}</span>
         </div>
       ) : (
@@ -817,7 +1004,10 @@ export function RoutesPage() {
             </span>{' '}
             · {r.binding === 'port' ? 'HTTPS (LAN port)' : servesHttps(r) ? 'HTTPS' : 'HTTP'}
           </p>
-          {unpublishedBadge(r)}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {accessBadge(r)}
+            {unpublishedBadge(r)}
+          </div>
         </div>
       )}
       <div className="flex items-center justify-between border-t border-border pt-3">
@@ -1039,7 +1229,7 @@ export function RoutesPage() {
           <CardContent>
             <SectionHeader
               title="New route"
-              description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically."
+              description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically, and new domain routes are protected by default."
             />
             <form onSubmit={submit} className="space-y-4">
               {supportsPortRoutes && (
@@ -1123,6 +1313,12 @@ export function RoutesPage() {
                       setForm((f) => ({
                         ...emptyForm,
                         domain: f.domain,
+                        // The hostname is the one thing both targets have, so all three fields that
+                        // spell it come across — dropping them would reset a composed domain to the
+                        // first primary domain's apex mid-form.
+                        subdomain: f.subdomain,
+                        primaryDomain: f.primaryDomain,
+                        customHostname: f.customHostname,
                         tlsEnabled: f.tlsEnabled,
                         target: v as RouteTarget,
                       }))
@@ -1170,33 +1366,133 @@ export function RoutesPage() {
                 </Field>
               ) : (
                 <>
+              {/* Two shapes of the same field, and the same label over both: the hostname composed out
+                  of a subdomain and one of the configured primary domains, or typed in full. Which one
+                  is shown depends on whether there is anything to compose against (ADR-0036). */}
+              {primaryNames.length > 0 && !form.customHostname ? (
+                <Field
+                  label="Domain"
+                  required
+                  hint={`Leave the subdomain empty to use ${form.primaryDomain || firstPrimaryName} itself.`}
+                >
+                  {({ id, describedBy }) => (
+                    <>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <div className="flex flex-1 items-center gap-1.5">
+                          <Input
+                            id={id}
+                            aria-describedby={describedBy}
+                            mono
+                            value={form.subdomain}
+                            onChange={(e) => setForm((f) => ({ ...f, subdomain: e.target.value }))}
+                            placeholder="app"
+                            autoComplete="off"
+                            spellCheck={false}
+                            className="flex-1"
+                          />
+                          <span className="shrink-0 font-mono text-sm text-text-2">.</span>
+                          {/* With one primary domain there is nothing to choose, so the suffix is shown
+                              as text rather than as a dropdown holding a single option. */}
+                          {primaryNames.length === 1 ? (
+                            <span className="shrink-0 font-mono text-sm text-text-2">
+                              {firstPrimaryName}
+                            </span>
+                          ) : (
+                            <Select
+                              value={form.primaryDomain || firstPrimaryName}
+                              onValueChange={(v) => setForm((f) => ({ ...f, primaryDomain: v }))}
+                            >
+                              <SelectTrigger className="w-auto shrink-0 font-mono" aria-label="Primary domain">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {primaryNames.map((name) => (
+                                  <SelectItem key={name} value={name}>
+                                    {name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          loading={dns.isPending}
+                          disabled={!composed}
+                          onClick={() => dns.mutate(composed)}
+                          className="shrink-0"
+                        >
+                          Check DNS
+                        </Button>
+                      </div>
+                      {/* Primary domains are an affordance, never a restriction: a hostname none of
+                          them covers is still a route, and this is the way to it. */}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({ ...f, customHostname: true, domain: composed }))
+                        }
+                        className="self-start text-[13px] text-brand hover:underline"
+                      >
+                        Use a custom hostname
+                      </button>
+                    </>
+                  )}
+                </Field>
+              ) : (
               <Field label="Domain" required hint="e.g. app.example.com — point its DNS at this host">
                 {({ id, describedBy }) => (
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <Input
-                      id={id}
-                      aria-describedby={describedBy}
-                      mono
-                      value={form.domain}
-                      onChange={(e) => setForm((f) => ({ ...f, domain: e.target.value }))}
-                      placeholder="app.example.com"
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="flex-1"
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      loading={dns.isPending}
-                      disabled={!form.domain.trim()}
-                      onClick={() => dns.mutate(form.domain.trim())}
-                      className="shrink-0"
-                    >
-                      Check DNS
-                    </Button>
-                  </div>
+                  <>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Input
+                        id={id}
+                        aria-describedby={describedBy}
+                        mono
+                        value={form.domain}
+                        onChange={(e) => setForm((f) => ({ ...f, domain: e.target.value }))}
+                        placeholder="app.example.com"
+                        autoComplete="off"
+                        spellCheck={false}
+                        className="flex-1"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={dns.isPending}
+                        disabled={!composed}
+                        onClick={() => dns.mutate(composed)}
+                        className="shrink-0"
+                      >
+                        Check DNS
+                      </Button>
+                    </div>
+                    {/* The way back, offered only when there is something to go back to. What was
+                        typed is carried across when a primary domain covers it, so switching does not
+                        silently discard a hostname that fits perfectly well. */}
+                    {primaryNames.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => {
+                            const split = splitHost(primaryNames, f.domain)
+                            return {
+                              ...f,
+                              customHostname: false,
+                              subdomain: split?.subdomain ?? f.subdomain,
+                              primaryDomain: split?.primaryDomain ?? f.primaryDomain,
+                            }
+                          })
+                        }
+                        className="self-start text-[13px] text-brand hover:underline"
+                      >
+                        Choose from your domains
+                      </button>
+                    )}
+                  </>
                 )}
               </Field>
+              )}
 
               {dns.data && (
                 <p className={`text-[13px] ${dns.data.resolves ? 'text-ok' : 'text-warn'}`}>
@@ -1341,6 +1637,69 @@ export function RoutesPage() {
               </div>
               )}
 
+              {/* Only on a service route to a domain: a port route is LAN-only and a Watchtower route
+                  serves the login page, so both are Public by definition and the server refuses an
+                  access field on them. Admin-only, like every other access control on this page. */}
+              {canManageAccess && !isPortForm && !isWatchtowerForm && (
+                <>
+                  <Field label="Who can access">
+                    {({ id }) => (
+                      <>
+                        <Select
+                          value={formAccessMode}
+                          onValueChange={(v) => setForm((f) => ({ ...f, accessMode: v as AccessMode }))}
+                        >
+                          <SelectTrigger id={id}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {/* Restricted is left out: a create carries no grants, so a route starting
+                                restricted would admit nobody. Pick it in the Access dialog afterwards,
+                                where the users and groups can be chosen in the same breath. */}
+                            {ACCESS_MODES.filter((m) => m.value !== 'Restricted').map((m) => (
+                              <SelectItem key={m.value} value={m.value}>
+                                {m.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="mt-1.5 text-xs text-text-3">
+                          {accessModeDescription(formAccessMode)}
+                        </p>
+                      </>
+                    )}
+                  </Field>
+
+                  {formAccessMode !== 'Public' && (
+                    <Field
+                      label="Public paths"
+                      hint="Paths exempt from access control, e.g. /api/webhooks/*. One per line."
+                    >
+                      {({ id, describedBy }) => (
+                        <Textarea
+                          id={id}
+                          aria-describedby={describedBy}
+                          mono
+                          value={form.bypassPaths}
+                          onChange={(e) => setForm((f) => ({ ...f, bypassPaths: e.target.value }))}
+                          placeholder={'/api/webhooks/\n/healthz'}
+                          spellCheck={false}
+                        />
+                      )}
+                    </Field>
+                  )}
+
+                  {formAccessMode !== 'Public' && cfAllowSourceMissing && (
+                    <Banner tone="warn" title="Cloudflare Access has no allow source">
+                      A protected route's Access application admits the emails, email domains, Access
+                      groups and reusable policies you configure — and none are set, so this route would
+                      deny everyone. Add at least one under Settings → Reverse proxy, or create this
+                      route as Public.
+                    </Banner>
+                  )}
+                </>
+              )}
+
               {isPortForm ? (
                 <Banner tone="info" title="Publish the port on Watchtower's container">
                   Watchtower listens on this port inside its container, so the container has to publish
@@ -1410,7 +1769,24 @@ export function RoutesPage() {
         </Banner>
       )}
 
-      {!isError && (
+      {grouped && (
+        <div className="flex flex-col gap-8">
+          {groups.map((group) => (
+            <div key={group.key}>
+              <SectionHeader title={group.title} description={group.subtitle} />
+              <DataList
+                items={group.routes}
+                getKey={(r) => r.id}
+                columns={columns}
+                renderCard={renderCard}
+                aria-label={group.title}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!isError && !grouped && (
         <DataList
           items={routes}
           getKey={(r) => r.id}

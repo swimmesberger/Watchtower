@@ -141,6 +141,35 @@ public static class RouteAccessPolicy {
     }
 
     /// <summary>
+    /// Trims each bypass line, drops the blanks, and rejects the first non-empty line that is not a rooted
+    /// path (a prefix that cannot occur in a request path would only ever be dead configuration — see
+    /// <see cref="ParseBypassPaths"/>, which silently drops such lines on the read side).
+    /// Returns the newline-joined survivors, or <see langword="null"/> when nothing is left.
+    /// </summary>
+    /// <remarks>
+    /// The write-side counterpart of <see cref="ParseBypassPaths"/>, and here rather than on a handler
+    /// because both <c>proxy.setAccess</c> and <c>proxy.createRoute</c> store the column: two copies of
+    /// "what a bypass line may look like" is one copy too many for a rule that decides which requests skip
+    /// authentication.
+    /// </remarks>
+    public static string? NormalizeBypassPaths(string? raw, out string? offending) {
+        offending = null;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var lines = new List<string>();
+        foreach (var line in raw.Split('\n')) {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0) continue;
+            if (trimmed[0] != '/') {
+                offending = trimmed;
+                return null;
+            }
+            lines.Add(trimmed);
+        }
+        return lines.Count == 0 ? null : string.Join('\n', lines);
+    }
+
+    /// <summary>
     /// Whether <paramref name="path"/> is exempt from access control on a route configured with
     /// <paramref name="bypassPaths"/> — either a reserved Watchtower path or a configured bypass prefix.
     /// </summary>

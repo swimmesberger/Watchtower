@@ -143,3 +143,46 @@ warn: WATCHTOWER__PROXY__YARP__LANNAMES is set but no longer has any effect: the
 Rename the variable in your compose file (or drop it and set the LAN names under **Settings → Reverse
 proxy → LAN port routes**). Until you do, the internal CA has no names to issue for and every port route
 reports `Error`.
+
+## New routes are protected by default (ADR-0035, ADR-0036)
+
+**Read this before upgrading if you use the Cloudflare provider.** One change in this release alters the
+behaviour of routes you already have, and it is the kind that locks people out rather than the kind that
+lets them in.
+
+**A protected route with no allow source is now denied at the edge.** Until now, a route stored as
+`Authenticated` or `Restricted` whose allow-list came out empty — no allowed emails, no email domains,
+no Access group ids, no reusable policy ids, or grants that resolve to no address Cloudflare can match —
+was *skipped* by the reconcile: no Access application was published and any existing one was left alone.
+The Routes page said the route was protected; the edge served it to everyone. From this image on, the
+reconcile publishes an explicit **deny-all** Access application for such a route and sets the row to
+`Error`. Nobody reaches it until you act.
+
+That happens on the **first reconcile after the upgrade**, which is at startup. There is no migration
+that softens it, deliberately: flipping those routes to Public would silently confirm the exposure, and
+flipping them anywhere else would be Watchtower deciding your access policy for you
+([ADR-0035](decisions/0035-new-routes-are-protected-by-default.md)).
+
+**Before you upgrade**, go through **Routes** and, for every route showing *Authenticated* or
+*Restricted* under the Cloudflare provider, either:
+
+- configure an allow source under **Settings → Reverse proxy** — allowed emails, email domains, an
+  Access group id, or a reusable Access policy id — which is almost certainly what you meant the route
+  to have; or
+- set the route **Public** if it was in fact meant to be open. It is open today; this makes the row say
+  so.
+
+**Routes already stored as Public are untouched**, under every provider. Nothing re-evaluates the access
+mode of an existing route.
+
+**New routes created from now on are Authenticated by default**, under every provider, and creating a
+protected route is refused while Cloudflare has no allow source configured. The default is a setting —
+**Settings → Reverse proxy → Default access for new routes** (`authenticated` or `public`,
+env-pinnable as `WATCHTOWER__PROXY__DEFAULTACCESSMODE`) — so a deployment that genuinely wants open
+routes sets it once. Watchtower's own routes and LAN port routes stay Public and are unaffected.
+
+**Add `Zone: Read` to your Cloudflare API token.** It is not required — an install with a zone id set
+keeps working exactly as it does today — but with it Watchtower discovers the zones your token can see,
+the zone id becomes optional, and routes can live under more than one domain in the same account
+([ADR-0036](decisions/0036-routes-live-under-primary-domains.md)). See
+[docs/reverse-proxy/cloudflare.md → Zone discovery](reverse-proxy/cloudflare.md#zone-discovery).

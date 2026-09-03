@@ -92,7 +92,7 @@ public sealed class SetAccess(
         // bypass line would only be dead state. Validation therefore applies to the modes that keep them.
         string? bypassPaths = null;
         if (command.Mode != AccessMode.Public) {
-            bypassPaths = NormalizeBypassPaths(command.BypassPaths, out var offending);
+            bypassPaths = RouteAccessPolicy.NormalizeBypassPaths(command.BypassPaths, out var offending);
             if (offending is not null)
                 return AppError.Validation($"Bypass path '{offending}' must start with '/'.");
         }
@@ -200,29 +200,6 @@ public sealed class SetAccess(
         missing.Count == 1
             ? missing[0].ToString(CultureInfo.InvariantCulture)
             : string.Join(", ", missing);
-
-    /// <summary>
-    /// Trims each bypass line, drops the blanks, and rejects the first non-empty line that is not a rooted
-    /// path (a prefix that cannot occur in a request path would only ever be dead configuration — see
-    /// <see cref="RouteAccessPolicy.ParseBypassPaths"/>, which silently drops such lines on the read side).
-    /// Returns the newline-joined survivors, or <see langword="null"/> when nothing is left.
-    /// </summary>
-    private static string? NormalizeBypassPaths(string? raw, out string? offending) {
-        offending = null;
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-
-        var lines = new List<string>();
-        foreach (var line in raw.Split('\n')) {
-            var trimmed = line.Trim();
-            if (trimmed.Length == 0) continue;
-            if (trimmed[0] != '/') {
-                offending = trimmed;
-                return null;
-            }
-            lines.Add(trimmed);
-        }
-        return lines.Count == 0 ? null : string.Join('\n', lines);
-    }
 
     /// <summary>
     /// Appends the audit row for a policy change: the route is the target, the acting administrator the

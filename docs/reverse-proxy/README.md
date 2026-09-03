@@ -13,15 +13,11 @@ The feature is **opt-in**. While it is off, routes are stored and nothing is ser
 | `caddy` *(deprecated)* | A sibling Caddy container Watchtower manages, holding the host's ports 80/443. Kept for existing installs. | [caddy.md](caddy.md) |
 | `cloudflare` | A Cloudflare Tunnel: outbound only, no open ports, TLS at Cloudflare's edge, access gated by Zero Trust. | [cloudflare.md](cloudflare.md) |
 
-One capability is not shared, because it is a listener on Watchtower's own host and nothing else can
-lend one:
-
-| Capability | `yarp` | `caddy` | `cloudflare` |
-| --- | --- | --- | --- |
-| **Port routes** — HTTPS on a LAN address with no domain (`https://nas.lan:9001`), certified by a CA Watchtower generates for itself | ✔ | — | — |
-
-Under the other two providers such a route is stored but reports `Error` saying so. See
-[yarp.md](yarp.md) and [ADR-0033](../decisions/0033-port-routes-and-internal-ca.md).
+One capability sits beside the providers rather than inside any of them: **port routes** — HTTPS on a LAN
+address with no domain (`https://nas.lan:9001`), certified by a CA Watchtower generates for itself. Their
+listeners are on Watchtower's own container, so they work under every provider, alongside whichever one
+serves your domains ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md) and its addendum). See
+[Port routes: HTTPS on a LAN, with any provider](#port-routes-https-on-a-lan-with-any-provider) below.
 
 Background: [ADR-0015](../decisions/0015-proxy-provider-abstraction.md) (the provider seam) and
 [ADR-0022](../decisions/0022-in-process-yarp-proxy.md) (the in-process provider and the default flip).
@@ -37,8 +33,17 @@ either a **stack service** — a compose service in one of your stacks and a con
 itself" below). You add them in the **Routes** UI (`/routes`); every provider is a projection of that one
 table, so switching providers does not mean re-entering anything. Each route also carries its **access
 mode** (Public / Authenticated / Restricted) and, for the two certificate-issuing providers, whether it
-is served over TLS — a port route is always public and always TLS, since it has no hostname a login
-redirect could return a visitor to.
+is served over TLS.
+
+A new route bound to a domain is **Authenticated** unless you say otherwise, under every provider, so
+adding a route never publishes a service to everyone as a side effect
+([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md)). The default is
+**Settings → Reverse proxy → Default access for new routes** (`authenticated` or `public`), and an admin
+can pick the mode — and the anonymous bypass paths — in the new-route form itself. Two kinds of route
+are **always Public**, and are held there by the database rather than by the form: a route targeting
+**Watchtower itself**, because a login page that needs a session is one nobody can sign in through, and a
+**port route**, because a bare `host:port` is not an address a login redirect can return a visitor to.
+Existing routes are untouched by the default; it applies when a route is created.
 
 Route status (`Pending`, `Awaiting DNS`, `Active`, `Error`) reports the certificate state, and how much
 that is worth depends on the provider. Under the **built-in provider it is authoritative**: Watchtower
@@ -47,6 +52,32 @@ certificate store, and the Routes page gains a **Certificates** card listing the
 "Renew now" button. Under **Caddy** it is only indicative — Caddy owns the certificates and does not
 report their state back. Under **Cloudflare** TLS terminates at the edge, so the per-route TLS flag
 controls nothing.
+
+## Primary domains
+
+Most deployments publish everything under one base domain, or a few. Tell Watchtower which they are —
+**Settings → Reverse proxy → Primary domains**, comma- or newline-separated — and two things get shorter
+([ADR-0036](../decisions/0036-routes-live-under-primary-domains.md)):
+
+- the **new-route form** composes the hostname for you: type `app`, pick `example.com`, get
+  `app.example.com`. An empty subdomain means the domain itself. *Use a custom hostname* is always one
+  click away for anything that does not fit, and whatever you have typed comes with you;
+- the **route list** groups by domain — one section per primary domain (the domain itself first, then
+  its subdomains), then **Other domains** for hostnames none of them covers, then **LAN ports** for port
+  routes, which have no domain at all.
+
+A primary domain is not a thing you create or delete: it is a string in a setting, and a route belongs
+to the one that is the longest suffix of its hostname. Change the setting and everything re-groups.
+Nothing is stored per route, so nothing can go stale, and this restricts nothing — a route under a
+domain you never listed is created and served exactly as before.
+
+**Under the Cloudflare provider the list is also discovered**, from the zones your API token can see, so
+an account with two domains in it needs no setting at all. Configured domains and discovered zones are
+merged into one list, and the same list decides which zone a route's DNS record is written into. See
+[cloudflare.md → Zone discovery](cloudflare.md#zone-discovery).
+
+**Configure nothing and nothing changes:** the form asks for a full hostname as it always has, and the
+route list is one flat table.
 
 ## Shared network topology
 
@@ -392,6 +423,14 @@ selected users and groups — with a signed identity forwarded to the applicatio
 shared by the providers that run it in front of your apps, so `yarp` and `caddy` reach identical
 verdicts; under `cloudflare`, access belongs to Zero Trust instead. See
 [docs/central-auth/README.md](../central-auth/README.md).
+
+A new domain route is **Authenticated** unless you say otherwise. Change what "otherwise" means under
+**Settings → Reverse proxy → Default access for new routes**; an admin can also set the mode and the
+anonymous bypass paths on the route as it is created, and `Restricted` is set afterwards, once the route
+exists and there are grants to put on it. Watchtower's own routes and port routes stay Public — that is
+a database constraint rather than a default, for the reasons given under *The route table is the source
+of truth* above. The access mode of every route is shown in the Routes list
+([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md)).
 
 ## Also here
 

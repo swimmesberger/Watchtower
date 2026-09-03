@@ -53,3 +53,5 @@ live here.
 - [ADR-0032: NVIDIA GPUs resolve the same intent through the container toolkit](0032-nvidia-gpu-passthrough.md)
 - [ADR-0033: A route can be bound to a port, and Watchtower is its own CA for those](0033-port-routes-and-internal-ca.md)
 - [ADR-0034: A supervisor owns Watchtower's deployment — Watchtower declares, the supervisor reconciles](0034-supervisor-owns-the-deployment.md) — *proposed*
+- [ADR-0035: New domain routes are protected by default](0035-new-routes-are-protected-by-default.md)
+- [ADR-0036: Routes live under primary domains, and Cloudflare zones are discovered](0036-routes-live-under-primary-domains.md)

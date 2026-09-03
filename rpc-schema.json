@@ -8029,6 +8029,22 @@
               "null"
             ],
             "default": null
+          },
+          "accessMode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted",
+              null
+            ],
+            "default": null
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8129,6 +8145,9 @@
                   "integer",
                   "null"
                 ]
+              },
+              "accessMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -8150,7 +8169,8 @@
               "realmSlug",
               "isLoginRoute",
               "binding",
-              "listenPort"
+              "listenPort",
+              "accessMode"
             ]
           }
         },
@@ -8270,6 +8290,12 @@
                 "type": "boolean"
               },
               "provider": {
+                "type": "string"
+              },
+              "defaultAccessMode": {
+                "type": "string"
+              },
+              "primaryDomains": {
                 "type": "string"
               },
               "adminEmail": {
@@ -8414,6 +8440,8 @@
             "required": [
               "enabled",
               "provider",
+              "defaultAccessMode",
+              "primaryDomains",
               "adminEmail",
               "caddyImage",
               "yarp",
@@ -8676,6 +8704,9 @@
                   "integer",
                   "null"
                 ]
+              },
+              "accessMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -8697,7 +8728,8 @@
               "realmSlug",
               "isLoginRoute",
               "binding",
-              "listenPort"
+              "listenPort",
+              "accessMode"
             ]
           }
         },
@@ -8910,6 +8942,48 @@
         ]
       }
     },
+    "proxy.listPrimaryDomains": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "zoneId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "source",
+                "zoneId",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "domains"
+        ]
+      }
+    },
     "proxy.listRoutes": {
       "params": {
         "type": "object"
@@ -9004,6 +9078,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "accessMode": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -9025,7 +9102,8 @@
                 "realmSlug",
                 "isLoginRoute",
                 "binding",
-                "listenPort"
+                "listenPort",
+                "accessMode"
               ]
             }
           }
@@ -9444,6 +9522,20 @@
               "null"
             ],
             "default": null
+          },
+          "defaultAccessMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "primaryDomains": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9463,6 +9555,12 @@
                 "type": "boolean"
               },
               "provider": {
+                "type": "string"
+              },
+              "defaultAccessMode": {
+                "type": "string"
+              },
+              "primaryDomains": {
                 "type": "string"
               },
               "adminEmail": {
@@ -9607,6 +9705,8 @@
             "required": [
               "enabled",
               "provider",
+              "defaultAccessMode",
+              "primaryDomains",
               "adminEmail",
               "caddyImage",
               "yarp",
@@ -9772,6 +9872,9 @@
                   "integer",
                   "null"
                 ]
+              },
+              "accessMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -9793,7 +9896,8 @@
               "realmSlug",
               "isLoginRoute",
               "binding",
-              "listenPort"
+              "listenPort",
+              "accessMode"
             ]
           }
         },

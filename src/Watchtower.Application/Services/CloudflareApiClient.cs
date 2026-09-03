@@ -16,14 +16,32 @@ namespace Watchtower.Application.Services;
 /// Follows the <see cref="GitHubApiClient"/> pattern: hand-rolled <see cref="HttpClient"/>,
 /// source-generated JSON, errors surfaced as <see cref="HttpRequestException"/> carrying Cloudflare's
 /// own error messages so reconcile logs say what the API actually objected to.
+/// <para>
+/// Open rather than sealed, and the calls a test needs to answer for are <c>virtual</c>: the seam for
+/// "what would Watchtower do if Cloudflare said this" is a subclass, the same shape
+/// <c>StubDnsPreflight</c> uses. A test that is about the wire itself — the URL asked for, the envelope
+/// parsed — takes the <see cref="HttpClient"/> constructor instead.
+/// </para>
 /// </remarks>
-public sealed class CloudflareApiClient : IDisposable {
+public class CloudflareApiClient : IDisposable {
     private readonly HttpClient _client;
 
     public CloudflareApiClient() {
         _client = new HttpClient { BaseAddress = new Uri("https://api.cloudflare.com/client/v4/") };
         _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         _client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("watchtower-proxy", "1.0"));
+    }
+
+    /// <summary>
+    /// Wire-test seam: the client speaks to <paramref name="client"/> instead of to Cloudflare. Its base
+    /// address is filled in only when it has none, so a handler under test can be pointed at a loopback
+    /// server while a bare <see cref="HttpClient"/> over a fake message handler still resolves the
+    /// relative URLs every call below builds.
+    /// </summary>
+    internal CloudflareApiClient(HttpClient client) {
+        ArgumentNullException.ThrowIfNull(client);
+        _client = client;
+        _client.BaseAddress ??= new Uri("https://api.cloudflare.com/client/v4/");
     }
 
     /// <summary>Finds a non-deleted tunnel by exact name; null when none exists.</summary>
@@ -80,6 +98,37 @@ public sealed class CloudflareApiClient : IDisposable {
         var result = await SendAsync(HttpMethod.Get, $"accounts/{accountId}/cfd_tunnel/{tunnelId}/configurations",
             token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeCloudflareTunnelConfigurationResult, ct);
         return result.Config?.Ingress ?? [];
+    }
+
+    /// <summary>
+    /// The active zones this token can read (ADR-0036) — what makes the provider multi-zone: each route
+    /// domain's DNS record goes into the zone whose name is the longest suffix of it.
+    /// </summary>
+    /// <remarks>
+    /// Requires <c>Zone → Zone → Read</c>, which a token predating ADR-0036 does not carry; every caller
+    /// therefore treats a failure as "nothing discovered" and falls back to the configured Zone ID.
+    /// Active zones only, because a pending one serves no DNS. One page of 50: an account with more zones
+    /// than that is well past the point where naming the zone explicitly is the clearer configuration,
+    /// and paging through hundreds of zones on a cache miss would not make the answer better.
+    /// </remarks>
+    public virtual async Task<IReadOnlyList<CloudflareZone>> ListZonesAsync(
+        string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, "zones?status=active&per_page=50", token, body: null,
+            CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareZone, ct);
+    }
+
+    /// <summary>
+    /// The name of one zone, read from a DNS record in it rather than from the zone endpoint — the
+    /// fallback for a token that can write a zone's records but not list zones at all
+    /// (<c>Zone:Read</c> is a separate permission from <c>DNS:Edit</c>). Null when the zone has no
+    /// records to ask, which is the empty-zone case and not an error.
+    /// </summary>
+    public virtual async Task<string?> GetZoneNameAsync(
+        string zoneId, string token, CancellationToken ct = default) {
+        var records = await SendAsync(HttpMethod.Get, $"zones/{zoneId}/dns_records?per_page=1", token,
+            body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareDnsRecord, ct);
+        var name = records.FirstOrDefault()?.ZoneName;
+        return string.IsNullOrWhiteSpace(name) ? null : name;
     }
 
     /// <summary>Deletes one DNS record — the route-removal path, for a CNAME Watchtower itself pointed at the tunnel.</summary>
@@ -185,7 +234,7 @@ public sealed class CloudflareApiClient : IDisposable {
     /// Cheap credential probe for the settings surface: verifies the token can read the account's
     /// tunnels. Returns null on success, else a human-readable reason.
     /// </summary>
-    public async Task<string?> ValidateAccessAsync(string accountId, string token, CancellationToken ct = default) =>
+    public virtual async Task<string?> ValidateAccessAsync(string accountId, string token, CancellationToken ct = default) =>
         await ProbeAsync($"accounts/{accountId}/cfd_tunnel?per_page=1", token, ct);
 
     /// <summary>
@@ -194,7 +243,7 @@ public sealed class CloudflareApiClient : IDisposable {
     /// CNAME upsert with <c>10000: Authentication error</c> in a reconcile nobody is watching — this is
     /// the same failure surfaced at save time, with Cloudflare's own words. Null when readable.
     /// </summary>
-    public async Task<string?> ValidateZoneAccessAsync(string zoneId, string token, CancellationToken ct = default) =>
+    public virtual async Task<string?> ValidateZoneAccessAsync(string zoneId, string token, CancellationToken ct = default) =>
         await ProbeAsync($"zones/{zoneId}/dns_records?per_page=1", token, ct);
 
     private async Task<string?> ProbeAsync(string url, string token, CancellationToken ct) {
@@ -311,6 +360,23 @@ public sealed record CloudflareDnsRecord {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
     [JsonPropertyName("content")] public string Content { get; init; } = "";
     [JsonPropertyName("proxied")] public bool? Proxied { get; init; }
+
+    /// <summary>
+    /// The name of the zone the record lives in, which Cloudflare returns on every record. Read only by
+    /// <see cref="CloudflareApiClient.GetZoneNameAsync"/>, to name a zone a token cannot list.
+    /// </summary>
+    [JsonPropertyName("zone_name")] public string ZoneName { get; init; } = "";
+}
+
+/// <summary>One DNS zone the API token can see (ADR-0036).</summary>
+public sealed record CloudflareZone {
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+
+    /// <summary>The zone's apex domain, e.g. <c>example.com</c>; punycode for an internationalised one.</summary>
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+
+    /// <summary><c>active</c>, <c>pending</c>, … — listings ask for the active ones, so this is a check, not a filter.</summary>
+    [JsonPropertyName("status")] public string Status { get; init; } = "";
 }
 
 public sealed record CloudflareDnsRecordRequest {
@@ -342,6 +408,29 @@ public sealed record CloudflareAccessAppRequest {
     /// leaves existing attachments untouched; a non-empty array replaces them.
     /// </summary>
     [JsonPropertyName("policies")] public string[]? Policies { get; init; }
+
+    /// <summary>
+    /// Every hostname (and path) this application covers, beyond the single <see cref="Domain"/>. What a
+    /// bypass application needs: one app naming <c>app.example.com/webhooks</c> and
+    /// <c>app.example.com/healthz</c> rather than one app per public path. Null omits the field, which is
+    /// what an ordinary whole-hostname application wants.
+    /// </summary>
+    /// <remarks>
+    /// This replaces the <c>self_hosted_domains</c> string array, which Cloudflare deprecated in favour of
+    /// <c>destinations</c> and stopped supporting on 21 November 2025.
+    /// </remarks>
+    [JsonPropertyName("destinations")] public CloudflareAccessDestination[]? Destinations { get; init; }
+}
+
+/// <summary>One destination of a self-hosted Access application: a <c>host</c> or <c>host/path</c>.</summary>
+public sealed record CloudflareAccessDestination {
+    /// <summary><c>public</c> — the only kind Watchtower publishes; the others are private-network ones.</summary>
+    [JsonPropertyName("type")] public required string Type { get; init; }
+
+    [JsonPropertyName("uri")] public required string Uri { get; init; }
+
+    /// <summary>A public destination for <paramref name="uri"/> (<c>host</c> or <c>host/path</c>).</summary>
+    public static CloudflareAccessDestination Public(string uri) => new() { Type = "public", Uri = uri };
 }
 
 public sealed record CloudflareAccessPolicy {
@@ -365,11 +454,22 @@ public sealed record CloudflareAccessRule {
     [JsonPropertyName("email")] public CloudflareEmailRule? Email { get; init; }
     [JsonPropertyName("email_domain")] public CloudflareEmailDomainRule? EmailDomain { get; init; }
     [JsonPropertyName("group")] public CloudflareGroupRule? Group { get; init; }
+    [JsonPropertyName("everyone")] public CloudflareEveryoneRule? Everyone { get; init; }
 
     public static CloudflareAccessRule ForEmail(string email) => new() { Email = new CloudflareEmailRule { Email = email } };
     public static CloudflareAccessRule ForEmailDomain(string domain) => new() { EmailDomain = new CloudflareEmailDomainRule { Domain = domain } };
     public static CloudflareAccessRule ForGroup(string groupId) => new() { Group = new CloudflareGroupRule { Id = groupId } };
+
+    /// <summary>
+    /// The rule every visitor matches. It is the subject of both policies that are not allow-lists: the
+    /// <c>deny</c> a protected route with no allow source gets, and the <c>bypass</c> that lets a route's
+    /// public paths through — in either case the decision, not the rule, is what does the work.
+    /// </summary>
+    public static CloudflareAccessRule ForEveryone() => new() { Everyone = new CloudflareEveryoneRule() };
 }
+
+/// <summary>Matches every visitor. Cloudflare spells it as an empty object, so this record has no members.</summary>
+public sealed record CloudflareEveryoneRule;
 
 public sealed record CloudflareEmailRule {
     [JsonPropertyName("email")] public required string Email { get; init; }
@@ -389,6 +489,7 @@ public sealed record CloudflareGroupRule {
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareTunnel>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<string>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareDnsRecord>>))]
+[JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareZone>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<JsonElement>))]
 [JsonSerializable(typeof(CloudflareEnvelope<CloudflareTunnelConfigurationResult>))]
 [JsonSerializable(typeof(CloudflareEnvelope<CloudflareAccessApp>))]

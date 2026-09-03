@@ -259,6 +259,9 @@ public sealed class AdoptStack(
             foreach (var v in missing)
                 db.StackEnvVars.Add(new StackEnvVar { StackId = stack.Id, Key = v.Key, Value = v.Value });
 
+            // Public, like the route TenantProvisioningService mints: the protected-by-default rule of
+            // ADR-0035 belongs to proxy.createRoute, and what a tenant's subdomain should default to is
+            // the tenancy model's question (ADR-0026) — recorded there as a follow-up.
             db.Routes.Add(new Route {
                 StackId = stack.Id,
                 Domain = domain,

@@ -10,11 +10,18 @@ same things you would otherwise click together under
 
 ## Setup
 
-1. Create an API token with **Cloudflare Tunnel: Edit**, **DNS: Edit**, and — for Access-protected
-   routes — **Access: Apps and Policies: Edit** (scoped to the account and the zone your domains
-   live under).
+1. Create an API token with **Cloudflare Tunnel: Edit**, **DNS: Edit**, **Zone: Read** (so Watchtower
+   can discover the zones your routes live under), and **Access: Apps and Policies: Edit** — the last
+   one is effectively required now that every new route is protected by default (see below), not just
+   for routes you protect deliberately. Scope it to the account and the zones your domains live under.
 2. In **Settings → Reverse proxy**, select the **Cloudflare Tunnel** provider and fill in the account
-   id, zone id, API token (validated on save), and a tunnel name (default `watchtower`).
+   id, API token (validated on save), and a tunnel name (default `watchtower`). The **zone id is
+   optional**, and there are two ways to fill it in:
+   - **Leave it blank** and let Watchtower discover your zones from the token. This is the one that
+     serves routes across more than one domain, and it needs `Zone:Read`; the save is refused if the
+     token cannot list a single zone.
+   - **Paste a zone id** as before. Nothing about your setup changes, `Zone:Read` is not required, and
+     every route whose domain no discovered zone covers falls back to that zone.
 3. Choose who runs `cloudflared`:
    - **Managed (default):** Watchtower finds or creates the remotely-managed tunnel, fetches its run
      token, and supervises a `watchtower-cloudflared` container over the Docker socket — the same way
@@ -34,7 +41,9 @@ On startup, on every route change/deploy, and on every settings change:
 - one ingress rule per route — `https://{domain}` → `http://{project}-{service}:{containerPort}`
   (plain HTTP inside the private per-stack ingress network; the public leg is TLS at the edge),
   terminated by the mandatory `http_status:404` catch-all;
-- one **proxied CNAME** per route domain → `{tunnelId}.cfargotunnel.com`;
+- one **proxied CNAME** per route domain → `{tunnelId}.cfargotunnel.com`, written **in the zone whose
+  name is the longest suffix of that domain** (falling back to the configured zone id — see
+  *Zone discovery* below);
 - the cloudflared container (managed mode) and its ingress-network memberships;
 - one **Zero Trust Access application** (`self_hosted`, named `watchtower: {domain}`) per protected
   route, with a single Watchtower-owned allow policy:
@@ -45,15 +54,71 @@ On startup, on every route change/deploy, and on every settings change:
   - **Restricted** routes admit exactly the emails behind the route's grants — granted users plus
     members of granted groups (accounts without an email address cannot be matched by Cloudflare and
     are effectively excluded);
-  - a protected route whose allow-list comes out **empty is skipped with a warning** rather than
-    published as a deny-all app, and any existing app is left untouched — a silent total lockout is
-    the worse failure;
+  - a protected route whose allow-list comes out **empty gets an explicit deny-all app** and its row
+    is set to `Error` saying so. Nobody reaches it until you configure an allow source or set the
+    route Public. This is deliberate and it reverses what earlier versions did: a lockout tells you
+    about itself the moment anyone tries to sign in, while a route that says *Authenticated* on the
+    Routes page and is served to everyone tells you nothing
+    ([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md));
   - a route flipped back to **Public** gets its Watchtower-created app deleted. Only apps carrying
     the `watchtower: ` name prefix are ever deleted; dashboard-made apps are never touched.
+- a second Access application, `watchtower: {host} (public paths)`, for a protected route that has
+  **bypass paths** — the anonymous allow-list you set under *Routes → Access* for webhooks and OAuth
+  callbacks. It carries `{host}{path}` for each path with a single `bypass` policy for Everyone, and
+  Cloudflare's most-specific-application rule is what makes it win on those paths while the route's own
+  app keeps everything else. It is published for a denied-out route too — a webhook has no identity to
+  present, and the lockout above is about people. Note that the edge matches by **path segment** while
+  Watchtower's own in-process check matches a raw prefix and refuses any path carrying a percent-encoded
+  byte or a `..` segment; the edge applies no such guard, so keep bypass prefixes narrow and point them
+  at endpoints that authenticate their own callers.
 
 Disabling the proxy — or switching back to Caddy — stops and removes only the managed cloudflared
 container. **The tunnel and the DNS records are kept**: deleting public DNS you may still want is not
 a toggle's job, and re-enabling reuses both.
+
+### New routes are protected by default
+
+A route you create with a domain is **Authenticated** unless you say otherwise, so a service is never
+published to the internet as the side effect of adding a route
+([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md)). The default is a setting —
+**Settings → Reverse proxy → Default access for new routes**, `authenticated` or `public` — and the
+new-route form lets an admin choose the mode and the bypass paths per route.
+
+Under this provider that only works if Cloudflare has somebody to let in, so **creating a protected
+route is refused while no allow source is configured**: allowed emails, email domains, Access group ids
+or reusable policy ids, any one of them. The message names the settings page and the Public alternative.
+Configure an allow source before you create your first route, and the rest of this page applies as
+written.
+
+Watchtower's own routes ([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md)) and
+LAN port routes ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md)) stay Public — a login
+page that needs a session is a login page nobody can use, and a `host:port` address is not somewhere a
+login redirect can return anyone to.
+
+### Zone discovery
+
+Watchtower assembles the list of domains it will offer you — under **Settings → Reverse proxy →
+Primary domains** and in the new-route form — from up to three sources
+([ADR-0036](../decisions/0036-routes-live-under-primary-domains.md)):
+
+- the domains you configured yourself in **Primary domains** (any provider);
+- the zones your API token can list, which needs `Zone:Read` (this provider only);
+- the configured zone id, when there is one — its name is read off any DNS record in it, so a token
+  without `Zone:Read` still gets its one zone.
+
+A domain you configured wins over a zone of the same name. Discovery is **cached for about five
+minutes**, keyed by your credentials, so changing the token takes effect without a restart. It also
+**fails open**: if the listing errors, you get fewer domains rather than an error page, and you can
+always type a hostname in full.
+
+The same list decides where a DNS record goes: the zone whose name is the **longest suffix** of the
+route's domain, so an account holding both `example.com` and `apps.example.com` sends
+`web.apps.example.com` to the more specific one. A domain no zone covers — and no configured zone id to
+fall back to — leaves its route at `Error` naming both remedies.
+
+**Beyond 50 zones, set the zone id.** The listing asks for the first 50 and does not paginate yet, so a
+larger account gets an arbitrary subset; a route under one of the others then relies on the configured
+zone id.
 
 ## Pre-existing tunnel hostnames (merge & import)
 
@@ -105,8 +170,6 @@ The full walkthrough — LAN names, publishing the host port, importing the root
   Cloudflare Access exists to do properly, so expose Watchtower through the Cloudflare dashboard and
   gate it there. The row is still worth keeping: it is where the realm's login address is written down,
   and that is what its protected apps redirect to.
-- **Single zone:** all route domains must live under the configured zone id. A domain outside it
-  fails its DNS upsert (logged, best-effort) while the rest proceed.
 - **Access control:** Watchtower's forward-auth (central-auth) does not run in front of tunneled
   routes — protection is Cloudflare Access, projected from `Route.AccessMode` as described above.
   Apps behind a protected route see Cloudflare's `Cf-Access-Jwt-Assertion`, not the

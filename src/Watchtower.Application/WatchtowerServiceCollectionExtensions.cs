@@ -184,6 +184,10 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
         services.AddSingleton<CloudflareApiClient>();
+        // The discovered-zone cache (ADR-0036). A singleton because the cache is the point: the create
+        // form asks on every visit and every reconcile asks again, while zones change about as often as
+        // someone buys a domain.
+        services.AddSingleton<CloudflareZoneCatalog>();
         services.AddSingleton<CloudflareTunnelProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
         // In-process provider: the routing table and the listener outcome are process state the request

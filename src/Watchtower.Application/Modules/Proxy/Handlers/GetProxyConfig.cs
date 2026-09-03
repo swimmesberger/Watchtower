@@ -25,6 +25,7 @@ public sealed class GetProxyConfig(
     internal static readonly string[] ProxyPaths = [
         WatchtowerSettingPaths.ProxyEnabled,
         WatchtowerSettingPaths.ProxyProvider,
+        WatchtowerSettingPaths.ProxyDefaultAccessMode,
         WatchtowerSettingPaths.ProxyAdminEmail,
         WatchtowerSettingPaths.ProxyCaddyImage,
         WatchtowerSettingPaths.ProxyYarpHttpPort,
@@ -35,6 +36,7 @@ public sealed class GetProxyConfig(
         WatchtowerSettingPaths.ProxyYarpAcmeEabHmacKey,
         WatchtowerSettingPaths.ProxyYarpRedirectHttpToHttps,
         WatchtowerSettingPaths.ProxyPortRoutesLanNames,
+        WatchtowerSettingPaths.ProxyPrimaryDomains,
         WatchtowerSettingPaths.ProxyCloudflareAccountId,
         WatchtowerSettingPaths.ProxyCloudflareZoneId,
         WatchtowerSettingPaths.ProxyCloudflareApiToken,
@@ -57,9 +59,21 @@ public sealed class GetProxyConfig(
 }
 
 /// <summary>The proxy configuration surfaced to the Settings page (secrets reduced to flags).</summary>
+/// <param name="DefaultAccessMode">
+/// The access mode a new route starts in (ADR-0035), as the <em>resolved</em> lowercase wire name rather
+/// than the raw stored string: the Settings page and the create form both preselect it, and a value
+/// neither of them could offer would leave them showing something the server does not mean.
+/// </param>
+/// <param name="PrimaryDomains">
+/// The base domains setting (ADR-0036), as the raw text the operator typed rather than the parsed list —
+/// this is the value their edit box holds, and reformatting it would rewrite their commas and ordering
+/// underneath them. The parsed, merged, ready-to-render answer is <c>proxy.listPrimaryDomains</c>'s.
+/// </param>
 public sealed record ProxyConfigDto(
     bool Enabled,
     string Provider,
+    string DefaultAccessMode,
+    string PrimaryDomains,
     string? AdminEmail,
     string CaddyImage,
     ProxyYarpConfigDto Yarp,
@@ -70,6 +84,8 @@ public sealed record ProxyConfigDto(
         ProxyOptions proxy, EnvironmentSettingPins pins, bool httpsListenerBound) => new(
         Enabled: proxy.Enabled,
         Provider: proxy.ProviderName(),
+        DefaultAccessMode: proxy.DefaultAccessModeName(),
+        PrimaryDomains: proxy.PrimaryDomains,
         AdminEmail: proxy.AdminEmail,
         CaddyImage: proxy.CaddyImage,
         Yarp: new ProxyYarpConfigDto(

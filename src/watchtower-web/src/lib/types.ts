@@ -907,6 +907,21 @@ export interface LanNameCandidate {
   detail: string
 }
 
+/**
+ * A base domain routes live under (ADR-0036). Derived, never persisted as a list: the server merges what
+ * `Watchtower:Proxy:PrimaryDomains` holds with the zones the Cloudflare token can see, so a domain can be
+ * offered here without anybody having typed it. `proxy.listPrimaryDomains` sorts by name and never errors.
+ */
+export interface PrimaryDomain {
+  name: string
+  /** Where it was learned: the setting, or a zone discovered through the Cloudflare API. */
+  source: 'configured' | 'cloudflare-zone'
+  /** The Cloudflare zone id, when it came from one. Null for a configured entry. */
+  zoneId: string | null
+  /** One sentence saying where it came from — shown as a group subtitle for discovered zones. */
+  detail: string
+}
+
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
 export interface ProxyCloudflareConfig {
   accountId: string | null
@@ -941,9 +956,22 @@ export interface ProxyConfig {
   yarp: ProxyYarpConfig
   portRoutes: ProxyPortRoutesConfig
   cloudflare: ProxyCloudflareConfig
+  /** The resolved access policy a new domain route starts under (ADR-0035). */
+  defaultAccessMode: DefaultAccessMode
+  /**
+   * The primary-domains setting exactly as it was typed — comma- or newline-separated, not a parsed list.
+   * The parsed, merged view is what `proxy.listPrimaryDomains` answers with.
+   */
+  primaryDomains: string
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
+
+/**
+ * What `Watchtower:Proxy:DefaultAccessMode` may hold. `Restricted` is not offered: a create carries no
+ * grants, so a route starting restricted would admit nobody.
+ */
+export type DefaultAccessMode = 'authenticated' | 'public'
 
 /** `proxy.updateConfig` request. Null provider fields keep the stored values (secrets included). */
 export interface UpdateProxyConfigRequest {
@@ -975,6 +1003,16 @@ export interface UpdateProxyConfigRequest {
   cloudflareAccessAllowedEmailDomains?: string | null
   cloudflareAccessGroupIds?: string | null
   cloudflareAccessReusablePolicyIds?: string | null
+  /**
+   * The access policy new domain routes start under. Sent under every provider, like `portRoutesLanNames`;
+   * null leaves the stored value alone.
+   */
+  defaultAccessMode?: DefaultAccessMode | null
+  /**
+   * Comma- or newline-separated base domains routes live under (ADR-0036). Sent under every provider,
+   * like `portRoutesLanNames`; null leaves the stored value alone.
+   */
+  primaryDomains?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
@@ -1024,7 +1062,12 @@ export interface Route {
   binding: RouteBinding
   /** The host port a `port` route's own TLS listener answers on; null on a `domain` route. */
   listenPort: number | null
+  /** The route's access policy. Lowercase on the wire, unlike the `AccessMode` `proxy.setAccess` speaks. */
+  accessMode: RouteAccessModeWire
 }
+
+/** `RouteDto.accessMode` — the same policy as `AccessMode`, spelled the way the route list reports it. */
+export type RouteAccessModeWire = 'public' | 'authenticated' | 'restricted'
 
 export interface CreateRouteRequest {
   stackId: number
@@ -1045,6 +1088,13 @@ export interface CreateRouteRequest {
   binding?: RouteBinding | null
   /** `port` routes only: the host port to listen on. Must also be published on Watchtower's container. */
   listenPort?: number | null
+  /**
+   * The access policy the route starts under. Omitted means the configured default (ADR-0035); naming one
+   * explicitly is admin-only, and `Restricted` is refused because a create carries no grants.
+   */
+  accessMode?: AccessMode | null
+  /** Newline-separated request-path prefixes left anonymous on a protected route; null when none. */
+  bypassPaths?: string | null
 }
 
 export interface UpdateRouteRequest {
