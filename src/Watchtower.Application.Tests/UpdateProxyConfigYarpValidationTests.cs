@@ -602,6 +602,93 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         Assert.Contains("new routes public", row.Detail, StringComparison.Ordinal);
     }
 
+    // ── The primary domains (ADR-0036) ───────────────────────────────────────
+
+    /// <summary>
+    /// The setting's rules are <c>PrimaryDomains.TryParse</c>'s, and the interesting one is that an IP
+    /// address — which the LAN names field next to it accepts — is not a domain routes can be built on.
+    /// </summary>
+    [Fact]
+    public async Task APrimaryDomainThatIsAnIpAddress_IsRefused() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { PrimaryDomains = "example.com, 192.168.1.10" });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("192.168.1.10", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("separated by commas or newlines", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Stored as typed rather than reformatted: this is the text the operator's edit box holds, and
+    /// rewriting their commas and ordering underneath them would make Save feel like it changed something
+    /// they did not ask about.
+    /// </summary>
+    [Fact]
+    public async Task ThePrimaryDomainsArePersistedAndEchoedVerbatim() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(
+            host, Command() with { PrimaryDomains = "  example.com, eu.example.com  " });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("example.com, eu.example.com", result.Value.Config.PrimaryDomains);
+        var settings = host.Services.GetRequiredService<ISettingsManager>();
+        Assert.Equal(
+            "example.com, eu.example.com",
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyPrimaryDomains, SettingsScope.Global, Ct));
+    }
+
+    /// <summary>
+    /// Empty is a real answer — a deployment that publishes under no base domain at all — so the create
+    /// form simply goes on asking for whole hostnames.
+    /// </summary>
+    [Fact]
+    public async Task NoPrimaryDomainsIsValid() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:PrimaryDomains", "example.com"));
+        var result = await SaveAsync(host, Command() with { PrimaryDomains = "" });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("", result.Value.Config.PrimaryDomains);
+    }
+
+    /// <summary>
+    /// Enabling the proxy is the moment the stored value starts being offered, so a value that cannot be
+    /// read is refused then too — the same rule the LAN names hold to.
+    /// </summary>
+    [Fact]
+    public async Task EnablingTheProxy_ChecksTheStoredPrimaryDomains() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:PrimaryDomains", "*.example.com"));
+        var result = await SaveAsync(
+            host, Command() with { Enabled = true, Provider = ProxyProviderNames.Yarp });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("*.example.com", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task APinnedPrimaryDomainsValueIsRefused() {
+        using var host = AuthTestHost.Start();
+        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__PRIMARYDOMAINS"]);
+
+        var result = await SaveAsync(host, Command() with { PrimaryDomains = "example.com" }, pins: pins);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("WATCHTOWER__PROXY__PRIMARYDOMAINS", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(WatchtowerSettingPaths.ProxyPrimaryDomains, GetProxyConfig.ProxyPaths);
+    }
+
+    /// <summary>They decide which domains the next route is offered under, so the trail names them.</summary>
+    [Fact]
+    public async Task TheAuditLineNamesThePrimaryDomains() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { PrimaryDomains = "example.com, eu.example.com" });
+        Assert.True(result.IsSuccess, Describe(result));
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuditEvents.SingleAsync(Ct);
+        Assert.Contains("primary domains example.com, eu.example.com", row.Detail, StringComparison.Ordinal);
+    }
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     private static UpdateProxyConfig.Command Command() =>
