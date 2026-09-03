@@ -21,7 +21,9 @@ namespace Watchtower.Application.Services;
 ///   <item>joins each routed service's container to its per-stack ingress network under the stable
 ///   <c>{project}-{service}</c> alias (<see cref="ProxyIngressNetworks"/> — same topology as Caddy);</item>
 ///   <item>replaces the tunnel's ingress rules with a projection of the route table and upserts a
-///   proxied CNAME (<c>{domain}</c> → <c>{tunnelId}.cfargotunnel.com</c>) per route.</item>
+///   proxied CNAME (<c>{domain}</c> → <c>{tunnelId}.cfargotunnel.com</c>) per route — each into the zone
+///   whose name is the longest suffix of that route's hostname (ADR-0036), so one deployment can publish
+///   across every zone its API token can read.</item>
 /// </list>
 /// TLS terminates at Cloudflare's edge — no host ports, no ACME. Runtime-switchable like
 /// <see cref="CaddyManager"/>: an options change starts, stops or refreshes the provider; disabling
@@ -47,6 +49,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     private readonly DockerEngineClient _docker;
     private readonly ProxyIngressNetworks _networks;
     private readonly CloudflareApiClient _api;
+    private readonly CloudflareZoneCatalog _zones;
     private readonly AuditLog _audit;
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<CloudflareTunnelProvider> _logger;
@@ -62,6 +65,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         DockerEngineClient docker,
         ProxyIngressNetworks networks,
         CloudflareApiClient api,
+        CloudflareZoneCatalog zones,
         AuditLog audit,
         IOptionsMonitor<WatchtowerOptions> options,
         ILogger<CloudflareTunnelProvider> logger) {
@@ -69,6 +73,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         _docker = docker;
         _networks = networks;
         _api = api;
+        _zones = zones;
         _audit = audit;
         _options = options;
         _logger = logger;
@@ -200,10 +205,24 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             // CNAME points at the tunnel, Error with Cloudflare's own words when it does not — instead of
             // sitting at Pending with the reason only in the audit trail.
             var target = $"{tunnel.Id}.cfargotunnel.com";
+            // Listed once for the whole loop rather than per domain: the answer is the same for all of
+            // them, and it is cached anyway (ADR-0036).
+            var zones = await _zones.ListAsync(ct);
             foreach (var domain in domains.Distinct(StringComparer.OrdinalIgnoreCase)) {
-                var routeIds = routes.Where(r => string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).Select(r => r.Id);
+                var routeIds = routes.Where(r => string.Equals(r.Domain, domain, StringComparison.OrdinalIgnoreCase)).Select(r => r.Id).ToList();
+                var zoneId = ZoneForDomain(zones, domain, cf.ZoneId);
+                if (zoneId is null) {
+                    // Not an exception: the route is well-formed and the tunnel now carries its ingress
+                    // rule — what is missing is a zone to point at it, which only the operator can supply.
+                    var missing = NoZoneCovers(domain);
+                    await _audit.RecordAsync(AuditCategory, "dns.upsert", domain, $"proxied CNAME → {target}",
+                        success: false, error: missing, ct: ct);
+                    await SetRouteStatusAsync(routeIds, RouteStatus.Error, missing, ct);
+                    _logger.LogWarning("No Cloudflare zone covers {Domain}; its DNS record was not written.", domain);
+                    continue;
+                }
                 try {
-                    var upsert = await _api.UpsertDnsCnameAsync(cf.ZoneId!, domain, target, cf.ApiToken!, ct);
+                    var upsert = await _api.UpsertDnsCnameAsync(zoneId, domain, target, cf.ApiToken!, ct);
                     if (upsert != CloudflareDnsUpsert.Unchanged) {
                         await _audit.RecordAsync(AuditCategory,
                             upsert == CloudflareDnsUpsert.Created ? "dns.create" : "dns.update",
@@ -211,7 +230,7 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     }
                     await SetRouteStatusAsync(routeIds, RouteStatus.Active, null, ct);
                 } catch (Exception ex) {
-                    // Per-domain best effort: one domain outside the configured zone must not stop the rest.
+                    // Per-domain best effort: one zone refusing its write must not stop the other domains.
                     await _audit.RecordAsync(AuditCategory, "dns.upsert", domain, $"proxied CNAME → {target}",
                         success: false, error: ex.Message, ct: ct);
                     await SetRouteStatusAsync(routeIds, RouteStatus.Error, $"DNS record not written: {ex.Message}", ct);
@@ -279,12 +298,22 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         // 2. The CNAME — but only one that points at THIS tunnel. A record someone else made for the
         // name is not Watchtower's to delete, even though the route named the same hostname.
         var target = $"{tunnel.Id}.cfargotunnel.com";
-        var records = await _api.ListDnsRecordsAsync(cf.ZoneId!, domain, cf.ApiToken!, ct);
+        var zoneId = ZoneForDomain(await _zones.ListAsync(ct), domain, cf.ZoneId);
+        if (zoneId is null) {
+            // Recorded and returned rather than thrown: the caller is deleting the route row, and a
+            // hostname whose zone nobody can name has no record here to leave behind either. Throwing
+            // would strand the deletion over a record that may not exist.
+            await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}",
+                success: false, error: NoZoneCovers(domain), actor: actor, ct: ct);
+            _logger.LogWarning("No Cloudflare zone covers {Domain}; no DNS record was looked for.", domain);
+            return;
+        }
+        var records = await _api.ListDnsRecordsAsync(zoneId, domain, cf.ApiToken!, ct);
         foreach (var record in records.Where(r =>
                      string.Equals(r.Type, "CNAME", StringComparison.OrdinalIgnoreCase)
                      && string.Equals(r.Content, target, StringComparison.OrdinalIgnoreCase))) {
             try {
-                await _api.DeleteDnsRecordAsync(cf.ZoneId!, record.Id, cf.ApiToken!, ct);
+                await _api.DeleteDnsRecordAsync(zoneId, record.Id, cf.ApiToken!, ct);
                 await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}", actor: actor, ct: ct);
             } catch (Exception ex) {
                 await _audit.RecordAsync(AuditCategory, "dns.delete", domain, $"proxied CNAME → {target}",
@@ -448,9 +477,31 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         : string.IsNullOrWhiteSpace(cf.CloudflaredContainerName) ? null
         : cf.CloudflaredContainerName.Trim();
 
+    /// <summary>
+    /// The zone one hostname's DNS record belongs in (ADR-0036): the discovered zone whose name is the
+    /// longest suffix of it, and failing that the configured Zone ID. Null when neither can say.
+    /// </summary>
+    /// <remarks>
+    /// The configured id is the fallback rather than the first answer on purpose. It is one zone and a
+    /// deployment can publish under several, so preferring it would send every hostname to the same zone
+    /// — including the ones that demonstrably live elsewhere. As a fallback it does the opposite: an
+    /// install whose token cannot list zones behaves exactly as it did before this ADR.
+    /// </remarks>
+    internal static string? ZoneForDomain(
+        IReadOnlyList<CloudflareZone> zones, string domain, string? configuredZoneId) =>
+        CloudflareZoneCatalog.ResolveZoneId(zones, domain)
+        ?? (string.IsNullOrWhiteSpace(configuredZoneId) ? null : configuredZoneId.Trim());
+
+    /// <summary>
+    /// What a route whose hostname no zone covers is told. Stated once so the reconcile, the deletion path
+    /// and the tests read the same sentence.
+    /// </summary>
+    internal static string NoZoneCovers(string domain) =>
+        $"No Cloudflare zone covers {domain} — grant the token Zone:Read on that zone, or set its zone id "
+        + "under Settings → Reverse proxy.";
+
     private static bool Misconfigured(CloudflareProxyOptions cf, out string reason) {
         if (string.IsNullOrWhiteSpace(cf.AccountId)) { reason = "Proxy:Cloudflare:AccountId is not set."; return true; }
-        if (string.IsNullOrWhiteSpace(cf.ZoneId)) { reason = "Proxy:Cloudflare:ZoneId is not set."; return true; }
         if (string.IsNullOrWhiteSpace(cf.ApiToken)) { reason = "Proxy:Cloudflare:ApiToken is not set."; return true; }
         if (string.IsNullOrWhiteSpace(cf.TunnelName)) { reason = "Proxy:Cloudflare:TunnelName is not set."; return true; }
         reason = "";

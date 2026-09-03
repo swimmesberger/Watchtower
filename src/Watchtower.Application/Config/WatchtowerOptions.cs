@@ -573,6 +573,25 @@ public sealed record ProxyOptions {
     /// </summary>
     public PortRouteOptions PortRoutes { get; init; } = new();
 
+    /// <summary>
+    /// The base domains this deployment publishes under (ADR-0036) — host names separated by commas or
+    /// newlines (<c>example.com, eu.example.com</c>). They are a convenience, never a constraint: the
+    /// create form offers a subdomain box under each of them and the Routes page groups by them, while a
+    /// hostname none of them covers stays a perfectly good route.
+    /// </summary>
+    /// <remarks>
+    /// Provider-independent, like <see cref="PortRoutes"/> and for a plainer reason: this says what the
+    /// operator publishes under, which is a fact about their domains rather than about whichever plane
+    /// terminates them. Under the Cloudflare provider the zones the API token can read are merged in on
+    /// top of these (<c>proxy.listPrimaryDomains</c>), so an operator there usually needs to type nothing
+    /// here at all.
+    /// <para>
+    /// Empty by default, and empty simply means nothing is offered: the create form asks for a whole
+    /// hostname exactly as it did before ADR-0036.
+    /// </para>
+    /// </remarks>
+    public string PrimaryDomains { get; init; } = "";
+
     /// <summary>Cloudflare Tunnel settings. Only used when <see cref="Provider"/> is <c>cloudflare</c>.</summary>
     public CloudflareProxyOptions Cloudflare { get; init; } = new();
 
@@ -762,7 +781,13 @@ public sealed record CloudflareProxyOptions {
     /// <summary>Cloudflare account id owning the tunnel.</summary>
     public string? AccountId { get; init; }
 
-    /// <summary>Zone id of the domain the route hostnames live under (single-zone by design for now).</summary>
+    /// <summary>
+    /// Zone id of the domain the route hostnames live under. Optional since ADR-0036: Watchtower lists
+    /// the zones the token can read and writes each route's DNS into the zone whose name is the longest
+    /// suffix of its hostname, which is what makes the provider multi-zone. Set it when the token carries
+    /// no <c>Zone:Read</c>, or when more than one zone could claim a hostname and you want to say which —
+    /// it is the fallback for every domain no listed zone covers.
+    /// </summary>
     public string? ZoneId { get; init; }
 
     /// <summary>

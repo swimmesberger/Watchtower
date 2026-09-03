@@ -182,4 +182,46 @@ public static class PrimaryDomains {
         var sub = (subdomain ?? "").Trim().Trim('.').Trim();
         return sub.Length == 0 ? primary : $"{sub}.{primary}";
     }
+
+    /// <summary>
+    /// The one list the create form and the Routes page render: what the operator configured, plus the
+    /// zones the Cloudflare token can see (ADR-0036).
+    /// </summary>
+    /// <remarks>
+    /// A domain in both sources appears once, as <see cref="PrimaryDomainSources.Configured"/> — the
+    /// operator typing a domain into the setting is a statement, and a zone listing that happens to agree
+    /// with it is not new information. Sorted by name so the list is stable across refreshes: the zone
+    /// listing's order is Cloudflare's and can change between calls, which would otherwise reshuffle a
+    /// picker under the cursor.
+    /// </remarks>
+    /// <param name="configured">Domains from the setting, already through <see cref="TryParse"/>.</param>
+    /// <param name="zones">Zones as the provider listed them; one with no name is skipped, since a domain
+    /// with no name is nothing a route could be built on.</param>
+    public static IReadOnlyList<PrimaryDomain> Merge(
+        IReadOnlyList<string> configured, IReadOnlyList<CloudflareZone> zones) {
+        ArgumentNullException.ThrowIfNull(configured);
+        ArgumentNullException.ThrowIfNull(zones);
+
+        var merged = new List<PrimaryDomain>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in configured) {
+            if (string.IsNullOrWhiteSpace(name) || !seen.Add(name.Trim())) continue;
+            merged.Add(new PrimaryDomain(
+                name.Trim(), PrimaryDomainSources.Configured, ZoneId: null, ConfiguredDetail));
+        }
+        foreach (var zone in zones) {
+            var name = zone?.Name?.Trim();
+            if (string.IsNullOrEmpty(name) || !seen.Add(name)) continue;
+            merged.Add(new PrimaryDomain(
+                name, PrimaryDomainSources.CloudflareZone, zone!.Id, CloudflareZoneDetail));
+        }
+        merged.Sort((left, right) => string.CompareOrdinal(left.Name, right.Name));
+        return merged;
+    }
+
+    /// <summary>What a <see cref="PrimaryDomainSources.Configured"/> domain says about itself.</summary>
+    internal const string ConfiguredDetail = "Listed under Settings → Reverse proxy → Primary domains.";
+
+    /// <summary>What a <see cref="PrimaryDomainSources.CloudflareZone"/> domain says about itself.</summary>
+    internal const string CloudflareZoneDetail = "A zone your Cloudflare API token can see.";
 }

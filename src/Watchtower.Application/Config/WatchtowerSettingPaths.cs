@@ -143,6 +143,13 @@ public static class WatchtowerSettingPaths {
     /// happened to the new ones since.
     /// </summary>
     public const string ProxyPortRoutesMigrated = "Watchtower:Proxy:PortRoutes:Migrated";
+
+    /// <summary>
+    /// The base domains routes are offered under (ADR-0036). Not under <c>Proxy:Cloudflare:</c> even
+    /// though the Cloudflare provider merges its zones into the same list: what an operator publishes
+    /// under is a fact about their domains, and moving providers must not lose it.
+    /// </summary>
+    public const string ProxyPrimaryDomains = "Watchtower:Proxy:PrimaryDomains";
     public const string ProxyCloudflareAccountId = "Watchtower:Proxy:Cloudflare:AccountId";
     public const string ProxyCloudflareZoneId = "Watchtower:Proxy:Cloudflare:ZoneId";
     public const string ProxyCloudflareApiToken = "Watchtower:Proxy:Cloudflare:ApiToken";
