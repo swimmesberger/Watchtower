@@ -16,6 +16,7 @@ import type {
   BackupConfig,
   BackupEvent,
   BackupProvider,
+  DefaultAccessMode,
   MetricsBackend,
   MetricsConfig,
   ProxyConfig,
@@ -668,6 +669,15 @@ const PROVIDER_LABELS: Record<ProxyProvider, string> = {
 /** What the picker offers, default first — the same order the backend accepts them in. */
 const SELECTABLE_PROVIDERS: ProxyProvider[] = ['yarp', 'caddy', 'cloudflare']
 
+/**
+ * The two policies a new route may start under, protected first. `Restricted` is deliberately absent:
+ * a create carries no grants, so a route starting restricted would admit nobody.
+ */
+const DEFAULT_ACCESS_MODES: { value: DefaultAccessMode; label: string }[] = [
+  { value: 'authenticated', label: 'Protected — any signed-in user may enter' },
+  { value: 'public', label: 'Public — no access control' },
+]
+
 interface ProxyDraft {
   enabled: boolean
   provider: ProxyProvider
@@ -688,6 +698,12 @@ interface ProxyDraft {
    * terminates the public domains (ADR-0033 addendum), so it is sent under every provider.
    */
   portRoutesLanNames: string
+  /**
+   * The access policy a new domain route starts under (ADR-0035). Like the LAN names, not a provider
+   * field: routes are protected by Watchtower's own gate whichever provider terminates them, so it is
+   * sent under every provider.
+   */
+  defaultAccessMode: DefaultAccessMode
   cfAccountId: string
   cfZoneId: string
   /** Only sent when non-empty — an empty field keeps the stored token. */
@@ -717,6 +733,7 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     yarpAcmeEabHmacKey: '',
     yarpRedirectHttpToHttps: config.yarp.redirectHttpToHttps,
     portRoutesLanNames: config.portRoutes.lanNames,
+    defaultAccessMode: config.defaultAccessMode,
     cfAccountId: config.cloudflare.accountId ?? '',
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
@@ -863,6 +880,9 @@ function ProxyCard() {
         // terminates the domains. Empty is a real value here — it means the internal CA is unused — so
         // the field is sent as typed rather than coalesced away, and clearing it is a save like any other.
         portRoutesLanNames: next.portRoutesLanNames.trim(),
+        // Sent under every provider for the same reason as the LAN names above: what a new route starts
+        // under is Watchtower's own policy, not something the selected provider has a say in.
+        defaultAccessMode: next.defaultAccessMode,
         cloudflareAccountId: next.cfAccountId.trim() || null,
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
@@ -971,6 +991,37 @@ function ProxyCard() {
                   </Select>
                   {pinnedPath('Watchtower:Proxy:Provider') && (
                     <PinnedNote path="Watchtower:Proxy:Provider" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            {/* Only the starting point: this changes nothing about the routes that already exist, and
+                an administrator can still choose a mode per route in the create form. */}
+            <Field
+              label="Default access for new routes"
+              hint="What a new domain route starts under. Watchtower's own hostnames and LAN port routes are always public."
+            >
+              {({ id }) => (
+                <>
+                  <Select
+                    value={form.defaultAccessMode}
+                    onValueChange={v => set('defaultAccessMode', v as DefaultAccessMode)}
+                    disabled={isPinned('Watchtower:Proxy:DefaultAccessMode')}
+                  >
+                    <SelectTrigger id={id}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DEFAULT_ACCESS_MODES.map(m => (
+                        <SelectItem key={m.value} value={m.value}>
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {pinnedPath('Watchtower:Proxy:DefaultAccessMode') && (
+                    <PinnedNote path="Watchtower:Proxy:DefaultAccessMode" />
                   )}
                 </>
               )}

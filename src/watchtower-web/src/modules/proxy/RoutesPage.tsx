@@ -10,6 +10,7 @@ import type {
   IdentityHeaderMode,
   Route,
   RouteAccess,
+  RouteAccessModeWire,
   RouteBinding,
   RouteStatus,
   RouteTarget,
@@ -78,6 +79,37 @@ const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] 
   },
 ]
 
+/**
+ * The Access badge, keyed on the lowercase mode `proxy.listRoutes` reports. `Public` is the warning one:
+ * since ADR-0035 a route is protected unless somebody chose otherwise, so an unguarded address is the
+ * exception worth spotting in the list, not the norm.
+ */
+const ACCESS_TONE: Record<RouteAccessModeWire, BadgeTone> = {
+  public: 'warn',
+  authenticated: 'ok',
+  restricted: 'ok',
+}
+
+const ACCESS_LABEL: Record<RouteAccessModeWire, string> = {
+  public: 'Public',
+  authenticated: 'Protected',
+  restricted: 'Restricted',
+}
+
+/**
+ * What the tooltip beside the badge says. Public gets a sentence of its own: the dialog's copy describes
+ * the choice ("no access control — every request is proxied") where a row has to answer "who gets in?".
+ */
+const ACCESS_DESCRIPTION: Record<RouteAccessModeWire, string> = {
+  public: 'Anyone can reach this route.',
+  authenticated: accessModeDescription('Authenticated'),
+  restricted: accessModeDescription('Restricted'),
+}
+
+function accessModeDescription(value: AccessMode): string {
+  return ACCESS_MODES.find((m) => m.value === value)?.description ?? ''
+}
+
 /** The identity-forwarding modes in menu order, with the label the Access dialog shows for each. */
 const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
   { value: 'None', label: 'JWT only (default)' },
@@ -101,6 +133,11 @@ const emptyForm = {
   containerPort: '',
   listenPort: '',
   tlsEnabled: true,
+  // The access policy to create the route under (ADR-0035). Empty means "untouched": the request carries
+  // no mode at all and the configured default decides, which is also the only shape a non-administrator
+  // may send. Naming one explicitly is admin-only, so an empty field is never a silent downgrade.
+  accessMode: '' as AccessMode | '',
+  bypassPaths: '',
   // True once the user opts out of the discovered-value dropdown to type a custom value.
   serviceManual: false,
   portManual: false,
@@ -307,10 +344,13 @@ export function RoutesPage() {
   // The key is the Settings page's, deliberately: saving the proxy card invalidates ['proxy'], and a
   // key of this page's own would leave the "no LAN names" banner up — and the submit button disabled —
   // for a staleTime after the operator went and configured exactly what it asked them to.
+  // Also fetched for the access half of the create form, which needs the default mode and the Cloudflare
+  // allow sources — and needs them whether or not the proxy is on, because a route can be created ahead
+  // of turning it on and would still be created protected.
   const proxyConfigQuery = useQuery({
     queryKey: ['proxy', 'config'],
     queryFn: api.proxy.getConfig,
-    enabled: supportsPortRoutes,
+    enabled: supportsPortRoutes || canManageAccess,
   })
   const proxyConfig = proxyConfigQuery.data
   const lanNames = useMemo(() => parseLanNames(proxyConfig?.portRoutes.lanNames), [proxyConfig])
@@ -322,6 +362,24 @@ export function RoutesPage() {
   // then refusing the submit — would be sending them after something that may already be there.
   const lanNamesKnown = proxyConfig != null
   const lanNamesUnavailable = proxyConfigQuery.isError
+
+  // What a new route starts under when the form doesn't say (ADR-0035). Protected while the settings are
+  // still loading: that is the shipped default, and showing "Public" first would misdescribe what the
+  // Create button is about to do.
+  const defaultAccessMode: AccessMode =
+    proxyConfig?.defaultAccessMode === 'public' ? 'Public' : 'Authenticated'
+  const formAccessMode = form.accessMode || defaultAccessMode
+  // Under Cloudflare a protected route's Access application needs somebody to let in. With all four allow
+  // sources blank the reconcile publishes deny-all, so the server refuses the create — say so before the
+  // operator fills the form in. Only once the settings actually answered: a query in flight is not an
+  // empty configuration.
+  const cfAllowSourceMissing =
+    isCloudflare &&
+    proxyConfig != null &&
+    proxyConfig.cloudflare.accessAllowedEmails.trim() === '' &&
+    proxyConfig.cloudflare.accessAllowedEmailDomains.trim() === '' &&
+    proxyConfig.cloudflare.accessGroupIds.trim() === '' &&
+    proxyConfig.cloudflare.accessReusablePolicyIds.trim() === ''
 
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
   // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
@@ -611,6 +669,12 @@ export function RoutesPage() {
       containerPort,
       tlsEnabled: isCloudflare || form.tlsEnabled,
       isPrimary: false,
+      // Naming a mode is admin-only and an untouched field means "use the configured default", so both
+      // stay null unless an administrator actually picked something. Bypass paths belong to a protected
+      // route; on a public one they would be text with nothing to exempt from.
+      accessMode: canManageAccess ? (form.accessMode || null) : null,
+      bypassPaths:
+        canManageAccess && formAccessMode !== 'Public' ? (form.bypassPaths.trim() || null) : null,
     })
   }
 
@@ -699,6 +763,16 @@ export function RoutesPage() {
       </Tooltip>
     ) : null
 
+  /**
+   * Who gets through this route. Shown on every row, port and Watchtower ones included: those are always
+   * Public and reading "Public" there is the truth, not an omission.
+   */
+  const accessBadge = (r: Route) => (
+    <Tooltip label={ACCESS_DESCRIPTION[r.accessMode]}>
+      <Badge tone={ACCESS_TONE[r.accessMode]}>{ACCESS_LABEL[r.accessMode]}</Badge>
+    </Tooltip>
+  )
+
   const columns: DataListColumn<Route>[] = [
     {
       key: 'domain',
@@ -741,6 +815,11 @@ export function RoutesPage() {
             {r.serviceName}:{r.containerPort}
           </span>
         ),
+    },
+    {
+      key: 'access',
+      header: 'Access',
+      cell: (r) => accessBadge(r),
     },
     {
       key: 'tls',
@@ -806,6 +885,7 @@ export function RoutesPage() {
         <div className="flex flex-wrap items-center gap-1.5 text-[13px] text-text-2">
           <Badge tone="brand">Watchtower</Badge>
           {r.isLoginRoute && <Badge tone="ok">login host ({r.realmSlug ?? `realm ${r.realmId}`})</Badge>}
+          {accessBadge(r)}
           <span>· {servesHttps(r) ? 'HTTPS' : 'HTTP'}</span>
         </div>
       ) : (
@@ -817,7 +897,10 @@ export function RoutesPage() {
             </span>{' '}
             · {r.binding === 'port' ? 'HTTPS (LAN port)' : servesHttps(r) ? 'HTTPS' : 'HTTP'}
           </p>
-          {unpublishedBadge(r)}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {accessBadge(r)}
+            {unpublishedBadge(r)}
+          </div>
         </div>
       )}
       <div className="flex items-center justify-between border-t border-border pt-3">
@@ -1039,7 +1122,7 @@ export function RoutesPage() {
           <CardContent>
             <SectionHeader
               title="New route"
-              description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically."
+              description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically, and new domain routes are protected by default."
             />
             <form onSubmit={submit} className="space-y-4">
               {supportsPortRoutes && (
@@ -1339,6 +1422,69 @@ export function RoutesPage() {
                   </Field>
                 </div>
               </div>
+              )}
+
+              {/* Only on a service route to a domain: a port route is LAN-only and a Watchtower route
+                  serves the login page, so both are Public by definition and the server refuses an
+                  access field on them. Admin-only, like every other access control on this page. */}
+              {canManageAccess && !isPortForm && !isWatchtowerForm && (
+                <>
+                  <Field label="Who can access">
+                    {({ id }) => (
+                      <>
+                        <Select
+                          value={formAccessMode}
+                          onValueChange={(v) => setForm((f) => ({ ...f, accessMode: v as AccessMode }))}
+                        >
+                          <SelectTrigger id={id}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {/* Restricted is left out: a create carries no grants, so a route starting
+                                restricted would admit nobody. Pick it in the Access dialog afterwards,
+                                where the users and groups can be chosen in the same breath. */}
+                            {ACCESS_MODES.filter((m) => m.value !== 'Restricted').map((m) => (
+                              <SelectItem key={m.value} value={m.value}>
+                                {m.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="mt-1.5 text-xs text-text-3">
+                          {accessModeDescription(formAccessMode)}
+                        </p>
+                      </>
+                    )}
+                  </Field>
+
+                  {formAccessMode !== 'Public' && (
+                    <Field
+                      label="Public paths"
+                      hint="Paths exempt from access control, e.g. /api/webhooks/*. One per line."
+                    >
+                      {({ id, describedBy }) => (
+                        <Textarea
+                          id={id}
+                          aria-describedby={describedBy}
+                          mono
+                          value={form.bypassPaths}
+                          onChange={(e) => setForm((f) => ({ ...f, bypassPaths: e.target.value }))}
+                          placeholder={'/api/webhooks/\n/healthz'}
+                          spellCheck={false}
+                        />
+                      )}
+                    </Field>
+                  )}
+
+                  {formAccessMode !== 'Public' && cfAllowSourceMissing && (
+                    <Banner tone="warn" title="Cloudflare Access has no allow source">
+                      A protected route's Access application admits the emails, email domains, Access
+                      groups and reusable policies you configure — and none are set, so this route would
+                      deny everyone. Add at least one under Settings → Reverse proxy, or create this
+                      route as Public.
+                    </Banner>
+                  )}
+                </>
               )}
 
               {isPortForm ? (

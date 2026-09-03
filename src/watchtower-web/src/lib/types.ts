@@ -941,9 +941,17 @@ export interface ProxyConfig {
   yarp: ProxyYarpConfig
   portRoutes: ProxyPortRoutesConfig
   cloudflare: ProxyCloudflareConfig
+  /** The resolved access policy a new domain route starts under (ADR-0035). */
+  defaultAccessMode: DefaultAccessMode
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
+
+/**
+ * What `Watchtower:Proxy:DefaultAccessMode` may hold. `Restricted` is not offered: a create carries no
+ * grants, so a route starting restricted would admit nobody.
+ */
+export type DefaultAccessMode = 'authenticated' | 'public'
 
 /** `proxy.updateConfig` request. Null provider fields keep the stored values (secrets included). */
 export interface UpdateProxyConfigRequest {
@@ -975,6 +983,11 @@ export interface UpdateProxyConfigRequest {
   cloudflareAccessAllowedEmailDomains?: string | null
   cloudflareAccessGroupIds?: string | null
   cloudflareAccessReusablePolicyIds?: string | null
+  /**
+   * The access policy new domain routes start under. Sent under every provider, like `portRoutesLanNames`;
+   * null leaves the stored value alone.
+   */
+  defaultAccessMode?: DefaultAccessMode | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
@@ -1024,7 +1037,12 @@ export interface Route {
   binding: RouteBinding
   /** The host port a `port` route's own TLS listener answers on; null on a `domain` route. */
   listenPort: number | null
+  /** The route's access policy. Lowercase on the wire, unlike the `AccessMode` `proxy.setAccess` speaks. */
+  accessMode: RouteAccessModeWire
 }
+
+/** `RouteDto.accessMode` — the same policy as `AccessMode`, spelled the way the route list reports it. */
+export type RouteAccessModeWire = 'public' | 'authenticated' | 'restricted'
 
 export interface CreateRouteRequest {
   stackId: number
@@ -1045,6 +1063,13 @@ export interface CreateRouteRequest {
   binding?: RouteBinding | null
   /** `port` routes only: the host port to listen on. Must also be published on Watchtower's container. */
   listenPort?: number | null
+  /**
+   * The access policy the route starts under. Omitted means the configured default (ADR-0035); naming one
+   * explicitly is admin-only, and `Restricted` is refused because a create carries no grants.
+   */
+  accessMode?: AccessMode | null
+  /** Newline-separated request-path prefixes left anonymous on a protected route; null when none. */
+  bypassPaths?: string | null
 }
 
 export interface UpdateRouteRequest {

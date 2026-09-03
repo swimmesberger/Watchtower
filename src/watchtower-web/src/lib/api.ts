@@ -474,6 +474,8 @@ export const api = {
         makeLoginRoute: data.makeLoginRoute ?? null,
         binding: data.binding ?? null,
         listenPort: data.listenPort ?? null,
+        accessMode: data.accessMode ?? null,
+        bypassPaths: data.bypassPaths ?? null,
       })).route as Route,
     updateRoute: async (id: number, data: UpdateRouteRequest) =>
       (await rpc('proxy.updateRoute', {
@@ -547,6 +549,7 @@ export const api = {
         cloudflareAccessAllowedEmailDomains: data.cloudflareAccessAllowedEmailDomains ?? null,
         cloudflareAccessGroupIds: data.cloudflareAccessGroupIds ?? null,
         cloudflareAccessReusablePolicyIds: data.cloudflareAccessReusablePolicyIds ?? null,
+        defaultAccessMode: data.defaultAccessMode ?? null,
       })).config as ProxyConfig,
     getAccess: async (routeId: number) =>
       (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,
