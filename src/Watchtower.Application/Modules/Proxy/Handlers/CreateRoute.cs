@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -25,7 +26,8 @@ public sealed class CreateRoute(
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
     YarpListenerState listener,
-    HostPortOccupancy hostPorts)
+    HostPortOccupancy hostPorts,
+    ICurrentUser currentUser)
     : IHandler<CreateRoute.Command, Result<CreateRoute.Response>> {
     /// <param name="Domain">
     /// The hostname to serve. Required for a <c>domain</c> route and refused on a <c>port</c> one, which
@@ -51,6 +53,16 @@ public sealed class CreateRoute(
     /// Port routes only: the host port this route's own TLS listener answers on. The port has to be
     /// published on Watchtower's own container as well — nothing here can do that.
     /// </param>
+    /// <param name="AccessMode">
+    /// Service domain routes only, and administrators only: the access policy the route starts under.
+    /// Left unset (together with <paramref name="BypassPaths"/>) it is the deployment's
+    /// <c>Proxy:DefaultAccessMode</c> — <c>Authenticated</c> unless an operator says otherwise (ADR-0035).
+    /// </param>
+    /// <param name="BypassPaths">
+    /// Service domain routes only, and administrators only: newline-separated rooted path prefixes that
+    /// stay reachable without signing in — the public webhook or health endpoint of an otherwise gated
+    /// app. Stored only for a protected route; a Public one has no access control to except anything from.
+    /// </param>
     public sealed record Command(
         int StackId,
         string? Domain,
@@ -63,7 +75,9 @@ public sealed class CreateRoute(
         int? RealmId = null,
         bool? MakeLoginRoute = null,
         string? Binding = null,
-        int? ListenPort = null);
+        int? ListenPort = null,
+        AccessMode? AccessMode = null,
+        string? BypassPaths = null);
 
     public sealed record Response(RouteDto Route);
 
@@ -111,6 +125,9 @@ public sealed class CreateRoute(
                 "routes only.");
         }
 
+        if (ResolveAccess(command, out var accessMode, out var bypassPaths) is { } accessError)
+            return accessError;
+
         if (!await db.Stacks.AnyAsync(s => s.Id == command.StackId, ct))
             return AppError.NotFound($"Stack {command.StackId} not found");
 
@@ -123,6 +140,8 @@ public sealed class CreateRoute(
             TlsEnabled = command.TlsEnabled,
             IsPrimary = command.IsPrimary,
             Kind = RouteMapping.ParseKind(command.Kind),
+            AccessMode = accessMode,
+            BypassPaths = bypassPaths,
             Status = RouteStatus.Pending,
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -138,10 +157,12 @@ public sealed class CreateRoute(
     }
 
     /// <remarks>
-    /// <see cref="AccessMode"/> is never taken from the request and is always
-    /// <see cref="AccessMode.Public"/>: Watchtower authenticates the visitors of its own surface natively,
-    /// so route access control has nothing to add, and a login page behind the gate that redirects to it
-    /// would be a closed loop. The check constraint refuses anything else anyway.
+    /// <see cref="Route.AccessMode"/> is never taken from the request and is always
+    /// <see cref="AccessMode.Public"/> — the deployment's protected-by-default setting included
+    /// (ADR-0035): Watchtower authenticates the visitors of its own surface natively, so route access
+    /// control has nothing to add, and a login page behind the gate that redirects to it would be a
+    /// closed loop. The check constraint refuses anything else anyway. A request that <em>asked</em> for
+    /// a policy is refused rather than quietly given Public, for the same reason a stack is.
     /// </remarks>
     private async ValueTask<Result<Response>> CreateWatchtowerRouteAsync(
         Command command, string domain, CancellationToken ct) {
@@ -153,6 +174,12 @@ public sealed class CreateRoute(
         if (!string.IsNullOrWhiteSpace(command.ServiceName) || command.ContainerPort != 0) {
             return AppError.Validation(
                 "A Watchtower route forwards nowhere; leave the service name and container port unset.");
+        }
+        if (RefuseAccessFields(
+                command,
+                "Watchtower routes use Watchtower's own login; route access control does not apply — "
+                + "leave the access mode and bypass paths unset.") is { } accessError) {
+            return accessError;
         }
 
         var realmId = command.RealmId ?? Realm.SystemRealmId;
@@ -231,6 +258,13 @@ public sealed class CreateRoute(
                 "A port route has no hostname, so it is neither a managed subdomain nor a custom domain; "
                 + "leave the kind unset.");
         }
+        if (RefuseAccessFields(
+                command,
+                "A port route is always public. It has no hostname for a login redirect to return to, so "
+                + "route access control does not apply — leave the access mode and bypass paths unset.")
+            is { } accessError) {
+            return accessError;
+        }
         if (string.IsNullOrWhiteSpace(command.ServiceName))
             return AppError.Validation("Service name is required.");
         if (command.ContainerPort is < 1 or > 65535)
@@ -294,6 +328,82 @@ public sealed class CreateRoute(
         var saved = await db.Routes.AsNoTracking().Include(r => r.Stack).FirstAsync(r => r.Id == route.Id, ct);
         return new Response(RouteMapping.ToDto(saved));
     }
+
+    /// <summary>
+    /// Settles the access policy a new service route starts under (ADR-0035), returning the
+    /// operator-facing refusal or <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// Two paths, and the split is the point. A request that says nothing about access gets the
+    /// deployment's default — <c>Authenticated</c> unless an operator changed it — which is what makes a
+    /// freshly published hostname gated rather than open to the internet. A request that says
+    /// <em>anything</em> about access is an administrative act and needs the Admin role, the same one
+    /// <c>proxy.setAccess</c> demands: the gate fires on any explicit value rather than on a "non-default"
+    /// one, because the default can change between the moment a form is rendered and the moment it is
+    /// submitted, and a rule nobody can predict is not a rule.
+    /// <para>
+    /// <see cref="AccessMode.Restricted"/> is refused because a create carries no grants: the route would
+    /// be published admitting nobody, which reads as a broken deployment rather than as a policy. Set it
+    /// afterwards with <c>proxy.setAccess</c>, together with the users and groups it means.
+    /// </para>
+    /// </remarks>
+    private AppError? ResolveAccess(Command command, out AccessMode mode, out string? bypassPaths) {
+        var proxyOptions = options.CurrentValue.Proxy;
+        mode = proxyOptions.ResolveDefaultAccessMode();
+        bypassPaths = null;
+
+        if (command.AccessMode is not null || command.BypassPaths is not null) {
+            if (!currentUser.IsInRole(WatchtowerClaims.AdminRole)) {
+                return AppError.Forbidden(
+                    "Only an administrator can choose a route's access policy. Leave the access mode and "
+                    + "bypass paths unset to create the route under the configured default.");
+            }
+            mode = command.AccessMode ?? mode;
+            if (!Enum.IsDefined(mode))
+                return AppError.Validation($"Unknown access mode '{mode}'.");
+            if (mode == AccessMode.Restricted) {
+                return AppError.Validation(
+                    "A new route cannot start Restricted — it carries no grants yet, so nobody would be "
+                    + "admitted. Create it authenticated or public, then name the users and groups under "
+                    + "the route's access policy.");
+            }
+            // Bypass paths only mean something for a protected route, exactly as in proxy.setAccess: a
+            // Public route has no access control for them to except anything from.
+            if (mode != AccessMode.Public) {
+                bypassPaths = RouteAccessPolicy.NormalizeBypassPaths(command.BypassPaths, out var offending);
+                if (offending is not null)
+                    return AppError.Validation($"Bypass path '{offending}' must start with '/'.");
+            }
+        }
+
+        // Under Cloudflare the gate is an Access application, and an application nobody can pass is a
+        // route the edge denies outright (the reconcile publishes exactly that — ADR-0035). Better said
+        // here, while the operator is looking, than discovered as a route that answers 403 to everyone.
+        if (mode != AccessMode.Public
+            && proxyOptions.Enabled
+            && proxyOptions.ResolveProvider() == ProxyProviderKind.Cloudflare
+            && !proxyOptions.Cloudflare.HasAccessAllowSource()) {
+            return AppError.Validation(
+                "Cloudflare Zero Trust has no allow source configured, so a protected route would deny "
+                + "everyone. Add allowed emails, email domains, an Access group id or a reusable policy id "
+                + "under Settings → Reverse proxy, or create this route as public.");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Refuses a request that names an access policy on a route whose mode is structural, returning the
+    /// operator-facing message or <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// Refused rather than ignored, the same house rule the stack and service fields follow above: an
+    /// administrator who thought they had gated a hostname must find out that they have not. Both check
+    /// constraints (<c>ck_routes_target</c>, <c>ck_routes_binding</c>) would refuse the row anyway — as a
+    /// 500 naming a constraint instead of a sentence.
+    /// </remarks>
+    private static AppError? RefuseAccessFields(Command command, string reason) =>
+        command.AccessMode is null && command.BypassPaths is null ? null : AppError.Validation(reason);
 
     /// <summary>A write that lost a race on a unique index, as opposed to any other write failure.</summary>
     private static bool IsUniqueViolation(DbUpdateException exception) =>

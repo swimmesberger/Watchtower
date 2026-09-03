@@ -342,6 +342,29 @@ public sealed record CloudflareAccessAppRequest {
     /// leaves existing attachments untouched; a non-empty array replaces them.
     /// </summary>
     [JsonPropertyName("policies")] public string[]? Policies { get; init; }
+
+    /// <summary>
+    /// Every hostname (and path) this application covers, beyond the single <see cref="Domain"/>. What a
+    /// bypass application needs: one app naming <c>app.example.com/webhooks</c> and
+    /// <c>app.example.com/healthz</c> rather than one app per public path. Null omits the field, which is
+    /// what an ordinary whole-hostname application wants.
+    /// </summary>
+    /// <remarks>
+    /// This replaces the <c>self_hosted_domains</c> string array, which Cloudflare deprecated in favour of
+    /// <c>destinations</c> and stopped supporting on 21 November 2025.
+    /// </remarks>
+    [JsonPropertyName("destinations")] public CloudflareAccessDestination[]? Destinations { get; init; }
+}
+
+/// <summary>One destination of a self-hosted Access application: a <c>host</c> or <c>host/path</c>.</summary>
+public sealed record CloudflareAccessDestination {
+    /// <summary><c>public</c> — the only kind Watchtower publishes; the others are private-network ones.</summary>
+    [JsonPropertyName("type")] public required string Type { get; init; }
+
+    [JsonPropertyName("uri")] public required string Uri { get; init; }
+
+    /// <summary>A public destination for <paramref name="uri"/> (<c>host</c> or <c>host/path</c>).</summary>
+    public static CloudflareAccessDestination Public(string uri) => new() { Type = "public", Uri = uri };
 }
 
 public sealed record CloudflareAccessPolicy {
@@ -365,11 +388,22 @@ public sealed record CloudflareAccessRule {
     [JsonPropertyName("email")] public CloudflareEmailRule? Email { get; init; }
     [JsonPropertyName("email_domain")] public CloudflareEmailDomainRule? EmailDomain { get; init; }
     [JsonPropertyName("group")] public CloudflareGroupRule? Group { get; init; }
+    [JsonPropertyName("everyone")] public CloudflareEveryoneRule? Everyone { get; init; }
 
     public static CloudflareAccessRule ForEmail(string email) => new() { Email = new CloudflareEmailRule { Email = email } };
     public static CloudflareAccessRule ForEmailDomain(string domain) => new() { EmailDomain = new CloudflareEmailDomainRule { Domain = domain } };
     public static CloudflareAccessRule ForGroup(string groupId) => new() { Group = new CloudflareGroupRule { Id = groupId } };
+
+    /// <summary>
+    /// The rule every visitor matches. It is the subject of both policies that are not allow-lists: the
+    /// <c>deny</c> a protected route with no allow source gets, and the <c>bypass</c> that lets a route's
+    /// public paths through — in either case the decision, not the rule, is what does the work.
+    /// </summary>
+    public static CloudflareAccessRule ForEveryone() => new() { Everyone = new CloudflareEveryoneRule() };
 }
+
+/// <summary>Matches every visitor. Cloudflare spells it as an empty object, so this record has no members.</summary>
+public sealed record CloudflareEveryoneRule;
 
 public sealed record CloudflareEmailRule {
     [JsonPropertyName("email")] public required string Email { get; init; }

@@ -54,6 +54,7 @@ public static class WatchtowerSettingPaths {
     // ── Proxy (proxy.updateConfig) ───────────────────────────────────────────
     public const string ProxyEnabled = "Watchtower:Proxy:Enabled";
     public const string ProxyProvider = "Watchtower:Proxy:Provider";
+    public const string ProxyDefaultAccessMode = "Watchtower:Proxy:DefaultAccessMode";
 
     /// <summary>
     /// Internal marker: <see cref="Services.ProxyProviderMigration"/> has already decided whether this

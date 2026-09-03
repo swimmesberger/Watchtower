@@ -25,6 +25,7 @@ public sealed class GetProxyConfig(
     internal static readonly string[] ProxyPaths = [
         WatchtowerSettingPaths.ProxyEnabled,
         WatchtowerSettingPaths.ProxyProvider,
+        WatchtowerSettingPaths.ProxyDefaultAccessMode,
         WatchtowerSettingPaths.ProxyAdminEmail,
         WatchtowerSettingPaths.ProxyCaddyImage,
         WatchtowerSettingPaths.ProxyYarpHttpPort,
@@ -57,9 +58,15 @@ public sealed class GetProxyConfig(
 }
 
 /// <summary>The proxy configuration surfaced to the Settings page (secrets reduced to flags).</summary>
+/// <param name="DefaultAccessMode">
+/// The access mode a new route starts in (ADR-0035), as the <em>resolved</em> lowercase wire name rather
+/// than the raw stored string: the Settings page and the create form both preselect it, and a value
+/// neither of them could offer would leave them showing something the server does not mean.
+/// </param>
 public sealed record ProxyConfigDto(
     bool Enabled,
     string Provider,
+    string DefaultAccessMode,
     string? AdminEmail,
     string CaddyImage,
     ProxyYarpConfigDto Yarp,
@@ -70,6 +77,7 @@ public sealed record ProxyConfigDto(
         ProxyOptions proxy, EnvironmentSettingPins pins, bool httpsListenerBound) => new(
         Enabled: proxy.Enabled,
         Provider: proxy.ProviderName(),
+        DefaultAccessMode: proxy.DefaultAccessModeName(),
         AdminEmail: proxy.AdminEmail,
         CaddyImage: proxy.CaddyImage,
         Yarp: new ProxyYarpConfigDto(

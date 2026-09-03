@@ -219,7 +219,8 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 }
             }
 
-            // Phase 3: protected routes get a Zero Trust Access application in front of their hostname.
+            // Protected routes get a Zero Trust Access application in front of their hostname — which,
+            // since new routes are protected by default (ADR-0035), is most of them.
             await ReconcileAccessAppsAsync(cf, routes, ct);
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Failed to apply the Cloudflare tunnel configuration; will be retried on the next change.");
@@ -484,21 +485,54 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         }
     }
 
-    // ── Zero Trust Access applications (phase 3) ─────────────────────────────
+    // ── Zero Trust Access applications ───────────────────────────────────────
 
     private const string AccessAppNamePrefix = "watchtower: ";
     private const string AccessPolicyName = "watchtower";
 
-    /// <summary>One desired Access application: the hostname and who its allow policy admits.</summary>
+    /// <summary>The suffix that tells a route's bypass application apart from the route's own.</summary>
+    private const string AccessBypassNameSuffix = " (public paths)";
+
+    /// <summary>The policy decision that admits the app's allow-list and nobody else.</summary>
+    internal const string AccessDecisionAllow = "allow";
+
+    /// <summary>The policy decision that admits nobody — a protected route with no allow source.</summary>
+    internal const string AccessDecisionDeny = "deny";
+
+    /// <summary>The policy decision that lets everyone through without signing in — the bypass paths.</summary>
+    internal const string AccessDecisionBypass = "bypass";
+
+    /// <summary>
+    /// One desired Access application: the hostname it covers, what its Watchtower-owned policy decides,
+    /// and — for an <see cref="AccessDecisionAllow"/> one — who that policy admits.
+    /// </summary>
+    /// <param name="RouteId">
+    /// The route this application was projected from, so a lockout can be written back onto the row that
+    /// caused it. Not part of the app's identity at the edge: two applications can carry the same id.
+    /// </param>
+    /// <param name="Destinations">
+    /// Every <c>host</c>/<c>host/path</c> the application covers when one hostname is not enough — a
+    /// bypass app naming each of the route's public paths. Null for the ordinary whole-hostname app.
+    /// </param>
     internal sealed record AccessAppSpec(
+        int RouteId,
         string Domain,
         string Name,
         string[] Emails,
         string[] EmailDomains,
         string[] GroupIds,
-        string[] ReusablePolicyIds) {
+        string[] ReusablePolicyIds,
+        string Decision = AccessDecisionAllow,
+        string[]? Destinations = null) {
         /// <summary>Whether a Watchtower-generated app-scoped policy is needed (any inline rule at all).</summary>
         public bool HasInlineRules => Emails.Length > 0 || EmailDomains.Length > 0 || GroupIds.Length > 0;
+
+        /// <summary>
+        /// Whether this application denies everyone — the answer to a protected route whose allow-list is
+        /// empty. The route it came from is marked <see cref="RouteStatus.Error"/>, because a hostname
+        /// nobody can reach is a misconfiguration rather than a policy.
+        /// </summary>
+        public bool IsLockout => string.Equals(Decision, AccessDecisionDeny, StringComparison.Ordinal);
     }
 
     /// <summary>The desired Access apps plus the warnings for routes that could not be projected.</summary>
@@ -511,10 +545,26 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     /// ID users), and/or reusable policy ids attached to the app.
     /// <see cref="AccessMode.Restricted"/> admits exactly the emails behind the route's grants (granted
     /// users plus granted groups' members — accounts without an email cannot be matched by Cloudflare
-    /// and are effectively excluded). A protected route with no allow source at all is skipped with a
-    /// warning rather than published as a deny-all app: a silent total lockout right when the operator
-    /// flips a switch is the worse failure, and the skip keeps any pre-existing app untouched.
+    /// and are effectively excluded).
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A protected route with no allow source at all gets a <see cref="AccessDecisionDeny"/> application
+    /// (ADR-0035) rather than being skipped. The rule used to run the other way — no app, a warning, and
+    /// whatever was already at the edge left alone — on the reasoning that a silent total lockout is worse
+    /// than an open door. It is not: since new routes are protected by default, the skip is what would be
+    /// silent, publishing an unauthenticated hostname the operator believes is gated. A lockout announces
+    /// itself, in the warning, in the audit trail and as <see cref="RouteStatus.Error"/> on the route.
+    /// </para>
+    /// <para>
+    /// A protected route with bypass paths gets a second, <see cref="AccessDecisionBypass"/> application
+    /// covering exactly those paths — a deny route included, because a public webhook has to keep working
+    /// while the operator sorts the allow list out. Cloudflare applies the most specific application, so
+    /// the bypass one wins for the paths it names. Its match is path-segment based and therefore wider
+    /// than Watchtower's own raw-prefix <see cref="RouteAccessPolicy.IsExemptPath"/>; a Public route gets
+    /// none at all, having no access control for anything to be excepted from.
+    /// </para>
+    /// </remarks>
     internal static AccessProjection ProjectAccessApps(
         IReadOnlyList<Route> routes,
         IReadOnlyDictionary<int, string[]> grantedEmailsByRouteId,
@@ -542,24 +592,73 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 groupIds = [];
                 reusablePolicyIds = [];
             }
-            if (emails.Length == 0 && emailDomains.Length == 0 && groupIds.Length == 0 && reusablePolicyIds.Length == 0) {
+            var lockedOut = emails.Length == 0 && emailDomains.Length == 0
+                && groupIds.Length == 0 && reusablePolicyIds.Length == 0;
+            if (lockedOut) {
                 warnings.Add(
                     $"Route {domain} is {route.AccessMode} but nobody could pass its Access policy — " +
                     (route.AccessMode == AccessMode.Authenticated
                         ? "configure allowed emails, email domains, an Access group id or a reusable policy id in the proxy settings. "
                         : "grant users (or groups with members) that have an email address. ") +
-                    "The Access application was not created/updated.");
-                continue;
+                    "Access is denying everyone until then.");
             }
             apps.Add(new AccessAppSpec(
+                route.Id,
                 domain,
                 AccessAppNamePrefix + domain,
                 emails.OrderBy(e => e, StringComparer.OrdinalIgnoreCase).ToArray(),
                 emailDomains.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToArray(),
                 groupIds.OrderBy(g => g, StringComparer.OrdinalIgnoreCase).ToArray(),
-                reusablePolicyIds.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray()));
+                reusablePolicyIds.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray(),
+                Decision: lockedOut ? AccessDecisionDeny : AccessDecisionAllow));
+
+            // The trailing slash goes because Cloudflare matches path segments, so `/webhooks` and
+            // `/webhooks/` name the same destination and would otherwise churn as two. An entry that is
+            // nothing but slashes would name the hostname itself and collide with the app above, so it is
+            // dropped: bypassing a whole protected route is not something to infer from a stray line.
+            var bypassPaths = RouteAccessPolicy.ParseBypassPaths(route.BypassPaths)
+                .Select(path => path.TrimEnd('/'))
+                .Where(path => path.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray();
+            if (bypassPaths.Length == 0) continue;
+            apps.Add(new AccessAppSpec(
+                route.Id,
+                // The primary hostname of an application is one value, so it is the first path; the rest
+                // ride along as destinations. Which one is primary decides nothing but what the dashboard
+                // shows.
+                domain + bypassPaths[0],
+                AccessAppNamePrefix + domain + AccessBypassNameSuffix,
+                [], [], [], [],
+                Decision: AccessDecisionBypass,
+                Destinations: [.. bypassPaths.Select(path => domain + path)]));
         }
         return new AccessProjection(apps, warnings);
+    }
+
+    /// <summary>
+    /// The Watchtower-created Access applications the projection no longer wants — pure, for tests.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the desired domains <em>and</em> the desired names, because the two identities do not
+    /// always agree. A bypass application's domain carries a path, so a rename or an added public path
+    /// changes it while the name stays put; matching on names alone would in turn delete an app whose
+    /// hostname is still wanted under a name Cloudflare normalised differently. Wanting either is enough
+    /// to keep it — otherwise every reconcile would delete the bypass app and create it again.
+    /// Only apps carrying the <see cref="AccessAppNamePrefix"/> are ever candidates: an app somebody made
+    /// in the dashboard is not ours to remove.
+    /// </remarks>
+    internal static IEnumerable<CloudflareAccessApp> StaleApps(
+        IReadOnlyList<CloudflareAccessApp> existing, AccessProjection projection) {
+        ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(projection);
+        var wantedDomains = projection.Apps.Select(a => a.Domain).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var wantedNames = projection.Apps.Select(a => a.Name).ToHashSet(StringComparer.Ordinal);
+        return existing.Where(app =>
+            app.Name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
+            && !wantedDomains.Contains(app.Domain)
+            && !wantedNames.Contains(app.Name));
     }
 
     /// <summary>
@@ -590,10 +689,12 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
 
     /// <summary>
     /// Makes the account's Access applications match the protected routes: create/update one
-    /// <c>self_hosted</c> app per protected hostname with a single Watchtower-owned allow policy, and
-    /// delete Watchtower-created apps whose hostname is no longer protected. Only apps carrying the
-    /// <see cref="AccessAppNamePrefix"/> are ever deleted — dashboard-made apps are never touched.
-    /// Best-effort per app; a token without <c>Access: Apps and Policies:Edit</c> logs one warning.
+    /// <c>self_hosted</c> app per protected hostname with a single Watchtower-owned policy — allow, or
+    /// deny when nothing could pass it — plus a bypass app for each route's public paths, and delete the
+    /// Watchtower-created apps the projection no longer wants (<see cref="StaleApps"/>). Only apps
+    /// carrying the <see cref="AccessAppNamePrefix"/> are ever deleted — dashboard-made apps are never
+    /// touched. Best-effort per app; a token without <c>Access: Apps and Policies:Edit</c> logs one
+    /// warning.
     /// </summary>
     private async Task ReconcileAccessAppsAsync(
         CloudflareProxyOptions cf, IReadOnlyList<Route> routes, CancellationToken ct) {
@@ -627,9 +728,21 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     AppLauncherVisible = false,
                     // Reusable policies (the dashboard-maintained "default policy" workflow) attach on
                     // the app itself; null leaves any existing attachments alone when none are configured.
-                    Policies = spec.ReusablePolicyIds.Length > 0 ? spec.ReusablePolicyIds : null,
+                    // Never on a deny or bypass app: attaching an allow-list to one would undo the very
+                    // decision it exists to make.
+                    Policies = spec.Decision == AccessDecisionAllow && spec.ReusablePolicyIds.Length > 0
+                        ? spec.ReusablePolicyIds
+                        : null,
+                    Destinations = spec.Destinations is { Length: > 0 } uris
+                        ? [.. uris.Select(CloudflareAccessDestination.Public)]
+                        : null,
                 };
-                var found = existing.FirstOrDefault(a => string.Equals(a.Domain, spec.Domain, StringComparison.OrdinalIgnoreCase));
+                // By domain or by name: a bypass app's domain carries a path, so a public path added or
+                // removed moves it while the name — the identity Watchtower gave it — stays. Matching on
+                // one of the two would create a duplicate app rather than update the one that is there.
+                var found = existing.FirstOrDefault(a =>
+                    string.Equals(a.Domain, spec.Domain, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(a.Name, spec.Name, StringComparison.Ordinal));
                 var app = found is null
                     ? await _api.CreateAccessAppAsync(cf.AccountId!, request, cf.ApiToken!, ct)
                     : await _api.UpdateAccessAppAsync(cf.AccountId!, found.Id, request, cf.ApiToken!, ct);
@@ -640,14 +753,19 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 var policies = await _api.ListAccessPoliciesAsync(cf.AccountId!, app.Id, cf.ApiToken!, ct);
                 var mine = policies.FirstOrDefault(p => string.Equals(p.Name, AccessPolicyName, StringComparison.Ordinal));
                 var ruleCount = 0;
-                if (spec.HasInlineRules) {
-                    var include = spec.Emails.Select(CloudflareAccessRule.ForEmail)
-                        .Concat(spec.EmailDomains.Select(CloudflareAccessRule.ForEmailDomain))
-                        .Concat(spec.GroupIds.Select(CloudflareAccessRule.ForGroup))
-                        .ToArray();
+                // A deny or bypass policy is about everyone, so it is written whether or not the spec
+                // carries inline rules — that emptiness is precisely what a deny app is answering.
+                if (spec.Decision != AccessDecisionAllow || spec.HasInlineRules) {
+                    var include = spec.Decision == AccessDecisionAllow
+                        ? [
+                            .. spec.Emails.Select(CloudflareAccessRule.ForEmail),
+                            .. spec.EmailDomains.Select(CloudflareAccessRule.ForEmailDomain),
+                            .. spec.GroupIds.Select(CloudflareAccessRule.ForGroup),
+                        ]
+                        : new[] { CloudflareAccessRule.ForEveryone() };
                     ruleCount = include.Length;
                     var policyRequest = new CloudflareAccessPolicyRequest {
-                        Name = AccessPolicyName, Decision = "allow", Include = include, Precedence = 1,
+                        Name = AccessPolicyName, Decision = spec.Decision, Include = include, Precedence = 1,
                     };
                     if (mine is null)
                         await _api.CreateAccessPolicyAsync(cf.AccountId!, app.Id, policyRequest, cf.ApiToken!, ct);
@@ -656,13 +774,17 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 } else if (mine is not null) {
                     await _api.DeleteAccessPolicyAsync(cf.AccountId!, app.Id, mine.Id, cf.ApiToken!, ct);
                 }
+                // The decision leads the detail line: "allow" and "deny" on the same hostname are the
+                // difference between a gate and a wall, and the trail is where an operator finds out which
+                // one a reconcile settled on.
                 await _audit.RecordAsync(AuditCategory,
                     found is null ? "access.app.create" : "access.app.sync",
                     spec.Domain,
-                    $"{ruleCount} inline rule(s), {spec.ReusablePolicyIds.Length} reusable policy(ies)", ct: ct);
+                    $"{spec.Decision} · {ruleCount} inline rule(s), "
+                    + $"{spec.ReusablePolicyIds.Length} reusable policy(ies)", ct: ct);
                 _logger.LogInformation(
-                    "Access application reconciled for {Domain} ({Rules} inline rule(s), {Reusable} reusable policy(ies)).",
-                    spec.Domain, ruleCount, spec.ReusablePolicyIds.Length);
+                    "Access application reconciled for {Domain} ({Decision}, {Rules} inline rule(s), {Reusable} reusable policy(ies)).",
+                    spec.Domain, spec.Decision, ruleCount, spec.ReusablePolicyIds.Length);
             } catch (Exception ex) {
                 await _audit.RecordAsync(AuditCategory, "access.app.sync", spec.Domain, detail: null,
                     success: false, error: ex.Message, ct: ct);
@@ -670,24 +792,26 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             }
         }
 
-        // Deletion set: Watchtower-created apps whose hostname is no longer protected AT ALL. A protected
-        // route that was merely skipped (empty allow-list) keeps its existing app untouched — deleting it
-        // would silently un-gate a route the operator marked protected.
-        var protectedDomains = routes
-            .Where(r => r.AccessMode != AccessMode.Public)
-            .Select(r => r.Domain)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var stale in existing.Where(a =>
-                     a.Name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
-                     && !protectedDomains.Contains(a.Domain))) {
+        // Every route the projection had to lock out, marked on the row so the Routes page says so rather
+        // than reading healthy while the edge answers 403 to everybody. After the loop, because it is the
+        // projection that decided this, not whether any single API call went through.
+        await SetRouteStatusAsync(
+            projection.Apps.Where(a => a.IsLockout).Select(a => a.RouteId).Distinct(),
+            RouteStatus.Error,
+            "Cloudflare Access is denying everyone: no allow source is configured. Add allowed emails, "
+            + "email domains, an Access group id or a reusable policy id under Settings → Reverse proxy, "
+            + "or set this route to public.",
+            ct);
+
+        foreach (var stale in StaleApps(existing, projection)) {
             try {
                 await _api.DeleteAccessAppAsync(cf.AccountId!, stale.Id, cf.ApiToken!, ct);
                 await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
-                    "route no longer protected", ct: ct);
-                _logger.LogInformation("Removed the Access application for {Domain} (route no longer protected).", stale.Domain);
+                    "no longer projected", ct: ct);
+                _logger.LogInformation("Removed the Access application for {Domain} (no longer projected).", stale.Domain);
             } catch (Exception ex) {
                 await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
-                    "route no longer protected", success: false, error: ex.Message, ct: ct);
+                    "no longer projected", success: false, error: ex.Message, ct: ct);
                 _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", stale.Domain);
             }
         }

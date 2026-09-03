@@ -59,7 +59,10 @@ public sealed class UpdateProxyConfig(
         string? CloudflareAccessAllowedEmails = null,
         string? CloudflareAccessAllowedEmailDomains = null,
         string? CloudflareAccessGroupIds = null,
-        string? CloudflareAccessReusablePolicyIds = null);
+        string? CloudflareAccessReusablePolicyIds = null,
+        // Appended last, and optional, for the reason every field below the first four is: a client that
+        // predates ADR-0035 omits it and keeps whatever is stored, instead of having its save rejected.
+        string? DefaultAccessMode = null);
 
     public sealed record Response(ProxyConfigDto Config);
 
@@ -79,6 +82,21 @@ public sealed class UpdateProxyConfig(
             return AppError.Validation("CaddyImage must be a single image reference.");
 
         var proxy = options.CurrentValue.Proxy;
+
+        // The default access mode for new routes, canonicalised the way the provider name is: what is
+        // stored is what the API surfaces. Checked only when this request supplies it — an unreadable
+        // stored value resolves to Authenticated (ProxyOptions.ResolveDefaultAccessMode), so refusing it
+        // here would block every unrelated save instead of failing closed where it matters.
+        var defaultAccessMode = command.DefaultAccessMode is null
+            ? proxy.DefaultAccessModeName()
+            : command.DefaultAccessMode.Trim().ToLowerInvariant();
+        if (command.DefaultAccessMode is not null
+            && !ProxyOptions.DefaultAccessModeNames.Contains(defaultAccessMode, StringComparer.Ordinal)) {
+            return AppError.Validation(
+                "The default access mode for new routes must be one of: "
+                + $"{string.Join(", ", ProxyOptions.DefaultAccessModeNames)}.");
+        }
+
         var cf = proxy.Cloudflare;
         var yarp = proxy.Yarp;
         var portRoutes = proxy.PortRoutes;
@@ -175,6 +193,7 @@ public sealed class UpdateProxyConfig(
         }
         Check(WatchtowerSettingPaths.ProxyEnabled, command.Enabled != proxy.Enabled);
         Check(WatchtowerSettingPaths.ProxyProvider, provider != proxy.ProviderName());
+        Check(WatchtowerSettingPaths.ProxyDefaultAccessMode, defaultAccessMode != proxy.DefaultAccessModeName());
         Check(WatchtowerSettingPaths.ProxyAdminEmail, !string.Equals(email, proxy.AdminEmail?.Trim() ?? "", StringComparison.Ordinal));
         Check(WatchtowerSettingPaths.ProxyCaddyImage, !string.Equals(image, proxy.CaddyImage.Trim(), StringComparison.Ordinal));
         Check(WatchtowerSettingPaths.ProxyYarpHttpPort, httpPort != yarp.HttpPort);
@@ -239,6 +258,8 @@ public sealed class UpdateProxyConfig(
             await WritePortsAsync();
         }
 
+        if (command.DefaultAccessMode is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyDefaultAccessMode, defaultAccessMode, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyAdminEmail, email, ct);
         await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCaddyImage, image, ct);
         if (command.YarpAcmeDirectoryUrl is not null)
@@ -303,6 +324,9 @@ public sealed class UpdateProxyConfig(
             // internal CA issues for under every provider, and a name added or removed here changes which
             // devices can reach this deployment's port routes over TLS.
             + $" · lan names {(lanNames.Length > 0 ? lanNames : "none")}"
+            // Outside the switch for the same reason, and worth a line of its own: it decides whether the
+            // next hostname anyone adds is reachable by the internet or gated (ADR-0035).
+            + $" · new routes {defaultAccessMode}"
             + (secretsUpdated.Count > 0 ? $" · secrets updated: {string.Join(", ", secretsUpdated)}" : ""),
             actor: await audit.ActorAsync(currentUser, ct), ct: ct);
 
@@ -311,6 +335,7 @@ public sealed class UpdateProxyConfig(
         var echoed = proxy with {
             Enabled = command.Enabled,
             Provider = provider,
+            DefaultAccessMode = defaultAccessMode,
             AdminEmail = email.Length > 0 ? email : null,
             CaddyImage = image,
             Yarp = yarp with {
