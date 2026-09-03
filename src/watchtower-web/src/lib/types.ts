@@ -907,6 +907,21 @@ export interface LanNameCandidate {
   detail: string
 }
 
+/**
+ * A base domain routes live under (ADR-0036). Derived, never persisted as a list: the server merges what
+ * `Watchtower:Proxy:PrimaryDomains` holds with the zones the Cloudflare token can see, so a domain can be
+ * offered here without anybody having typed it. `proxy.listPrimaryDomains` sorts by name and never errors.
+ */
+export interface PrimaryDomain {
+  name: string
+  /** Where it was learned: the setting, or a zone discovered through the Cloudflare API. */
+  source: 'configured' | 'cloudflare-zone'
+  /** The Cloudflare zone id, when it came from one. Null for a configured entry. */
+  zoneId: string | null
+  /** One sentence saying where it came from — shown as a group subtitle for discovered zones. */
+  detail: string
+}
+
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
 export interface ProxyCloudflareConfig {
   accountId: string | null
@@ -943,6 +958,11 @@ export interface ProxyConfig {
   cloudflare: ProxyCloudflareConfig
   /** The resolved access policy a new domain route starts under (ADR-0035). */
   defaultAccessMode: DefaultAccessMode
+  /**
+   * The primary-domains setting exactly as it was typed — comma- or newline-separated, not a parsed list.
+   * The parsed, merged view is what `proxy.listPrimaryDomains` answers with.
+   */
+  primaryDomains: string
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
@@ -988,6 +1008,11 @@ export interface UpdateProxyConfigRequest {
    * null leaves the stored value alone.
    */
   defaultAccessMode?: DefaultAccessMode | null
+  /**
+   * Comma- or newline-separated base domains routes live under (ADR-0036). Sent under every provider,
+   * like `portRoutesLanNames`; null leaves the stored value alone.
+   */
+  primaryDomains?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────

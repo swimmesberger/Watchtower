@@ -704,6 +704,12 @@ interface ProxyDraft {
    * sent under every provider.
    */
   defaultAccessMode: DefaultAccessMode
+  /**
+   * Comma- or newline-separated base domains routes live under (ADR-0036). Sent under every provider for
+   * the same reason as the two above: which domains an operator publishes under is theirs to say, and the
+   * Routes page groups by them whichever provider terminates them.
+   */
+  primaryDomains: string
   cfAccountId: string
   cfZoneId: string
   /** Only sent when non-empty — an empty field keeps the stored token. */
@@ -734,6 +740,7 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     yarpRedirectHttpToHttps: config.yarp.redirectHttpToHttps,
     portRoutesLanNames: config.portRoutes.lanNames,
     defaultAccessMode: config.defaultAccessMode,
+    primaryDomains: config.primaryDomains,
     cfAccountId: config.cloudflare.accountId ?? '',
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
@@ -823,6 +830,33 @@ function LanNameSuggestionChips({
   )
 }
 
+/**
+ * The Cloudflare zones the token can already see, listed under the primary-domains field (ADR-0036).
+ * Deliberately not chips: a discovered zone is offered to the create form and grouped in the route list
+ * whether or not anybody clicks it, so a click would only add a duplicate of something already working.
+ * Renders nothing while the query is in flight, after it fails, or when the token found no zones — the
+ * same rule as the suggestion chips above, for the same reason.
+ */
+function DiscoveredZoneNote() {
+  const { data } = useQuery({
+    queryKey: ['proxy', 'primary-domains'],
+    queryFn: api.proxy.listPrimaryDomains,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const zones = (data ?? []).filter(domain => domain.source === 'cloudflare-zone')
+  if (zones.length === 0) return null
+
+  return (
+    <p className="mt-1.5 text-[13px] text-text-2">
+      Also available from your Cloudflare token:{' '}
+      <span className="font-mono">{zones.map(zone => zone.name).join(', ')}</span> — you do not need to
+      list these.
+    </p>
+  )
+}
+
 /** A port field on the wire: an empty or unparseable field is the listener turned off. */
 function portValue(raw: string): number {
   const port = Number.parseInt(raw.trim(), 10)
@@ -883,6 +917,9 @@ function ProxyCard() {
         // Sent under every provider for the same reason as the LAN names above: what a new route starts
         // under is Watchtower's own policy, not something the selected provider has a say in.
         defaultAccessMode: next.defaultAccessMode,
+        // Sent under every provider too, and as typed rather than coalesced away: empty is a real value
+        // here — it means every route names its hostname in full — so clearing the list is an ordinary save.
+        primaryDomains: next.primaryDomains.trim(),
         cloudflareAccountId: next.cfAccountId.trim() || null,
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
@@ -1283,6 +1320,35 @@ function ProxyCard() {
               </div>
             )}
 
+            {/* Outside every provider block for the same reason as the LAN names below: which base
+                domains an operator publishes under is theirs to say, and it shapes the create form and
+                the route list whichever provider terminates them (ADR-0036). Not behind the enable
+                switch either, unlike the LAN names: routes are created and grouped while the proxy is
+                still off, so the domains they are composed from have to be settable then too. */}
+            <Field
+              label="Primary domains"
+              hint="The base domains your routes live under (e.g. wimmesberger.dev). New routes offer them as a dropdown so you only type the subdomain, and the Routes page groups by them. Comma- or newline-separated; leave empty to type every hostname in full."
+            >
+              {({ id }) => (
+                <>
+                  <Input
+                    id={id}
+                    mono
+                    placeholder="wimmesberger.dev, example.com"
+                    value={form.primaryDomains}
+                    onChange={e => set('primaryDomains', e.target.value)}
+                    disabled={isPinned('Watchtower:Proxy:PrimaryDomains')}
+                  />
+                  {pinnedPath('Watchtower:Proxy:PrimaryDomains') && (
+                    <PinnedNote path="Watchtower:Proxy:PrimaryDomains" />
+                  )}
+                  {/* Only under Cloudflare, which is the one provider that can discover zones by
+                      itself — under the others the setting is the whole list. */}
+                  {form.provider === 'cloudflare' && <DiscoveredZoneNote />}
+                </>
+              )}
+            </Field>
+
             {/* Its own section, and outside every provider block: a port route is a TLS listener on
                 Watchtower's own container, so it is served alongside Caddy and the tunnel exactly as it
                 is under the built-in provider (ADR-0033 addendum). Only the proxy being on gates it. */}
@@ -1349,8 +1415,10 @@ function ProxyCard() {
                 <p className="text-[13px] text-text-2">
                   Watchtower configures a remotely-managed tunnel: it pushes one public hostname per
                   route and creates the matching proxied DNS records in your zone. The API token needs
-                  the <span className="font-mono">Cloudflare Tunnel:Edit</span> and{' '}
-                  <span className="font-mono">DNS:Edit</span> permissions.
+                  the <span className="font-mono">Cloudflare Tunnel:Edit</span>,{' '}
+                  <span className="font-mono">DNS:Edit</span> and{' '}
+                  <span className="font-mono">Zone:Read</span> permissions — the last lets Watchtower
+                  find the zone each route's domain belongs to.
                 </p>
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field
@@ -1374,8 +1442,8 @@ function ProxyCard() {
                     )}
                   </Field>
                   <Field
-                    label="Zone ID"
-                    hint="32 hex characters, in the same “API” panel — open the domain your routes live under, since every domain (zone) has its own ID."
+                    label="Zone ID (optional)"
+                    hint="Only needed when the token has no Zone:Read. With it, Watchtower discovers every zone the token can see and writes each route's DNS record into the one that covers it."
                   >
                     {({ id }) => (
                       <>
@@ -1401,7 +1469,7 @@ function ProxyCard() {
                       ? 'The token is set via the environment and cannot be changed here.'
                       : data?.cloudflare.hasApiToken
                         ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
-                        : 'Token with Cloudflare Tunnel:Edit and DNS:Edit. Validated against the API on save.'
+                        : 'Token with Cloudflare Tunnel:Edit, DNS:Edit and Zone:Read. Validated against the API on save.'
                   }
                 >
                   {() => (

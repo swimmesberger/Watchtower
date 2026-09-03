@@ -64,6 +64,7 @@ import type {
   NetworkPortsResult,
   PortBindingsApplied,
   PortBindingsStatus,
+  PrimaryDomain,
   Product,
   ProductDetail,
   CreateReleaseRequest,
@@ -509,6 +510,13 @@ export const api = {
     // for itself — and it comes back as a candidate like any other, held to the same rules.
     suggestLanNames: async (hint: string | null) =>
       (await rpc('proxy.suggestLanNames', { hint })).candidates as LanNameCandidate[],
+    // The base domains routes live under (ADR-0036) — the configured list merged with the Cloudflare
+    // zones the token can see. Same principle as the LAN-name suggestions above: every rule about what
+    // counts as a primary domain lives on the server, this side renders what it is sent. Never errors
+    // and answers `[]` when nothing is configured or discovered, so a failed discovery costs a shorter
+    // list rather than a broken page.
+    listPrimaryDomains: async () =>
+      (await rpc('proxy.listPrimaryDomains', {})).domains as PrimaryDomain[],
     // Whether each port route's host port is actually published on Watchtower's container (ADR-0033).
     // Its own call rather than part of getStatus: answering it inspects the Docker daemon, and the
     // status badge is polled from every page.
@@ -550,6 +558,7 @@ export const api = {
         cloudflareAccessGroupIds: data.cloudflareAccessGroupIds ?? null,
         cloudflareAccessReusablePolicyIds: data.cloudflareAccessReusablePolicyIds ?? null,
         defaultAccessMode: data.defaultAccessMode ?? null,
+        primaryDomains: data.primaryDomains ?? null,
       })).config as ProxyConfig,
     getAccess: async (routeId: number) =>
       (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,
