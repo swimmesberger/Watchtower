@@ -8295,6 +8295,9 @@
               "defaultAccessMode": {
                 "type": "string"
               },
+              "primaryDomains": {
+                "type": "string"
+              },
               "adminEmail": {
                 "type": [
                   "string",
@@ -8438,6 +8441,7 @@
               "enabled",
               "provider",
               "defaultAccessMode",
+              "primaryDomains",
               "adminEmail",
               "caddyImage",
               "yarp",
@@ -8935,6 +8939,48 @@
         },
         "required": [
           "routes"
+        ]
+      }
+    },
+    "proxy.listPrimaryDomains": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "zoneId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "source",
+                "zoneId",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "domains"
         ]
       }
     },
@@ -9483,6 +9529,13 @@
               "null"
             ],
             "default": null
+          },
+          "primaryDomains": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9505,6 +9558,9 @@
                 "type": "string"
               },
               "defaultAccessMode": {
+                "type": "string"
+              },
+              "primaryDomains": {
                 "type": "string"
               },
               "adminEmail": {
@@ -9650,6 +9706,7 @@
               "enabled",
               "provider",
               "defaultAccessMode",
+              "primaryDomains",
               "adminEmail",
               "caddyImage",
               "yarp",
