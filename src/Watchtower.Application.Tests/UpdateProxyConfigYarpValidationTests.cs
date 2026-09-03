@@ -518,6 +518,90 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         Assert.Contains("lan names nas.lan, 192.168.1.10", row.Detail, StringComparison.Ordinal);
     }
 
+    // ── The default access mode for new routes (ADR-0035) ────────────────────
+
+    /// <summary>
+    /// The shipped answer, and the one an installation that never touched the setting keeps: a hostname
+    /// published tomorrow is gated rather than open to the internet.
+    /// </summary>
+    [Fact]
+    public async Task NewRoutesDefaultToAuthenticated_WhenNobodyHasSaidOtherwise() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command());
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("authenticated", result.Value.Config.DefaultAccessMode);
+    }
+
+    [Fact]
+    public async Task ThePublicDefaultIsAccepted_AndCanonicalised() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { DefaultAccessMode = "  PUBLIC  " });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("public", result.Value.Config.DefaultAccessMode);
+        var settings = host.Services.GetRequiredService<ISettingsManager>();
+        Assert.Equal(
+            "public",
+            await settings.GetStringAsync(WatchtowerSettingPaths.ProxyDefaultAccessMode, SettingsScope.Global, Ct));
+    }
+
+    /// <summary>
+    /// <c>restricted</c> is refused rather than accepted and quietly downgraded: a create carries no
+    /// grants, so every new route would be published admitting nobody.
+    /// </summary>
+    [Theory]
+    [InlineData("restricted")]
+    [InlineData("protected")]
+    [InlineData("")]
+    public async Task ARefusedDefaultAccessMode(string mode) {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { DefaultAccessMode = mode });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            "The default access mode for new routes must be one of: authenticated, public.",
+            result.Error.Message);
+    }
+
+    /// <summary>
+    /// A stored value nobody can read fails closed. Refusing it on the way out instead would block every
+    /// unrelated save — including the one that fixes it.
+    /// </summary>
+    [Fact]
+    public async Task AnUnreadableStoredDefault_ResolvesToAuthenticated() {
+        using var host = AuthTestHost.Start(("Watchtower:Proxy:DefaultAccessMode", "wide-open"));
+        var result = await SaveAsync(host, Command());
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("authenticated", result.Value.Config.DefaultAccessMode);
+    }
+
+    [Fact]
+    public async Task APinnedDefaultAccessModeIsRefused() {
+        using var host = AuthTestHost.Start();
+        var pins = new EnvironmentSettingPins(["WATCHTOWER__PROXY__DEFAULTACCESSMODE"]);
+
+        var result = await SaveAsync(host, Command() with { DefaultAccessMode = "public" }, pins: pins);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("WATCHTOWER__PROXY__DEFAULTACCESSMODE", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(WatchtowerSettingPaths.ProxyDefaultAccessMode, GetProxyConfig.ProxyPaths);
+    }
+
+    /// <summary>It decides whether the next hostname anyone adds is gated, so the trail names it.</summary>
+    [Fact]
+    public async Task TheAuditLineNamesTheDefaultAccessMode() {
+        using var host = AuthTestHost.Start();
+        var result = await SaveAsync(host, Command() with { DefaultAccessMode = "public" });
+        Assert.True(result.IsSuccess, Describe(result));
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.AuditEvents.SingleAsync(Ct);
+        Assert.Contains("new routes public", row.Detail, StringComparison.Ordinal);
+    }
+
     // ── Wiring ───────────────────────────────────────────────────────────────
 
     private static UpdateProxyConfig.Command Command() =>
@@ -545,6 +629,9 @@ public sealed class UpdateProxyConfigYarpValidationTests {
         File.WriteAllText(path, content);
         return path;
     }
+
+    private static string Describe<T>(Result<T> result) =>
+        result.IsSuccess ? "success" : $"{result.Error.Kind}: {result.Error.Message}";
 
     private static string SelfSignedPem() {
         using var key = RSA.Create(2048);

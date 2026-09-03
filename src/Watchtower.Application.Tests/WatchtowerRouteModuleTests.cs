@@ -307,6 +307,47 @@ public sealed class WatchtowerRouteModuleTests {
             (await db.Routes.AsNoTracking().SingleAsync(r => r.Id == route.Id, Ct)).AccessMode);
     }
 
+    /// <summary>
+    /// The protected-by-default setting (ADR-0035) does not reach a Watchtower route: Watchtower
+    /// authenticates its own visitors, and <c>ck_routes_target</c> allows nothing but Public anyway.
+    /// </summary>
+    [Fact]
+    public async Task Create_LeavesAWatchtowerRoutePublic_UnderTheProtectedDefault() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<CreateRoute.Command, CreateRoute.Response>(
+            scope.ServiceProvider, SelfCommand("ui.example.invalid"));
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("public", result.Value.Route.AccessMode);
+
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var route = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == result.Value.Route.Id, Ct);
+        Assert.Equal(AccessMode.Public, route.AccessMode);
+    }
+
+    /// <summary>
+    /// Refused rather than ignored, like the stack and the service above: an administrator who thought
+    /// they had gated a hostname must find out that they have not.
+    /// </summary>
+    [Fact]
+    public async Task Create_RefusesAWatchtowerRouteCarryingAnAccessPolicy() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<CreateRoute.Command, CreateRoute.Response>(
+            scope.ServiceProvider,
+            SelfCommand("ui.example.invalid") with { AccessMode = AccessMode.Authenticated });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorKind.Validation, result.Error.Kind);
+        Assert.Contains("own login", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        Assert.Empty(await db.Routes.AsNoTracking().ToListAsync(Ct));
+    }
+
     // -- Delete ----------------------------------------------------------------------------------
 
     [Fact]
@@ -371,6 +412,30 @@ public sealed class WatchtowerRouteModuleTests {
         Assert.False(byDomain["portal.acme.invalid"].IsLoginRoute);
         Assert.Equal("service", byDomain["app.example.invalid"].Target);
         Assert.Null(byDomain["app.example.invalid"].RealmSlug);
+    }
+
+    /// <summary>
+    /// Every row says who it admits, so the Routes page can badge a gated hostname without a
+    /// <c>proxy.getAccess</c> call per route (ADR-0035).
+    /// </summary>
+    [Fact]
+    public async Task ListRoutes_ReportsEachRoutesAccessMode() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        await host.AddRouteAsync("open.example.invalid");
+        await host.AddRouteAsync("app.example.invalid", AccessMode.Authenticated);
+        await host.AddRouteAsync("secret.example.invalid", AccessMode.Restricted);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var result = await SendAsync<ListRoutes.Query, ListRoutes.Response>(
+            scope.ServiceProvider, new ListRoutes.Query());
+
+        Assert.True(result.IsSuccess, Describe(result));
+        var byDomain = result.Value.Routes
+            .Where(r => r.Domain is not null)
+            .ToDictionary(r => r.Domain!, r => r.AccessMode, StringComparer.Ordinal);
+        Assert.Equal("public", byDomain["open.example.invalid"]);
+        Assert.Equal("authenticated", byDomain["app.example.invalid"]);
+        Assert.Equal("restricted", byDomain["secret.example.invalid"]);
     }
 
     // -- Helpers ---------------------------------------------------------------------------------
