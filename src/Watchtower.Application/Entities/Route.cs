@@ -199,6 +199,23 @@ public sealed class Route : IHasXmin {
     /// </summary>
     public string? BypassPaths { get; set; }
 
+    /// <summary>
+    /// The <c>aud</c> claim an identity assertion reaching this route's upstream carries, when the edge
+    /// mints one whose audience is not simply the hostname: the Cloudflare Access application's
+    /// <b>Application Audience (AUD) tag</b>, recorded by the provider each time it reconciles the app.
+    /// Null for a <see cref="AccessMode.Public"/> route, for every non-Cloudflare edge (integrated auth
+    /// binds an assertion to the route's own <see cref="Domain"/> instead, so there is nothing extra to
+    /// store), and for a protected route the provider has not reconciled yet.
+    /// </summary>
+    /// <remarks>
+    /// Stored rather than fetched at deploy time on purpose: the value is what
+    /// <c>WATCHTOWER_AUTH_AUDIENCE</c> injects, and a deploy that had to ask Cloudflare for it would
+    /// fail whenever the API or the token was unreachable — turning an unrelated outage into an
+    /// inability to deploy. It is a cache of a remote fact, so it is written back best-effort and read
+    /// as "the last thing the edge said", never as the authority.
+    /// </remarks>
+    public string? AccessAud { get; set; }
+
     public RouteStatus Status { get; set; } = RouteStatus.Pending;
     /// <summary>Human-readable detail for the current status (e.g. an error reason).</summary>
     public string? StatusDetail { get; set; }

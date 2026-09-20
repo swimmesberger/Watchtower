@@ -473,7 +473,11 @@ public class DeployQueueService : IHostedService, IDisposable {
             // Which JWKS the active edge signs identity assertions with (Cloudflare Access or
             // Watchtower's own) — injected so apps verify without hard-coding an issuer.
             var authJwksUrl = AppApiTokens.ResolveJwksUrl(optionsSnapshot);
-            var reservedVars = BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl, authJwksUrl);
+            // And which `aud` those assertions will carry — the stack's own protected routes, so an app
+            // can refuse an assertion minted for somebody else's application behind the same edge.
+            var authAudience = AppApiTokens.ResolveAudience(optionsSnapshot, GetRouteAudiences(stackId));
+            var reservedVars =
+                BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl, authJwksUrl, authAudience);
             var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
             foreach (var droppedKey in repoEnv.DroppedKeys)
                 WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
@@ -519,7 +523,8 @@ public class DeployQueueService : IHostedService, IDisposable {
                 appApiToken,
                 publicBaseUrl,
                 GetTemplateTargetService(stack.TemplateId),
-                authJwksUrl));
+                authJwksUrl,
+                authAudience));
             foreach (var warning in plan.Warnings)
                 WriteHeader($"[Watchtower] {warning}");
 
@@ -741,8 +746,14 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// Configured <c>Watchtower:PublicBaseUrl</c>. Passed in rather than read here so the env file and
     /// the compose override of one deploy cannot disagree about it.
     /// </param>
+    /// <param name="authJwksUrl">The active edge's JWKS URL, or null when none is issuing.</param>
+    /// <param name="authAudience">
+    /// The <c>aud</c> value(s) this stack's assertions carry, or null when nothing gated in front of it
+    /// mints one. Passed in for the same reason as the base URL: the env file and the override are two
+    /// renderings of one decision.
+    /// </param>
     private static List<(string Key, string Value)> BuildReservedEnvVars(
-        int stackId, string appApiToken, string? publicBaseUrl, string? authJwksUrl) {
+        int stackId, string appApiToken, string? publicBaseUrl, string? authJwksUrl, string? authAudience) {
         var vars = new List<(string Key, string Value)> {
             (AppApiTokens.TokenVariable, appApiToken),
             (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
@@ -751,7 +762,23 @@ public class DeployQueueService : IHostedService, IDisposable {
             vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
         if (!string.IsNullOrWhiteSpace(authJwksUrl))
             vars.Add((AppApiTokens.JwksUrlVariable, authJwksUrl.Trim()));
+        if (!string.IsNullOrWhiteSpace(authAudience))
+            vars.Add((AppApiTokens.AudienceVariable, authAudience.Trim()));
         return vars;
+    }
+
+    /// <summary>
+    /// The stack's routes, reduced to what the injected audience depends on. Read at deploy time rather
+    /// than cached: a route protected (or opened) since the last deploy changes the answer, and a deploy
+    /// is exactly the moment the container is about to be told what to trust.
+    /// </summary>
+    private List<AppApiTokens.RouteAudience> GetRouteAudiences(int stackId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return db.Routes.AsNoTracking()
+            .Where(r => r.StackId == stackId)
+            .Select(r => new AppApiTokens.RouteAudience(r.Domain, r.AccessMode, r.AccessAud))
+            .ToList();
     }
 
     /// <summary>

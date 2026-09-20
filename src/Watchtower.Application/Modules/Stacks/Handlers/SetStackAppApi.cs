@@ -50,7 +50,18 @@ public sealed class SetStackAppApi(
             ? await appApi.RegenerateTokenAsync(command.StackId, ct)
             : await appApi.EnsureTokenAsync(command.StackId, ct);
 
+        var routes = await RouteAudiencesAsync(command.StackId, ct);
         return new Response(
-            enabled, token, AppApiTokens.InjectedVariableNames(options.Value));
+            enabled, token, AppApiTokens.InjectedVariableNames(options.Value, routes));
     }
+
+    /// <summary>
+    /// The stack's routes, reduced to what <c>AppApiTokens.ResolveAudience</c> reads. Queried here
+    /// rather than inferred, so the preview names exactly the variables the next deploy will write.
+    /// </summary>
+    private Task<List<AppApiTokens.RouteAudience>> RouteAudiencesAsync(int stackId, CancellationToken ct) =>
+        db.Routes.AsNoTracking()
+            .Where(r => r.StackId == stackId)
+            .Select(r => new AppApiTokens.RouteAudience(r.Domain, r.AccessMode, r.AccessAud))
+            .ToListAsync(ct);
 }

@@ -1,4 +1,5 @@
 using Watchtower.Application.Config;
+using Watchtower.Application.Entities;
 
 namespace Watchtower.Application.Services;
 
@@ -39,11 +40,28 @@ public static class AppApiTokens {
     public const string JwksUrlVariable = "WATCHTOWER_AUTH_JWKS_URL";
 
     /// <summary>
+    /// Environment variable carrying the <c>aud</c> value(s) an identity assertion reaching this stack
+    /// will carry, resolved from the active edge and the stack's own protected routes
+    /// (<see cref="ResolveAudience"/>): the Cloudflare Access applications' AUD tags on the cloudflare
+    /// provider, the routes' own hostnames under integrated auth. The other half of
+    /// <see cref="JwksUrlVariable"/> — the JWKS says the assertion is genuine, this says it was minted
+    /// for <em>this</em> application rather than for some other one behind the same edge.
+    /// </summary>
+    /// <remarks>
+    /// Comma-separated when the stack has more than one protected route, because each of them is a
+    /// separate application at the edge and any of their assertions is legitimately this stack's. Every
+    /// JWT library takes a set of acceptable audiences, so a reader splits on <c>,</c> and passes the
+    /// result straight through.
+    /// </remarks>
+    public const string AudienceVariable = "WATCHTOWER_AUTH_AUDIENCE";
+
+    /// <summary>
     /// Names Watchtower reserves for itself. An operator-defined stack variable using one of these
     /// keys is skipped at deploy time so the injected value always wins.
     /// </summary>
-    public static readonly IReadOnlySet<string> Reserved =
-        new HashSet<string>(StringComparer.Ordinal) { TokenVariable, StackIdVariable, BaseUrlVariable, JwksUrlVariable };
+    public static readonly IReadOnlySet<string> Reserved = new HashSet<string>(StringComparer.Ordinal) {
+        TokenVariable, StackIdVariable, BaseUrlVariable, JwksUrlVariable, AudienceVariable,
+    };
 
     /// <summary>
     /// The JWKS URL for the identity assertions apps behind the active edge will see, or null when
@@ -65,6 +83,61 @@ public static class AppApiTokens {
         if (options.Auth.Enabled && !string.IsNullOrWhiteSpace(options.PublicBaseUrl))
             return $"{options.PublicBaseUrl.TrimEnd('/')}/api/auth/jwks";
         return null;
+    }
+
+    /// <summary>
+    /// One of a stack's routes, reduced to what the audience depends on. A projection rather than the
+    /// entity so the callers can <c>Select</c> three columns and the resolver stays a pure function the
+    /// tests drive directly.
+    /// </summary>
+    /// <param name="Domain">The route's hostname, or null for a port route (which is always Public).</param>
+    /// <param name="AccessMode">Whether the route is gated at all.</param>
+    /// <param name="AccessAud">The Cloudflare Access application's AUD tag, when one has been recorded.</param>
+    public readonly record struct RouteAudience(string? Domain, AccessMode AccessMode, string? AccessAud);
+
+    /// <summary>
+    /// The <c>aud</c> value(s) an assertion reaching this stack will carry, comma-separated and ordered
+    /// by hostname, or null when nothing gated in front of it mints one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two edges answer the same question with different values. Cloudflare Access mints an
+    /// assertion whose <c>aud</c> is the <em>application's</em> AUD tag, an opaque identifier that only
+    /// the edge can produce — so the value has to come from <see cref="RouteAudience.AccessAud"/>, which
+    /// the provider recorded when it reconciled the app. Watchtower's own signer mints one whose
+    /// <c>aud</c> is the route's hostname (<c>AuthTokenSigner.Mint</c>), so under integrated auth the
+    /// answer is already in the routes table and nothing extra is stored.
+    /// </para>
+    /// <para>
+    /// Only protected routes contribute: a <see cref="AccessMode.Public"/> route has no gate in front of
+    /// it and therefore no assertion to bind. A protected Cloudflare route whose AUD is not recorded yet
+    /// contributes nothing rather than a blank — the app will reject assertions until the next reconcile
+    /// fills it in, which is the fail-closed direction and is visible on the Routes page.
+    /// </para>
+    /// <para>
+    /// Several values are not a weakening. Each one names an application of <em>this</em> stack, so the
+    /// check still refuses every assertion minted for anything else behind the same edge, which is the
+    /// whole point of verifying <c>aud</c> at all.
+    /// </para>
+    /// </remarks>
+    /// <param name="options">Current settings, which decide which edge is issuing.</param>
+    /// <param name="routes">The stack's routes.</param>
+    /// <returns>The comma-separated audience list, or null when there is nothing to inject.</returns>
+    public static string? ResolveAudience(WatchtowerOptions options, IEnumerable<RouteAudience> routes) {
+        ArgumentNullException.ThrowIfNull(routes);
+        var proxy = options.Proxy;
+        var cloudflare = proxy.Enabled && proxy.ResolveProvider() == ProxyProviderKind.Cloudflare;
+        // Integrated auth has to actually be on for Watchtower to be minting anything; under Cloudflare
+        // the edge mints regardless of Watchtower's own auth setting.
+        if (!cloudflare && !options.Auth.Enabled) return null;
+        var values = routes
+            .Where(r => r.AccessMode != AccessMode.Public && !string.IsNullOrWhiteSpace(r.Domain))
+            .OrderBy(r => r.Domain, StringComparer.Ordinal)
+            .Select(r => cloudflare ? r.AccessAud?.Trim() : r.Domain!.Trim())
+            .Where(value => !string.IsNullOrEmpty(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return values.Length == 0 ? null : string.Join(',', values);
     }
 
     /// <summary>
@@ -102,13 +175,22 @@ public static class AppApiTokens {
     /// <summary>
     /// Names actually injected into a deploy, in write order. <see cref="BaseUrlVariable"/> is only
     /// present when a public base URL is configured, <see cref="JwksUrlVariable"/> only when an edge
-    /// is issuing assertions (<see cref="ResolveJwksUrl"/>).
+    /// is issuing assertions (<see cref="ResolveJwksUrl"/>), and <see cref="AudienceVariable"/> only
+    /// when this stack has a protected route whose audience is known (<see cref="ResolveAudience"/>).
     /// </summary>
+    /// <param name="options">Current settings.</param>
+    /// <param name="routes">
+    /// The stack's routes. Empty answers for a stack that has none, which is also what a caller that
+    /// cannot cheaply look them up should pass — the list is a preview of the next deploy, and naming a
+    /// variable that will not be written is the worse error of the two.
+    /// </param>
     /// <returns>The reserved variable names a deploy of this stack will write.</returns>
-    public static IReadOnlyList<string> InjectedVariableNames(WatchtowerOptions options) {
+    public static IReadOnlyList<string> InjectedVariableNames(
+        WatchtowerOptions options, IEnumerable<RouteAudience> routes) {
         var names = new List<string> { TokenVariable, StackIdVariable };
         if (!string.IsNullOrWhiteSpace(options.PublicBaseUrl)) names.Add(BaseUrlVariable);
         if (ResolveJwksUrl(options) is not null) names.Add(JwksUrlVariable);
+        if (ResolveAudience(options, routes) is not null) names.Add(AudienceVariable);
         return names;
     }
 }

@@ -394,6 +394,20 @@ public sealed record CloudflareAccessApp {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
     [JsonPropertyName("domain")] public string Domain { get; init; } = "";
     [JsonPropertyName("type")] public string Type { get; init; } = "";
+
+    /// <summary>
+    /// The application's <b>Application Audience (AUD) tag</b> — the <c>aud</c> claim Cloudflare stamps
+    /// into every <c>Cf-Access-Jwt-Assertion</c> it mints for this application. Cloudflare assigns it
+    /// once, at creation, and never changes it, so an update returns the same value the create did.
+    /// </summary>
+    /// <remarks>
+    /// Nullable, unlike its siblings above, and that is the accurate declaration rather than a looser
+    /// one: <c>JsonSourceGenerator</c> treats a record of <c>init</c> properties as having a
+    /// parameterized constructor and assigns <em>every</em> property from the parsed arguments, so a
+    /// field absent from the response arrives as null and a property initializer never runs. A caller
+    /// reads this as "not known" and injects no audience at all, which is the fail-closed answer.
+    /// </remarks>
+    [JsonPropertyName("aud")] public string? Aud { get; init; }
 }
 
 public sealed record CloudflareAccessAppRequest {
