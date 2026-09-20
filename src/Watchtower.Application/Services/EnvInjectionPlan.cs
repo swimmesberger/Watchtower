@@ -66,13 +66,20 @@ public sealed record ServiceEnvInjection(string ServiceName, IReadOnlyList<Injec
 /// nowhere. Identifies rather than authenticates, so like <c>WATCHTOWER_URL</c> it goes to every
 /// service.
 /// </param>
+/// <param name="AuthAudience">
+/// The <c>aud</c> value(s) assertions reaching this stack carry (<c>AppApiTokens.ResolveAudience</c>),
+/// comma-separated, or null when no protected route in front of it has a known audience — in which case
+/// <c>WATCHTOWER_AUTH_AUDIENCE</c> is injected nowhere. Public information like the JWKS URL it
+/// completes, so it goes to every service too.
+/// </param>
 public sealed record EnvInjectionRequest(
     IReadOnlyList<EnvInjectionService> Services,
     int StackId,
     string AppApiToken,
     string? PublicBaseUrl = null,
     string? TargetServiceName = null,
-    string? AuthJwksUrl = null) {
+    string? AuthJwksUrl = null,
+    string? AuthAudience = null) {
     /// <summary>Redacted for the same reason as <see cref="InjectedEnvVar.ToString"/>: it carries the token.</summary>
     public override string ToString() =>
         $"{nameof(EnvInjectionRequest)} {{ StackId = {StackId}, Services = {Services.Count} }}";
@@ -174,10 +181,11 @@ public sealed record EnvInjectionPlan(
         var stackId = request.StackId.ToString(CultureInfo.InvariantCulture);
         var baseUrl = string.IsNullOrWhiteSpace(request.PublicBaseUrl) ? null : request.PublicBaseUrl.Trim();
         var jwksUrl = string.IsNullOrWhiteSpace(request.AuthJwksUrl) ? null : request.AuthJwksUrl.Trim();
+        var audience = string.IsNullOrWhiteSpace(request.AuthAudience) ? null : request.AuthAudience.Trim();
 
         var planned = new List<ServiceEnvInjection>(services.Count);
         foreach (var service in services) {
-            var variables = new List<InjectedEnvVar>(4);
+            var variables = new List<InjectedEnvVar>(5);
             if (tokenRecipients.Contains(service.Name))
                 variables.Add(new InjectedEnvVar(AppApiTokens.TokenVariable, request.AppApiToken));
             variables.Add(new InjectedEnvVar(AppApiTokens.StackIdVariable, stackId));
@@ -185,6 +193,8 @@ public sealed record EnvInjectionPlan(
                 variables.Add(new InjectedEnvVar(AppApiTokens.BaseUrlVariable, baseUrl));
             if (jwksUrl is not null)
                 variables.Add(new InjectedEnvVar(AppApiTokens.JwksUrlVariable, jwksUrl));
+            if (audience is not null)
+                variables.Add(new InjectedEnvVar(AppApiTokens.AudienceVariable, audience));
             planned.Add(new ServiceEnvInjection(
                 service.Name, [.. variables.OrderBy(v => v.Key, StringComparer.Ordinal)]));
         }

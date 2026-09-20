@@ -24,8 +24,14 @@ public sealed class SetStackAppApi(
     /// <summary>App API settings after the change.</summary>
     /// <param name="Enabled">When false, every <c>/api/app/*</c> call with this token is refused with 403.</param>
     /// <param name="Token">The stack's bearer token, injected as <c>WATCHTOWER_APP_TOKEN</c>.</param>
-    /// <param name="InjectedVarNames">Reserved variable names this stack's deploys write into its environment.</param>
-    public sealed record Response(bool Enabled, string Token, IReadOnlyList<string> InjectedVarNames);
+    /// <param name="InjectedVariables">
+    /// Exactly what this stack's next deploy writes into its environment, name and value, in write
+    /// order. A preview rather than a record of the last deploy: it is resolved from the current
+    /// settings and the stack's current routes, so a route protected since the last deploy already
+    /// shows its audience here.
+    /// </param>
+    public sealed record Response(
+        bool Enabled, string Token, IReadOnlyList<AppApiTokens.InjectedVariable> InjectedVariables);
 
     /// <summary>Applies the change and returns the resulting settings.</summary>
     /// <param name="command">The change to apply.</param>
@@ -50,7 +56,19 @@ public sealed class SetStackAppApi(
             ? await appApi.RegenerateTokenAsync(command.StackId, ct)
             : await appApi.EnsureTokenAsync(command.StackId, ct);
 
+        var routes = await RouteAudiencesAsync(command.StackId, ct);
         return new Response(
-            enabled, token, AppApiTokens.InjectedVariableNames(options.Value));
+            enabled, token,
+            AppApiTokens.InjectedVariables(options.Value, command.StackId, token, routes));
     }
+
+    /// <summary>
+    /// The stack's routes, reduced to what <c>AppApiTokens.ResolveAudience</c> reads. Queried here
+    /// rather than inferred, so the preview names exactly the variables the next deploy will write.
+    /// </summary>
+    private Task<List<AppApiTokens.RouteAudience>> RouteAudiencesAsync(int stackId, CancellationToken ct) =>
+        db.Routes.AsNoTracking()
+            .Where(r => r.StackId == stackId)
+            .Select(r => new AppApiTokens.RouteAudience(r.Domain, r.AccessMode, r.AccessAud))
+            .ToListAsync(ct);
 }

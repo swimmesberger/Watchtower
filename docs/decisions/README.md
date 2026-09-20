@@ -55,3 +55,4 @@ live here.
 - [ADR-0034: A supervisor owns Watchtower's deployment — Watchtower declares, the supervisor reconciles](0034-supervisor-owns-the-deployment.md) — *proposed*
 - [ADR-0035: New domain routes are protected by default](0035-new-routes-are-protected-by-default.md)
 - [ADR-0036: Routes live under primary domains, and Cloudflare zones are discovered](0036-routes-live-under-primary-domains.md)
+- [ADR-0037: Deploys inject the audience an app must check, not just the JWKS to check it against](0037-assertions-carry-an-injected-audience.md)

@@ -176,6 +176,10 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             // The hostnames of those routes, which is what every call below is keyed by. Projected once
             // so "a service route has a hostname" is stated in one place rather than at each use.
             var domains = routes.Select(r => r.Domain).OfType<string>().ToList();
+            // What to call the tunnel in the trail. Cloudflare echoes the name on every response, but the
+            // wire type does not promise one, and the name we looked it up by is the better fallback than
+            // an empty audit target: it is what the operator configured and would recognise.
+            var tunnelName = tunnel.Name ?? cf.TunnelName;
             // Merge, don't replace: rules the operator made in the dashboard (hostnames Watchtower's
             // route table doesn't know) are preserved verbatim — the configurations endpoint is a
             // whole-config PUT, so without this a fresh Watchtower pointed at an existing tunnel
@@ -190,15 +194,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 var detail = $"{ingress.Count - 1} hostname rule(s), {foreign.Count} foreign preserved";
                 try {
                     await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, ingress, cf.ApiToken!, ct);
-                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail, ct: ct);
+                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnelName, detail, ct: ct);
                 } catch (Exception ex) {
-                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail,
+                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnelName, detail,
                         success: false, error: ex.Message, ct: ct);
                     await SetRouteStatusAsync(routes.Select(r => r.Id), RouteStatus.Error,
                         $"Tunnel configuration push failed: {ex.Message}", ct);
                     throw;
                 }
-                _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
+                _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnelName);
             }
 
             // The outcome per hostname is known right here, so the route row says so — Active once its
@@ -706,10 +710,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         ArgumentNullException.ThrowIfNull(projection);
         var wantedDomains = projection.Apps.Select(a => a.Domain).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var wantedNames = projection.Apps.Select(a => a.Name).ToHashSet(StringComparer.Ordinal);
+        // An application with no name is not one Watchtower created, so it is not a deletion candidate.
+        // That reading matters more than it looks: the prefix test is the *only* thing standing between
+        // this sweep and an operator's dashboard-made applications, so "the response did not say" has to
+        // fall on the side of leaving it alone rather than on the side of deleting it.
         return existing.Where(app =>
-            app.Name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
-            && !wantedDomains.Contains(app.Domain)
-            && !wantedNames.Contains(app.Name));
+            app.Name is { } name
+            && name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
+            && !(app.Domain is { } domain && wantedDomains.Contains(domain))
+            && !wantedNames.Contains(name));
     }
 
     /// <summary>
@@ -769,6 +778,10 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             return;
         }
 
+        // Filled as the loop goes and written back once at the end: the AUD tag is what
+        // WATCHTOWER_AUTH_AUDIENCE injects on the route's next deploy, so an app behind this route can
+        // check that an assertion was minted for it and not for some other application in the account.
+        var auds = new Dictionary<int, string>();
         foreach (var spec in projection.Apps) {
             try {
                 var request = new CloudflareAccessAppRequest {
@@ -797,6 +810,13 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 var app = found is null
                     ? await _api.CreateAccessAppAsync(cf.AccountId!, request, cf.ApiToken!, ct)
                     : await _api.UpdateAccessAppAsync(cf.AccountId!, found.Id, request, cf.ApiToken!, ct);
+
+                // The bypass app's AUD is deliberately not recorded. It admits everyone without signing
+                // them in, so it mints no assertion at all — storing its tag would hand the upstream a
+                // second acceptable audience that nothing can ever present, and the route already has
+                // one from its own app above.
+                if (spec.Decision != AccessDecisionBypass && !string.IsNullOrWhiteSpace(app.Aud))
+                    auds[spec.RouteId] = app.Aud.Trim();
 
                 // The Watchtower-generated app-scoped policy carries the inline rules (emails, email
                 // domains, Access groups). When only reusable policies are configured it is removed
@@ -855,16 +875,61 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             ct);
 
         foreach (var stale in StaleApps(existing, projection)) {
+            // Whatever the response gave us to call it by. The hostname is what an operator reads the
+            // trail for; the id is always there and is at least something they can look up.
+            var label = stale.Domain ?? stale.Name ?? stale.Id;
             try {
                 await _api.DeleteAccessAppAsync(cf.AccountId!, stale.Id, cf.ApiToken!, ct);
-                await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
+                await _audit.RecordAsync(AuditCategory, "access.app.delete", label,
                     "no longer projected", ct: ct);
-                _logger.LogInformation("Removed the Access application for {Domain} (no longer projected).", stale.Domain);
+                _logger.LogInformation("Removed the Access application for {Domain} (no longer projected).", label);
             } catch (Exception ex) {
-                await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
+                await _audit.RecordAsync(AuditCategory, "access.app.delete", label,
                     "no longer projected", success: false, error: ex.Message, ct: ct);
-                _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", stale.Domain);
+                _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", label);
             }
+        }
+
+        // Every route the table knows about, not only the ones just reconciled: a route flipped to
+        // Public (or one whose app this pass failed to write) must lose its recorded AUD, or its next
+        // deploy would keep injecting an audience the edge no longer mints.
+        await SetRouteAudsAsync(routes.Select(r => r.Id), auds, ct);
+    }
+
+    /// <summary>
+    /// Records each route's Access application AUD tag, and clears the column on every route that no
+    /// longer has one. Writes only the rows whose value actually changed, so a steady-state reconcile
+    /// costs one SELECT and no UPDATE at all — the same reasoning as skipping an unchanged tunnel
+    /// configuration PUT.
+    /// </summary>
+    /// <remarks>
+    /// Best-effort, like <see cref="SetRouteStatusAsync"/>: a bookkeeping failure must not fail a
+    /// reconcile that already succeeded at the edge. Logged at warning rather than debug, because the
+    /// consequence outlives this pass — until the next one, deploys inject the previous audience, and an
+    /// app that verifies <c>aud</c> strictly will refuse the assertions it is handed. Fail-closed, and
+    /// self-healing on the next reconcile.
+    /// </remarks>
+    private async Task SetRouteAudsAsync(
+        IEnumerable<int> routeIds, IReadOnlyDictionary<int, string> auds, CancellationToken ct) {
+        var ids = routeIds.Distinct().ToList();
+        if (ids.Count == 0) return;
+        try {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var current = await db.Routes.AsNoTracking()
+                .Where(r => ids.Contains(r.Id))
+                .Select(r => new { r.Id, r.AccessAud })
+                .ToListAsync(ct);
+            foreach (var row in current) {
+                var desired = auds.TryGetValue(row.Id, out var aud) ? aud : null;
+                if (string.Equals(row.AccessAud, desired, StringComparison.Ordinal)) continue;
+                await db.Routes.Where(r => r.Id == row.Id)
+                    .ExecuteUpdateAsync(s => s.SetProperty(r => r.AccessAud, desired), ct);
+            }
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            _logger.LogWarning(ex,
+                "Failed to record the Access application audience for {Count} route(s). Deploys will keep "
+                + "injecting the previously recorded value until the next reconcile.", ids.Count);
         }
     }
 
