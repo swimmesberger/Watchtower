@@ -11372,17 +11372,33 @@
           "token": {
             "type": "string"
           },
-          "injectedVarNames": {
+          "injectedVariables": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "secret": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ]
             }
           }
         },
         "required": [
           "enabled",
           "token",
-          "injectedVarNames"
+          "injectedVariables"
         ]
       }
     },
@@ -11846,17 +11862,33 @@
           "token": {
             "type": "string"
           },
-          "injectedVarNames": {
+          "injectedVariables": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "secret": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ]
             }
           }
         },
         "required": [
           "enabled",
           "token",
-          "injectedVarNames"
+          "injectedVariables"
         ]
       }
     },
