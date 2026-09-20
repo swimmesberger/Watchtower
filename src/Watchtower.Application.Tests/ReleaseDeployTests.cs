@@ -256,15 +256,22 @@ public sealed class ReleaseDeployTests {
     /// A fan-out deploy of a stack that already converged onto the same release does nothing — no clone,
     /// no compose, and a success saying so.
     /// </summary>
-    [Fact]
-    public async Task Deploy_TriggeredByARelease_ShortCircuitsWhenTheStackIsAlreadyOnIt() {
+    /// <remarks>
+    /// The reconcile trigger is here for the same reason it may short-circuit at all: it asks the one
+    /// question a fan-out asks, so when it turns out to have been racing a fan-out that was not lost
+    /// after all, "already there" is the answer it wants.
+    /// </remarks>
+    [Theory]
+    [InlineData(DeployTriggers.Release)]
+    [InlineData(DeployTriggers.ReleaseReconcile)]
+    public async Task Deploy_TriggeredByARelease_ShortCircuitsWhenTheStackIsAlreadyOnIt(string trigger) {
         using var host = AuthTestHost.Start();
         var productId = await host.AddProductAsync("shop");
         var releaseId = await host.AddReleaseAsync(productId, "v1");
         var stackId = await host.AddProductStackAsync("shop-prod", productId);
         await host.SetDeployedReleaseAsync(stackId, releaseId);
 
-        var run = await RunDeployAsync(host, stackId, SingleService, DeployTriggers.Release);
+        var run = await RunDeployAsync(host, stackId, SingleService, trigger);
 
         Assert.Equal("success", run.Status);
         Assert.Contains("[Watchtower] Already on v1 — nothing to do.", run.Output, StringComparison.Ordinal);

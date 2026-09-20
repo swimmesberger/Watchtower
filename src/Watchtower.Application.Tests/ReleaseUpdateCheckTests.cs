@@ -211,15 +211,51 @@ public sealed class ReleaseUpdateCheckTests {
     // ── auto-deploy eligibility ──────────────────────────────────────────────
 
     /// <summary>
-    /// Rule 3: in release mode the webhook is an <c>OnChange</c> stack's trigger, so polling it here
-    /// would only race the fan-out to enqueue the identical convergent deploy.
+    /// Rule 3 stopped gating: an <c>OnChange</c> stack in release mode is eligible again, because the
+    /// fan-out it used to defer to is a single enqueue behind a single inbound call and nothing retried
+    /// it when that was lost. It runs as a reconcile — <see cref="AutoDeploy_ReconcileNeedsTwoTicks"/>
+    /// is the half that keeps it from racing a healthy fan-out.
+    /// </summary>
+    [Theory]
+    [InlineData(AutoDeployMode.OnChange)]
+    [InlineData(AutoDeployMode.Scheduled)]
+    public void AutoDeploy_EvaluatesReleaseModeStacks(AutoDeployMode mode) =>
+        Assert.True(AutoDeployBackgroundService.IsEligible(Stack(ProductReleaseMode.Releases, mode)));
+
+    /// <summary>
+    /// The reconcile acts on the second consecutive sighting of the same undeployed release, never the
+    /// first: one sighting is indistinguishable from a fan-out still draining through the deploy gate.
     /// </summary>
     [Fact]
-    public void AutoDeploy_SkipsOnChangeStacksInReleaseMode() {
-        Assert.False(AutoDeployBackgroundService.IsEligible(
-            Stack(ProductReleaseMode.Releases, AutoDeployMode.OnChange)));
-        Assert.True(AutoDeployBackgroundService.IsEligible(
-            Stack(ProductReleaseMode.Releases, AutoDeployMode.Scheduled)));
+    public void AutoDeploy_ReconcileNeedsTwoTicks() {
+        var seen = new Dictionary<int, int>();
+
+        Assert.False(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, 7));
+        Assert.True(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, 7));
+    }
+
+    /// <summary>
+    /// A newer release supersedes the one being confirmed and restarts the count. Without this a stack
+    /// that had been waiting on v1 would deploy v2 the instant it appeared, which is the fan-out's job
+    /// and the race the guard exists to avoid.
+    /// </summary>
+    [Fact]
+    public void AutoDeploy_ReconcileRestartsWhenTheReleaseMoves() {
+        var seen = new Dictionary<int, int>();
+
+        Assert.False(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, 7));
+        Assert.False(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, 8));
+        Assert.True(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, 8));
+    }
+
+    /// <summary>A check that names no available release is nothing to reconcile towards.</summary>
+    [Fact]
+    public void AutoDeploy_ReconcileIgnoresAnAbsentRelease() {
+        var seen = new Dictionary<int, int>();
+
+        Assert.False(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, null));
+        Assert.False(AutoDeployBackgroundService.ConfirmUnconverged(seen, stackId: 1, null));
+        Assert.Empty(seen);
     }
 
     /// <summary>
