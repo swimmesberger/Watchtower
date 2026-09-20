@@ -330,12 +330,43 @@ Reinterpret `AutoDeployMode`; add **no** second automation field. The rules, in 
 3. `ReleaseMode == Releases` → the release event is the trigger; `AutoDeployMode` keeps its three
    intents with the mechanism swapped from pull to push: `Off` = badge only; `OnChange` = deploy
    when a release arrives; `Scheduled` = newest release at the daily window. Git-head and
-   registry-digest polling never trigger a deploy in this mode.
+   registry-digest polling never trigger a deploy in this mode; a release the push path *failed* to
+   deliver is picked up by the reconcile below.
 4. `ReleaseMode == Git` → exactly today's behaviour.
 
 A second field would give operators two orthogonal automation switches whose combinations are
 mostly nonsense. One consequence to accept: `AutoDeployMode` defaults to `Off`, so the UI (not the
 model) defaults the selector to `OnChange` when creating a stack from a `Releases`-mode product.
+
+#### The reconcile, and the delivery assumption under rule 3
+
+Rule 3 hands `OnChange` to the push path, and that path is thinner than it looks: one inbound HTTP
+call from CI, and one in-process `ReleaseRolloutService` enqueue behind it. Neither is retried. If
+Watchtower is restarting when the webhook fires, if the call times out at the edge, if the process
+dies between the release insert committing and the fan-out enqueueing — the release is recorded, the
+stack is not deployed, and **nothing ever revisits it**. `Scheduled` has its daily re-evaluation to
+fall back on. `OnChange` had nothing, while the UI promised a deploy "within a minute of your CI
+reporting a new release".
+
+So `AutoDeployBackgroundService` no longer skips those stacks. They tick on the ordinary check
+interval and run the `Releases`-mode check from §"Update checks and drift" — a database comparison
+plus the drift `docker inspect`, no registry and no git head, so rule 3's "polling never triggers a
+deploy in this mode" still holds literally. When the check finds a release the stack never deployed,
+the tick enqueues it under a `release-reconcile` trigger.
+
+Two things stop that from becoming a second rollout path competing with the fan-out:
+
+- **It must see the same undeployed release twice**, a full check interval apart. A fan-out enqueues
+  every eligible stack at once, but the cross-stack gate drains those deploys over minutes, so one
+  sighting cannot tell "the webhook was lost" from "your deploy is still queued". A drain finishes
+  well inside one interval; a lost enqueue never resolves at all.
+- **`release-reconcile` may short-circuit**, exactly as `release` does. If it fires against a stack
+  that converged in the meantime, the deploy ends as "already on *v* — nothing to do" instead of
+  re-running the pipeline.
+
+The trigger is spelled apart from `release` deliberately. A reconcile deploy is evidence that webhook
+delivery failed for this install, and folding it into `release` would throw away the only record of
+that; it logs at warning level for the same reason. On a healthy install this path never fires.
 
 ### Convergent fan-out
 

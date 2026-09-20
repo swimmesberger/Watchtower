@@ -360,9 +360,10 @@ public class DeployQueueService : IHostedService, IDisposable {
 
                 // The convergence short-circuit (design.md §Convergent fan-out): a fan-out only ever
                 // asks a stack to reach the newest release, so one that is already there has nothing to
-                // do. Restricted to the "release" trigger — every other one converges compose, env and
-                // configuration too — and to a plain deploy, because a coalesced volume recreate must
-                // never be swallowed by it.
+                // do. Restricted to the two triggers that ask only that — "release" and its safety net
+                // "release-reconcile"; every other one converges compose, env and configuration too —
+                // and to a plain deploy, because a coalesced volume recreate must never be swallowed
+                // by it.
                 //
                 // Recorded on the event and NOWHERE else — which is why it is decided before
                 // MarkRunning below. The event is terminal and successful, because "nothing to do" is a
