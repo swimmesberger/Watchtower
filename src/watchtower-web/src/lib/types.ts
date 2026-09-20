@@ -491,6 +491,18 @@ export interface StackEnvVar {
   value: string
 }
 
+/**
+ * One variable Watchtower injects itself on every deploy, previewed for the settings page.
+ * Read-only by nature: the value is resolved from the settings and the stack's routes at deploy
+ * time, so there is nothing here for an operator to edit. `secret` is true only for the App API
+ * token; the rest identify or locate the stack and are safe to show.
+ */
+export interface InjectedEnvVar {
+  name: string
+  value: string
+  secret: boolean
+}
+
 export interface StackEnvVarInput {
   key: string
   value: string

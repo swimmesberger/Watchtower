@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
-import type { StackEnvVarInput } from '@/lib/types'
+import { Eye, EyeOff, Lock, Plus, Trash2 } from 'lucide-react'
+import type { InjectedEnvVar, StackEnvVarInput } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 export interface EnvVarEditorProps {
@@ -11,6 +11,14 @@ export interface EnvVarEditorProps {
    */
   value: StackEnvVarInput[]
   onChange: (rows: StackEnvVarInput[]) => void
+  /**
+   * What Watchtower injects itself on the next deploy, rendered read-only above the
+   * editable rows. In the same list on purpose: "which variables does my container
+   * actually get" is one question, and answering it in two places invites the reading
+   * that the editable list is the whole answer. Omit where no stack is known yet (New
+   * Stack), which is also why these are not part of `value` — they are never saved.
+   */
+  injected?: InjectedEnvVar[]
   className?: string
 }
 
@@ -20,11 +28,24 @@ export interface EnvVarEditorProps {
  * there's always an empty row to type into; removing a row keeps that invariant.
  * Per-row show/hide on the value. On mobile each row is a vertical mini-card.
  *
+ * Injected rows render first, locked: same grid, muted, no remove button, and the
+ * same show/hide on the value so a secret one is not on screen by default.
+ *
  * To persist, filter out rows with an empty key:
  *   value.filter(v => v.key.trim() !== '')
  */
-export function EnvVarEditor({ value, onChange, className }: EnvVarEditorProps) {
+export function EnvVarEditor({ value, onChange, injected, className }: EnvVarEditorProps) {
   const [visible, setVisible] = useState<Set<number>>(new Set())
+  const [injectedVisible, setInjectedVisible] = useState<Set<string>>(new Set())
+
+  function toggleInjected(name: string) {
+    setInjectedVisible((prev) => {
+      const s = new Set(prev)
+      if (s.has(name)) s.delete(name)
+      else s.add(name)
+      return s
+    })
+  }
 
   function updateRow(i: number, field: 'key' | 'value', val: string) {
     const next = value.map((r, idx) => (idx === i ? { ...r, [field]: val } : r))
@@ -59,6 +80,46 @@ export function EnvVarEditor({ value, onChange, className }: EnvVarEditorProps) 
       </div>
 
       <div>
+        {injected?.map((row) => {
+          const shown = injectedVisible.has(row.name)
+          return (
+            <div
+              key={`injected:${row.name}`}
+              className={cn(
+                'border-b border-border bg-surface-2/40',
+                'md:grid md:grid-cols-[1fr_1fr_2.5rem] md:items-center',
+                'flex flex-col gap-2 p-3 md:gap-0 md:p-0',
+              )}
+            >
+              <div className="flex min-w-0 items-center gap-1.5 px-0 py-0 md:border-r md:border-border md:px-3 md:py-2">
+                <span className="truncate font-mono text-[13px] text-text-2">{row.name}</span>
+              </div>
+              <div className="relative flex min-w-0 items-center md:border-r md:border-border">
+                <span
+                  className="w-full truncate px-0 py-0 pr-9 font-mono text-[13px] text-text-3 md:px-3 md:py-2"
+                  // The value is inert text, not a disabled input: a disabled input still looks
+                  // like somewhere to type, which is the misreading this row exists to avoid.
+                  title={shown || !row.secret ? row.value : undefined}
+                >
+                  {row.secret && !shown ? '••••••••••••' : row.value}
+                </span>
+                {row.secret && (
+                  <button
+                    type="button"
+                    onClick={() => toggleInjected(row.name)}
+                    aria-label={shown ? `Hide ${row.name}` : `Show ${row.name}`}
+                    className="absolute right-2 text-text-3 transition-colors hover:text-text"
+                  >
+                    {shown ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center justify-end md:justify-center">
+                <Lock className="size-3.5 text-text-3" aria-label="Injected by Watchtower" />
+              </div>
+            </div>
+          )
+        })}
         {value.map((row, i) => {
           const isBlankTrailer = i === value.length - 1
           const showToggle = row.value !== '' || !isBlankTrailer

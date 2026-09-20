@@ -47,6 +47,15 @@ export function SettingsTab({ stack }: { stack: Stack }) {
     queryFn: () => api.stacks.getEnv(stackId),
   })
 
+  // What Watchtower injects itself, shown read-only alongside the operator's own variables. A
+  // preview of the next deploy rather than a record of the last one, so it follows the stack's
+  // current routes and settings. A failure here is not worth a banner: the editable variables are
+  // the part an operator came to change, and they load independently.
+  const injectedQuery = useQuery({
+    queryKey: ['stacks', stackId, 'appApi'],
+    queryFn: () => api.stacks.getAppApi(stackId),
+  })
+
   const devicesQuery = useQuery({
     queryKey: ['stacks', stackId, 'devices'],
     queryFn: () => api.stacks.getDevices(stackId),
@@ -428,7 +437,7 @@ export function SettingsTab({ stack }: { stack: Stack }) {
       <section>
         <SectionHeader
           title="Environment variables"
-          description="Injected via --env-file on every deploy. Reference them as ${KEY} in your compose file."
+          description="Injected via --env-file on every deploy. Reference them as ${KEY} in your compose file. The locked rows are Watchtower's own, resolved on each deploy — WATCHTOWER_APP_TOKEN reaches only the services your compose labels opt in."
         />
         {envQuery.isPending && (
           <p className="rounded-md border border-border px-3 py-2.5 text-sm text-text-3">
@@ -441,7 +450,13 @@ export function SettingsTab({ stack }: { stack: Stack }) {
             {envQuery.error.message} — saving will leave the stored variables unchanged.
           </Banner>
         )}
-        {envQuery.isSuccess && <EnvVarEditor value={envRows} onChange={setEnvDraft} />}
+        {envQuery.isSuccess && (
+          <EnvVarEditor
+            value={envRows}
+            onChange={setEnvDraft}
+            injected={injectedQuery.data?.injectedVariables}
+          />
+        )}
       </section>
 
       {/* Device mappings (ADR-0030) */}

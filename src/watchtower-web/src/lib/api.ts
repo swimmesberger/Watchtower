@@ -91,6 +91,7 @@ import type {
   HostGpus,
   StackDeviceMappingInput,
   StackDevices,
+  InjectedEnvVar,
   StackEnvVar,
   StackEnvVarInput,
   StackMetricsResult,
@@ -338,6 +339,12 @@ export const api = {
       (await rpc('stacks.start', { id })) as { stack: Stack; started: boolean },
     events: async (id: number) => (await rpc('stacks.events', { stackId: id })).events as DeployEvent[],
     getEnv: async (id: number) => (await rpc('stacks.getEnv', { stackId: id })).envVars as StackEnvVar[],
+    getAppApi: async (id: number) =>
+      (await rpc('stacks.getAppApi', { stackId: id })) as {
+        enabled: boolean
+        token: string
+        injectedVariables: InjectedEnvVar[]
+      },
     setEnv: async (id: number, vars: StackEnvVarInput[]) =>
       (await rpc('stacks.setEnv', { stackId: id, vars })).envVars as StackEnvVar[],
     getDevices: async (id: number) =>
