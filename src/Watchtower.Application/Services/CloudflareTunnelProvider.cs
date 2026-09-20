@@ -176,6 +176,10 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             // The hostnames of those routes, which is what every call below is keyed by. Projected once
             // so "a service route has a hostname" is stated in one place rather than at each use.
             var domains = routes.Select(r => r.Domain).OfType<string>().ToList();
+            // What to call the tunnel in the trail. Cloudflare echoes the name on every response, but the
+            // wire type does not promise one, and the name we looked it up by is the better fallback than
+            // an empty audit target: it is what the operator configured and would recognise.
+            var tunnelName = tunnel.Name ?? cf.TunnelName;
             // Merge, don't replace: rules the operator made in the dashboard (hostnames Watchtower's
             // route table doesn't know) are preserved verbatim — the configurations endpoint is a
             // whole-config PUT, so without this a fresh Watchtower pointed at an existing tunnel
@@ -190,15 +194,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 var detail = $"{ingress.Count - 1} hostname rule(s), {foreign.Count} foreign preserved";
                 try {
                     await _api.PutTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, ingress, cf.ApiToken!, ct);
-                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail, ct: ct);
+                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnelName, detail, ct: ct);
                 } catch (Exception ex) {
-                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnel.Name, detail,
+                    await _audit.RecordAsync(AuditCategory, "tunnel.config.push", tunnelName, detail,
                         success: false, error: ex.Message, ct: ct);
                     await SetRouteStatusAsync(routes.Select(r => r.Id), RouteStatus.Error,
                         $"Tunnel configuration push failed: {ex.Message}", ct);
                     throw;
                 }
-                _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnel.Name);
+                _logger.LogInformation("Pushed {Count} ingress rule(s) to tunnel {Tunnel}.", ingress.Count - 1, tunnelName);
             }
 
             // The outcome per hostname is known right here, so the route row says so — Active once its
@@ -706,10 +710,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         ArgumentNullException.ThrowIfNull(projection);
         var wantedDomains = projection.Apps.Select(a => a.Domain).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var wantedNames = projection.Apps.Select(a => a.Name).ToHashSet(StringComparer.Ordinal);
+        // An application with no name is not one Watchtower created, so it is not a deletion candidate.
+        // That reading matters more than it looks: the prefix test is the *only* thing standing between
+        // this sweep and an operator's dashboard-made applications, so "the response did not say" has to
+        // fall on the side of leaving it alone rather than on the side of deleting it.
         return existing.Where(app =>
-            app.Name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
-            && !wantedDomains.Contains(app.Domain)
-            && !wantedNames.Contains(app.Name));
+            app.Name is { } name
+            && name.StartsWith(AccessAppNamePrefix, StringComparison.Ordinal)
+            && !(app.Domain is { } domain && wantedDomains.Contains(domain))
+            && !wantedNames.Contains(name));
     }
 
     /// <summary>
@@ -866,15 +875,18 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             ct);
 
         foreach (var stale in StaleApps(existing, projection)) {
+            // Whatever the response gave us to call it by. The hostname is what an operator reads the
+            // trail for; the id is always there and is at least something they can look up.
+            var label = stale.Domain ?? stale.Name ?? stale.Id;
             try {
                 await _api.DeleteAccessAppAsync(cf.AccountId!, stale.Id, cf.ApiToken!, ct);
-                await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
+                await _audit.RecordAsync(AuditCategory, "access.app.delete", label,
                     "no longer projected", ct: ct);
-                _logger.LogInformation("Removed the Access application for {Domain} (no longer projected).", stale.Domain);
+                _logger.LogInformation("Removed the Access application for {Domain} (no longer projected).", label);
             } catch (Exception ex) {
-                await _audit.RecordAsync(AuditCategory, "access.app.delete", stale.Domain,
+                await _audit.RecordAsync(AuditCategory, "access.app.delete", label,
                     "no longer projected", success: false, error: ex.Message, ct: ct);
-                _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", stale.Domain);
+                _logger.LogWarning(ex, "Failed to remove the stale Access application for {Domain}.", label);
             }
         }
 
