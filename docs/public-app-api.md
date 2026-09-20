@@ -78,16 +78,39 @@ them at all.
 | `WATCHTOWER_STACK_ID` | Watchtower's numeric stack id | every service, always |
 | `WATCHTOWER_URL` | Watchtower's public base URL | every service, when `Watchtower:PublicBaseUrl` is configured |
 | `WATCHTOWER_AUTH_JWKS_URL` | The JWKS URL of the edge signing identity assertions: Cloudflare Access's `https://{team}.cloudflareaccess.com/cdn-cgi/access/certs` when the cloudflare proxy provider is active (requires `Proxy:Cloudflare:TeamDomain`), else Watchtower's own `{PublicBaseUrl}/api/auth/jwks` when integrated auth is enabled | every service, when an edge is issuing assertions |
+| `WATCHTOWER_AUTH_AUDIENCE` | The `aud` claim(s) assertions reaching this stack carry: the Cloudflare Access applications' **AUD tags** under the cloudflare provider, else the protected routes' own hostnames. Comma-separated when the stack has more than one protected route | every service, when a protected route in front of the stack has a known audience |
 | `WATCHTOWER_APP_TOKEN` | The stack's App API bearer token | the services chosen by the rules [below](#which-services-receive-the-token) |
 
 Set the base URL with `WATCHTOWER__PUBLICBASEURL=https://watchtower.example.com` (or the
 `Watchtower:PublicBaseUrl` config key). Without it the variable is simply not injected and the
 application must know where Watchtower lives by other means.
 
-`WATCHTOWER_AUTH_JWKS_URL` is what makes switching between Cloudflare Access and integrated auth
-zero-config for an app that cryptographically verifies its identity assertion
-(`Cf-Access-Jwt-Assertion` / `X-Watchtower-Jwt`): read the JWKS location from the environment instead
-of hard-coding an issuer, and the next deploy after an edge switch injects the right URL.
+`WATCHTOWER_AUTH_JWKS_URL` and `WATCHTOWER_AUTH_AUDIENCE` are what make switching between Cloudflare
+Access and integrated auth zero-config for an app that cryptographically verifies its identity
+assertion (`Cf-Access-Jwt-Assertion` / `X-Watchtower-Jwt`). Read both from the environment instead of
+hard-coding an issuer and an audience, and the next deploy after an edge switch injects the right
+values ([ADR-0037](decisions/0037-assertions-carry-an-injected-audience.md)):
+
+```python
+# The JWKS says the assertion is genuine; the audience says it was minted for *you*.
+claims = jwt.decode(
+    assertion,
+    key=jwks_client(os.environ["WATCHTOWER_AUTH_JWKS_URL"]).get_signing_key_from_jwt(assertion).key,
+    algorithms=["ES256", "RS256"],
+    audience=os.environ["WATCHTOWER_AUTH_AUDIENCE"].split(","),
+)
+```
+
+**Check the audience.** Every application behind one Cloudflare account is signed by one team key and
+published under one JWKS, so an app that verifies the signature and skips `aud` accepts an assertion
+minted for any *other* application in that account — including one whose Access policy admits a much
+wider population. The variable exists so that check costs you nothing but a `split`.
+
+The value is a list because a stack can be reached on several protected hostnames, and each is a
+separate application at the edge. Every value in it names an application of *this* stack, so the check
+still refuses everything minted elsewhere. If a protected route has not been reconciled with the edge
+yet it contributes nothing, and if that leaves nothing to say the variable is not injected at all —
+so treat a missing value as "do not trust this assertion", never as "accept any audience".
 
 All of these are *also* written into the temporary `.env` Watchtower passes to
 `docker compose --env-file`, **after** the operator's own stack variables, so they stay available for

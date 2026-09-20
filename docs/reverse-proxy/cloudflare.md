@@ -181,5 +181,14 @@ The full walkthrough — LAN names, publishing the host port, importing the root
   `/cdn-cgi/access/certs` here, Watchtower's `/api/auth/jwks` under integrated auth), so a
   JWT-verifying app reads its JWKS location from the environment and the edge switch needs no app
   configuration at all — see docs/public-app-api.md.
+- **The application audience is injected too.** Each reconcile records the Access application's
+  **AUD tag** on the route, and the stack's next deploy injects it as `WATCHTOWER_AUTH_AUDIENCE`
+  (comma-separated when the stack has several protected hostnames; the route's own hostname instead
+  under integrated auth). Apps should check it —
+  [ADR-0037](../decisions/0037-assertions-carry-an-injected-audience.md). Every application in your
+  account is signed by the same team key and published under the same JWKS, so an app that verifies
+  the signature and ignores `aud` will accept an assertion minted for *any* of them, including ones
+  with a far wider allow-list than this route's. A newly created route has no AUD tag until its first
+  reconcile, so the variable appears on the deploy after it.
 - **TLS mode:** upstream connections from cloudflared to your services are plain HTTP on the private
   ingress network, like Caddy's; the route's `TlsEnabled` flag is not consulted by this provider.

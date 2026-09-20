@@ -88,6 +88,12 @@ and trustworthy to the app only because of network topology. We do both of what 
   validate cryptographically instead of trusting topology; apps with their own auth can consume it as
   an SSO assertion. The per-stack `watchtower-ingress-{stackId}` networks already guarantee the upstream is
   unreachable except through Caddy — that stays as defense in depth, not the load-bearing control.
+  The app does not have to know its own `aud`: deploys inject it as `WATCHTOWER_AUTH_AUDIENCE`
+  alongside the JWKS URL, resolved from whichever edge is signing
+  ([ADR-0037](../decisions/0037-assertions-carry-an-injected-audience.md)), so the same verification
+  code runs behind integrated auth and behind Cloudflare Access — where `aud` is the Access
+  application's AUD tag rather than a hostname, and checking it is what keeps an assertion minted for
+  another application in the same account from being accepted here.
 
 ### 2.4 Identity storage: ASP.NET Identity *core*, not the frame
 
