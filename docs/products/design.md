@@ -1,6 +1,8 @@
 # Products & Releases — one deployable unit, from hobby stack to tenant fleet
 
-Status: draft (2026-08-25). Decision record: [ADR-0026](../decisions/0026-products-are-the-deployable-unit.md).
+Status: draft (2026-08-25). Decision records: [ADR-0026](../decisions/0026-products-are-the-deployable-unit.md)
+and, for [Configuration](#configuration),
+[ADR-0038](../decisions/0038-product-declares-the-configuration-contract.md) (2026-09-20).
 How far the implementation got, and what is owed: [implementation-status.md](implementation-status.md).
 
 ## Motivation
@@ -65,6 +67,7 @@ Two contracts anchor the design:
 | `Id`, `Name` (unique), `Description?` | No slug; webhook URLs use the numeric id like the stack webhook does. |
 | `RepositoryUrl`, `ComposeFilePath`, `DefaultBranch` | Moved off `Stack` / `StackTemplate`. |
 | `CredentialId?` → `Credential` (SET NULL) | Git clone credential. |
+| `EnvVars` → `ProductEnvVar` (Cascade) | The application's configuration contract — declared keys, optional defaults. See [Configuration](#configuration). |
 | `ReleaseWebhookToken?` (unique index), `ReleaseWebhookEnabled` | Bearer for the release webhook; plaintext like `Stack.WebhookToken` (must be re-pushable to GitHub). `wtrel_` prefix. |
 | `ReleaseMode` (`Git` \| `Releases`, enum name in DB) | Auto-flips to `Releases` on the first accepted release (audited, operator-revertible). The binary switch the whole UI keys on. |
 | `CiRepoId?` → `CiRepo` (SET NULL) | Replaces URL string matching. |
@@ -126,7 +129,8 @@ work — a label on `Release` can add them later without invalidating any of thi
 `BranchOverride?`, `DefaultPinnedReleaseId?` (SET NULL — a default for *future* tenants, copied at
 provisioning because per-tenant pinning is the point of the SaaS case), plus the backup policy
 fields (see [Backups](#backups-across-tenants)). It keeps `RealmId`, `Name`, `DomainPattern`,
-`TargetServiceName`, `TargetPort`, `BaseEnvVars`.
+`TargetServiceName`, `TargetPort`, `BaseEnvVars` — the last of which stops being copied onto tenants
+and becomes a rung of the env ladder ([Configuration](#configuration)).
 
 `DeployEvent` gains `ReleaseId?` (SET NULL) — what makes a rollout view possible without
 string-matching `TriggeredBy`. `StackUpdateCheck` gains `AvailableReleaseId?` /
@@ -150,6 +154,7 @@ deliberately not unique on repository URL). A repo has one clone credential.
 Product 1──* Stack           (ProductId, REQUIRED, Restrict — delete refused, names blockers)
 Product 1──* StackTemplate   (ProductId, REQUIRED, Restrict)
 Product 1──* Release         (Cascade)  1──* ReleaseImage (Cascade)
+Product 1──* ProductEnvVar   (Cascade — the bottom operator rung of the env ladder)
 Product *──1 CiRepo?         (SET NULL; many products may share one repo)
 Stack   *──1 Release?        (PinnedReleaseId, Restrict)
 Stack   *──1 Release?        (LastDeployedReleaseId, SET NULL)
@@ -563,6 +568,154 @@ recomputed).
 SET NULL) and they keep running; a per-tenant "leave this setup" is future work, and it owes an
 answer about what happens to the managed route the adoption created.
 
+## Configuration
+
+Decision record: [ADR-0038](../decisions/0038-product-declares-the-configuration-contract.md).
+
+Environment variables are the last axis still copied. `BaseEnvVars` is materialized onto each tenant
+at provisioning and never propagates — the defect this whole document exists to remove, surviving on
+the one field nobody moved. But the friction that actually forced the section is smaller: **a product
+with a single stack has nowhere to put its configuration at all.** The only shared env surface hangs
+off `StackTemplate`, so writing down "these are the variables this application takes" meant creating
+a tenancy setup — domain pattern, realm, slug, managed route — for a deployment that wanted none of
+it. The fallback is to put everything on the stack, which for one instance is not wrong, and that is
+the tell: **the payoff here is the declared contract, not the propagation.** At N=1 there is nothing
+to propagate to; what is missing is a way to say which values are not instance-specific.
+
+So the product gains configuration for the same reason it gained the repository URL: it is
+definitional. Propagation is the consequence.
+
+### The ladder
+
+```
+repo .env  <  product  <  template  <  stack  <  reserved WATCHTOWER_*
+```
+
+`StackEnvResolver` is `ProductSourceResolver`'s counterpart — static, a pure function over rows the
+caller has already loaded, throwing on a missing include rather than reading absence as "nothing set"
+(the same failure mode that would silently deploy the wrong branch). It returns the **operator set**
+that `DeployQueueService.BuildEnvFileContent` already takes, so nothing below it changes: the repo's
+`.env` still loses by omission, the reserved variables still win and are still skipped when an
+operator key collides with one, and ADR-0012's generated override is untouched. This section changes
+what the operator set *contains*, not how a value reaches a container.
+
+Resolution is per key, highest rung wins, values never merge.
+
+### ProductEnvVar
+
+| Property | Notes |
+| --- | --- |
+| `Id`, `ProductId` (Cascade) | Table `product_env_vars`, unique `(ProductId, Key)`. |
+| `Key` | Same validation as `StackEnvVar.Key`. |
+| `Value?` | **Null means "required, supplied per instance"** — declared, contributes nothing to the deploy, and visible everywhere as an unfilled requirement. |
+| `Description?` | One line, rendered beside the key. The product page is where an application's configuration is documented; a key with no explanation is half a contract. |
+
+`StackTemplateEnvVar` is unchanged as a table and changes meaning: it is now a rung, not a source to
+copy from. `StackEnvVar` is unchanged and narrows to what it always looked like — this instance's
+overrides.
+
+### What stops happening
+
+`TenantProvisioningService` stops writing `TenancyMapping.MergeEnv(...)` into `StackEnvVar` rows, and
+`MergeEnv` goes with it. Adoption's env step disappears outright: the keep-contract's "the running
+stack's values win, the template fills the gaps" is exactly what the ladder does, so there is nothing
+left to copy and nothing left to report as "env keys added" (one field leaves the `tenant.adopt`
+audit detail). Per-tenant overrides passed to `templates.addTenant` still write stack rows — that is
+the top rung, which is where a per-tenant value belongs.
+
+The template rung **must** convert in the same change. A live product rung over a copied template
+rung would mean a product edit reaches every tenant while a template edit reaches none: one ladder,
+two semantics, and no way for an operator to predict which they are looking at.
+
+### Declared but unset
+
+A key declared with a null value that no lower rung supplies emits one warning line into the deploy
+output, next to the existing `[Watchtower] Injecting N environment variable(s)…` line. It does not
+fail the deploy: every product migrated from today's world has keys it does not set, and failing
+closed would break the back-compat contract on the first deploy after upgrade. Warn, never guess —
+the rule ADR-0012 set for ambiguous injection input.
+
+### Where it is edited
+
+**Product → Settings** gains a *Configuration* section (the fifth tab's fourth section, inside the
+≤4 cap): the key/value/description rows, with a required-no-default row rendering its value field as
+the placeholder `set per deployment`. The empty state is one sentence naming what the section is for,
+because for a single-stack product this is the only place the feature is visible.
+
+**Stack → Environment** needs no new pattern: `EnvVarEditor` already renders a read-only band above
+the editable rows for the variables Watchtower injects (`injected?: InjectedEnvVar[]` — same grid,
+muted, a lock instead of a remove button, and inert text rather than a disabled input, because a
+disabled input still looks like somewhere to type). That component landed for the reserved rung and
+its reasoning is the ladder's: *"which variables does my container actually get" is one question, and
+answering it in two places invites the reading that the editable list is the whole answer.* The
+inherited rungs join the same list under the same treatment, so the editor reads top to bottom as the
+ladder reads:
+
+- **injected** — the reserved `WATCHTOWER_*` rung, exactly as today;
+- **inherited** — product and fleet rows, locked, each labelled **Set by: product *acme/web*** or
+  **Set by: fleet *acme-prod*** and carrying an **Override here** action that writes a stack row
+  seeded with the inherited value;
+- **this deployment** — the stack's own rows, editable exactly as today, each showing the value it
+  shadows.
+
+Unset required keys pin to the top of the inherited band as the one thing on the screen asking for
+input. `InjectedEnvVar` grows a source discriminator rather than a second row type: the bands differ
+in label and in whether they offer **Override here**, not in how they are drawn. New Stack keeps
+passing no rows for the injected band and gains the product's defaults in the editable one, which is
+the pre-filled-instead-of-empty payoff at N=1.
+
+An override is never refused because a rung above it is set — nothing above the stack exists, and the
+whole point of the rung is that it can be overridden. An override whose value equals the inherited
+one is kept, not silently dropped: ADR-0020 keeps a label-shadowed override for the same reason, and
+"I typed it deliberately" is not Watchtower's to overrule.
+
+### Blast radius
+
+Saving product configuration **enqueues nothing**. Three things carry the consequence instead:
+
+- the save-confirm enumerates affected deployments, in `products.update`'s existing shape ("Saving
+  changes the configuration for 3 deployments. They keep running until redeployed.");
+- the change is audited as a field diff (`product.env.change`), values included — they are not
+  secrets today, and an env change nobody can reconstruct is worse than one they can;
+- a **Roll out configuration…** action on the product fans out deploys explicitly, reusing
+  `templates.deployAll`'s mechanics and the pre-rollout backup checkbox.
+
+Convergent deploys mean an unrolled change lands whenever a stack next deploys for any other reason —
+a release, a scheduled deploy, a redeploy a week later. That is the hazard this rung introduces and
+it is worse than the source-field equivalent, because a stale env value produces an application that
+misbehaves rather than a visible version skew. Instances whose `LastDeployedAt` predates the product's
+configuration change get the same quiet treatment as a pinned-and-behind tenant: a column, not a
+banner.
+
+*Fix in passing:* `stacks.setEnv` is unaudited today, the same gap as registry CRUD. It is worth
+closing with this change rather than after it.
+
+### RPC and migration
+
+`products.getEnv` / `products.setEnv` mirror `stacks.getEnv` / `stacks.setEnv` (atomic whole-list
+replace, duplicate keys rejected). `stacks.getEnv` gains per-key `source` and `shadows` fields —
+additive, existing readers unaffected. `stacks.setEnv` keeps its contract and writes only the stack's
+own rows.
+
+One additive migration: create `product_env_vars`, then **delete each tenant `StackEnvVar` row whose
+key and value both exactly equal its template's current base row.** Those rows are provably the
+provisioning copy and provably a no-op for what the next deploy applies; anything that differs is a
+real override and stays. Leaving them all in place would be the safe-looking choice and the wrong
+one — a 40-tenant fleet would inherit nothing until someone cleared 40 stacks by hand, which is the
+propagation fix shipping switched off. The cost is stated in the release note: a tenant value
+deliberately set identical to the fleet default stops being pinned, and re-setting it now shows as an
+override.
+
+### Deferred
+
+- **Secret values.** `StackEnvVar.Value` is plaintext and `ProductEnvVar` is no different. The
+  product rung raises the stakes (fleet-wide blast radius, visible in every instance's env view) but
+  the gap is pre-existing, and masking touches every env surface at once.
+- **`{tenant}` interpolation in a value.** Right idea, wrong rung — per-tenant parameterization is
+  what the template rung is for.
+- **Per-service scoping.** Every rung applies project-wide, as stack env vars do today. Service-level
+  configuration already has a home in the compose file.
+
 ## Backups across tenants
 
 Backups today are entirely stack-scoped and template-blind. The extension builds on existing seams:
@@ -815,6 +968,8 @@ New `Products` module (`[AppModule("Products")]`, the `Ci`/`Tenancy` layout):
 - `products.listReleases` / `.getRelease` / `.createRelease` (manual — useful for adopting the
   model before CI is wired) / `.deleteRelease` (blocked while pinned) / `.deployRelease`
 - `products.rotateReleaseToken` / `.setReleaseWebhook`
+- `products.getEnv` / `.setEnv` — the configuration contract, mirroring `stacks.getEnv` / `.setEnv`
+  (whole-list replace, duplicate keys rejected); `products.rolloutEnv` fans the change out
 
 Changed elsewhere: `stacks.setRelease(stackId, releaseId | null)`;
 `templates.setTenantsRelease(templateId, releaseId | null, deploy)`;
@@ -830,19 +985,23 @@ existing readers (frontend, mgmt API, scripts). `stacks.create` keeps the inline
 supplying both `productId` and repo fields is a validation error. `stacks.update` compares repo
 fields against effective values (the frontend posts whole objects, so presence-based rejection
 would break every save): a *changed* field is an error pointing at `products.update`, except
-`branch`, which maps to `BranchOverride`. `rpc-schema.json` regeneration is part of every stage.
+`branch`, which maps to `BranchOverride`. `stacks.getEnv` gains per-key `source` and `shadows`
+(additive); `stacks.setEnv` keeps its contract and writes only the stack's own rows.
+`rpc-schema.json` regeneration is part of every stage.
 
 ## Audit
 
 | Category | Actions |
 | --- | --- |
-| `products` | `product.create/update/delete` (field diffs; repo-URL change called out), `product.credential.change`, `release.publish` (actor-less, one row per release — target `product/version`, detail: source, commit, image count, stacks enqueued), `release.delete`, `release.prune`, `release.token.rotate`, `release.webhook.toggle`, `release.mode.change` |
+| `products` | `product.create/update/delete` (field diffs; repo-URL change called out), `product.credential.change`, `product.env.change` (field diffs, values included — they are not secrets today, and an env change nobody can reconstruct is worse than one they can) + `product.env.rollout` (instance count), `release.publish` (actor-less, one row per release — target `product/version`, detail: source, commit, image count, stacks enqueued), `release.delete`, `release.prune`, `release.token.rotate`, `release.webhook.toggle`, `release.mode.change` |
 | `stacks` | `release.pin` / `release.unpin` (before → after), `release.pin.bulk` (template, tenant count), `tenant.adopt` (target = the adopted stack; detail: setup, slug, the route created and whether it became primary, env keys added) |
 | `ci` | `release-token.sync` (transitions-only on failure, like `registry.sync`) |
 | `backups` | `backup.all` (template fan-out, one row), the `pre-deploy` trigger on per-stack rows |
 
 Fix in passing: registry CRUD is currently unaudited — an operator can rotate the credential behind
-a synced registry with no attributed record.
+a synced registry with no attributed record. `stacks.setEnv` is the same gap and is worth closing
+alongside the configuration ladder (`stack.env.change`), which otherwise adds an audited rung above
+an unaudited one.
 
 ## Migration
 
@@ -885,6 +1044,12 @@ for existing installs until a product enters `Releases` mode.
 | **5 — Secret sync** | `SyncActionsConfigAsync`, product sync state + PAT probe, snippet UI. (Until then, operators paste the token by hand — a fine intermediate state.) |
 | **6 — Tenant release policy** | Template defaults, `templates.setTenantsRelease`, Version/Behind columns + rollup, rollout view + retry-failed, release pruning. |
 | **7 — Tenant-aware backups** | `Stack.BackupDirectory` (if not landed at 0), per-tenant folder layout, template backup policy + nullable stack fields, `templates.backupAll`, pre-rollout backup chaining, manifest keys, product Backups tab. |
+| **10 — Configuration ladder** | `ProductEnvVar` + the redundant-tenant-row migration, `StackEnvResolver`, `BuildEnvFileContent` takes the resolved operator set, provisioning and adoption stop copying (`MergeEnv` deleted), declared-but-unset warning, `products.getEnv`/`.setEnv`/`.rolloutEnv`, `stacks.getEnv` provenance, the product Configuration section and the stack Environment tab's inherited rows. Audit for both rungs. See [Configuration](#configuration) and ADR-0038. |
+
+Stages **8** (UX hardening and the dashboard's fleet cards) and **9** (adoption) were added after this
+table was first written and are recorded, with their commits, in
+[implementation-status.md](implementation-status.md); stage 10 follows them and is the first stage of
+this roadmap that has not shipped.
 
 ## Risks and open questions
 
@@ -917,3 +1082,13 @@ for existing installs until a product enters `Releases` mode.
     `deploy_events` has no retention today either (pre-existing gap, noted).
 12. **Backup fan-out duration** — the serial backup queue makes pre-rollout fleet backups
     sequential; surface expected duration in the dialog.
+13. **Unrolled configuration lands at the next unrelated deploy** — the cost of a live ladder over a
+    copy. A stale env value produces a misbehaving application rather than a visible version skew,
+    which makes it worse than the source-field equivalent (risk 9). Mitigated by the enumerating
+    save-confirm, the explicit roll-out action and the "last deployed before this change" column;
+    not prevented, because auto-deploying on save would be a worse surprise.
+14. **The migration un-pins deliberately-identical tenant values** — a tenant row equal to the fleet
+    default is deleted as the provisioning copy it almost certainly is. Nothing about the next
+    deploy changes; the divergence only appears on a later template edit, which is the intended fix.
+    Release-note material, and the strongest argument anyone will make for the rejected
+    leave-everything option.
