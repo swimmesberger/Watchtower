@@ -131,10 +131,31 @@ public sealed class AuthAudienceInjectionTests {
     public void ThePreview_NamesTheVariable_OnlyWhenTheStackHasAProtectedRoute() {
         var options = Integrated();
         Assert.Contains(
-            AppApiTokens.AudienceVariable,
-            AppApiTokens.InjectedVariableNames(options, [Route("app.example.com")]));
+            Preview(options, [Route("app.example.com")]),
+            v => v.Name == AppApiTokens.AudienceVariable && v.Value == "app.example.com");
         Assert.DoesNotContain(
-            AppApiTokens.AudienceVariable,
-            AppApiTokens.InjectedVariableNames(options, [Route("open.example.com", AccessMode.Public)]));
+            Preview(options, [Route("open.example.com", AccessMode.Public)]),
+            v => v.Name == AppApiTokens.AudienceVariable);
     }
+
+    [Fact]
+    public void ThePreview_IsTheSameListADeployWrites_WithOnlyTheTokenMarkedSecret() {
+        // One definition of "what a deploy writes", read by the deploy and by the API that previews
+        // it. The token is the only credential in it; the rest name, locate or scope the stack.
+        var preview = Preview(Integrated(), [Route("app.example.com")]);
+        Assert.Equal(
+            [
+                AppApiTokens.TokenVariable, AppApiTokens.StackIdVariable, AppApiTokens.BaseUrlVariable,
+                AppApiTokens.JwksUrlVariable, AppApiTokens.AudienceVariable,
+            ],
+            preview.Select(v => v.Name));
+        Assert.Equal("7", Assert.Single(preview, v => v.Name == AppApiTokens.StackIdVariable).Value);
+        var secret = Assert.Single(preview, v => v.Secret);
+        Assert.Equal(AppApiTokens.TokenVariable, secret.Name);
+        Assert.Equal("wtapp_x", secret.Value);
+    }
+
+    private static IReadOnlyList<AppApiTokens.InjectedVariable> Preview(
+        WatchtowerOptions options, AppApiTokens.RouteAudience[] routes) =>
+        AppApiTokens.InjectedVariables(options, stackId: 7, appApiToken: "wtapp_x", routes);
 }

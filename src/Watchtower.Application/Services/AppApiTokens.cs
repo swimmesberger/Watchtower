@@ -1,3 +1,4 @@
+using System.Globalization;
 using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 
@@ -173,24 +174,53 @@ public static class AppApiTokens {
     public static bool Verify(string presented, string? stored) => BearerTokens.Verify(presented, stored);
 
     /// <summary>
-    /// Names actually injected into a deploy, in write order. <see cref="BaseUrlVariable"/> is only
-    /// present when a public base URL is configured, <see cref="JwksUrlVariable"/> only when an edge
-    /// is issuing assertions (<see cref="ResolveJwksUrl"/>), and <see cref="AudienceVariable"/> only
-    /// when this stack has a protected route whose audience is known (<see cref="ResolveAudience"/>).
+    /// One reserved variable a deploy writes.
     /// </summary>
+    /// <param name="Name">The variable name, one of the constants above.</param>
+    /// <param name="Value">Its resolved value.</param>
+    /// <param name="Secret">
+    /// Whether the value is a credential rather than an identifier. True only for
+    /// <see cref="TokenVariable"/>: the rest name, locate or scope this stack and are safe to show.
+    /// Callers that render the list use this to decide what to mask, and callers that log it use it to
+    /// decide what to omit — the deploy log prints names only, whatever this says.
+    /// </param>
+    public sealed record InjectedVariable(string Name, string Value, bool Secret = false);
+
+    /// <summary>
+    /// Exactly what a deploy of this stack writes into its environment, in write order — the one
+    /// definition of that, read both by the deploy that performs it and by the API that previews it.
+    /// <see cref="BaseUrlVariable"/> is present only when a public base URL is configured,
+    /// <see cref="JwksUrlVariable"/> only when an edge is issuing assertions
+    /// (<see cref="ResolveJwksUrl"/>), and <see cref="AudienceVariable"/> only when this stack has a
+    /// protected route whose audience is known (<see cref="ResolveAudience"/>).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TokenVariable"/> is listed for the stack, but at deploy time it reaches only the
+    /// services the label rules choose (<c>EnvInjectionPlan</c>) rather than all of them. That
+    /// distinction needs the resolved compose project, which no settings query has, so a caller
+    /// previewing this list should say so rather than imply every service receives it.
+    /// </remarks>
     /// <param name="options">Current settings.</param>
+    /// <param name="stackId">The stack the preview or the deploy is for.</param>
+    /// <param name="appApiToken">The stack's App API bearer token.</param>
     /// <param name="routes">
     /// The stack's routes. Empty answers for a stack that has none, which is also what a caller that
-    /// cannot cheaply look them up should pass — the list is a preview of the next deploy, and naming a
-    /// variable that will not be written is the worse error of the two.
+    /// cannot cheaply look them up should pass — naming a variable that will not be written is the
+    /// worse error of the two.
     /// </param>
-    /// <returns>The reserved variable names a deploy of this stack will write.</returns>
-    public static IReadOnlyList<string> InjectedVariableNames(
-        WatchtowerOptions options, IEnumerable<RouteAudience> routes) {
-        var names = new List<string> { TokenVariable, StackIdVariable };
-        if (!string.IsNullOrWhiteSpace(options.PublicBaseUrl)) names.Add(BaseUrlVariable);
-        if (ResolveJwksUrl(options) is not null) names.Add(JwksUrlVariable);
-        if (ResolveAudience(options, routes) is not null) names.Add(AudienceVariable);
-        return names;
+    /// <returns>The reserved variables, in write order.</returns>
+    public static IReadOnlyList<InjectedVariable> InjectedVariables(
+        WatchtowerOptions options, int stackId, string appApiToken, IEnumerable<RouteAudience> routes) {
+        var vars = new List<InjectedVariable> {
+            new(TokenVariable, appApiToken, Secret: true),
+            new(StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
+        };
+        if (!string.IsNullOrWhiteSpace(options.PublicBaseUrl))
+            vars.Add(new InjectedVariable(BaseUrlVariable, options.PublicBaseUrl.Trim()));
+        if (ResolveJwksUrl(options) is { } jwksUrl)
+            vars.Add(new InjectedVariable(JwksUrlVariable, jwksUrl));
+        if (ResolveAudience(options, routes) is { } audience)
+            vars.Add(new InjectedVariable(AudienceVariable, audience));
+        return vars;
     }
 }

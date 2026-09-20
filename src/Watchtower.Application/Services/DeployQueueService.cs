@@ -475,9 +475,12 @@ public class DeployQueueService : IHostedService, IDisposable {
             var authJwksUrl = AppApiTokens.ResolveJwksUrl(optionsSnapshot);
             // And which `aud` those assertions will carry — the stack's own protected routes, so an app
             // can refuse an assertion minted for somebody else's application behind the same edge.
-            var authAudience = AppApiTokens.ResolveAudience(optionsSnapshot, GetRouteAudiences(stackId));
-            var reservedVars =
-                BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl, authJwksUrl, authAudience);
+            var routeAudiences = GetRouteAudiences(stackId);
+            var authAudience = AppApiTokens.ResolveAudience(optionsSnapshot, routeAudiences);
+            var reservedVars = AppApiTokens
+                .InjectedVariables(optionsSnapshot, stackId, appApiToken, routeAudiences)
+                .Select(v => (Key: v.Name, v.Value))
+                .ToList();
             var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
             foreach (var droppedKey in repoEnv.DroppedKeys)
                 WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
@@ -734,37 +737,6 @@ public class DeployQueueService : IHostedService, IDisposable {
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return db.Credentials.AsNoTracking()
             .Where(c => c.Id == credentialId).Select(c => c.Token).FirstOrDefault();
-    }
-
-    /// <summary>
-    /// The reserved variables injected into every deploy, in write order. <c>WATCHTOWER_URL</c> is
-    /// only written when a public base URL is configured.
-    /// </summary>
-    /// <param name="stackId">The stack being deployed.</param>
-    /// <param name="appApiToken">The stack's App API bearer token.</param>
-    /// <param name="publicBaseUrl">
-    /// Configured <c>Watchtower:PublicBaseUrl</c>. Passed in rather than read here so the env file and
-    /// the compose override of one deploy cannot disagree about it.
-    /// </param>
-    /// <param name="authJwksUrl">The active edge's JWKS URL, or null when none is issuing.</param>
-    /// <param name="authAudience">
-    /// The <c>aud</c> value(s) this stack's assertions carry, or null when nothing gated in front of it
-    /// mints one. Passed in for the same reason as the base URL: the env file and the override are two
-    /// renderings of one decision.
-    /// </param>
-    private static List<(string Key, string Value)> BuildReservedEnvVars(
-        int stackId, string appApiToken, string? publicBaseUrl, string? authJwksUrl, string? authAudience) {
-        var vars = new List<(string Key, string Value)> {
-            (AppApiTokens.TokenVariable, appApiToken),
-            (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
-        };
-        if (!string.IsNullOrWhiteSpace(publicBaseUrl))
-            vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
-        if (!string.IsNullOrWhiteSpace(authJwksUrl))
-            vars.Add((AppApiTokens.JwksUrlVariable, authJwksUrl.Trim()));
-        if (!string.IsNullOrWhiteSpace(authAudience))
-            vars.Add((AppApiTokens.AudienceVariable, authAudience.Trim()));
-        return vars;
     }
 
     /// <summary>
