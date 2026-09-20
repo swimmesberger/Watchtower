@@ -60,8 +60,13 @@ Watchtower has to read the value back to re-inject it at every deploy. See
 
 Operators manage the token from the admin JSON-RPC API:
 
-- `stacks.getAppApi` → `{ enabled, token, injectedVarNames }`
+- `stacks.getAppApi` → `{ enabled, token, injectedVariables }`, where each injected variable is
+  `{ name, value, secret }` — exactly what this stack's **next** deploy will write, resolved from the
+  current settings and the stack's current routes. `secret` is true only for `WATCHTOWER_APP_TOKEN`.
 - `stacks.setAppApi` → same shape; accepts `{ stackId, enabled?, regenerateToken? }`
+
+The same list is rendered read-only above your own variables under **Stack → Settings → Environment
+variables**, so the answer to "which variables does my container actually get" is in one place.
 
 Rotating a token takes effect for the running containers only at their **next deploy** — until then
 they keep presenting the old value and will receive `401`.
