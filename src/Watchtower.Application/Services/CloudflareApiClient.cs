@@ -206,6 +206,23 @@ public class CloudflareApiClient : IDisposable {
             token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareAccessPolicy, ct);
     }
 
+    /// <summary>
+    /// The account's <b>reusable</b> Access policies — the ones that exist independently of any application
+    /// and are attached by id (ADR-0039). The roster an <c>ExternalPolicy</c> clause is picked from, so an
+    /// operator chooses a policy by the name they gave it rather than pasting a UUID.
+    /// </summary>
+    /// <remarks>
+    /// A different endpoint from <see cref="ListAccessPoliciesAsync"/>, which is app-scoped: this one is
+    /// account-scoped and is the only way to learn a reusable policy's name. Asks for the first 100 and does
+    /// not paginate, the same limitation (and the same reason) as the zone listing — an account with more
+    /// than that gets an arbitrary subset in the picker and can still type an id in full.
+    /// </remarks>
+    public async Task<IReadOnlyList<CloudflareAccessPolicy>> ListReusableAccessPoliciesAsync(
+        string accountId, string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, $"accounts/{accountId}/access/policies?per_page=100",
+            token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareAccessPolicy, ct);
+    }
+
     /// <summary>Creates an app-scoped allow policy.</summary>
     public async Task CreateAccessPolicyAsync(
         string accountId, string appId, CloudflareAccessPolicyRequest policy, string token, CancellationToken ct = default) {

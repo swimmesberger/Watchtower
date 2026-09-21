@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Watchtower.Application.Persistence;
@@ -11,9 +12,11 @@ using Watchtower.Application.Persistence;
 namespace Watchtower.Application.Persistence.Migrations
 {
     [DbContext(typeof(WatchtowerDbContext))]
-    partial class WatchtowerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260921184634_AddAccessRules")]
+    partial class AddAccessRules
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1521,9 +1524,9 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     b.ToTable("routes", null, t =>
                         {
-                            t.HasCheckConstraint("ck_routes_binding", "(\"binding\" = 'Domain' AND \"domain\" IS NOT NULL AND \"listen_port\" IS NULL)\nOR (\"binding\" = 'Port' AND \"domain\" IS NULL AND \"listen_port\" BETWEEN 1 AND 65535\n    AND \"target\" = 'Service' AND \"access_mode\" = 'Public' AND \"tls_enabled\")");
+                            t.HasCheckConstraint("ck_routes_binding", "(\"binding\" = 'Domain' AND \"domain\" IS NOT NULL AND \"listen_port\" IS NULL) OR (\"binding\" = 'Port' AND \"domain\" IS NULL AND \"listen_port\" BETWEEN 1 AND 65535\r\n    AND \"target\" = 'Service' AND \"access_mode\" = 'Public' AND \"tls_enabled\")");
 
-                            t.HasCheckConstraint("ck_routes_target", "(\"target\" = 'Watchtower' AND \"stack_id\" IS NULL AND \"realm_id\" IS NOT NULL AND \"access_mode\" = 'Public')\nOR (\"target\" = 'Service' AND \"stack_id\" IS NOT NULL AND \"realm_id\" IS NULL)");
+                            t.HasCheckConstraint("ck_routes_target", "(\"target\" = 'Watchtower' AND \"stack_id\" IS NULL AND \"realm_id\" IS NOT NULL AND \"access_mode\" = 'Public')\r\nOR (\"target\" = 'Service' AND \"stack_id\" IS NOT NULL AND \"realm_id\" IS NULL)");
                         });
                 });
 

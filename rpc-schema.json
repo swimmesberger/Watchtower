@@ -8179,6 +8179,30 @@
         ]
       }
     },
+    "proxy.deleteAccessRule": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
     "proxy.deleteRoute": {
       "params": {
         "type": "object",
@@ -8264,6 +8288,23 @@
           },
           "realmId": {
             "type": "integer"
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "activeEnforcementPoint": {
+            "enum": [
+              "InProcess",
+              "CloudflareAccess"
+            ],
+            "default": "InProcess"
           }
         },
         "required": [
@@ -8773,6 +8814,119 @@
         ]
       }
     },
+    "proxy.listAccessRules": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "realmId": {
+                  "type": "integer"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "clauses": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "User",
+                          "Group",
+                          "Email",
+                          "EmailDomain",
+                          "ExternalGroup",
+                          "ExternalPolicy"
+                        ]
+                      },
+                      "userId": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "groupId": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "value": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "subjectLabel": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                },
+                "enforceableInProcess": {
+                  "type": "boolean"
+                },
+                "enforceableByCloudflareAccess": {
+                  "type": "boolean"
+                },
+                "attachedRouteCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "realmId",
+                "description",
+                "clauses",
+                "enforceableInProcess",
+                "enforceableByCloudflareAccess",
+                "attachedRouteCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "rules"
+        ]
+      }
+    },
     "proxy.listCertificates": {
       "params": {
         "type": "object"
@@ -8939,6 +9093,51 @@
         },
         "required": [
           "routes"
+        ]
+      }
+    },
+    "proxy.listExternalAccessPolicies": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "policies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "decision": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "decision"
+              ]
+            }
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "policies"
         ]
       }
     },
@@ -9255,6 +9454,16 @@
               "type": "integer"
             },
             "default": null
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
           }
         },
         "required": [
@@ -9299,6 +9508,16 @@
             "items": {
               "type": "integer"
             }
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
           }
         },
         "required": [
@@ -9307,6 +9526,186 @@
           "bypassPaths",
           "grantedUserIds",
           "grantedGroupIds"
+        ]
+      }
+    },
+    "proxy.setAccessRule": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "clauses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "User",
+                    "Group",
+                    "Email",
+                    "EmailDomain",
+                    "ExternalGroup",
+                    "ExternalPolicy"
+                  ]
+                },
+                "userId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "groupId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "value": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "subjectLabel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          },
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "clauses"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": "integer"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "clauses": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "User",
+                        "Group",
+                        "Email",
+                        "EmailDomain",
+                        "ExternalGroup",
+                        "ExternalPolicy"
+                      ]
+                    },
+                    "userId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "groupId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "value": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "subjectLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              },
+              "enforceableInProcess": {
+                "type": "boolean"
+              },
+              "enforceableByCloudflareAccess": {
+                "type": "boolean"
+              },
+              "attachedRouteCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "realmId",
+              "description",
+              "clauses",
+              "enforceableInProcess",
+              "enforceableByCloudflareAccess",
+              "attachedRouteCount"
+            ]
+          }
+        },
+        "required": [
+          "rule"
         ]
       }
     },

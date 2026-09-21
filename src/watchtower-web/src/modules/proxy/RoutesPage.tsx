@@ -4,6 +4,8 @@ import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, L
 import { api, INTERNAL_CA_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AccessMode,
+  AccessRule,
+  ActiveEnforcementPoint,
   CertificateInfo,
   CloudflareForeignRoute,
   CreateRouteRequest,
@@ -11,6 +13,7 @@ import type {
   IdentityHeaderMode,
   Route,
   RouteAccess,
+  RouteAccessView,
   RouteAccessModeWire,
   RouteBinding,
   RouteStatus,
@@ -50,6 +53,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
+import { AccessRulesCard, isAttachableAt } from './AccessRulesCard'
 import { routesRoute } from './module'
 
 const STATUS_TONE: Record<RouteStatus, BadgeTone> = {
@@ -110,6 +114,26 @@ const ACCESS_DESCRIPTION: Record<RouteAccessModeWire, string> = {
 
 function accessModeDescription(value: AccessMode): string {
   return ACCESS_MODES.find((m) => m.value === value)?.description ?? ''
+}
+
+/**
+ * What a mode means **at the enforcement point that is actually live**. `Authenticated` is the one that
+ * needed this: under the built-in proxy it really is "any signed-in Watchtower user", but under Cloudflare
+ * Watchtower's forward-auth does not run at all and the mode means "whoever passes the attached access
+ * rules, or the instance-wide allow sources when none are attached" (ADR-0039). The static description
+ * described a mechanism that is not running there, which is exactly the kind of mislabelling the whole
+ * access plane is supposed to avoid.
+ */
+function accessModeDescriptionAt(value: AccessMode, point: ActiveEnforcementPoint): string {
+  if (point !== 'CloudflareAccess') return accessModeDescription(value)
+  switch (value) {
+    case 'Authenticated':
+      return 'Cloudflare Access decides. Tick the access rules that admit people here, or leave them unticked to use the instance-wide allow sources from Settings.'
+    case 'Restricted':
+      return 'Only the users and group members you pick below may enter — matched by email address at the Cloudflare edge.'
+    default:
+      return accessModeDescription(value)
+  }
 }
 
 /** The identity-forwarding modes in menu order, with the label the Access dialog shows for each. */
@@ -1813,6 +1837,11 @@ export function RoutesPage() {
         />
       )}
 
+      {/* Under the routes rather than in Settings: a rule is only meaningful as something a route attaches,
+          and the instance-wide allow sources it replaces per route are the Settings half of the same
+          decision (ADR-0039). Shown whenever the proxy is on, because a rule outlives a provider switch. */}
+      {status?.enabled === true && <AccessRulesCard />}
+
       {/* Two different questions, and they used to be one. The ACME table is the built-in provider's —
           Caddy and Cloudflare hold their own certificates and Watchtower has none to list — while the
           internal CA belongs to the port routes, which every provider serves. */}
@@ -2187,6 +2216,13 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
     enabled: open && realmId != null,
   })
 
+  // The rules this route could attach, scoped to its realm for the same reason the two rosters above are.
+  const { data: accessRules = [] } = useQuery({
+    queryKey: ['access-rules', { realmId }],
+    queryFn: () => api.proxy.listAccessRules(realmId),
+    enabled: open && realmId != null,
+  })
+
   const save = useMutation({
     mutationFn: (data: RouteAccess) => api.proxy.setAccess(route!.id, data),
     onSuccess: () => {
@@ -2223,6 +2259,7 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
             realmName={nameOrNull(access.realmId)}
             users={users}
             groups={groups}
+            accessRules={accessRules}
             saving={save.isPending}
             onCancel={onClose}
             onSubmit={(data) => save.mutate(data)}
@@ -2238,11 +2275,12 @@ function AccessForm({
   realmName,
   users,
   groups,
+  accessRules,
   saving,
   onCancel,
   onSubmit,
 }: {
-  initial: RouteAccess
+  initial: RouteAccessView
   /**
    * The realm the candidate lists are scoped to, named in the copy so the shorter lists make sense —
    * or null while the roster has not answered, in which case the copy says the scoping without naming
@@ -2251,6 +2289,7 @@ function AccessForm({
   realmName: string | null
   users: { id: number; userName: string; email: string | null }[]
   groups: { id: number; name: string; memberCount: number }[]
+  accessRules: AccessRule[]
   saving: boolean
   onCancel: () => void
   onSubmit: (data: RouteAccess) => void
@@ -2262,6 +2301,7 @@ function AccessForm({
   const [bypassPaths, setBypassPaths] = useState(initial.bypassPaths ?? '')
   const [grantedUserIds, setGrantedUserIds] = useState<number[]>(initial.grantedUserIds)
   const [grantedGroupIds, setGrantedGroupIds] = useState<number[]>(initial.grantedGroupIds)
+  const [accessRuleIds, setAccessRuleIds] = useState<number[]>(initial.accessRuleIds ?? [])
 
   function toggleUser(id: number) {
     setGrantedUserIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
@@ -2269,6 +2309,12 @@ function AccessForm({
 
   function toggleGroup(id: number) {
     setGrantedGroupIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+  }
+
+  // Appended rather than inserted in roster order: the list's order is the precedence the policies attach in
+  // at the edge, so ticking a rule puts it after the ones already chosen.
+  function toggleRule(id: number) {
+    setAccessRuleIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
   }
 
   return (
@@ -2285,6 +2331,9 @@ function AccessForm({
           bypassPaths: mode === 'Public' || bypassPaths.trim() === '' ? null : bypassPaths,
           grantedUserIds: mode === 'Restricted' ? grantedUserIds : [],
           grantedGroupIds: mode === 'Restricted' ? grantedGroupIds : [],
+          // Always an array, never null: this form knows what the route's attachments should be, so an
+          // untick has to be sent as the empty list that detaches. Null is for clients that do not.
+          accessRuleIds: mode === 'Authenticated' ? accessRuleIds : [],
         })
       }}
     >
@@ -2305,8 +2354,71 @@ function AccessForm({
         )}
       </Field>
       <p className="-mt-2 text-xs text-text-3">
-        {ACCESS_MODES.find((m) => m.value === mode)?.description}
+        {accessModeDescriptionAt(mode, initial.activeEnforcementPoint)}
       </p>
+
+      {mode === 'Authenticated' && (
+        <Field
+          label="Access rules"
+          hint="Tick the named allow-lists this hostname admits. Tick two to admit both. Leave all unticked to use the instance-wide allow sources from Settings → Reverse proxy, which apply to every protected hostname alike."
+        >
+          {() =>
+            accessRules.length === 0 ? (
+              <p className="text-[13px] text-text-3">
+                No access rules yet. Create one under <span className="text-text-2">Access rules</span> below
+                this dialog to admit a different set of people here than on your other hostnames.
+              </p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto rounded-md border border-border">
+                {accessRules.map((rule) => {
+                  // A rule the active provider cannot honour would be refused on save (ADR-0039 decision 4),
+                  // so it is disabled here with the reason rather than offered and then rejected.
+                  const attachable = isAttachableAt(rule, initial.activeEnforcementPoint)
+                  const checked = accessRuleIds.includes(rule.id)
+                  const position = accessRuleIds.indexOf(rule.id)
+                  return (
+                    <label
+                      key={rule.id}
+                      className={`flex items-center gap-3 border-b border-border px-3 py-2 last:border-b-0 ${
+                        attachable ? 'cursor-pointer hover:bg-surface-2' : 'cursor-not-allowed opacity-60'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-brand"
+                        checked={checked}
+                        disabled={!attachable}
+                        onChange={() => toggleRule(rule.id)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="text-sm text-text">{rule.name}</span>
+                        {checked && accessRuleIds.length > 1 && (
+                          <span className="ml-2 text-xs text-text-3">#{position + 1}</span>
+                        )}
+                        <span className="ml-2 text-xs text-text-3">
+                          {attachable
+                            ? (rule.description ??
+                              (rule.clauses.length === 1 ? '1 clause' : `${rule.clauses.length} clauses`))
+                            : initial.activeEnforcementPoint === 'CloudflareAccess'
+                              ? 'Cloudflare Access cannot enforce every clause in this rule'
+                              : 'the built-in proxy cannot enforce every clause in this rule'}
+                        </span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            )
+          }
+        </Field>
+      )}
+
+      {mode === 'Authenticated' && accessRuleIds.length > 1 && (
+        <p className="-mt-2 text-xs text-text-3">
+          Ticked rules are attached in the order shown, which is the order the edge evaluates them in. Anyone
+          matching any of them gets in.
+        </p>
+      )}
 
       {mode === 'Restricted' && (
         <Field

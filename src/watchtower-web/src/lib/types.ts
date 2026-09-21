@@ -1141,6 +1141,79 @@ export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
  */
 export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest' | 'Cloudflare'
 
+/**
+ * What one clause of an access rule names (ADR-0039). `user` and `group` are Watchtower's own subjects and
+ * mean the same thing wherever a route is served; `email` and `emailDomain` are enforceable only at the
+ * Cloudflare edge, which verifies an address before asserting it where Watchtower does not; `externalGroup`
+ * and `externalPolicy` are ids for allow-lists Cloudflare owns and Watchtower only references.
+ */
+export type AccessClauseKind =
+  | 'User'
+  | 'Group'
+  | 'Email'
+  | 'EmailDomain'
+  | 'ExternalGroup'
+  | 'ExternalPolicy'
+
+/** Which enforcement point the active proxy provider decides a route's access at (ADR-0039). */
+export type ActiveEnforcementPoint = 'InProcess' | 'CloudflareAccess'
+
+/**
+ * One clause of an access rule. Exactly one of `userId`, `groupId` and `value` carries the subject, decided
+ * by `kind` — the same shape the database's CHECK constraint enforces.
+ */
+export interface AccessRuleClause {
+  kind: AccessClauseKind
+  userId?: number | null
+  groupId?: number | null
+  /** An address, an email domain, or Cloudflare's own id — for the three value-carrying kinds. */
+  value?: string | null
+  /** What to render for this clause: the account's username, the group's name, or the value itself. */
+  subjectLabel?: string | null
+}
+
+/**
+ * A named, reusable allow-list that routes attach instead of restating who gets in (ADR-0039). The two
+ * portability flags are the intersection over its clauses: a rule is attachable only to a route whose active
+ * provider can honour every one of them, so the UI can grey out the rest rather than letting the refusal
+ * happen on save.
+ */
+export interface AccessRule {
+  id: number
+  name: string
+  realmId: number
+  description: string | null
+  clauses: AccessRuleClause[]
+  enforceableInProcess: boolean
+  enforceableByCloudflareAccess: boolean
+  /** How many routes name this rule — what makes a delete refusable and an edit's blast radius visible. */
+  attachedRouteCount: number
+}
+
+/**
+ * A reusable Access policy that already exists in the operator's Cloudflare account — the roster an
+ * `externalPolicy` clause is picked from, so a rule names *friends* rather than carrying a UUID.
+ */
+export interface ExternalAccessPolicy {
+  id: string
+  name: string
+  /** Cloudflare's own decision word. Shown because attaching a `deny` policy should be a knowing choice. */
+  decision: string | null
+}
+
+/**
+ * What `proxy.setAccessRule` takes. An upsert: omitting `id` creates, supplying it replaces that rule's name,
+ * description and whole clause list. `realmId` is ignored on an update — a rule's population is immutable,
+ * because changing it would invalidate every clause and every attachment at once.
+ */
+export interface SetAccessRuleRequest {
+  id?: number | null
+  name: string
+  description?: string | null
+  realmId?: number | null
+  clauses: AccessRuleClause[]
+}
+
 /** The shape `proxy.setAccess` both accepts and returns — the policy itself, with nothing derived. */
 export interface RouteAccess {
   mode: AccessMode
@@ -1155,6 +1228,12 @@ export interface RouteAccess {
    * granted group is let through, evaluated per request — so membership changes take effect immediately.
    */
   grantedGroupIds: number[]
+  /**
+   * Ids of the access rules this route attaches, in precedence order; only meaningful for `Authenticated`
+   * (ADR-0039). An empty array is the instance-wide fallback — `null`/omitted means "leave them as they are",
+   * which is what keeps an older client from stripping a composition it knows nothing about.
+   */
+  accessRuleIds?: number[] | null
 }
 
 /**
@@ -1165,6 +1244,8 @@ export interface RouteAccess {
  */
 export interface RouteAccessView extends RouteAccess {
   realmId: number
+  /** Which enforcement point is live, so the form knows which of a rule's two portability flags applies. */
+  activeEnforcementPoint: ActiveEnforcementPoint
 }
 
 export interface DnsCheckResult {

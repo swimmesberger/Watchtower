@@ -78,6 +78,9 @@ import type {
   Realm,
   Registry,
   Route,
+  AccessRule,
+  ExternalAccessPolicy,
+  SetAccessRuleRequest,
   RouteAccess,
   RouteAccessView,
   SelfUpdateStatus,
@@ -577,7 +580,36 @@ export const api = {
         bypassPaths: data.bypassPaths ?? null,
         grantedUserIds: data.grantedUserIds,
         grantedGroupIds: data.grantedGroupIds,
+        // Sent as null when the caller has nothing to say about attachments, which the backend reads as
+        // "leave them alone" rather than "detach everything" (ADR-0039).
+        accessRuleIds: data.accessRuleIds ?? null,
       })) as RouteAccess,
+
+    listAccessRules: async (realmId?: number) =>
+      ((await rpc('proxy.listAccessRules', { realmId: realmId ?? null })).rules ?? []) as AccessRule[],
+    setAccessRule: async (data: SetAccessRuleRequest) =>
+      (await rpc('proxy.setAccessRule', {
+        id: data.id ?? null,
+        name: data.name,
+        description: data.description ?? null,
+        realmId: data.realmId ?? null,
+        clauses: data.clauses.map(c => ({
+          kind: c.kind,
+          userId: c.userId ?? null,
+          groupId: c.groupId ?? null,
+          value: c.value ?? null,
+        })),
+      })).rule as AccessRule,
+    deleteAccessRule: async (id: number) => {
+      await rpc('proxy.deleteAccessRule', { id })
+    },
+    listExternalAccessPolicies: async () => {
+      const data = await rpc('proxy.listExternalAccessPolicies', {})
+      return {
+        policies: (data.policies ?? []) as ExternalAccessPolicy[],
+        warning: (data.warning ?? null) as string | null,
+      }
+    },
   },
 
   backups: {

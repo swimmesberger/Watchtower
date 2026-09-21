@@ -47,13 +47,19 @@ On startup, on every route change/deploy, and on every settings change:
 - the cloudflared container (managed mode) and its ingress-network memberships;
 - one **Zero Trust Access application** (`self_hosted`, named `watchtower: {domain}`) per protected
   route, with a single Watchtower-owned allow policy:
-  - **Authenticated** routes admit the instance-wide allow sources configured on the Settings page:
-    *allowed emails*, *email domains*, **Access group ids** (the natural fit when your allow-list
-    already lives in an Access group — e.g. your Entra ID users), and/or **reusable Access policy
-    ids** (your dashboard-maintained default policy, attached on the app rather than recreated);
+  - **Authenticated** routes with no **access rules** attached admit the instance-wide allow sources
+    configured on the Settings page: *allowed emails*, *email domains*, **Access group ids** (the natural
+    fit when your allow-list already lives in an Access group — e.g. your Entra ID users), and/or
+    **reusable Access policy ids** (your dashboard-maintained default policy, attached on the app rather
+    than recreated). These apply to **every** protected hostname alike, which is what
+    [access rules](#access-rules-different-people-per-hostname) exist to vary;
+  - **Authenticated** routes **with** access rules attached admit exactly what those rules resolve to,
+    and the instance-wide sources do not apply to them at all;
   - **Restricted** routes admit exactly the emails behind the route's grants — granted users plus
-    members of granted groups (accounts without an email address cannot be matched by Cloudflare and
-    are effectively excluded);
+    members of granted groups, **of the route's own realm** (accounts without an email address cannot be
+    matched by Cloudflare and are effectively excluded, and a grant left behind by a realm change admits
+    nobody here just as it admits nobody in process —
+    [ADR-0040](../decisions/0040-the-edge-projection-is-authoritative.md));
   - a protected route whose allow-list comes out **empty gets an explicit deny-all app** and its row
     is set to `Error` saying so. Nobody reaches it until you configure an allow source or set the
     route Public. This is deliberate and it reverses what earlier versions did: a lockout tells you
@@ -75,6 +81,78 @@ On startup, on every route change/deploy, and on every settings change:
 Disabling the proxy — or switching back to Caddy — stops and removes only the managed cloudflared
 container. **The tunnel and the DNS records are kept**: deleting public DNS you may still want is not
 a toggle's job, and re-enabling reuses both.
+
+### Access rules: different people per hostname
+
+The four settings above are **instance-wide** — every `Authenticated` route in the deployment gets the same
+allow-list. When one hostname should admit more people than the others (your own apps for your household,
+one shared app for friends too), that is what **access rules** are for
+([ADR-0039](../decisions/0039-access-rules-compose.md)).
+
+A rule is a **name** and a list of **clauses**, managed under **Routes → Access rules**. It admits anyone
+matching any clause, and a route attaches it by name under **Routes → Access**. The composition you
+probably came here for is two rules and two attachments:
+
+```
+Access rule "family"    →  Cloudflare reusable policy: family
+Access rule "friends"   →  Cloudflare reusable policy: friends
+
+internal.example.com    →  [ family ]
+shared.example.com      →  [ family, friends ]
+```
+
+`shared.example.com`'s application gets **both** policies attached, in that order; `internal.example.com`
+gets only the first. Before rules, both hostnames necessarily got the identical instance-wide list.
+
+**Six clause kinds**, and the two columns matter as much as the list:
+
+| Clause | Cloudflare Access | Built-in proxy (`yarp`) |
+| --- | --- | --- |
+| **Watchtower group** | member email addresses, resolved at each reconcile | evaluated per request |
+| **Watchtower user** | that account's email address | evaluated per request |
+| **Email address** | an `email` include | not enforceable |
+| **Email domain** | an `email_domain` include | not enforceable |
+| **Cloudflare Access group** | an Access-group include | not enforceable |
+| **Cloudflare reusable policy** | attached to the app by id, never edited | not enforceable |
+
+The right-hand column is **enforced, not advisory**: attaching a rule the active provider cannot honour is
+**refused when you save it**, naming the clause and the provider, rather than being accepted and then
+quietly ignored at the next reconcile. The Access dialog greys out those rules so you can see it before
+saving, and each rule carries a badge saying where it can be enforced. A rule may still be *created* with
+clauses the current provider cannot honour — that is how you stage a move between edges, keeping both
+spellings on one rule while the cutover happens.
+
+Two consequences worth knowing:
+
+- **A group's members are flattened at reconcile time** under this provider, so removing somebody from a
+  group takes effect on the next reconcile rather than on their next request. Under the built-in proxy it is
+  immediate. Same declaration, different revocation latency.
+- **The email kinds are edge-only on purpose.** Cloudflare's identity provider verifies an address before
+  asserting it; Watchtower does not (an account's email is optional and not unique), so matching a
+  Watchtower session on an address would make an unverified field an authorization key.
+
+**Rules replace the instance-wide settings for the route that attaches them** — they do not add to them. So
+an internal hostname can be narrower than the default, which "extend" could never express. Attach no rules
+and the route keeps the instance-wide list; tick none again and it goes back to it.
+
+**A rule that resolves to nobody locks its route out**, exactly as an empty instance-wide list does
+(see below) — with the rule named in the warning and on the route's row, because the remedy is in the rule
+rather than on the Settings page.
+
+Rules belong to `Authenticated` routes. **Restricted** means "exactly the users and groups granted on this
+route", so attaching a rule to one is refused rather than merged — the two are separate axes, not a
+combination.
+
+**Picking a policy by name.** The clause editor lists your account's reusable Access policies so you choose
+*friends* rather than pasting a UUID. It asks for the first 100 and does not paginate; a larger account gets
+a subset in the picker and you can always type the id in full.
+
+**Watchtower owns the `policies` array of a route that attaches rules.** If you previously attached a
+reusable policy by hand to a `watchtower: {host}` application, that attachment stops surviving reconciles
+once you attach rules to that route ([ADR-0040](../decisions/0040-the-edge-projection-is-authoritative.md)).
+Express it as a *Cloudflare reusable policy* clause instead — or keep it as an **app-scoped** policy under
+any name except the reserved `watchtower`, which no reconcile ever touches. Routes with no rules attached
+keep today's behaviour, hand-made attachments included.
 
 ### New routes are protected by default
 
