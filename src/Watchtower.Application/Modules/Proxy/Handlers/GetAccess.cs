@@ -1,5 +1,7 @@
 using Elarion.Abstractions.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -21,7 +23,7 @@ namespace Watchtower.Application.Modules.Proxy.Handlers;
 /// </remarks>
 [Handler("proxy.getAccess")]
 [RequireRole(WatchtowerClaims.AdminRole)]
-public sealed class GetAccess(WatchtowerDbContext db)
+public sealed class GetAccess(WatchtowerDbContext db, IOptionsMonitor<WatchtowerOptions> options)
     : IHandler<GetAccess.Query, Result<GetAccess.Response>> {
     public sealed record Query(int RouteId);
     public sealed record Response(
@@ -33,7 +35,14 @@ public sealed class GetAccess(WatchtowerDbContext db)
         // The population the route's grants may name (docs/central-auth/design.md §13). Not policy, which is
         // why it comes last: it is the context a grant editor needs to offer only candidates SetAccess would
         // accept, so the cross-realm refusal is something the caller never has to run into.
-        int RealmId);
+        int RealmId,
+        // The access rules this route attaches, in precedence order (ADR-0039). Optional and after RealmId
+        // for the reason SetAccess's own additions are: a client that predates rules keeps working, and one
+        // that knows about them round-trips what it saved.
+        IReadOnlyList<int>? AccessRuleIds = null,
+        // Which enforcement point the active provider decides at, so a form can grey out the rules it would
+        // refuse instead of letting the operator discover the refusal on save (ADR-0039 decision 4).
+        ActiveEnforcementPoint ActiveEnforcementPoint = ActiveEnforcementPoint.InProcess);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var route = await db.Routes.AsNoTracking()
@@ -63,12 +72,22 @@ public sealed class GetAccess(WatchtowerDbContext db)
             .Select(g => new { g.UserId, g.GroupId })
             .ToListAsync(ct);
 
+        // Attachment order is the operator's, so it is read back in Order rather than sorted — it is the
+        // precedence the projected policies are attached in.
+        var attachedRuleIds = await db.RouteAccessRules.AsNoTracking()
+            .Where(a => a.RouteId == route.Id)
+            .OrderBy(a => a.Order).ThenBy(a => a.Id)
+            .Select(a => a.AccessRuleId)
+            .ToListAsync(ct);
+
         return new Response(
             route.AccessMode,
             route.IdentityHeaderMode,
             route.BypassPaths,
             [.. grants.Where(g => g.UserId is not null).Select(g => g.UserId!.Value).Order()],
             [.. grants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).Order()],
-            realmId.Value);
+            realmId.Value,
+            attachedRuleIds,
+            AccessRuleMapping.Active(AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider())));
     }
 }

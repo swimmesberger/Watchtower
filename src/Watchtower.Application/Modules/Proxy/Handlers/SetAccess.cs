@@ -2,6 +2,8 @@ using System.Globalization;
 using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Watchtower.Application.Services;
@@ -30,6 +32,7 @@ public sealed class SetAccess(
     WatchtowerDbContext db,
     IProxyProvider proxy,
     ICurrentUser currentUser,
+    IOptionsMonitor<WatchtowerOptions> options,
     TimeProvider time)
     : IHandler<SetAccess.Command, Result<SetAccess.Response>> {
 
@@ -45,14 +48,19 @@ public sealed class SetAccess(
         // Added the same way and for the same reason, which is why it goes after IdentityHeaderMode rather
         // than next to GrantedUserIds: a client that predates group grants omits it and gets today's
         // behaviour — the user grants it did send, and no group grants — instead of a rejected write.
-        IReadOnlyList<int>? GrantedGroupIds = null);
+        IReadOnlyList<int>? GrantedGroupIds = null,
+        // The access rules this route attaches, in precedence order (ADR-0039). Added last for the same
+        // reason again: a client that predates rules omits it and keeps the instance-wide fallback. An
+        // explicit empty list detaches everything, which is how a route goes back to that fallback.
+        IReadOnlyList<int>? AccessRuleIds = null);
 
     public sealed record Response(
         AccessMode Mode,
         IdentityHeaderMode IdentityHeaderMode,
         string? BypassPaths,
         IReadOnlyList<int> GrantedUserIds,
-        IReadOnlyList<int> GrantedGroupIds);
+        IReadOnlyList<int> GrantedGroupIds,
+        IReadOnlyList<int>? AccessRuleIds = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var route = await db.Routes.FirstOrDefaultAsync(r => r.Id == command.RouteId, ct);
@@ -108,6 +116,30 @@ public sealed class SetAccess(
             ? (command.GrantedGroupIds ?? []).Distinct().ToList()
             : [];
 
+        // Attachments belong to Authenticated and only Authenticated (ADR-0039 decision 2). Refused rather
+        // than silently dropped for the mode that cannot use them: Restricted means "exactly these subjects"
+        // and Public asks nobody, so accepting a rule there would store state that reads like access
+        // somebody has while deciding nothing — and an administrator who thought they had composed two
+        // allow-lists must find out that they have not. Distinct rather than rejected on duplicates: naming
+        // one rule twice is one attachment, which is what the unique index says too.
+        //
+        // Null and empty are *not* the same here, which is where this parameter differs from the grant lists
+        // above. A client that predates rules omits the field on every save, and reading that as "detach
+        // everything" would let an old UI silently strip a composition the operator built in a new one — the
+        // hostname would fall back to the instance-wide allow-list with nothing saying so. So null means
+        // "leave them alone" and an explicit empty list is how detaching is asked for. Leaving Authenticated
+        // clears them regardless, exactly as it clears grants: the mode is what decides they mean anything.
+        var requestedRuleIds = command.AccessRuleIds?.Distinct().ToList();
+        if (requestedRuleIds is { Count: > 0 } && command.Mode != AccessMode.Authenticated) {
+            return AppError.Validation(
+                $"Access rules apply to an {nameof(AccessMode.Authenticated)} route. "
+                + (command.Mode == AccessMode.Restricted
+                    ? "A Restricted route admits exactly the users and groups granted on it; a rule would widen that."
+                    : "A Public route admits everyone, so there is nothing for a rule to decide."));
+        }
+        // Null here means "the caller said nothing about attachments" and skips the reconcile below.
+        List<int>? targetRuleIds = command.Mode == AccessMode.Authenticated ? requestedRuleIds : [];
+
         // The realm the route belongs to — its stack's category, or the operator realm for a standalone
         // stack. A grant naming a subject from any other population would never admit anyone
         // (RouteAccessPolicy applies the same invariant at access time), so it is refused here rather than
@@ -150,6 +182,42 @@ public sealed class SetAccess(
             }
         }
 
+        // Every attached rule must exist, belong to the route's population, and consist only of clauses the
+        // active provider can actually honour (ADR-0039 decision 4). The portability check is the whole point
+        // of declaring portability: a reconcile is never where an operator finds out that half of what they
+        // asked for was dropped.
+        if (targetRuleIds is { Count: > 0 }) {
+            var known = await db.AccessRules.AsNoTracking()
+                .Where(r => targetRuleIds.Contains(r.Id))
+                .Select(r => new {
+                    r.Id, r.Name, r.RealmId,
+                    Kinds = db.AccessRuleClauses.Where(c => c.AccessRuleId == r.Id).Select(c => c.Kind).ToList(),
+                })
+                .ToListAsync(ct);
+
+            var missing = targetRuleIds.Except(known.Select(r => r.Id)).OrderBy(id => id).ToList();
+            if (missing.Count > 0)
+                return AppError.Validation($"No access rule exists with id {Describe(missing)}.");
+
+            var foreign = known.Where(r => r.RealmId != routeRealmId).Select(r => r.Name)
+                .OrderBy(n => n, StringComparer.Ordinal).ToList();
+            if (foreign.Count > 0) {
+                return AppError.Validation(
+                    $"Access rule '{string.Join("', '", foreign)}' belongs to a different realm than {route.Domain}.");
+            }
+
+            var point = AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider());
+            foreach (var rule in known.OrderBy(r => r.Name, StringComparer.Ordinal)) {
+                var unsupported = rule.Kinds.Where(k => !AccessClauseSupport.IsSupportedAt(k, point))
+                    .Distinct().Order().ToList();
+                if (unsupported.Count == 0) continue;
+                return AppError.Validation(
+                    $"Access rule '{rule.Name}' uses {AccessClauseSupport.DescribeAll(unsupported)}, which "
+                    + $"{AccessClauseSupport.Describe(point)} cannot enforce. Attaching it would admit fewer "
+                    + "people than the rule says. Remove those clauses, or attach a rule this provider can enforce.");
+            }
+        }
+
         route.AccessMode = command.Mode;
         route.IdentityHeaderMode = identityHeaderMode;
         route.BypassPaths = bypassPaths;
@@ -178,6 +246,28 @@ public sealed class SetAccess(
         foreach (var groupId in targetGroupGrants.Where(id => !currentGroups.Contains(id)))
             db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = route.Id, GroupId = groupId });
 
+        // Attachments are reconciled by position, not deleted and re-added: Order is the precedence the
+        // projected policies attach in, so re-saving an unchanged list must touch no rows and produce an
+        // identical request at the edge. Skipped entirely when the caller said nothing about them.
+        var currentAttachments = await db.RouteAccessRules
+            .Where(a => a.RouteId == route.Id)
+            .OrderBy(a => a.Order).ThenBy(a => a.Id)
+            .ToListAsync(ct);
+        if (targetRuleIds is not null) {
+            foreach (var attachment in currentAttachments.Where(a => !targetRuleIds.Contains(a.AccessRuleId)))
+                db.RouteAccessRules.Remove(attachment);
+            for (var i = 0; i < targetRuleIds.Count; i++) {
+                var existing = currentAttachments.FirstOrDefault(a => a.AccessRuleId == targetRuleIds[i]);
+                if (existing is null) {
+                    db.RouteAccessRules.Add(new RouteAccessRule {
+                        RouteId = route.Id, AccessRuleId = targetRuleIds[i], Order = i,
+                    });
+                } else if (existing.Order != i) {
+                    existing.Order = i;
+                }
+            }
+        }
+
         await db.SaveChangesAsync(ct);
 
         // Protected-ness may have flipped, so the generated Caddyfile changes — reload it. Best-effort like
@@ -192,7 +282,11 @@ public sealed class SetAccess(
             route.IdentityHeaderMode,
             route.BypassPaths,
             [.. targetUserGrants.Order()],
-            [.. targetGroupGrants.Order()]);
+            [.. targetGroupGrants.Order()],
+            // Not sorted: the caller's order is the precedence, so echoing it back is what lets a form
+            // round-trip what it saved. A caller that said nothing gets what the route already had, which is
+            // the honest answer rather than an empty list it might then save back.
+            targetRuleIds ?? [.. currentAttachments.Select(a => a.AccessRuleId)]);
     }
 
     /// <summary>Renders the ids that could not be resolved for the refusal message.</summary>

@@ -935,6 +935,90 @@ public sealed class InternalCaConfiguration : IEntityTypeConfiguration<InternalC
     }
 }
 
+[EntityConfiguration]
+public sealed class AccessRuleConfiguration : IEntityTypeConfiguration<AccessRule> {
+    public void Configure(EntityTypeBuilder<AccessRule> b) {
+        b.ToTable("access_rules");
+        b.HasKey(x => x.Id);
+        b.UseXminAsConcurrencyToken();
+        b.Property(x => x.Name).IsRequired();
+        b.Property(x => x.NormalizedName).IsRequired();
+        // The Group shape, for the same reasons: uniqueness on the normalized column so names are
+        // case-insensitive, scoped to the realm because a rule is an allow-list over one population.
+        b.HasIndex(x => new { x.RealmId, x.NormalizedName }).IsUnique();
+        // Restrict, as for users and groups: a realm still holding rules is not deletable.
+        b.HasOne(x => x.Realm)
+            .WithMany()
+            .HasForeignKey(x => x.RealmId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+[EntityConfiguration]
+public sealed class AccessRuleClauseConfiguration : IEntityTypeConfiguration<AccessRuleClause> {
+    public void Configure(EntityTypeBuilder<AccessRuleClause> b) {
+        // A clause's kind decides which subject column it may use, enforced in the schema rather than only
+        // in the handlers — the RouteAccessGrant precedent. A row whose kind and columns disagree is a
+        // clause whose meaning depends on which column a reader consults first, and this table is what
+        // decides who reaches a hostname.
+        b.ToTable("access_rule_clauses", t => t.HasCheckConstraint(
+            "ck_access_rule_clauses_subject",
+            "(\"kind\" = 'User' AND \"user_id\" IS NOT NULL AND \"group_id\" IS NULL AND \"value\" IS NULL)"
+            + " OR (\"kind\" = 'Group' AND \"group_id\" IS NOT NULL AND \"user_id\" IS NULL AND \"value\" IS NULL)"
+            + " OR (\"kind\" IN ('Email', 'EmailDomain', 'ExternalGroup', 'ExternalPolicy')"
+            + " AND \"value\" IS NOT NULL AND \"user_id\" IS NULL AND \"group_id\" IS NULL)"));
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Kind).HasConversion<string>().IsRequired();
+        b.HasIndex(x => new { x.AccessRuleId, x.Order });
+        // One clause per (rule, subject), per subject kind — re-adding is idempotent rather than
+        // duplicated. Three partial indexes rather than one composite, for the reason the grant table
+        // gives: the pair is unique *within* a kind, and rows of the other kinds must not be dragged in.
+        b.HasIndex(x => new { x.AccessRuleId, x.UserId }).IsUnique()
+            .HasFilter("\"user_id\" IS NOT NULL");
+        b.HasIndex(x => new { x.AccessRuleId, x.GroupId }).IsUnique()
+            .HasFilter("\"group_id\" IS NOT NULL");
+        b.HasIndex(x => new { x.AccessRuleId, x.Kind, x.Value }).IsUnique()
+            .HasFilter("\"value\" IS NOT NULL");
+        b.HasOne(x => x.AccessRule)
+            .WithMany(x => x.Clauses)
+            .HasForeignKey(x => x.AccessRuleId)
+            .OnDelete(DeleteBehavior.Cascade);
+        // Deleting an account or a group removes the clauses that named it, exactly as it revokes the
+        // grants that named it: a clause outliving its subject would re-admit a recycled id.
+        b.HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        b.HasOne(x => x.Group)
+            .WithMany()
+            .HasForeignKey(x => x.GroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+[EntityConfiguration]
+public sealed class RouteAccessRuleConfiguration : IEntityTypeConfiguration<RouteAccessRule> {
+    public void Configure(EntityTypeBuilder<RouteAccessRule> b) {
+        b.ToTable("route_access_rules");
+        b.HasKey(x => x.Id);
+        // One attachment per (route, rule): attaching twice is idempotent rather than a hostname that
+        // projects the same policy twice.
+        b.HasIndex(x => new { x.RouteId, x.AccessRuleId }).IsUnique();
+        b.HasIndex(x => new { x.RouteId, x.Order });
+        b.HasOne(x => x.Route)
+            .WithMany()
+            .HasForeignKey(x => x.RouteId)
+            .OnDelete(DeleteBehavior.Cascade);
+        // Restrict, unlike every other edge here: deleting a rule that hostnames still name would silently
+        // widen or close them at the next reconcile depending on what is left. Detaching it first is the
+        // same work made visible, and proxy.deleteAccessRule says which routes are in the way.
+        b.HasOne(x => x.AccessRule)
+            .WithMany()
+            .HasForeignKey(x => x.AccessRuleId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 /// <summary>
 /// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3),
 /// mapped onto <see cref="IHasXmin.Xmin"/> — a real property on the entity.

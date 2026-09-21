@@ -222,6 +222,37 @@ public sealed class LoginCode {                          // the one-time cross-d
 
 public enum AccessMode { Public, Authenticated, Restricted }
 
+// Named, composable allow-lists (ADR-0039). A rule holds clauses and no decision of its own, like a
+// Group; a route attaches rules in precedence order and a protected route with none falls back to the
+// instance-wide allow sources, which is what keeps this additive.
+public enum AccessClauseKind { User, Group, Email, EmailDomain, ExternalGroup, ExternalPolicy }
+
+public sealed class AccessRule {                         // realm-scoped, unique (realm_id, normalized)
+    public int Id { get; set; }
+    public int RealmId { get; set; }
+    public required string Name { get; set; }
+    public required string NormalizedName { get; set; }
+    public string? Description { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public sealed class AccessRuleClause {                   // one "who" predicate; CHECK ties Kind to column
+    public int Id { get; set; }
+    public int AccessRuleId { get; set; }                // FK, Cascade
+    public AccessClauseKind Kind { get; set; }
+    public int? UserId { get; set; }                     // Kind = User; FK, Cascade
+    public int? GroupId { get; set; }                    // Kind = Group; FK, Cascade
+    public string? Value { get; set; }                   // the three value-carrying kinds
+    public int Order { get; set; }
+}
+
+public sealed class RouteAccessRule {                    // Authenticated routes only
+    public int Id { get; set; }
+    public int RouteId { get; set; }                     // FK, Cascade
+    public int AccessRuleId { get; set; }                // FK, Restrict — a detach must be deliberate
+    public int Order { get; set; }                       // = precedence at the edge
+}
+
 // Route (existing entity) gains:
 public AccessMode AccessMode { get; set; } = AccessMode.Public;   // Public = today's behavior
 public string? BypassPaths { get; set; }                           // newline-separated prefixes
@@ -486,8 +517,14 @@ existing convention for non-RPC/external surfaces):
   `[RequireRole("Admin")]`, because putting an account in a group grants it every route that group is
   named on. `setMembers` is a whole-set replace, reconciled like `proxy.setAccess`.
 - `Access` handlers (fold into the existing `Proxy` module — policy is route-scoped):
-  `proxy.getAccess` / `proxy.setAccess` (mode + grants + bypass paths), calling
-  `CaddyManager.ApplyAsync()` on change like the route CRUD does.
+  `proxy.getAccess` / `proxy.setAccess` (mode + grants + bypass paths + attached access rules), calling
+  `CaddyManager.ApplyAsync()` on change like the route CRUD does. The access-rule surface joins them in the
+  same module and for the same reason (ADR-0039): `proxy.listAccessRules`, `proxy.setAccessRule` (an
+  upsert — a rule *is* its clauses, so there is no useful state where it has only a name),
+  `proxy.deleteAccessRule` (refused while any route attaches it, naming them) and
+  `proxy.listExternalAccessPolicies` (the Cloudflare account's reusable policies, so a clause is picked by
+  name). `setAccess` refuses a rule the **active provider** cannot enforce every clause of, which is what
+  keeps a reconcile from being where an operator discovers that half of what they asked for was dropped.
 - `Audit` module: `audit.listEvents` / `audit.listFacets` — both `[RequireRole("Admin")]`, and both
   **read-only**. The access-control plane writes into the instance's one audit trail (`AuditEvent`,
   categories `auth` / `access` / `users` / `groups` / `realms`; the kinds in `AuthEventKinds` are the

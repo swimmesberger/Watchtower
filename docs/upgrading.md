@@ -186,3 +186,37 @@ keeps working exactly as it does today — but with it Watchtower discovers the 
 the zone id becomes optional, and routes can live under more than one domain in the same account
 ([ADR-0036](decisions/0036-routes-live-under-primary-domains.md)). See
 [docs/reverse-proxy/cloudflare.md → Zone discovery](reverse-proxy/cloudflare.md#zone-discovery).
+
+## Access rules compose per route (ADR-0039, ADR-0040)
+
+A protected route can now attach **named access rules** instead of taking the instance-wide allow sources,
+so two hostnames in one instance can admit different sets of people — *family* on the internal ones,
+*family and friends* on the shared one ([ADR-0039](decisions/0039-access-rules-compose.md)). Manage them
+under **Routes → Access rules**, and tick them per route in **Routes → Access**.
+
+**Nothing changes until you create one.** A protected route with no rules attached resolves exactly as it
+does today: `Authenticated` admits the four instance-wide allow sources, `Restricted` admits its grants.
+No migration, no backfill, no behaviour change on upgrade.
+
+**One workflow does break, and only on routes you opt in.** If you attached a reusable Access policy *by
+hand* to a `watchtower: {host}` application in the Cloudflare dashboard, that attachment stops surviving
+reconciles **once you attach access rules to that route** — Watchtower then owns the application's policy
+list ([ADR-0040](decisions/0040-the-edge-projection-is-authoritative.md)). Two ways forward, and the first
+is better:
+
+- Express it as a **Cloudflare reusable policy** clause on a rule. The picker lists your account's policies
+  by name, so this is two clicks and the attachment becomes visible in Watchtower instead of only in the
+  dashboard.
+- Or keep it as an **app-scoped policy** under any name other than the reserved `watchtower`. Those are
+  never touched by a reconcile, and that is now a documented guarantee rather than an implementation
+  detail.
+
+Routes you never attach a rule to keep today's behaviour, hand-made attachments included.
+
+**One access-control fix lands with this, unconditionally.** Under the Cloudflare provider, a `Restricted`
+route's grants were flattened to email addresses without applying the realm invariant, so a grant left
+behind by a **realm change** could still admit at the edge although Watchtower's own forward-auth refuses
+it ([ADR-0040](decisions/0040-the-edge-projection-is-authoritative.md) decision 3). The projection now
+applies the route's realm, as the in-process path always has. It **removes** access rather than granting
+it, and only in that one situation — if a tenant stack has moved between categories and you expect
+somebody to reach it, re-grant them in the route's current realm.

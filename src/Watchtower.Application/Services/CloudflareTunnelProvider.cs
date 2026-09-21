@@ -543,6 +543,13 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     // ── Zero Trust Access applications ───────────────────────────────────────
 
     private const string AccessAppNamePrefix = "watchtower: ";
+
+    /// <summary>
+    /// The name of the one app-scoped policy Watchtower writes — a <b>reserved name</b>, part of the
+    /// operator-facing contract rather than an implementation detail (ADR-0040 decision 2). An app-scoped
+    /// policy under any other name is left alone by every reconcile, which makes it the escape hatch that
+    /// survives: a hand-made allow-list belongs there, not in the attachments Watchtower owns.
+    /// </summary>
     private const string AccessPolicyName = "watchtower";
 
     /// <summary>The suffix that tells a route's bypass application apart from the route's own.</summary>
@@ -569,6 +576,17 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     /// Every <c>host</c>/<c>host/path</c> the application covers when one hostname is not enough — a
     /// bypass app naming each of the route's public paths. Null for the ordinary whole-hostname app.
     /// </param>
+    /// <param name="OwnsPolicyAttachments">
+    /// Whether Watchtower is the authority on this application's reusable-policy attachments (ADR-0040
+    /// decision 1), which it is exactly when the route attached access rules: the array is then sent on
+    /// every reconcile, empty included, so removing a rule's external-policy clause detaches it.
+    /// <para>
+    /// False for a route that attached none — Watchtower has nothing to say about its attachments, so the
+    /// field is omitted and whatever is at the edge is left alone, which is the behaviour every existing
+    /// deployment has. That is what keeps this change a no-op until an operator opts in, and it confines
+    /// the breaking half ("a hand-attached policy stops surviving") to the routes they opted in on.
+    /// </para>
+    /// </param>
     internal sealed record AccessAppSpec(
         int RouteId,
         string Domain,
@@ -578,7 +596,8 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         string[] GroupIds,
         string[] ReusablePolicyIds,
         string Decision = AccessDecisionAllow,
-        string[]? Destinations = null) {
+        string[]? Destinations = null,
+        bool OwnsPolicyAttachments = false) {
         /// <summary>Whether a Watchtower-generated app-scoped policy is needed (any inline rule at all).</summary>
         public bool HasInlineRules => Emails.Length > 0 || EmailDomains.Length > 0 || GroupIds.Length > 0;
 
@@ -620,10 +639,17 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     /// none at all, having no access control for anything to be excepted from.
     /// </para>
     /// </remarks>
+    /// <param name="resolvedRulesByRouteId">
+    /// The access rules each route attaches, already resolved for this edge (ADR-0039). Optional and last so
+    /// the many tests that exercise the instance-wide fallback need not restate "no route attached anything";
+    /// omitting it <em>is</em> that case.
+    /// </param>
     internal static AccessProjection ProjectAccessApps(
         IReadOnlyList<Route> routes,
         IReadOnlyDictionary<int, string[]> grantedEmailsByRouteId,
-        CloudflareProxyOptions cf) {
+        CloudflareProxyOptions cf,
+        IReadOnlyDictionary<int, AccessRuleResolver.ResolvedAccess>? resolvedRulesByRouteId = null) {
+        resolvedRulesByRouteId ??= new Dictionary<int, AccessRuleResolver.ResolvedAccess>();
         var apps = new List<AccessAppSpec>();
         var warnings = new List<string>();
         foreach (var route in routes.Where(r => r.AccessMode != AccessMode.Public).OrderBy(r => r.Domain, StringComparer.Ordinal)) {
@@ -635,13 +661,32 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             string[] emailDomains;
             string[] groupIds;
             string[] reusablePolicyIds;
-            if (route.AccessMode == AccessMode.Authenticated) {
+            // Present iff the route has attachments *and* they decide anything here. Absent and
+            // present-but-empty mean different things (ADR-0039 decision 2): fall back to the instance-wide
+            // settings, versus admit nobody.
+            //
+            // Narrowed to Authenticated at the point of reading rather than at each use below, so every
+            // downstream decision — the allow-list, the warning wording, the attachment ownership — agrees
+            // on one answer. A Restricted route cannot carry attachments (setAccess refuses them), and if one
+            // somehow does, they decide nothing: "only these subjects" is the whole meaning of the mode.
+            var rules = route.AccessMode == AccessMode.Authenticated
+                && resolvedRulesByRouteId.TryGetValue(route.Id, out var resolved)
+                    ? resolved
+                    : null;
+            if (rules is not null) {
+                // The route has stated who admits people, so the instance-wide settings do not apply to it.
+                emails = rules.Emails;
+                emailDomains = rules.EmailDomains;
+                groupIds = rules.ExternalGroupIds;
+                reusablePolicyIds = rules.ExternalPolicyIds;
+            } else if (route.AccessMode == AccessMode.Authenticated) {
                 emails = CloudflareProxyOptions.SplitList(cf.AccessAllowedEmails);
                 emailDomains = CloudflareProxyOptions.SplitList(cf.AccessAllowedEmailDomains);
                 groupIds = CloudflareProxyOptions.SplitList(cf.AccessGroupIds);
                 reusablePolicyIds = CloudflareProxyOptions.SplitList(cf.AccessReusablePolicyIds);
             } else {
-                // Restricted means "only these subjects" — the instance-wide sources must not widen it.
+                // Restricted means "only these subjects" — the instance-wide sources must not widen it, and
+                // neither may a rule, which is why proxy.setAccess refuses attachments on this mode.
                 emails = grantedEmailsByRouteId.TryGetValue(route.Id, out var granted) ? granted : [];
                 emailDomains = [];
                 groupIds = [];
@@ -652,10 +697,26 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
             if (lockedOut) {
                 warnings.Add(
                     $"Route {domain} is {route.AccessMode} but nobody could pass its Access policy — " +
-                    (route.AccessMode == AccessMode.Authenticated
-                        ? "configure allowed emails, email domains, an Access group id or a reusable policy id in the proxy settings. "
-                        : "grant users (or groups with members) that have an email address. ") +
+                    (rules is not null
+                        // Naming the rules is the whole point of the indirection: the operator attached
+                        // something that was supposed to admit people, and the remedy is in the rule rather
+                        // than in the settings page the other branches point at.
+                        ? $"its access rule(s) {string.Join(", ", rules.RuleNames)} resolve to nobody"
+                          + (rules.UnsupportedKinds.Length > 0
+                              ? $" here — {AccessClauseSupport.DescribeAll(rules.UnsupportedKinds)} cannot be enforced by "
+                                + $"{AccessClauseSupport.Describe(AccessEnforcementPoint.CloudflareAccess)}. "
+                              : ". ")
+                        : route.AccessMode == AccessMode.Authenticated
+                            ? "configure allowed emails, email domains, an Access group id or a reusable policy id in the proxy settings. "
+                            : "grant users (or groups with members) that have an email address. ") +
                     "Access is denying everyone until then.");
+            } else if (rules is { UnsupportedKinds.Length: > 0 }) {
+                // Not a lockout — something else in the rule admits people — but still a divergence between
+                // what the rule says and what this edge can do, so it is said out loud rather than dropped.
+                warnings.Add(
+                    $"Route {domain} attaches {AccessClauseSupport.DescribeAll(rules.UnsupportedKinds)}, which "
+                    + $"{AccessClauseSupport.Describe(AccessEnforcementPoint.CloudflareAccess)} cannot "
+                    + "enforce. Those clauses admit nobody here; the rest of the rule still applies.");
             }
             apps.Add(new AccessAppSpec(
                 route.Id,
@@ -664,8 +725,14 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                 emails.OrderBy(e => e, StringComparer.OrdinalIgnoreCase).ToArray(),
                 emailDomains.OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToArray(),
                 groupIds.OrderBy(g => g, StringComparer.OrdinalIgnoreCase).ToArray(),
-                reusablePolicyIds.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray(),
-                Decision: lockedOut ? AccessDecisionDeny : AccessDecisionAllow));
+                // Attachment order is the operator's, so it is *not* sorted — it is the precedence the
+                // policies are attached in at the edge (ADR-0039 decision 1). The resolver has already
+                // de-duplicated, so a reconcile that changed nothing still produces an identical request.
+                rules is not null
+                    ? reusablePolicyIds
+                    : reusablePolicyIds.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToArray(),
+                Decision: lockedOut ? AccessDecisionDeny : AccessDecisionAllow,
+                OwnsPolicyAttachments: rules is not null));
 
             // The trailing slash goes because Cloudflare matches path segments, so `/webhooks` and
             // `/webhooks/` name the same destination and would otherwise churn as two. An entry that is
@@ -723,28 +790,69 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
 
     /// <summary>
     /// Emails admitted by each restricted route's grants: directly granted users plus every member of
-    /// each granted group — enabled accounts with an email only.
+    /// each granted group — enabled accounts of the route's own realm that have an email.
     /// </summary>
+    /// <remarks>
+    /// The realm filter is the invariant <see cref="RouteAccessPolicy"/> applies in process, carried across
+    /// the provider seam (ADR-0040 decision 3, design.md §13.5): <b>a protected route is only ever
+    /// reachable by an account of its own realm, whatever its grants say</b>. Without it a grant left
+    /// behind by a realm change — which in process "grants nothing rather than crossing the boundary" —
+    /// would still contribute an email here, and Cloudflare, which knows nothing of realms, would admit
+    /// whoever presents it. One grant table must not admit differently at the two enforcement points.
+    /// <para>
+    /// Applied where the emails are resolved rather than where they are projected, so any later caller of
+    /// this loader inherits it. A route that has vanished between the two queries resolves to no realm and
+    /// contributes nothing, which is the fail-closed reading.
+    /// </para>
+    /// </remarks>
     private async Task<Dictionary<int, string[]>> LoadGrantedEmailsAsync(
         IReadOnlyList<int> routeIds, CancellationToken ct) {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await GrantedEmailsAsync(db, routeIds, ct);
+    }
+
+    /// <inheritdoc cref="LoadGrantedEmailsAsync"/>
+    /// <remarks>
+    /// Split from the scope-owning caller above so the realm rule can be asserted directly: it is an access
+    /// decision, and one that is invisible in the projection's output (a filtered-out grant and a grant that
+    /// was never written look identical there).
+    /// </remarks>
+    internal static async Task<Dictionary<int, string[]>> GrantedEmailsAsync(
+        WatchtowerDbContext db, IReadOnlyList<int> routeIds, CancellationToken ct) {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(routeIds);
+        var routeRealms = await RouteAccessPolicy.RouteRealmIdsAsync(db, routeIds, ct);
         var direct = await db.RouteAccessGrants.AsNoTracking()
             .Where(g => g.UserId != null && routeIds.Contains(g.RouteId))
-            .Select(g => new { g.RouteId, g.User!.Email, g.User.Disabled })
+            .Select(g => new { g.RouteId, g.User!.Email, g.User.Disabled, g.User.RealmId })
             .ToListAsync(ct);
         var viaGroups = await db.RouteAccessGrants.AsNoTracking()
             .Where(g => g.GroupId != null && routeIds.Contains(g.RouteId))
             .SelectMany(g => db.GroupMembers
                 .Where(m => m.GroupId == g.GroupId)
-                .Select(m => new { g.RouteId, m.User!.Email, m.User.Disabled }))
+                .Select(m => new { g.RouteId, m.User!.Email, m.User.Disabled, m.User.RealmId }))
             .ToListAsync(ct);
         return direct.Concat(viaGroups)
             .Where(x => !x.Disabled && !string.IsNullOrWhiteSpace(x.Email))
+            .Where(x => routeRealms.TryGetValue(x.RouteId, out var realmId) && realmId == x.RealmId)
             .GroupBy(x => x.RouteId)
             .ToDictionary(
                 g => g.Key,
                 g => g.Select(x => x.Email!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    /// <summary>
+    /// The access rules attached to each of <paramref name="routeIds"/>, resolved for this edge — absent for
+    /// a route that attached none (ADR-0039 decision 2).
+    /// </summary>
+    private async Task<IReadOnlyDictionary<int, AccessRuleResolver.ResolvedAccess>> LoadResolvedRulesAsync(
+        IReadOnlyList<int> routeIds, CancellationToken ct) {
+        if (routeIds.Count == 0) return new Dictionary<int, AccessRuleResolver.ResolvedAccess>();
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await AccessRuleResolver.ResolveAsync(
+            db, routeIds, AccessEnforcementPoint.CloudflareAccess, ct);
     }
 
     /// <summary>
@@ -762,7 +870,11 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         var granted = restrictedIds.Count > 0
             ? await LoadGrantedEmailsAsync(restrictedIds, ct)
             : new Dictionary<int, string[]>();
-        var projection = ProjectAccessApps(routes, granted, cf);
+        // Only Authenticated routes can carry attachments (proxy.setAccess refuses them on the other two),
+        // so only those are resolved — a Restricted route's allow-list is its grants and nothing else.
+        var authenticatedIds = routes.Where(r => r.AccessMode == AccessMode.Authenticated).Select(r => r.Id).ToList();
+        var resolvedRules = await LoadResolvedRulesAsync(authenticatedIds, ct);
+        var projection = ProjectAccessApps(routes, granted, cf, resolvedRules);
         foreach (var warning in projection.Warnings)
             _logger.LogWarning("{Warning}", warning);
 
@@ -790,12 +902,20 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     Type = "self_hosted",
                     SessionDuration = "24h",
                     AppLauncherVisible = false,
-                    // Reusable policies (the dashboard-maintained "default policy" workflow) attach on
-                    // the app itself; null leaves any existing attachments alone when none are configured.
-                    // Never on a deny or bypass app: attaching an allow-list to one would undo the very
-                    // decision it exists to make.
-                    Policies = spec.Decision == AccessDecisionAllow && spec.ReusablePolicyIds.Length > 0
-                        ? spec.ReusablePolicyIds
+                    // Reusable policies (the dashboard-maintained "default policy" workflow) attach on the
+                    // app itself. Never on a deny or bypass app: attaching an allow-list to one would undo
+                    // the very decision it exists to make.
+                    //
+                    // For a route that attached access rules Watchtower owns the array and sends it every
+                    // time, empty included, so dropping a rule's external-policy clause detaches it at the
+                    // edge (ADR-0040 decision 1). For a route that attached none it keeps sending null when
+                    // there is nothing to attach, which omits the field and leaves whatever is there alone.
+                    //
+                    // Whatever the array does to *app-scoped* policies, the end state is correct either way:
+                    // the Watchtower-owned one is reconciled below from a listing taken *after* this write.
+                    Policies = spec.Decision != AccessDecisionAllow ? null
+                        : spec.OwnsPolicyAttachments ? spec.ReusablePolicyIds
+                        : spec.ReusablePolicyIds.Length > 0 ? spec.ReusablePolicyIds
                         : null,
                     Destinations = spec.Destinations is { Length: > 0 } uris
                         ? [.. uris.Select(CloudflareAccessDestination.Public)]
@@ -852,10 +972,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
                     found is null ? "access.app.create" : "access.app.sync",
                     spec.Domain,
                     $"{spec.Decision} · {ruleCount} inline rule(s), "
-                    + $"{spec.ReusablePolicyIds.Length} reusable policy(ies)", ct: ct);
+                    + $"{spec.ReusablePolicyIds.Length} reusable policy(ies)"
+                    // Which of the two mechanisms decided the hostname is exactly what an operator reading
+                    // the trail needs, so the attachment authority is recorded rather than inferred.
+                    + (spec.OwnsPolicyAttachments ? " (attached from access rules)" : ""), ct: ct);
                 _logger.LogInformation(
-                    "Access application reconciled for {Domain} ({Decision}, {Rules} inline rule(s), {Reusable} reusable policy(ies)).",
-                    spec.Domain, spec.Decision, ruleCount, spec.ReusablePolicyIds.Length);
+                    "Access application reconciled for {Domain} ({Decision}, {Rules} inline rule(s), "
+                    + "{Reusable} reusable policy(ies), attachments owned: {Owned}).",
+                    spec.Domain, spec.Decision, ruleCount, spec.ReusablePolicyIds.Length,
+                    spec.OwnsPolicyAttachments);
             } catch (Exception ex) {
                 await _audit.RecordAsync(AuditCategory, "access.app.sync", spec.Domain, detail: null,
                     success: false, error: ex.Message, ct: ct);
