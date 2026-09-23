@@ -1101,12 +1101,32 @@ export interface CreateRouteRequest {
   /** `port` routes only: the host port to listen on. Must also be published on Watchtower's container. */
   listenPort?: number | null
   /**
-   * The access policy the route starts under. Omitted means the configured default (ADR-0035); naming one
-   * explicitly is admin-only, and `Restricted` is refused because a create carries no grants.
+   * The access policy the route starts under. Omitted means the configured default (ADR-0035); naming any
+   * part of the policy is admin-only. `Restricted` needs at least one granted user or group.
    */
   accessMode?: AccessMode | null
   /** Newline-separated request-path prefixes left anonymous on a protected route; null when none. */
   bypassPaths?: string | null
+  /**
+   * The rest of the policy, so a route is created with everything `proxy.setAccess` could give it and is
+   * never published under one policy only to be changed to another (ADR-0039, decision 5 as amended).
+   */
+  identityHeaderMode?: IdentityHeaderMode | null
+  /** `Restricted` only: the accounts let through. */
+  grantedUserIds?: number[] | null
+  /** `Restricted` only: the groups let through. */
+  grantedGroupIds?: number[] | null
+  /** `Authenticated` only: the access rules attached, in precedence order. None means the instance-wide list. */
+  accessRuleIds?: number[] | null
+}
+
+/**
+ * What a policy for a *new* route on a stack may name — the create-form counterpart of {@link RouteAccessView}'s
+ * `realmId` and `activeEnforcementPoint`, resolved exactly as `proxy.createRoute` validates.
+ */
+export interface StackAccessContext {
+  realmId: number
+  activeEnforcementPoint: ActiveEnforcementPoint
 }
 
 export interface UpdateRouteRequest {
@@ -1123,6 +1143,17 @@ export interface UpdateRouteRequest {
   binding?: RouteBinding | null
   /** `port` routes only: move the route to another host port. Omitted keeps the current one. */
   listenPort?: number | null
+  /**
+   * The route's whole access policy, saved in the same write as the fields above. Omitted (null) leaves
+   * access alone — what a non-administrator's edit sends. When named, the rest means what it means on
+   * `proxy.setAccess`; admin-only, and service domain routes only.
+   */
+  accessMode?: AccessMode | null
+  bypassPaths?: string | null
+  identityHeaderMode?: IdentityHeaderMode | null
+  grantedUserIds?: number[] | null
+  grantedGroupIds?: number[] | null
+  accessRuleIds?: number[] | null
 }
 
 /**

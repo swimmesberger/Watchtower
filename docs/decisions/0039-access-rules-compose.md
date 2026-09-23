@@ -1,6 +1,6 @@
 # ADR-0039: Access rules are named, composable clause lists — provider-neutral, with portability declared
 
-- Status: Accepted
+- Status: Accepted — decision 5 amended 2026-09-23 (routes are created with their whole access policy)
 - Date: 2026-09-21
 - Related: [ADR-0015](0015-proxy-provider-abstraction.md) (the provider seam this composes across),
   [ADR-0035](0035-new-routes-are-protected-by-default.md) (the lockout rule this makes route-aware),
@@ -154,8 +154,31 @@ not on the instance-wide settings, so a Cloudflare-only operator with rules and 
 not denied.
 
 `WatchtowerOptions.HasAccessAllowSource()` keeps its meaning — "the instance-wide fallback admits
-somebody" — and stays the check `proxy.createRoute` applies, because a create carries no rules yet, for the
-same reason it cannot start `Restricted`.
+somebody" — and is checked only where that fallback *is* the route's allow-list: an `Authenticated` route
+attaching no rules.
+
+> **Amended 2026-09-23.** This decision originally kept `HasAccessAllowSource()` as `proxy.createRoute`'s
+> check "because a create carries no rules yet, for the same reason it cannot start `Restricted`". That
+> reasoning was circular: a create carried no rules and no grants only because its request had no field for
+> them, and nothing in the model required it — the route's realm is known from the stack the create names,
+> and the whole policy fits in the transaction that writes the route. The consequence was not cosmetic. It
+> forced a create-then-`setAccess` sequence that published every route under the instance-wide allow-list
+> before narrowing it — the side-effect publishing ADR-0035 exists to prevent — and it left a Cloudflare
+> deployment built entirely from access rules unable to create a protected route at all.
+>
+> `proxy.createRoute` now takes the whole policy — mode, bypass paths, identity forwarding, grants and
+> access rules — validated by the same code as `proxy.setAccess` (`RouteAccessValidation`), and writes it in
+> the same `SaveChanges` as the route, audited like a `setAccess` would be. The create-time guard is
+> route-aware exactly as the reconcile is: rules decide an `Authenticated` route that attaches them, grants
+> decide a `Restricted` one. The one refusal that remains is a genuine one — a *new* `Restricted` route
+> naming nobody, which would be published admitting no one.
+>
+> `proxy.updateRoute` takes the same optional policy, with the same validation and the same reconcile
+> (`RouteAccessWrite`) `proxy.setAccess` uses, applied in the one `SaveChanges` that writes the route's other
+> fields: omitting the mode leaves access alone, naming it replaces the policy. That is what lets the Routes
+> page have one route form for creating and editing — access included — instead of an edit form beside a
+> separate access dialog, where saving the route and then its access in two calls could apply the first
+> and fail the second. `proxy.setAccess` stays, unchanged, for clients that change access alone.
 
 ## Consequences
 

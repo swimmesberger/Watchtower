@@ -525,6 +525,9 @@ existing convention for non-RPC/external surfaces):
   `proxy.listExternalAccessPolicies` (the Cloudflare account's reusable policies, so a clause is picked by
   name). `setAccess` refuses a rule the **active provider** cannot enforce every clause of, which is what
   keeps a reconcile from being where an operator discovers that half of what they asked for was dropped.
+  `proxy.createRoute` and `proxy.updateRoute` carry the same policy as optional fields — validated by the
+  same `RouteAccessValidation`, written in the same transaction as the route — so the UI has one route form
+  that creates and edits a route with its access (ADR-0039, decision 5 as amended).
 - `Audit` module: `audit.listEvents` / `audit.listFacets` — both `[RequireRole("Admin")]`, and both
   **read-only**. The access-control plane writes into the instance's one audit trail (`AuditEvent`,
   categories `auth` / `access` / `users` / `groups` / `realms`; the kinds in `AuthEventKinds` are the

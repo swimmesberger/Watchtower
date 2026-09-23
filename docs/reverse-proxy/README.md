@@ -425,9 +425,9 @@ verdicts; under `cloudflare`, access belongs to Zero Trust instead. See
 [docs/central-auth/README.md](../central-auth/README.md).
 
 A new domain route is **Authenticated** unless you say otherwise. Change what "otherwise" means under
-**Settings → Reverse proxy → Default access for new routes**; an admin can also set the mode and the
-anonymous bypass paths on the route as it is created, and `Restricted` is set afterwards, once the route
-exists and there are grants to put on it. Watchtower's own routes and port routes stay Public — that is
+**Settings → Reverse proxy → Default access for new routes**; an admin can also set the route's whole
+access policy as it is created — including `Restricted` with its users and groups, and access rules — and
+change it later with **Edit**, in the same form. Watchtower's own routes and port routes stay Public — that is
 a database constraint rather than a default, for the reasons given under *The route table is the source
 of truth* above. The access mode of every route is shown in the Routes list
 ([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md)).

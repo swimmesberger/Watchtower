@@ -72,6 +72,8 @@ namespace Watchtower.Application.Modules.Proxy;
 [JsonSerializable(typeof(DeleteAccessRule.Response), TypeInfoPropertyName = "DeleteAccessRuleResponse")]
 [JsonSerializable(typeof(ListExternalAccessPolicies.Query), TypeInfoPropertyName = "ListExternalAccessPoliciesQuery")]
 [JsonSerializable(typeof(ListExternalAccessPolicies.Response), TypeInfoPropertyName = "ListExternalAccessPoliciesResponse")]
+[JsonSerializable(typeof(GetStackAccessContext.Query), TypeInfoPropertyName = "GetStackAccessContextQuery")]
+[JsonSerializable(typeof(GetStackAccessContext.Response), TypeInfoPropertyName = "GetStackAccessContextResponse")]
 [JsonSerializable(typeof(ListCloudflareForeignRoutes.ForeignRouteDto))]
 [JsonSerializable(typeof(ListCloudflareForeignRoutes.Query), TypeInfoPropertyName = "ListCloudflareForeignRoutesQuery")]
 [JsonSerializable(typeof(ListCloudflareForeignRoutes.Response), TypeInfoPropertyName = "ListCloudflareForeignRoutesResponse")]
