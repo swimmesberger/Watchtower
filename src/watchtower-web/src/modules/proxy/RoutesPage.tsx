@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, Lock, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, Lock, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, INTERNAL_CA_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AccessMode,
@@ -18,6 +18,7 @@ import type {
   RouteBinding,
   RouteStatus,
   RouteTarget,
+  UpdateRouteRequest,
 } from '@/lib/types'
 import { LOCAL_USER_ID } from '@/lib/auth'
 import { absoluteTitle, timeAgo } from '@/lib/format'
@@ -353,6 +354,11 @@ export function RoutesPage() {
   const { caps } = routesRoute.useRouteContext()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ ...emptyForm })
+  // The route the form is editing, or null while it is creating one. One form for both, on purpose: an
+  // existing route can then be changed in exactly the ways a new one can be set up, and a field added to
+  // the create half later is an edit field too without anybody having to remember that.
+  const [editingRoute, setEditingRoute] = useState<Route | null>(null)
+  const isEditing = editingRoute != null
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
   const [accessRoute, setAccessRoute] = useState<Route | null>(null)
 
@@ -618,8 +624,84 @@ export function RoutesPage() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const update = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: UpdateRouteRequest }) => api.proxy.updateRoute(id, data),
+    onSuccess: (route) => {
+      toast.success(`Route ${routeLabel(route)} updated.`)
+      qc.invalidateQueries({ queryKey: ['routes'] })
+      // A moved listen port is a new host port to publish and an old one to release — both of which are
+      // what the port banner is about.
+      qc.invalidateQueries({ queryKey: ['proxy', 'port-bindings'] })
+      // A renamed hostname can leave the old one behind on the tunnel, where it reads as foreign.
+      qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
+      // Designating or releasing a login host changes what the realm roster reports as its login host.
+      qc.invalidateQueries({ queryKey: ['realms'] })
+      closeForm()
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
+  /** Closes the form, and forgets the route it was editing so the next open starts from a blank create. */
+  function closeForm() {
+    setShowForm(false)
+    if (editingRoute) {
+      setEditingRoute(null)
+      setForm({ ...emptyForm })
+    }
+    dns.reset()
+  }
+
+  /**
+   * Opens the form for a new route. Coming out of an edit it starts blank; otherwise it keeps whatever was
+   * typed before the form was last closed, which is how Cancel has always behaved.
+   */
+  function openCreate() {
+    if (editingRoute) {
+      setEditingRoute(null)
+      setForm({ ...emptyForm })
+      dns.reset()
+    }
+    setShowForm(true)
+  }
+
+  /**
+   * Loads an existing route into the form (the counterpart of {@link startImport}, which does the same for a
+   * hostname the route table does not know yet). Every field is spelled the way the create half would have
+   * produced it, so saving an untouched form sends back exactly what is stored.
+   */
+  function startEdit(route: Route) {
+    // Same reasoning as an import: where a primary domain covers the hostname the composed control can hold
+    // it; where none does, the custom field is the only place it fits.
+    const split = route.domain ? splitHost(primaryNames, route.domain) : null
+    setEditingRoute(route)
+    setForm({
+      ...emptyForm,
+      binding: route.binding,
+      target: route.target,
+      realmId: route.realmId != null ? String(route.realmId) : '',
+      makeLoginRoute: route.isLoginRoute,
+      stackId: route.stackId != null ? String(route.stackId) : '',
+      domain: route.domain ?? '',
+      subdomain: split?.subdomain ?? '',
+      primaryDomain: split?.primaryDomain ?? '',
+      customHostname: route.domain != null && split === null,
+      serviceName: route.target === 'watchtower' ? '' : route.serviceName,
+      containerPort: route.target === 'watchtower' ? '' : String(route.containerPort),
+      listenPort: route.listenPort != null ? String(route.listenPort) : '',
+      tlsEnabled: route.tlsEnabled,
+      // The stored service and port stay editable as text even when the stack's containers are not
+      // running right now, which is exactly when discovery would offer nothing to pick from.
+      serviceManual: true,
+      portManual: true,
+    })
+    dns.reset()
+    setShowForm(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   /** Prefills the new-route form from a dashboard-made tunnel hostname and opens it. */
   function startImport(foreign: CloudflareForeignRoute) {
+    setEditingRoute(null)
     // The hostname exists already, so the form has to show it however it was spelled. Where a primary
     // domain covers it the composed control can hold it and the operator sees the same shape they get
     // for a new route; where none does, the custom field is the only place it fits.
@@ -695,6 +777,23 @@ export function RoutesPage() {
         return toast.error('Enter a valid container port (1–65535).')
       if (!listenPort || listenPort < 1 || listenPort > 65535)
         return toast.error('Enter a valid listen port (1–65535).')
+      if (editingRoute) {
+        return update.mutate({
+          id: editingRoute.id,
+          data: {
+            // Sent back for confirmation only: the binding is fixed, and the server refuses another one.
+            binding: 'port',
+            domain: null,
+            serviceName: form.serviceName.trim(),
+            containerPort,
+            listenPort,
+            tlsEnabled: true,
+            // Round-tripped, never re-derived: this form has no control for it, so anything else it sent
+            // would be a silent change the operator never asked for.
+            isPrimary: editingRoute.isPrimary,
+          },
+        })
+      }
       return create.mutate({
         binding: 'port',
         target: 'service',
@@ -717,9 +816,29 @@ export function RoutesPage() {
     const kind: DomainKind | null =
       primaryNames.length === 0 ? null : bestPrimaryDomain(primaryNames, composed) ? 'managed' : 'custom'
 
+    // On an edit the TLS flag is sent as stored rather than forced on under Cloudflare, where the switch is
+    // hidden and the flag decides nothing: forcing it would quietly rewrite a setting that starts mattering
+    // again the moment the provider is switched back.
+    const tlsEnabled = editingRoute ? form.tlsEnabled : isCloudflare || form.tlsEnabled
+
     // A Watchtower route has no stack, no service and no port — the server refuses them rather than
     // ignoring them, so they are not sent at all.
     if (isWatchtowerForm) {
+      if (editingRoute) {
+        return update.mutate({
+          id: editingRoute.id,
+          data: {
+            domain: composed,
+            kind,
+            serviceName: '',
+            containerPort: 0,
+            tlsEnabled,
+            isPrimary: editingRoute.isPrimary,
+            // Designates this route as the realm's login host, or releases it if it was one.
+            makeLoginRoute: form.makeLoginRoute,
+          },
+        })
+      }
       return create.mutate({
         target: 'watchtower',
         realmId: formRealmId,
@@ -729,7 +848,7 @@ export function RoutesPage() {
         kind,
         serviceName: '',
         containerPort: 0,
-        tlsEnabled: isCloudflare || form.tlsEnabled,
+        tlsEnabled,
         isPrimary: false,
       })
     }
@@ -740,6 +859,23 @@ export function RoutesPage() {
     if (!form.serviceName.trim()) return toast.error('Enter a service name.')
     if (!containerPort || containerPort < 1 || containerPort > 65535)
       return toast.error('Enter a valid container port (1–65535).')
+    // Access is not part of an edit: an existing route's policy is the Access dialog's, which can say more
+    // than this form can (grants, access rules, identity forwarding) — two editors for one policy is how the
+    // two would come to disagree.
+    if (editingRoute) {
+      return update.mutate({
+        id: editingRoute.id,
+        data: {
+          binding: 'domain',
+          domain: composed,
+          kind,
+          serviceName: form.serviceName.trim(),
+          containerPort,
+          tlsEnabled,
+          isPrimary: editingRoute.isPrimary,
+        },
+      })
+    }
     create.mutate({
       target: 'service',
       stackId,
@@ -747,7 +883,7 @@ export function RoutesPage() {
       kind,
       serviceName: form.serviceName.trim(),
       containerPort,
-      tlsEnabled: isCloudflare || form.tlsEnabled,
+      tlsEnabled,
       isPrimary: false,
       // Naming a mode is admin-only and an untouched field means "use the configured default", so both
       // stay null unless an administrator actually picked something. Bypass paths belong to a protected
@@ -974,6 +1110,17 @@ export function RoutesPage() {
       align: 'right',
       cell: (r) => (
         <div className="flex items-center justify-end gap-1">
+          <Tooltip label="Edit route">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`Edit ${routeLabel(r)}`}
+              onClick={() => startEdit(r)}
+              className="text-text-2 hover:text-text"
+            >
+              <Pencil />
+            </Button>
+          </Tooltip>
           {canManageAccess && (
             <Tooltip label={accessNote(r) ?? 'Access control'}>
               {/* Disabled rather than hidden: an administrator looking for the gate on this address
@@ -1037,6 +1184,15 @@ export function RoutesPage() {
       <div className="flex items-center justify-between border-t border-border pt-3">
         <span className="text-xs text-text-3">created {timeAgo(r.createdAt)}</span>
         <div className="flex items-center gap-1">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`Edit ${routeLabel(r)}`}
+            onClick={() => startEdit(r)}
+            className="text-text-2 hover:text-text"
+          >
+            <Pencil />
+          </Button>
           {canManageAccess && (
             <Button
               size="icon-sm"
@@ -1090,7 +1246,7 @@ export function RoutesPage() {
         </div>
         {/* No longer gated on there being a stack: a Watchtower route has none, and the very first route
             an operator creates is often the one that exposes Watchtower itself. */}
-        <Button variant="primary" onClick={() => setShowForm((v) => !v)}>
+        <Button variant="primary" onClick={() => (showForm ? closeForm() : openCreate())}>
           {showForm ? <X /> : <Plus />} {showForm ? 'Cancel' : 'New route'}
         </Button>
       </div>
@@ -1252,11 +1408,27 @@ export function RoutesPage() {
         <Card>
           <CardContent>
             <SectionHeader
-              title="New route"
-              description="Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically, and new domain routes are protected by default."
+              title={editingRoute ? `Edit route · ${routeLabel(editingRoute)}` : 'New route'}
+              description={
+                editingRoute
+                  ? 'Change where this route points and how it is served. What it is — its binding, what serves it and which stack or realm it belongs to — is fixed once created; delete and recreate the route to change that, so a live address is never moved by an edit.'
+                  : 'Point a domain at a service inside a stack, or at Watchtower itself. HTTPS is provisioned automatically, and new domain routes are protected by default.'
+              }
             />
             <form onSubmit={submit} className="space-y-4">
-              {supportsPortRoutes && (
+              {/* Shown instead of the choice when editing: the binding is fixed (ADR-0033), and a radio that
+                  could only refuse would look like an option. */}
+              {isEditing && supportsPortRoutes && (
+                <p className="text-[13px] text-text-2">
+                  Reached by{' '}
+                  <span className="text-text">
+                    {ROUTE_BINDINGS.find((b) => b.value === form.binding)?.label ?? form.binding}
+                  </span>
+                  .
+                </p>
+              )}
+
+              {supportsPortRoutes && !isEditing && (
                 <Field
                   label="How it is reached"
                   required
@@ -1325,16 +1497,26 @@ export function RoutesPage() {
               <Field
                 label="Serve this domain with"
                 required
-                hint={ROUTE_TARGETS.find((t) => t.value === form.target)?.description}
+                hint={
+                  isEditing
+                    ? 'Fixed once created — a Watchtower route and a service route are different kinds of route.'
+                    : ROUTE_TARGETS.find((t) => t.value === form.target)?.description
+                }
               >
                 {({ id, describedBy }) => (
                   <Select
+                    disabled={isEditing}
                     value={form.target}
                     onValueChange={(v) =>
                       // Switching target invalidates the other half of the form outright: a Watchtower
                       // route has no stack and a service route has no realm, and carrying either across
                       // would submit a value the server refuses.
-                      setForm((f) => ({
+                      //
+                      // Only an actual switch, though. Radix re-announces a value set programmatically
+                      // (loading a route into the form sets it), and treating that as a switch would reset
+                      // everything else — turning "use as login host" back on for a Watchtower route that
+                      // is not one, which the next save would then quietly make it.
+                      setForm((f) => v === f.target ? f : ({
                         ...emptyForm,
                         domain: f.domain,
                         // The hostname is the one thing both targets have, so all three fields that
@@ -1533,10 +1715,15 @@ export function RoutesPage() {
                   <Field
                     label="Realm"
                     required
-                    hint="Whose login page and portal this hostname serves."
+                    hint={
+                      isEditing
+                        ? 'Fixed once created — the realm is whose sign-in cookies this hostname holds.'
+                        : 'Whose login page and portal this hostname serves.'
+                    }
                   >
                     {({ id, describedBy }) => (
                       <Select
+                        disabled={isEditing}
                         value={String(formRealmId)}
                         onValueChange={(v) => setForm((f) => ({ ...f, realmId: v }))}
                       >
@@ -1579,13 +1766,21 @@ export function RoutesPage() {
                 </div>
               ) : (
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Stack" required>
+                <Field
+                  label="Stack"
+                  required
+                  hint={isEditing ? 'Fixed once created — the route lives on this stack’s ingress network.' : undefined}
+                >
                   {({ id, describedBy }) => (
                     <Select
+                      disabled={isEditing}
                       value={form.stackId}
                       onValueChange={(v) =>
-                        // Switching stacks invalidates the service/port chosen for the old one.
-                        setForm((f) => ({
+                        // Switching stacks invalidates the service/port chosen for the old one — but only a
+                        // switch: Radix re-announces a programmatically set value, and loading a route or an
+                        // imported hostname into the form sets exactly this, with the service and port
+                        // alongside it that clearing here would throw away.
+                        setForm((f) => v === f.stackId ? f : ({
                           ...f,
                           stackId: v,
                           serviceName: '',
@@ -1664,7 +1859,38 @@ export function RoutesPage() {
               {/* Only on a service route to a domain: a port route is LAN-only and a Watchtower route
                   serves the login page, so both are Public by definition and the server refuses an
                   access field on them. Admin-only, like every other access control on this page. */}
-              {canManageAccess && !isPortForm && !isWatchtowerForm && (
+              {/* On an edit the policy is the Access dialog's, which says more than this form can — grants,
+                  access rules, identity forwarding. Offered from here rather than duplicated, so an existing
+                  route has one place its access is decided and it cannot disagree with another. */}
+              {isEditing && canManageAccess && editingRoute && accessNote(editingRoute) == null && (
+                <div className="flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-sm text-text">
+                      Access:{' '}
+                      {/* From the live list rather than the snapshot the edit started from, so changing it
+                          through the button beside this reads back here straight away. */}
+                      <span className="font-medium">
+                        {ACCESS_LABEL[
+                          (routes.find((r) => r.id === editingRoute.id) ?? editingRoute).accessMode
+                        ]}
+                      </span>
+                    </p>
+                    <p className="text-xs text-text-3">
+                      Who may reach this route, its public paths, access rules and grants.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setAccessRoute(editingRoute)}
+                  >
+                    <Lock /> Access control
+                  </Button>
+                </div>
+              )}
+
+              {canManageAccess && !isPortForm && !isWatchtowerForm && !isEditing && (
                 <>
                   <Field label="Who can access">
                     {({ id }) => (
@@ -1724,7 +1950,13 @@ export function RoutesPage() {
                 </>
               )}
 
-              {isPortForm ? (
+              {isPortForm && isEditing ? (
+                <p className="text-xs text-text-3">
+                  HTTPS is always on, with a certificate from Watchtower's internal CA. Moving the listen
+                  port means publishing the new one on Watchtower's container — the banner above offers to
+                  do that once the change is saved.
+                </p>
+              ) : isPortForm ? (
                 <Banner tone="info" title="Publish the port on Watchtower's container">
                   Watchtower listens on this port inside its container, so the container has to publish
                   it too. Once the route exists you can do that from here — a banner offers to recreate
@@ -1759,7 +1991,7 @@ export function RoutesPage() {
               )}
 
               <div className="flex justify-end gap-2 pt-1">
-                <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>
+                <Button type="button" variant="secondary" onClick={closeForm}>
                   Cancel
                 </Button>
                 {/* Disabled rather than refused on submit: with no LAN name there is no certificate the
@@ -1768,10 +2000,10 @@ export function RoutesPage() {
                     deployment with nothing configured, and the server is the backstop either way. */}
                 <Button
                   type="submit"
-                  loading={create.isPending}
+                  loading={isEditing ? update.isPending : create.isPending}
                   disabled={isPortForm && lanNamesKnown && lanNames.length === 0}
                 >
-                  Create route
+                  {isEditing ? 'Save changes' : 'Create route'}
                 </Button>
               </div>
             </form>
@@ -1827,7 +2059,7 @@ export function RoutesPage() {
                   : 'Add a route to expose a service — or Watchtower itself — on a domain with automatic HTTPS.'
               }
               action={
-                <Button variant="primary" onClick={() => setShowForm(true)}>
+                <Button variant="primary" onClick={openCreate}>
                   <Plus /> New route
                 </Button>
               }
@@ -2223,10 +2455,17 @@ function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => 
     enabled: open && realmId != null,
   })
 
+  const queryClient = useQueryClient()
   const save = useMutation({
     mutationFn: (data: RouteAccess) => api.proxy.setAccess(route!.id, data),
     onSuccess: () => {
       toast.success(`Access updated for ${routeLabel(route!)}.`)
+      // The list's access badge is read from proxy.listRoutes, the dialog from proxy.getAccess, and the
+      // rules card counts attachments — all three describe what was just changed, and none of them would
+      // otherwise refresh until something else happened to refetch them.
+      queryClient.invalidateQueries({ queryKey: ['routes'] })
+      queryClient.invalidateQueries({ queryKey: ['route-access', route!.id] })
+      queryClient.invalidateQueries({ queryKey: ['access-rules'] })
       onClose()
     },
     // The backend's AppError text (a rejected bypass line, an unknown user) rides RpcError.message.
