@@ -81,6 +81,7 @@ import type {
   AccessRule,
   ExternalAccessPolicy,
   SetAccessRuleRequest,
+  StackAccessContext,
   RouteAccess,
   RouteAccessView,
   SelfUpdateStatus,
@@ -487,7 +488,13 @@ export const api = {
         listenPort: data.listenPort ?? null,
         accessMode: data.accessMode ?? null,
         bypassPaths: data.bypassPaths ?? null,
+        identityHeaderMode: data.identityHeaderMode ?? null,
+        grantedUserIds: data.grantedUserIds ?? null,
+        grantedGroupIds: data.grantedGroupIds ?? null,
+        accessRuleIds: data.accessRuleIds ?? null,
       })).route as Route,
+    getStackAccessContext: async (stackId: number) =>
+      (await rpc('proxy.getStackAccessContext', { stackId })) as StackAccessContext,
     updateRoute: async (id: number, data: UpdateRouteRequest) =>
       (await rpc('proxy.updateRoute', {
         id,
@@ -500,6 +507,12 @@ export const api = {
         makeLoginRoute: data.makeLoginRoute ?? null,
         binding: data.binding ?? null,
         listenPort: data.listenPort ?? null,
+        accessMode: data.accessMode ?? null,
+        bypassPaths: data.bypassPaths ?? null,
+        identityHeaderMode: data.identityHeaderMode ?? null,
+        grantedUserIds: data.grantedUserIds ?? null,
+        grantedGroupIds: data.grantedGroupIds ?? null,
+        accessRuleIds: data.accessRuleIds ?? null,
       })).route as Route,
     // Returns the server's response rather than swallowing it: deleting a realm's login host succeeds
     // and carries a `warning` the caller has to show (ADR-0023).

@@ -8045,6 +8045,46 @@
               "null"
             ],
             "default": null
+          },
+          "grantedUserIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "grantedGroupIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest",
+              "Cloudflare",
+              null
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8776,6 +8816,37 @@
         },
         "required": [
           "route"
+        ]
+      }
+    },
+    "proxy.getStackAccessContext": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "realmId": {
+            "type": "integer"
+          },
+          "activeEnforcementPoint": {
+            "enum": [
+              "InProcess",
+              "CloudflareAccess"
+            ]
+          }
+        },
+        "required": [
+          "realmId",
+          "activeEnforcementPoint"
         ]
       }
     },
@@ -10170,6 +10241,62 @@
             "type": [
               "integer",
               "null"
+            ],
+            "default": null
+          },
+          "accessMode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted",
+              null
+            ],
+            "default": null
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "grantedUserIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "grantedGroupIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest",
+              "Cloudflare",
+              null
             ],
             "default": null
           }

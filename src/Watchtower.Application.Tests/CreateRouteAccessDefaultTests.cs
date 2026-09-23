@@ -134,9 +134,12 @@ public sealed class CreateRouteAccessDefaultTests {
         Assert.Empty(await DomainsAsync(host));
     }
 
-    /// <summary>A create carries no grants, so a Restricted route would be published admitting nobody.</summary>
+    /// <summary>
+    /// A new hostname that admits nobody reads as a broken deployment rather than a policy. Refused for
+    /// naming nobody — no longer for being Restricted, which a create can now say in full.
+    /// </summary>
     [Fact]
-    public async Task ARestrictedRoute_IsRefused_BecauseItWouldAdmitNobody() {
+    public async Task ARestrictedRouteNamingNobody_IsRefused() {
         using var host = AuthTestHost.Start(WithRouteHandlers);
         var stackId = await host.AddStackAsync("blog");
 
@@ -146,8 +149,168 @@ public sealed class CreateRouteAccessDefaultTests {
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorKind.Validation, result.Error.Kind);
-        Assert.Contains("cannot start Restricted", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("at least one user or group", result.Error.Message, StringComparison.Ordinal);
         Assert.Empty(await DomainsAsync(host));
+    }
+
+    // ── The whole policy in one write ────────────────────────────────────────
+
+    /// <summary>
+    /// The two-step create is gone: a Restricted route is created with its grants in the same write, so it
+    /// is never committed — and so never reconciled to an edge — under the instance-wide allow-list first.
+    /// </summary>
+    [Fact]
+    public async Task ARestrictedRouteWithGrants_IsCreatedWithThemInTheSameWrite() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        var stackId = await host.AddStackAsync("blog");
+        var alice = await host.AddUserAsync("alice");
+        var groupId = await host.AddGroupAsync("family", alice);
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Restricted,
+            GrantedUserIds = [alice],
+            GrantedGroupIds = [groupId],
+        });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("restricted", result.Value.Route.AccessMode);
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var grants = await db.RouteAccessGrants.AsNoTracking()
+            .Where(g => g.RouteId == result.Value.Route.Id).ToListAsync(Ct);
+        Assert.Contains(grants, g => g.UserId == alice);
+        Assert.Contains(grants, g => g.GroupId == groupId);
+    }
+
+    [Fact]
+    public async Task AnAuthenticatedRouteWithRules_IsCreatedWithThemAttachedInOrder() {
+        using var host = AuthTestHost.Start(WithRouteHandlers, CloudflareSettings());
+        var stackId = await host.AddStackAsync("blog");
+        var family = await host.AddAccessRuleAsync("family", [ExternalPolicy("pol-family")]);
+        var friends = await host.AddAccessRuleAsync("friends", [ExternalPolicy("pol-friends")]);
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Authenticated,
+            AccessRuleIds = [friends, family],
+        });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var attached = await db.RouteAccessRules.AsNoTracking()
+            .Where(a => a.RouteId == result.Value.Route.Id).OrderBy(a => a.Order)
+            .Select(a => a.AccessRuleId).ToListAsync(Ct);
+        // The caller's order, not the ids' — it is the precedence the policies attach in at the edge.
+        Assert.Equal([friends, family], attached);
+    }
+
+    [Fact]
+    public async Task IdentityForwarding_CanBeChosenAtCreate() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        var stackId = await host.AddStackAsync("blog");
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            IdentityHeaderMode = IdentityHeaderMode.Remote,
+        });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal(IdentityHeaderMode.Remote, (await RouteAsync(host, result.Value.Route.Id)).IdentityHeaderMode);
+    }
+
+    /// <summary>
+    /// The same validation proxy.setAccess runs — here the portability check (ADR-0039 decision 4): a rule
+    /// the active provider cannot enforce is refused at create exactly as it would be on a later change.
+    /// </summary>
+    [Fact]
+    public async Task ARuleTheProviderCannotEnforce_IsRefused_AndWritesNoRow() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        var stackId = await host.AddStackAsync("blog");
+        var friends = await host.AddAccessRuleAsync("friends", [ExternalPolicy("pol-friends")]);
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Authenticated,
+            AccessRuleIds = [friends],
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("external policy clauses", result.Error.Message, StringComparison.Ordinal);
+        Assert.Empty(await DomainsAsync(host));
+    }
+
+    [Fact]
+    public async Task RulesOnARestrictedCreate_AreRefused() {
+        using var host = AuthTestHost.Start(WithRouteHandlers, CloudflareSettings());
+        var stackId = await host.AddStackAsync("blog");
+        var alice = await host.AddUserAsync("alice");
+        var family = await host.AddAccessRuleAsync("family", [ExternalPolicy("pol-family")]);
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Restricted,
+            GrantedUserIds = [alice],
+            AccessRuleIds = [family],
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("would widen that", result.Error.Message, StringComparison.Ordinal);
+        Assert.Empty(await DomainsAsync(host));
+    }
+
+    /// <summary>
+    /// The realm comes from the stack the create names, because there is no route row yet to resolve it
+    /// from — the same answer RouteAccessPolicy gives once the route exists.
+    /// </summary>
+    [Fact]
+    public async Task AGrantFromAnotherRealmThanTheStacks_IsRefused_AndWritesNoRow() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        var tenants = await host.AddRealmAsync("tenants");
+        var templateId = await host.AddRealmTemplateAsync("tenant-apps", tenants);
+        var stackId = await host.AddStackAsync("acme", templateId, tenantSlug: "acme");
+        var operatorAccount = await host.AddUserAsync("alice");
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "acme.example.invalid") with {
+            AccessMode = AccessMode.Restricted,
+            GrantedUserIds = [operatorAccount],
+        });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("different realm", result.Error.Message, StringComparison.Ordinal);
+        Assert.Empty(await DomainsAsync(host));
+    }
+
+    // ── The audit trail ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Granting access at creation leaves the trace proxy.setAccess would have left for the same decision
+    /// made a moment later — otherwise creating with grants would be the way to grant without one.
+    /// </summary>
+    [Fact]
+    public async Task AnExplicitPolicy_IsAudited() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        var stackId = await host.AddStackAsync("blog");
+        var alice = await host.AddUserAsync("alice");
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Restricted,
+            GrantedUserIds = [alice],
+        });
+
+        Assert.True(result.IsSuccess, Describe(result));
+        var audit = await AccessAuditAsync(host);
+        var row = Assert.Single(audit);
+        Assert.Contains("mode=Restricted", row, StringComparison.Ordinal);
+        Assert.Contains("on create", row, StringComparison.Ordinal);
+    }
+
+    /// <summary>The configured default is a setting, audited when it was set — not a decision made here.</summary>
+    [Fact]
+    public async Task TheDefaultPolicy_IsNotAudited() {
+        using var host = AuthTestHost.Start(WithRouteHandlers);
+        var stackId = await host.AddStackAsync("blog");
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid"));
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Empty(await AccessAuditAsync(host));
     }
 
     // ── The role gate ────────────────────────────────────────────────────────
@@ -157,15 +320,26 @@ public sealed class CreateRouteAccessDefaultTests {
     /// between the moment a form is rendered and the moment it is submitted.
     /// </summary>
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task ANonAdministratorNamingAnAccessPolicy_IsForbidden_AndWritesNoRow(bool viaBypassPaths) {
+    [InlineData("mode")]
+    [InlineData("bypassPaths")]
+    [InlineData("grantedUsers")]
+    [InlineData("grantedGroups")]
+    [InlineData("accessRules")]
+    [InlineData("identityHeaders")]
+    public async Task ANonAdministratorNamingAnAccessPolicy_IsForbidden_AndWritesNoRow(string field) {
         using var host = AuthTestHost.Start(WithRouteHandlers, ("Watchtower:Auth:Enabled", "true"));
         var stackId = await host.AddStackAsync("blog");
         var command = ServiceCommand(stackId, "blog.example.invalid");
-        command = viaBypassPaths
-            ? command with { BypassPaths = "/webhooks/" }
-            : command with { AccessMode = AccessMode.Public };
+        // Every field of the policy trips the gate on its own — the new ones included, or granting at
+        // create would be the one way a non-administrator could decide who reaches a hostname.
+        command = field switch {
+            "mode" => command with { AccessMode = AccessMode.Public },
+            "bypassPaths" => command with { BypassPaths = "/webhooks/" },
+            "grantedUsers" => command with { GrantedUserIds = [1] },
+            "grantedGroups" => command with { GrantedGroupIds = [1] },
+            "accessRules" => command with { AccessRuleIds = [1] },
+            _ => command with { IdentityHeaderMode = IdentityHeaderMode.Remote },
+        };
 
         await using (var scope = host.Services.CreateAsyncScope()) {
             TestPrincipal.Seed(scope.ServiceProvider, isAdmin: false);
@@ -229,6 +403,40 @@ public sealed class CreateRouteAccessDefaultTests {
         Assert.Equal("authenticated", result.Value.Route.AccessMode);
     }
 
+    /// <summary>
+    /// The guard is route-aware (ADR-0039 decision 5): the instance-wide settings are only this route's
+    /// allow-list when it attaches no rules. A Cloudflare-only setup built entirely from access rules used
+    /// to be unable to create a protected route at all.
+    /// </summary>
+    [Fact]
+    public async Task ProtectedUnderCloudflareWithNoAllowSource_ButWithRules_IsCreated() {
+        using var host = AuthTestHost.Start(WithRouteHandlers, CloudflareSettings());
+        var stackId = await host.AddStackAsync("blog");
+        var family = await host.AddAccessRuleAsync("family", [ExternalPolicy("pol-family")]);
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Authenticated,
+            AccessRuleIds = [family],
+        });
+
+        Assert.True(result.IsSuccess, Describe(result));
+    }
+
+    /// <summary>A Restricted route's allow-list is its grants; the instance-wide settings never apply to it.</summary>
+    [Fact]
+    public async Task RestrictedUnderCloudflareWithNoAllowSource_IsCreated() {
+        using var host = AuthTestHost.Start(WithRouteHandlers, CloudflareSettings());
+        var stackId = await host.AddStackAsync("blog");
+        var alice = await host.AddUserAsync("alice");
+
+        var result = await CreateAsync(host, ServiceCommand(stackId, "blog.example.invalid") with {
+            AccessMode = AccessMode.Restricted,
+            GrantedUserIds = [alice],
+        });
+
+        Assert.True(result.IsSuccess, Describe(result));
+    }
+
     /// <summary>A Public route needs no Access application, so there is nothing for it to fail on.</summary>
     [Fact]
     public async Task APublicRouteUnderCloudflareWithNoAllowSource_IsCreated() {
@@ -284,6 +492,18 @@ public sealed class CreateRouteAccessDefaultTests {
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
         return await db.Routes.AsNoTracking().SingleAsync(r => r.Id == routeId, Ct);
+    }
+
+    private static AccessRuleClause ExternalPolicy(string id) =>
+        new() { Kind = AccessClauseKind.ExternalPolicy, Value = id };
+
+    /// <summary>The detail of every route-access audit row, oldest first.</summary>
+    private static async Task<List<string?>> AccessAuditAsync(AuthTestHost host) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return await db.AuditEvents.AsNoTracking()
+            .Where(e => e.Action == AuthEventKinds.RouteAccessChanged)
+            .OrderBy(e => e.Id).Select(e => e.Detail).ToListAsync(Ct);
     }
 
     /// <summary>Every routed hostname — empty is how "nothing was written" is asserted.</summary>

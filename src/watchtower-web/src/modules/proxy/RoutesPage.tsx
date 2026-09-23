@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, Lock, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, INTERNAL_CA_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AccessMode,
@@ -13,7 +13,6 @@ import type {
   IdentityHeaderMode,
   Route,
   RouteAccess,
-  RouteAccessView,
   RouteAccessModeWire,
   RouteBinding,
   RouteStatus,
@@ -30,13 +29,6 @@ import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
@@ -50,7 +42,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
@@ -71,7 +62,7 @@ const STATUS_LABEL: Record<RouteStatus, string> = {
   pending: 'Pending',
 }
 
-/** The three access modes in menu order, with the copy the Access dialog shows for each. */
+/** The three access modes in menu order, with the copy the access editor shows for each. */
 const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] = [
   { value: 'Public', label: 'Public', description: 'No access control — every request is proxied.' },
   {
@@ -137,7 +128,7 @@ function accessModeDescriptionAt(value: AccessMode, point: ActiveEnforcementPoin
   }
 }
 
-/** The identity-forwarding modes in menu order, with the label the Access dialog shows for each. */
+/** The identity-forwarding modes in menu order, with the label the access editor shows for each. */
 const IDENTITY_HEADER_MODES: { value: IdentityHeaderMode; label: string }[] = [
   { value: 'None', label: 'JWT only (default)' },
   { value: 'Remote', label: 'Remote-* headers (Authelia/Traefik)' },
@@ -172,6 +163,12 @@ const emptyForm = {
   // may send. Naming one explicitly is admin-only, so an empty field is never a silent downgrade.
   accessMode: '' as AccessMode | '',
   bypassPaths: '',
+  // The rest of the policy, so a route is created with everything an edit could give it
+  // afterwards (ADR-0039, decision 5 as amended) — never published under one policy and then changed.
+  identityHeaderMode: 'None' as IdentityHeaderMode,
+  grantedUserIds: [] as number[],
+  grantedGroupIds: [] as number[],
+  accessRuleIds: [] as number[],
   // True once the user opts out of the discovered-value dropdown to type a custom value.
   serviceManual: false,
   portManual: false,
@@ -244,7 +241,7 @@ function routeUrl(r: Route, lanNames: string[], https: boolean): string | null {
 }
 
 /**
- * Why the Access dialog is unavailable on a Watchtower route, said in one place so the tooltip and the
+ * Why a Watchtower route has no access policy, said in one place so the edit form and the
  * create form cannot describe the same rule differently.
  */
 const WATCHTOWER_ACCESS_NOTE =
@@ -254,7 +251,7 @@ const WATCHTOWER_ACCESS_NOTE =
 const PORT_ACCESS_NOTE =
   'A port route is always public — it has no hostname for a login redirect to return to.'
 
-/** Why the Access dialog is unavailable for a route, or null when it is available. */
+/** Why a route has no access policy to edit, or null when it has one. */
 function accessNote(r: Route): string | null {
   if (r.target === 'watchtower') return WATCHTOWER_ACCESS_NOTE
   if (r.binding === 'port') return PORT_ACCESS_NOTE
@@ -360,7 +357,6 @@ export function RoutesPage() {
   const [editingRoute, setEditingRoute] = useState<Route | null>(null)
   const isEditing = editingRoute != null
   const [pendingDelete, setPendingDelete] = useState<Route | null>(null)
-  const [accessRoute, setAccessRoute] = useState<Route | null>(null)
 
   const { data: status } = useQuery({ queryKey: ['proxy-status'], queryFn: api.proxy.getStatus })
   // Under the Cloudflare Tunnel provider TLS terminates at Cloudflare's edge: every route is served over
@@ -575,6 +571,49 @@ export function RoutesPage() {
   const selectedStack = stacks.find((s) => String(s.id) === form.stackId)
   const stackProject = selectedStack?.composeProjectName
 
+  // The form's access editor — the one place a route's access is decided, for a new route and an existing
+  // one alike. Only for an administrator, and only on a service route to a domain: a port route and a
+  // Watchtower route are Public by definition.
+  const wantsAccessEditor = showForm && canManageAccess && !isPortForm && !isWatchtowerForm
+  // A new route has no realm until its stack is chosen; asked of the server, which resolves it exactly as
+  // proxy.createRoute validates, so the pickers can only offer what the create will accept.
+  const createStackId = !isEditing ? (selectedStack?.id ?? null) : null
+  const { data: stackAccess } = useQuery({
+    queryKey: ['stack-access-context', createStackId],
+    queryFn: () => api.proxy.getStackAccessContext(createStackId!),
+    enabled: wantsAccessEditor && !isEditing && createStackId != null,
+  })
+  // An existing route's stored policy, with its realm and the enforcement point that decides it.
+  const { data: editAccess } = useQuery({
+    queryKey: ['route-access', editingRoute?.id],
+    queryFn: () => api.proxy.getAccess(editingRoute!.id),
+    enabled: wantsAccessEditor && isEditing,
+  })
+  const accessRealmId = !wantsAccessEditor ? undefined : isEditing ? editAccess?.realmId : stackAccess?.realmId
+  const { data: accessUsers = [] } = useQuery({
+    queryKey: ['users', { realmId: accessRealmId }],
+    queryFn: () => api.users.list(accessRealmId),
+    enabled: accessRealmId != null,
+  })
+  const { data: accessGroups = [] } = useQuery({
+    queryKey: ['groups', { realmId: accessRealmId }],
+    queryFn: () => api.groups.list(accessRealmId),
+    enabled: accessRealmId != null,
+  })
+  const { data: accessRules = [] } = useQuery({
+    queryKey: ['access-rules', { realmId: accessRealmId }],
+    queryFn: () => api.proxy.listAccessRules(accessRealmId),
+    enabled: accessRealmId != null,
+  })
+  // Until the server has answered, the provider already on the page is the same answer it will give.
+  const accessEnforcementPoint: ActiveEnforcementPoint =
+    (isEditing ? editAccess?.activeEnforcementPoint : stackAccess?.activeEnforcementPoint) ??
+    (isCloudflare ? 'CloudflareAccess' : 'InProcess')
+  // An edit's changes to the stored policy; null until the operator touches it, so the editor shows the
+  // stored policy as it arrives rather than a copy taken before it had loaded.
+  const [editAccessDraft, setEditAccessDraft] = useState<AccessDraft | null>(null)
+  const editDraft = editAccessDraft ?? (editAccess ? accessDraftFrom(editAccess) : null)
+
   // The selected stack's live containers, used to drive the service + port dropdowns.
   const { data: portsData, isFetching: portsFetching } = useQuery({
     queryKey: ['stack-ports', stackProject],
@@ -617,6 +656,8 @@ export function RoutesPage() {
       qc.invalidateQueries({ queryKey: ['proxy', 'port-bindings'] })
       // An imported hostname stops being foreign the moment its route row exists.
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
+      // A route created with access rules attached changes what the rules card counts.
+      qc.invalidateQueries({ queryKey: ['access-rules'] })
       setForm({ ...emptyForm })
       dns.reset()
       setShowForm(false)
@@ -636,6 +677,9 @@ export function RoutesPage() {
       qc.invalidateQueries({ queryKey: ['cloudflare-foreign-routes'] })
       // Designating or releasing a login host changes what the realm roster reports as its login host.
       qc.invalidateQueries({ queryKey: ['realms'] })
+      // The saved policy and the rule attachment counts both describe what was just written.
+      qc.invalidateQueries({ queryKey: ['route-access'] })
+      qc.invalidateQueries({ queryKey: ['access-rules'] })
       closeForm()
     },
     onError: (err: Error) => toast.error(err.message),
@@ -648,6 +692,8 @@ export function RoutesPage() {
       setEditingRoute(null)
       setForm({ ...emptyForm })
     }
+    // Whatever was changed in the access editor belonged to the route being edited.
+    setEditAccessDraft(null)
     dns.reset()
   }
 
@@ -674,6 +720,8 @@ export function RoutesPage() {
     // it; where none does, the custom field is the only place it fits.
     const split = route.domain ? splitHost(primaryNames, route.domain) : null
     setEditingRoute(route)
+    // Starts from the stored policy each time, as it arrives — not from another route's unsaved changes.
+    setEditAccessDraft(null)
     setForm({
       ...emptyForm,
       binding: route.binding,
@@ -859,10 +907,12 @@ export function RoutesPage() {
     if (!form.serviceName.trim()) return toast.error('Enter a service name.')
     if (!containerPort || containerPort < 1 || containerPort > 65535)
       return toast.error('Enter a valid container port (1–65535).')
-    // Access is not part of an edit: an existing route's policy is the Access dialog's, which can say more
-    // than this form can (grants, access rules, identity forwarding) — two editors for one policy is how the
-    // two would come to disagree.
     if (editingRoute) {
+      // The access policy goes in the same request, so the route and who reaches it are saved as one write.
+      // Only when the operator actually changed it: otherwise nothing is sent, which the server reads as
+      // "leave access alone" — so renaming a route neither rewrites its policy nor leaves an audit row for an
+      // access change nobody made, and a non-administrator's edit means what it always has.
+      const access = wantsAccessEditor && editAccessDraft ? toRouteAccess(editAccessDraft) : null
       return update.mutate({
         id: editingRoute.id,
         data: {
@@ -873,9 +923,32 @@ export function RoutesPage() {
           containerPort,
           tlsEnabled,
           isPrimary: editingRoute.isPrimary,
+          ...(access && {
+            accessMode: access.mode,
+            bypassPaths: access.bypassPaths,
+            identityHeaderMode: access.identityHeaderMode,
+            grantedUserIds: access.grantedUserIds,
+            grantedGroupIds: access.grantedGroupIds,
+            accessRuleIds: access.accessRuleIds,
+          }),
         },
       })
     }
+    // The whole policy, normalized the way an edit sends it: only what the chosen mode uses.
+    const access = toRouteAccess({
+      mode: formAccessMode,
+      identityHeaderMode: form.identityHeaderMode,
+      bypassPaths: form.bypassPaths,
+      grantedUserIds: form.grantedUserIds,
+      grantedGroupIds: form.grantedGroupIds,
+      accessRuleIds: form.accessRuleIds,
+    })
+    const accessRuleIds = access.accessRuleIds ?? []
+    const namesDetail =
+      access.grantedUserIds.length > 0 ||
+      access.grantedGroupIds.length > 0 ||
+      accessRuleIds.length > 0 ||
+      access.identityHeaderMode !== 'None'
     create.mutate({
       target: 'service',
       stackId,
@@ -885,12 +958,19 @@ export function RoutesPage() {
       containerPort,
       tlsEnabled,
       isPrimary: false,
-      // Naming a mode is admin-only and an untouched field means "use the configured default", so both
-      // stay null unless an administrator actually picked something. Bypass paths belong to a protected
-      // route; on a public one they would be text with nothing to exempt from.
-      accessMode: canManageAccess ? (form.accessMode || null) : null,
-      bypassPaths:
-        canManageAccess && formAccessMode !== 'Public' ? (form.bypassPaths.trim() || null) : null,
+      // Naming any part of the policy is admin-only, and an untouched mode means "use the configured
+      // default" — so everything stays null unless an administrator picked it. Once grants or rules are
+      // chosen the mode is sent explicitly too: they were chosen *for* that mode, and a default that changed
+      // between render and submit must not pair them with another one.
+      accessMode: canManageAccess ? (form.accessMode || (namesDetail ? formAccessMode : null)) : null,
+      bypassPaths: canManageAccess ? access.bypassPaths : null,
+      identityHeaderMode:
+        canManageAccess && access.mode !== 'Public' && access.identityHeaderMode !== 'None'
+          ? access.identityHeaderMode
+          : null,
+      grantedUserIds: canManageAccess && access.grantedUserIds.length > 0 ? access.grantedUserIds : null,
+      grantedGroupIds: canManageAccess && access.grantedGroupIds.length > 0 ? access.grantedGroupIds : null,
+      accessRuleIds: canManageAccess && accessRuleIds.length > 0 ? accessRuleIds : null,
     })
   }
 
@@ -1121,22 +1201,6 @@ export function RoutesPage() {
               <Pencil />
             </Button>
           </Tooltip>
-          {canManageAccess && (
-            <Tooltip label={accessNote(r) ?? 'Access control'}>
-              {/* Disabled rather than hidden: an administrator looking for the gate on this address
-                  should be told there isn't one, not left wondering where the button went. */}
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                aria-label={`Access control for ${routeLabel(r)}`}
-                disabled={accessNote(r) != null}
-                onClick={() => setAccessRoute(r)}
-                className="text-text-2 hover:text-text"
-              >
-                <Lock />
-              </Button>
-            </Tooltip>
-          )}
           <Tooltip label="Delete route">
             <Button
               size="icon-sm"
@@ -1193,18 +1257,6 @@ export function RoutesPage() {
           >
             <Pencil />
           </Button>
-          {canManageAccess && (
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={`Access control for ${routeLabel(r)}`}
-              disabled={accessNote(r) != null}
-              onClick={() => setAccessRoute(r)}
-              className="text-text-2 hover:text-text"
-            >
-              <Lock />
-            </Button>
-          )}
           <Button
             size="icon-sm"
             variant="ghost"
@@ -1783,6 +1835,11 @@ export function RoutesPage() {
                         setForm((f) => v === f.stackId ? f : ({
                           ...f,
                           stackId: v,
+                          // Grants and rules are realm-scoped, and another stack can be another realm's.
+                          // Cleared rather than filtered: the picker below reloads for the new realm.
+                          grantedUserIds: [],
+                          grantedGroupIds: [],
+                          accessRuleIds: [],
                           serviceName: '',
                           containerPort: '',
                           serviceManual: false,
@@ -1856,95 +1913,86 @@ export function RoutesPage() {
               </div>
               )}
 
+              {/* Said on an edit, where an administrator would look for the gate on this address: it has
+                  none, and that is by definition rather than an omission. (The create form's Watchtower and
+                  port banners say the same thing at the moment the kind is chosen.) */}
+              {isEditing && canManageAccess && editingRoute && accessNote(editingRoute) && (
+                <p className="text-xs text-text-3">{accessNote(editingRoute)}</p>
+              )}
+
               {/* Only on a service route to a domain: a port route is LAN-only and a Watchtower route
                   serves the login page, so both are Public by definition and the server refuses an
                   access field on them. Admin-only, like every other access control on this page. */}
-              {/* On an edit the policy is the Access dialog's, which says more than this form can — grants,
-                  access rules, identity forwarding. Offered from here rather than duplicated, so an existing
-                  route has one place its access is decided and it cannot disagree with another. */}
-              {isEditing && canManageAccess && editingRoute && accessNote(editingRoute) == null && (
-                <div className="flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2.5">
-                  <div className="min-w-0">
-                    <p className="text-sm text-text">
-                      Access:{' '}
-                      {/* From the live list rather than the snapshot the edit started from, so changing it
-                          through the button beside this reads back here straight away. */}
-                      <span className="font-medium">
-                        {ACCESS_LABEL[
-                          (routes.find((r) => r.id === editingRoute.id) ?? editingRoute).accessMode
-                        ]}
-                      </span>
-                    </p>
-                    <p className="text-xs text-text-3">
-                      Who may reach this route, its public paths, access rules and grants.
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => setAccessRoute(editingRoute)}
-                  >
-                    <Lock /> Access control
-                  </Button>
-                </div>
-              )}
-
-              {canManageAccess && !isPortForm && !isWatchtowerForm && !isEditing && (
+              {wantsAccessEditor && (
                 <>
-                  <Field label="Who can access">
-                    {({ id }) => (
-                      <>
-                        <Select
-                          value={formAccessMode}
-                          onValueChange={(v) => setForm((f) => ({ ...f, accessMode: v as AccessMode }))}
-                        >
-                          <SelectTrigger id={id}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {/* Restricted is left out: a create carries no grants, so a route starting
-                                restricted would admit nobody. Pick it in the Access dialog afterwards,
-                                where the users and groups can be chosen in the same breath. */}
-                            {ACCESS_MODES.filter((m) => m.value !== 'Restricted').map((m) => (
-                              <SelectItem key={m.value} value={m.value}>
-                                {m.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="mt-1.5 text-xs text-text-3">
-                          {accessModeDescription(formAccessMode)}
-                        </p>
-                      </>
-                    )}
-                  </Field>
-
-                  {formAccessMode !== 'Public' && (
-                    <Field
-                      label="Public paths"
-                      hint="Paths exempt from access control, e.g. /api/webhooks/*. One per line."
-                    >
-                      {({ id, describedBy }) => (
-                        <Textarea
-                          id={id}
-                          aria-describedby={describedBy}
-                          mono
-                          value={form.bypassPaths}
-                          onChange={(e) => setForm((f) => ({ ...f, bypassPaths: e.target.value }))}
-                          placeholder={'/api/webhooks/\n/healthz'}
-                          spellCheck={false}
-                        />
-                      )}
-                    </Field>
+                  {/* The one access editor, for a new route and an existing one alike (ADR-0039, decision 5
+                      as amended): a route is created with its whole policy and edited the same way, saved in
+                      the same write as its other fields — never published under one policy and then
+                      changed, and never half-applied by a second call. */}
+                  {isEditing ? (
+                    editDraft ? (
+                      <AccessFields
+                        value={editDraft}
+                        onChange={setEditAccessDraft}
+                        realmName={accessRealmId != null ? (realms.find((r) => r.id === accessRealmId)?.name ?? null) : null}
+                        users={accessUsers}
+                        groups={accessGroups}
+                        accessRules={accessRules}
+                        activeEnforcementPoint={accessEnforcementPoint}
+                      />
+                    ) : (
+                      <p className="text-[13px] text-text-3">Loading this route's access policy…</p>
+                    )
+                  ) : (
+                    <AccessFields
+                      value={{
+                        mode: formAccessMode,
+                        identityHeaderMode: form.identityHeaderMode,
+                        bypassPaths: form.bypassPaths,
+                        grantedUserIds: form.grantedUserIds,
+                        grantedGroupIds: form.grantedGroupIds,
+                        accessRuleIds: form.accessRuleIds,
+                      }}
+                      onChange={(next) =>
+                        setForm((f) => ({
+                          ...f,
+                          // Recorded only once it differs from what is shown: an untouched mode stays "the
+                          // configured default", which is what a create that names nothing is asking for.
+                          accessMode: next.mode === (f.accessMode || defaultAccessMode) ? f.accessMode : next.mode,
+                          identityHeaderMode: next.identityHeaderMode,
+                          bypassPaths: next.bypassPaths,
+                          grantedUserIds: next.grantedUserIds,
+                          grantedGroupIds: next.grantedGroupIds,
+                          accessRuleIds: next.accessRuleIds,
+                        }))
+                      }
+                      realmName={accessRealmId != null ? (realms.find((r) => r.id === accessRealmId)?.name ?? null) : null}
+                      users={accessUsers}
+                      groups={accessGroups}
+                      accessRules={accessRules}
+                      activeEnforcementPoint={accessEnforcementPoint}
+                      pickersNote={
+                        createStackId == null
+                          ? 'Choose a stack first — users, groups and access rules come from the realm it belongs to.'
+                          : accessRealmId == null
+                            ? 'Loading…'
+                            : null
+                      }
+                    />
                   )}
 
-                  {formAccessMode !== 'Public' && cfAllowSourceMissing && (
+                  {/* Only where the instance-wide settings *are* this route's allow-list — Authenticated with
+                      no rules attached. Rules decide an Authenticated route that attaches them, and grants
+                      decide a Restricted one. */}
+                  {(isEditing
+                    ? editDraft?.mode === 'Authenticated' && editDraft.accessRuleIds.length === 0
+                    : formAccessMode === 'Authenticated' && form.accessRuleIds.length === 0) &&
+                    cfAllowSourceMissing && (
                     <Banner tone="warn" title="Cloudflare Access has no allow source">
-                      A protected route's Access application admits the emails, email domains, Access
-                      groups and reusable policies you configure — and none are set, so this route would
-                      deny everyone. Add at least one under Settings → Reverse proxy, or create this
-                      route as Public.
+                      With no access rule ticked, this route's Access application admits the emails, email
+                      domains, Access groups and reusable policies configured under Settings → Reverse proxy
+                      — and none are set, so it would deny everyone. Tick an access rule, add an allow source
+                      there, or make this route Public.
                     </Banner>
                   )}
                 </>
@@ -2158,10 +2206,6 @@ export function RoutesPage() {
         loading={publishPorts.isPending}
         onConfirm={() => publishPorts.mutate()}
       />
-
-      {canManageAccess && (
-        <AccessDialog route={accessRoute} onClose={() => setAccessRoute(null)} />
-      )}
     </div>
   )
 }
@@ -2416,110 +2460,72 @@ function InternalCaCard() {
   )
 }
 
-/** Loads a route's policy and hosts the editor; the form is remounted per route so its state resets. */
-function AccessDialog({ route, onClose }: { route: Route | null; onClose: () => void }) {
-  const open = route != null
-  // Gated on the dialog being open, like the two rosters below: the Access dialog is mounted for the
-  // whole Routes page, and an administrator who never opens it should not have fetched the realm list.
-  const { nameOrNull } = useRealms({ enabled: open })
-
-  const { data: access, isLoading, isError } = useQuery({
-    queryKey: ['route-access', route?.id],
-    queryFn: () => api.proxy.getAccess(route!.id),
-    enabled: open,
-  })
-
-  // The grant pickers' rosters. Fetched lazily with the dialog, and only actually shown for Restricted.
-  // Both are scoped to the realm the route belongs to (its stack's template category, or the operator
-  // realm for a standalone stack — the server resolves it and reports it on the policy). proxy.setAccess
-  // refuses a grant naming a subject from any other population, and such a grant would never admit anyone
-  // anyway, so a cross-realm candidate is a checkbox that can only produce a rejected save.
-  const realmId = access?.realmId
-
-  const { data: users = [] } = useQuery({
-    queryKey: ['users', { realmId }],
-    queryFn: () => api.users.list(realmId),
-    enabled: open && realmId != null,
-  })
-
-  const { data: groups = [] } = useQuery({
-    queryKey: ['groups', { realmId }],
-    queryFn: () => api.groups.list(realmId),
-    enabled: open && realmId != null,
-  })
-
-  // The rules this route could attach, scoped to its realm for the same reason the two rosters above are.
-  const { data: accessRules = [] } = useQuery({
-    queryKey: ['access-rules', { realmId }],
-    queryFn: () => api.proxy.listAccessRules(realmId),
-    enabled: open && realmId != null,
-  })
-
-  const queryClient = useQueryClient()
-  const save = useMutation({
-    mutationFn: (data: RouteAccess) => api.proxy.setAccess(route!.id, data),
-    onSuccess: () => {
-      toast.success(`Access updated for ${routeLabel(route!)}.`)
-      // The list's access badge is read from proxy.listRoutes, the dialog from proxy.getAccess, and the
-      // rules card counts attachments — all three describe what was just changed, and none of them would
-      // otherwise refresh until something else happened to refetch them.
-      queryClient.invalidateQueries({ queryKey: ['routes'] })
-      queryClient.invalidateQueries({ queryKey: ['route-access', route!.id] })
-      queryClient.invalidateQueries({ queryKey: ['access-rules'] })
-      onClose()
-    },
-    // The backend's AppError text (a rejected bypass line, an unknown user) rides RpcError.message.
-    onError: (err: Error) => toast.error(err.message || 'Failed to update access.'),
-  })
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && !save.isPending && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Access · {route ? routeLabel(route) : null}</DialogTitle>
-          <DialogDescription>
-            Decide who may reach this app. The proxy enforces it on every request.
-          </DialogDescription>
-        </DialogHeader>
-
-        {isError ? (
-          <Banner tone="danger" title="Couldn’t load the access policy">
-            Something went wrong while fetching this route’s policy.
-          </Banner>
-        ) : isLoading || !access ? (
-          <div className="flex flex-col gap-3 py-2">
-            <Skeleton className="h-9 w-full" />
-            <Skeleton className="h-20 w-full" />
-          </div>
-        ) : (
-          <AccessForm
-            key={route!.id}
-            initial={access}
-            realmName={nameOrNull(access.realmId)}
-            users={users}
-            groups={groups}
-            accessRules={accessRules}
-            saving={save.isPending}
-            onCancel={onClose}
-            onSubmit={(data) => save.mutate(data)}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
-  )
+/**
+ * A route access policy while it is being edited — every field the policy has, whatever the mode, so
+ * switching modes back and forth keeps what was chosen for each. {@link toRouteAccess} drops what the chosen
+ * mode does not use when it is sent.
+ */
+interface AccessDraft {
+  mode: AccessMode
+  identityHeaderMode: IdentityHeaderMode
+  bypassPaths: string
+  grantedUserIds: number[]
+  grantedGroupIds: number[]
+  accessRuleIds: number[]
 }
 
-function AccessForm({
-  initial,
+/** The draft for an existing route's policy, as `proxy.getAccess` reported it. */
+function accessDraftFrom(view: RouteAccess): AccessDraft {
+  return {
+    mode: view.mode,
+    identityHeaderMode: view.identityHeaderMode,
+    bypassPaths: view.bypassPaths ?? '',
+    grantedUserIds: view.grantedUserIds,
+    grantedGroupIds: view.grantedGroupIds,
+    accessRuleIds: view.accessRuleIds ?? [],
+  }
+}
+
+/**
+ * The policy as it is sent: only the parts the chosen mode uses. The backend clears each for the modes they
+ * don't belong to anyway, but retained text or selections from another mode are not sent either.
+ */
+function toRouteAccess(draft: AccessDraft): RouteAccess {
+  return {
+    mode: draft.mode,
+    identityHeaderMode: draft.identityHeaderMode,
+    bypassPaths: draft.mode === 'Public' || draft.bypassPaths.trim() === '' ? null : draft.bypassPaths,
+    grantedUserIds: draft.mode === 'Restricted' ? draft.grantedUserIds : [],
+    grantedGroupIds: draft.mode === 'Restricted' ? draft.grantedGroupIds : [],
+    // Always an array, never null: a form that shows the attachments knows what they should be, so an
+    // untick has to be sent as the empty list that detaches. Null is for clients that do not.
+    accessRuleIds: draft.mode === 'Authenticated' ? draft.accessRuleIds : [],
+  }
+}
+
+/**
+ * Who may reach a route — the one access editor, used by the route form both to create a route and
+ * to edit one (ADR-0039, decision 5 as amended). One component on purpose: the create
+ * form used to carry a smaller copy that could not name grants or rules, which is what made creating a
+ * protected route a two-step job that published it under the instance-wide allow-list first.
+ */
+function AccessFields({
+  value,
+  onChange,
   realmName,
   users,
   groups,
   accessRules,
-  saving,
-  onCancel,
-  onSubmit,
+  activeEnforcementPoint,
+  pickersNote = null,
 }: {
-  initial: RouteAccessView
+  value: AccessDraft
+  onChange: (next: AccessDraft) => void
+  /**
+   * Shown in place of the user, group and rule pickers while they cannot be offered yet — a new route has
+   * no realm until its stack is chosen, and an empty roster there would claim the realm has nobody in it.
+   */
+  pickersNote?: string | null
   /**
    * The realm the candidate lists are scoped to, named in the copy so the shorter lists make sense —
    * or null while the roster has not answered, in which case the copy says the scoping without naming
@@ -2529,53 +2535,23 @@ function AccessForm({
   users: { id: number; userName: string; email: string | null }[]
   groups: { id: number; name: string; memberCount: number }[]
   accessRules: AccessRule[]
-  saving: boolean
-  onCancel: () => void
-  onSubmit: (data: RouteAccess) => void
+  /** Which enforcement point will decide the policy — what makes a rule attachable or not. */
+  activeEnforcementPoint: ActiveEnforcementPoint
 }) {
-  const [mode, setMode] = useState<AccessMode>(initial.mode)
-  const [identityHeaderMode, setIdentityHeaderMode] = useState<IdentityHeaderMode>(
-    initial.identityHeaderMode,
-  )
-  const [bypassPaths, setBypassPaths] = useState(initial.bypassPaths ?? '')
-  const [grantedUserIds, setGrantedUserIds] = useState<number[]>(initial.grantedUserIds)
-  const [grantedGroupIds, setGrantedGroupIds] = useState<number[]>(initial.grantedGroupIds)
-  const [accessRuleIds, setAccessRuleIds] = useState<number[]>(initial.accessRuleIds ?? [])
-
-  function toggleUser(id: number) {
-    setGrantedUserIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
-  }
-
-  function toggleGroup(id: number) {
-    setGrantedGroupIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
-  }
-
+  const { mode, identityHeaderMode, bypassPaths, grantedUserIds, grantedGroupIds, accessRuleIds } = value
+  const set = (patch: Partial<AccessDraft>) => onChange({ ...value, ...patch })
+  const setMode = (next: AccessMode) => set({ mode: next })
+  const setIdentityHeaderMode = (next: IdentityHeaderMode) => set({ identityHeaderMode: next })
+  const setBypassPaths = (next: string) => set({ bypassPaths: next })
+  const toggle = (ids: number[], id: number) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id])
+  const toggleUser = (id: number) => set({ grantedUserIds: toggle(grantedUserIds, id) })
+  const toggleGroup = (id: number) => set({ grantedGroupIds: toggle(grantedGroupIds, id) })
   // Appended rather than inserted in roster order: the list's order is the precedence the policies attach in
   // at the edge, so ticking a rule puts it after the ones already chosen.
-  function toggleRule(id: number) {
-    setAccessRuleIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
-  }
+  const toggleRule = (id: number) => set({ accessRuleIds: toggle(accessRuleIds, id) })
 
   return (
-    <form
-      className="mt-1 flex flex-col gap-4"
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (saving) return
-        onSubmit({
-          mode,
-          identityHeaderMode,
-          // Bypass paths only apply to a protected route, and grants only to Restricted; the backend clears
-          // each for the modes they don't belong to, but don't submit retained text/selection either.
-          bypassPaths: mode === 'Public' || bypassPaths.trim() === '' ? null : bypassPaths,
-          grantedUserIds: mode === 'Restricted' ? grantedUserIds : [],
-          grantedGroupIds: mode === 'Restricted' ? grantedGroupIds : [],
-          // Always an array, never null: this form knows what the route's attachments should be, so an
-          // untick has to be sent as the empty list that detaches. Null is for clients that do not.
-          accessRuleIds: mode === 'Authenticated' ? accessRuleIds : [],
-        })
-      }}
-    >
+    <>
       <Field label="Who can access">
         {({ id }) => (
           <Select value={mode} onValueChange={(v) => setMode(v as AccessMode)}>
@@ -2593,7 +2569,7 @@ function AccessForm({
         )}
       </Field>
       <p className="-mt-2 text-xs text-text-3">
-        {accessModeDescriptionAt(mode, initial.activeEnforcementPoint)}
+        {accessModeDescriptionAt(mode, activeEnforcementPoint)}
       </p>
 
       {mode === 'Authenticated' && (
@@ -2602,17 +2578,19 @@ function AccessForm({
           hint="Tick the named allow-lists this hostname admits. Tick two to admit both. Leave all unticked to use the instance-wide allow sources from Settings → Reverse proxy, which apply to every protected hostname alike."
         >
           {() =>
-            accessRules.length === 0 ? (
+            pickersNote ? (
+              <p className="text-[13px] text-text-3">{pickersNote}</p>
+            ) : accessRules.length === 0 ? (
               <p className="text-[13px] text-text-3">
-                No access rules yet. Create one under <span className="text-text-2">Access rules</span> below
-                this dialog to admit a different set of people here than on your other hostnames.
+                No access rules yet. Create one in the <span className="text-text-2">Access rules</span> card on
+                the Routes page to admit a different set of people here than on your other hostnames.
               </p>
             ) : (
               <div className="max-h-52 overflow-y-auto rounded-md border border-border">
                 {accessRules.map((rule) => {
                   // A rule the active provider cannot honour would be refused on save (ADR-0039 decision 4),
                   // so it is disabled here with the reason rather than offered and then rejected.
-                  const attachable = isAttachableAt(rule, initial.activeEnforcementPoint)
+                  const attachable = isAttachableAt(rule, activeEnforcementPoint)
                   const checked = accessRuleIds.includes(rule.id)
                   const position = accessRuleIds.indexOf(rule.id)
                   return (
@@ -2638,7 +2616,7 @@ function AccessForm({
                           {attachable
                             ? (rule.description ??
                               (rule.clauses.length === 1 ? '1 clause' : `${rule.clauses.length} clauses`))
-                            : initial.activeEnforcementPoint === 'CloudflareAccess'
+                            : activeEnforcementPoint === 'CloudflareAccess'
                               ? 'Cloudflare Access cannot enforce every clause in this rule'
                               : 'the built-in proxy cannot enforce every clause in this rule'}
                         </span>
@@ -2669,7 +2647,9 @@ function AccessForm({
           }
         >
           {() =>
-            users.length === 0 ? (
+            pickersNote ? (
+              <p className="text-[13px] text-text-3">{pickersNote}</p>
+            ) : users.length === 0 ? (
               <p className="text-[13px] text-text-3">
                 {realmName
                   ? `No accounts in the ${realmName} realm yet.`
@@ -2707,7 +2687,9 @@ function AccessForm({
           hint="Everyone in a ticked group gets in, evaluated per request — so adding or removing a member takes effect immediately."
         >
           {() =>
-            groups.length === 0 ? (
+            pickersNote ? (
+              <p className="text-[13px] text-text-3">{pickersNote}</p>
+            ) : groups.length === 0 ? (
               <p className="text-[13px] text-text-3">
                 {realmName
                   ? `No groups in the ${realmName} realm yet.`
@@ -2788,15 +2770,6 @@ function AccessForm({
           )}
         </Field>
       )}
-
-      <div className="flex justify-end gap-2 pt-1">
-        <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" loading={saving}>
-          Save
-        </Button>
-      </div>
-    </form>
+    </>
   )
 }

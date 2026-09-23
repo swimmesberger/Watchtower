@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -23,7 +24,9 @@ public sealed class UpdateRoute(
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
     YarpListenerState listener,
-    HostPortOccupancy hostPorts)
+    HostPortOccupancy hostPorts,
+    ICurrentUser currentUser,
+    TimeProvider time)
     : IHandler<UpdateRoute.Command, Result<UpdateRoute.Response>> {
     /// <param name="Domain">
     /// The hostname to serve. Required for a domain route; a port route has none, and sending one is
@@ -41,6 +44,13 @@ public sealed class UpdateRoute(
     /// <param name="ListenPort">
     /// Port routes only: move the route to another host port. Omitting it keeps the current one.
     /// </param>
+    /// <param name="AccessMode">
+    /// Service domain routes only, administrators only: the route's whole access policy, replaced together
+    /// with its other fields in one write — what lets one edit form change a route and who reaches it without
+    /// a second call that could half-apply. Omitted means "leave access alone", which is what every client
+    /// predating this sends. When named, the rest of the policy means exactly what it means on
+    /// <c>proxy.setAccess</c>, and is validated by the same code.
+    /// </param>
     public sealed record Command(
         int Id,
         string? Domain,
@@ -51,7 +61,19 @@ public sealed class UpdateRoute(
         string? Kind = null,
         bool? MakeLoginRoute = null,
         string? Binding = null,
-        int? ListenPort = null);
+        int? ListenPort = null,
+        AccessMode? AccessMode = null,
+        string? BypassPaths = null,
+        IReadOnlyList<int>? GrantedUserIds = null,
+        IReadOnlyList<int>? GrantedGroupIds = null,
+        IReadOnlyList<int>? AccessRuleIds = null,
+        IdentityHeaderMode? IdentityHeaderMode = null);
+
+    /// <summary>Whether the request says anything about access at all.</summary>
+    private static bool NamesAccess(Command command) =>
+        command.AccessMode is not null || command.BypassPaths is not null
+        || command.GrantedUserIds is { Count: > 0 } || command.GrantedGroupIds is { Count: > 0 }
+        || command.AccessRuleIds is not null || command.IdentityHeaderMode is not null;
 
     public sealed record Response(RouteDto Route);
 
@@ -61,6 +83,31 @@ public sealed class UpdateRoute(
         var route = await db.Routes.FirstOrDefaultAsync(r => r.Id == command.Id, ct);
         if (route is null)
             return AppError.NotFound($"Route {command.Id} not found");
+
+        // Access is all or nothing on an edit: a policy without its mode would leave the reader guessing
+        // which mode the grants or rules were meant for, so the mode is what makes the rest meaningful.
+        if (NamesAccess(command)) {
+            if (!currentUser.IsInRole(WatchtowerClaims.AdminRole)) {
+                return AppError.Forbidden(
+                    "Only an administrator can change a route's access policy. Leave the access fields unset "
+                    + "to edit the rest of the route.");
+            }
+            if (command.AccessMode is null) {
+                return AppError.Validation(
+                    "Name the access mode together with the rest of the access policy, or leave all of it unset "
+                    + "to keep the route's current access.");
+            }
+            // The same refusals proxy.setAccess makes, for the same reasons: their access is structural.
+            if (route.Target == RouteTarget.Watchtower) {
+                return AppError.Validation(
+                    "Watchtower routes use Watchtower's own login; route access control does not apply.");
+            }
+            if (route.Binding == RouteBinding.Port) {
+                return AppError.Validation(
+                    "A port route is always public. It has no hostname for a login redirect to return to, so "
+                    + "route access control does not apply.");
+            }
+        }
 
         if (command.Binding is not null) {
             if (!RouteMapping.TryParseBinding(command.Binding, out var requested))
@@ -106,17 +153,44 @@ public sealed class UpdateRoute(
                 "Watchtower UI is served on instead.");
         }
 
+        // Validated in full before anything is staged, by the code proxy.setAccess and proxy.createRoute run,
+        // so an edit that is refused for its access leaves the route's other fields untouched as well.
+        ValidatedRouteAccess? access = null;
+        if (command.AccessMode is { } mode) {
+            var realmId = await RouteAccessPolicy.RouteRealmIdAsync(db, route.Id, ct);
+            if (realmId is null)
+                return AppError.NotFound($"Route {command.Id} not found");
+            var validation = await RouteAccessValidation.ValidateAsync(
+                db,
+                new RouteAccessRequest(
+                    mode, command.BypassPaths, command.GrantedUserIds, command.GrantedGroupIds,
+                    command.AccessRuleIds, command.IdentityHeaderMode),
+                realmId.Value,
+                domain,
+                AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider()),
+                ct);
+            if (validation.Error is { } invalid) return invalid;
+            access = validation.Access;
+        }
+
         route.Domain = domain;
         route.ServiceName = command.ServiceName.Trim();
         route.ContainerPort = command.ContainerPort;
         route.TlsEnabled = command.TlsEnabled;
         route.IsPrimary = command.IsPrimary;
         if (command.Kind is not null) route.Kind = RouteMapping.ParseKind(command.Kind);
+        // Staged by the same writer proxy.setAccess uses, and saved in the one SaveChanges below with the
+        // route's other fields — the edit form changes a route and who reaches it as a single write.
+        if (access is not null) await RouteAccessWrite.ApplyAsync(db, route, access, ct);
         await db.SaveChangesAsync(ct);
 
         // StackId is non-null on a service route by the check constraint; the compiler cannot see that.
         await proxy.ConnectStackAsync(route.StackId!.Value, ct);
         await proxy.ApplyAsync(ct);
+
+        // Past the commit point, and the same trace proxy.setAccess leaves for the same decision.
+        if (access is not null)
+            await RouteAccessAudit.RecordAsync(db, currentUser, time, route, access.Mode, "on edit");
 
         var saved = await db.Routes.AsNoTracking().Include(r => r.Stack).FirstAsync(r => r.Id == route.Id, ct);
         return new Response(RouteMapping.ToDto(saved));

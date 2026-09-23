@@ -69,7 +69,7 @@ On startup, on every route change/deploy, and on every settings change:
   - a route flipped back to **Public** gets its Watchtower-created app deleted. Only apps carrying
     the `watchtower: ` name prefix are ever deleted; dashboard-made apps are never touched.
 - a second Access application, `watchtower: {host} (public paths)`, for a protected route that has
-  **bypass paths** — the anonymous allow-list you set under *Routes → Access* for webhooks and OAuth
+  **bypass paths** — the anonymous allow-list you set in a route's access section for webhooks and OAuth
   callbacks. It carries `{host}{path}` for each path with a single `bypass` policy for Everyone, and
   Cloudflare's most-specific-application rule is what makes it win on those paths while the route's own
   app keeps everything else. It is published for a denied-out route too — a webhook has no identity to
@@ -90,7 +90,7 @@ one shared app for friends too), that is what **access rules** are for
 ([ADR-0039](../decisions/0039-access-rules-compose.md)).
 
 A rule is a **name** and a list of **clauses**, managed under **Routes → Access rules**. It admits anyone
-matching any clause, and a route attaches it by name under **Routes → Access**. The composition you
+matching any clause, and a route attaches it by name in its access section (**Routes → New route**, or **Edit** on an existing one). The composition you
 probably came here for is two rules and two attachments:
 
 ```
@@ -117,7 +117,7 @@ gets only the first. Before rules, both hostnames necessarily got the identical 
 
 The right-hand column is **enforced, not advisory**: attaching a rule the active provider cannot honour is
 **refused when you save it**, naming the clause and the provider, rather than being accepted and then
-quietly ignored at the next reconcile. The Access dialog greys out those rules so you can see it before
+quietly ignored at the next reconcile. The route form greys out those rules so you can see it before
 saving, and each rule carries a badge saying where it can be enforced. A rule may still be *created* with
 clauses the current provider cannot honour — that is how you stage a move between edges, keeping both
 spellings on one rule while the cutover happens.
@@ -160,13 +160,18 @@ A route you create with a domain is **Authenticated** unless you say otherwise, 
 published to the internet as the side effect of adding a route
 ([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md)). The default is a setting —
 **Settings → Reverse proxy → Default access for new routes**, `authenticated` or `public` — and the
-new-route form lets an admin choose the mode and the bypass paths per route.
+new-route form lets an admin set the route's **whole** access policy as it is created: the mode, access
+rules, users and groups for a `Restricted` route, identity forwarding and bypass paths. The route and its
+policy are written together, so a route is never published under the instance-wide allow-list first and
+narrowed afterwards. **Edit** on an existing route offers the same fields, saved in the same write as the
+route's other changes.
 
-Under this provider that only works if Cloudflare has somebody to let in, so **creating a protected
-route is refused while no allow source is configured**: allowed emails, email domains, Access group ids
-or reusable policy ids, any one of them. The message names the settings page and the Public alternative.
-Configure an allow source before you create your first route, and the rest of this page applies as
-written.
+Under this provider a protected route needs Cloudflare to have somebody to let in, so **creating an
+`Authenticated` route with no access rules is refused while no instance-wide allow source is configured**
+— allowed emails, email domains, Access group ids or reusable policy ids, any one of them — because those
+settings are exactly its allow-list. A route that attaches access rules is judged on its rules instead, and
+a `Restricted` one on its grants, so a deployment built entirely from access rules needs no global allow
+source at all. A new `Restricted` route must name at least one user or group.
 
 Watchtower's own routes ([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md)) and
 LAN port routes ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md)) stay Public — a login

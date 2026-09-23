@@ -192,7 +192,7 @@ the zone id becomes optional, and routes can live under more than one domain in 
 A protected route can now attach **named access rules** instead of taking the instance-wide allow sources,
 so two hostnames in one instance can admit different sets of people — *family* on the internal ones,
 *family and friends* on the shared one ([ADR-0039](decisions/0039-access-rules-compose.md)). Manage them
-under **Routes → Access rules**, and tick them per route in **Routes → Access**.
+under **Routes → Access rules**, and tick them per route in the route form (**New route**, or **Edit**).
 
 **Nothing changes until you create one.** A protected route with no rules attached resolves exactly as it
 does today: `Authenticated` admits the four instance-wide allow sources, `Restricted` admits its grants.
@@ -220,3 +220,21 @@ it ([ADR-0040](decisions/0040-the-edge-projection-is-authoritative.md) decision 
 applies the route's realm, as the in-process path always has. It **removes** access rather than granting
 it, and only in that one situation — if a tenant stack has moved between categories and you expect
 somebody to reach it, re-grant them in the route's current realm.
+
+## One form creates and edits a route, access included (ADR-0039, decision 5 as amended)
+
+Routes now have an **Edit** action, and the separate access (lock) button is gone — the route form is where
+a route's access is set, when it is created and whenever it is changed. Two things behave differently:
+
+- **A route is created with its whole access policy.** The new-route form offers `Restricted` with its
+  users and groups, access rules, identity forwarding and bypass paths, and writes them together with the
+  route. There is no longer a moment where a new route is served under the instance-wide allow-list before
+  being narrowed.
+- **Under Cloudflare, a route with access rules no longer needs a global allow source.** Creating an
+  `Authenticated` route is still refused while no instance-wide allow source is configured — but only when
+  it attaches no rules, since only then are those settings its allow-list. A `Restricted` route is judged
+  on its grants.
+
+For API clients: `proxy.createRoute` and `proxy.updateRoute` accept the same optional access fields as
+`proxy.setAccess`, validated by the same code. Omitting them keeps today's behaviour — the configured
+default on a create, the route's current access on an edit — and `proxy.setAccess` is unchanged.

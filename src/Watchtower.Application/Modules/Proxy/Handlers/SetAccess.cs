@@ -1,4 +1,3 @@
-using System.Globalization;
 using Elarion.Abstractions.Authorization;
 using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -86,187 +85,28 @@ public sealed class SetAccess(
                 + "route access control does not apply.");
         }
 
-        // Reject an undefined enum value before touching anything — an unknown value must not be persisted
-        // and read back later as something the switch statements cannot map. Both enums are guarded, fail-
-        // closed and symmetric; an omitted identity header mode defaults to the safe JWT-only None.
-        if (!Enum.IsDefined(command.Mode))
-            return AppError.Validation($"Unknown access mode '{command.Mode}'.");
-        var identityHeaderMode = command.IdentityHeaderMode ?? IdentityHeaderMode.None;
-        if (!Enum.IsDefined(identityHeaderMode))
-            return AppError.Validation($"Unknown identity header mode '{identityHeaderMode}'.");
-
-        // Bypass paths only mean something for a protected route; a Public route stores none, the same way
-        // grants are cleared below for any non-Restricted mode — its access controls are off, so a stale
-        // bypass line would only be dead state. Validation therefore applies to the modes that keep them.
-        string? bypassPaths = null;
-        if (command.Mode != AccessMode.Public) {
-            bypassPaths = RouteAccessPolicy.NormalizeBypassPaths(command.BypassPaths, out var offending);
-            if (offending is not null)
-                return AppError.Validation($"Bypass path '{offending}' must start with '/'.");
-        }
-
-        // Grants only mean something for a Restricted route; every other mode stores none, so switching away
-        // from Restricted clears enforcement (RouteAccessPolicy.IsAuthorizedAsync no longer consults them).
-        // Both subject kinds are cleared together — leaving group grants behind while dropping user ones
-        // would make "not Restricted" mean something different depending on how access had been granted.
-        var targetUserGrants = command.Mode == AccessMode.Restricted
-            ? (command.GrantedUserIds ?? []).Distinct().ToList()
-            : [];
-        var targetGroupGrants = command.Mode == AccessMode.Restricted
-            ? (command.GrantedGroupIds ?? []).Distinct().ToList()
-            : [];
-
-        // Attachments belong to Authenticated and only Authenticated (ADR-0039 decision 2). Refused rather
-        // than silently dropped for the mode that cannot use them: Restricted means "exactly these subjects"
-        // and Public asks nobody, so accepting a rule there would store state that reads like access
-        // somebody has while deciding nothing — and an administrator who thought they had composed two
-        // allow-lists must find out that they have not. Distinct rather than rejected on duplicates: naming
-        // one rule twice is one attachment, which is what the unique index says too.
-        //
-        // Null and empty are *not* the same here, which is where this parameter differs from the grant lists
-        // above. A client that predates rules omits the field on every save, and reading that as "detach
-        // everything" would let an old UI silently strip a composition the operator built in a new one — the
-        // hostname would fall back to the instance-wide allow-list with nothing saying so. So null means
-        // "leave them alone" and an explicit empty list is how detaching is asked for. Leaving Authenticated
-        // clears them regardless, exactly as it clears grants: the mode is what decides they mean anything.
-        var requestedRuleIds = command.AccessRuleIds?.Distinct().ToList();
-        if (requestedRuleIds is { Count: > 0 } && command.Mode != AccessMode.Authenticated) {
-            return AppError.Validation(
-                $"Access rules apply to an {nameof(AccessMode.Authenticated)} route. "
-                + (command.Mode == AccessMode.Restricted
-                    ? "A Restricted route admits exactly the users and groups granted on it; a rule would widen that."
-                    : "A Public route admits everyone, so there is nothing for a rule to decide."));
-        }
-        // Null here means "the caller said nothing about attachments" and skips the reconcile below.
-        List<int>? targetRuleIds = command.Mode == AccessMode.Authenticated ? requestedRuleIds : [];
-
         // The realm the route belongs to — its stack's category, or the operator realm for a standalone
-        // stack. A grant naming a subject from any other population would never admit anyone
-        // (RouteAccessPolicy applies the same invariant at access time), so it is refused here rather than
-        // stored as a row that reads like access somebody has (docs/central-auth/design.md §13).
+        // stack — is the population every grant and rule must come from.
         var routeRealmId = await RouteAccessPolicy.RouteRealmIdAsync(db, route.Id, ct);
         if (routeRealmId is null)
             return AppError.NotFound($"Route {command.RouteId} not found");
 
-        // Both existence checks run before any write, so a command naming one good and one unknown subject
-        // is refused whole rather than half-applied.
-        if (targetUserGrants.Count > 0) {
-            var known = await db.Users.AsNoTracking()
-                .Where(u => targetUserGrants.Contains(u.Id))
-                .Select(u => new { u.Id, u.RealmId })
-                .ToListAsync(ct);
-            var missing = targetUserGrants.Except(known.Select(u => u.Id)).OrderBy(id => id).ToList();
-            if (missing.Count > 0)
-                return AppError.Validation($"No user exists with id {Describe(missing)}.");
+        // The same validation proxy.createRoute runs, so what a route may be created with and what it may
+        // later be changed to cannot disagree.
+        var validation = await RouteAccessValidation.ValidateAsync(
+            db,
+            new RouteAccessRequest(
+                command.Mode, command.BypassPaths, command.GrantedUserIds, command.GrantedGroupIds,
+                command.AccessRuleIds, command.IdentityHeaderMode),
+            routeRealmId.Value,
+            route.DisplayAddress,
+            AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider()),
+            ct);
+        if (validation.Error is { } invalid) return invalid;
+        var access = validation.Access!;
 
-            var foreign = known.Where(u => u.RealmId != routeRealmId).Select(u => u.Id).OrderBy(id => id).ToList();
-            if (foreign.Count > 0) {
-                return AppError.Validation(
-                    $"User {Describe(foreign)} belongs to a different realm than {route.Domain}.");
-            }
-        }
-
-        if (targetGroupGrants.Count > 0) {
-            var known = await db.Groups.AsNoTracking()
-                .Where(g => targetGroupGrants.Contains(g.Id))
-                .Select(g => new { g.Id, g.RealmId })
-                .ToListAsync(ct);
-            var missing = targetGroupGrants.Except(known.Select(g => g.Id)).OrderBy(id => id).ToList();
-            if (missing.Count > 0)
-                return AppError.Validation($"No group exists with id {Describe(missing)}.");
-
-            var foreign = known.Where(g => g.RealmId != routeRealmId).Select(g => g.Id).OrderBy(id => id).ToList();
-            if (foreign.Count > 0) {
-                return AppError.Validation(
-                    $"Group {Describe(foreign)} belongs to a different realm than {route.Domain}.");
-            }
-        }
-
-        // Every attached rule must exist, belong to the route's population, and consist only of clauses the
-        // active provider can actually honour (ADR-0039 decision 4). The portability check is the whole point
-        // of declaring portability: a reconcile is never where an operator finds out that half of what they
-        // asked for was dropped.
-        if (targetRuleIds is { Count: > 0 }) {
-            var known = await db.AccessRules.AsNoTracking()
-                .Where(r => targetRuleIds.Contains(r.Id))
-                .Select(r => new {
-                    r.Id, r.Name, r.RealmId,
-                    Kinds = db.AccessRuleClauses.Where(c => c.AccessRuleId == r.Id).Select(c => c.Kind).ToList(),
-                })
-                .ToListAsync(ct);
-
-            var missing = targetRuleIds.Except(known.Select(r => r.Id)).OrderBy(id => id).ToList();
-            if (missing.Count > 0)
-                return AppError.Validation($"No access rule exists with id {Describe(missing)}.");
-
-            var foreign = known.Where(r => r.RealmId != routeRealmId).Select(r => r.Name)
-                .OrderBy(n => n, StringComparer.Ordinal).ToList();
-            if (foreign.Count > 0) {
-                return AppError.Validation(
-                    $"Access rule '{string.Join("', '", foreign)}' belongs to a different realm than {route.Domain}.");
-            }
-
-            var point = AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider());
-            foreach (var rule in known.OrderBy(r => r.Name, StringComparer.Ordinal)) {
-                var unsupported = rule.Kinds.Where(k => !AccessClauseSupport.IsSupportedAt(k, point))
-                    .Distinct().Order().ToList();
-                if (unsupported.Count == 0) continue;
-                return AppError.Validation(
-                    $"Access rule '{rule.Name}' uses {AccessClauseSupport.DescribeAll(unsupported)}, which "
-                    + $"{AccessClauseSupport.Describe(point)} cannot enforce. Attaching it would admit fewer "
-                    + "people than the rule says. Remove those clauses, or attach a rule this provider can enforce.");
-            }
-        }
-
-        route.AccessMode = command.Mode;
-        route.IdentityHeaderMode = identityHeaderMode;
-        route.BypassPaths = bypassPaths;
-
-        // Reconcile rather than replace: delete only the rows that fell out of the set, add only the ones
-        // that entered it. Re-saving an unchanged set touches no grant rows.
-        var currentGrants = await db.RouteAccessGrants
-            .Where(g => g.RouteId == route.Id)
-            .ToListAsync(ct);
-        var targetUsers = targetUserGrants.ToHashSet();
-        var targetGroups = targetGroupGrants.ToHashSet();
-        var currentUsers = currentGrants.Where(g => g.UserId is not null).Select(g => g.UserId!.Value).ToHashSet();
-        var currentGroups = currentGrants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).ToHashSet();
-
-        // Each row is judged against the target set of its own subject kind. A row that is somehow neither
-        // (which the table's CHECK constraint forbids) matches nothing and is removed — the fail-closed
-        // reading, since a grant naming no subject is one nobody can account for.
-        foreach (var grant in currentGrants) {
-            var keep = grant.UserId is { } userId
-                ? targetUsers.Contains(userId)
-                : grant.GroupId is { } groupId && targetGroups.Contains(groupId);
-            if (!keep) db.RouteAccessGrants.Remove(grant);
-        }
-        foreach (var userId in targetUserGrants.Where(id => !currentUsers.Contains(id)))
-            db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = route.Id, UserId = userId });
-        foreach (var groupId in targetGroupGrants.Where(id => !currentGroups.Contains(id)))
-            db.RouteAccessGrants.Add(new RouteAccessGrant { RouteId = route.Id, GroupId = groupId });
-
-        // Attachments are reconciled by position, not deleted and re-added: Order is the precedence the
-        // projected policies attach in, so re-saving an unchanged list must touch no rows and produce an
-        // identical request at the edge. Skipped entirely when the caller said nothing about them.
-        var currentAttachments = await db.RouteAccessRules
-            .Where(a => a.RouteId == route.Id)
-            .OrderBy(a => a.Order).ThenBy(a => a.Id)
-            .ToListAsync(ct);
-        if (targetRuleIds is not null) {
-            foreach (var attachment in currentAttachments.Where(a => !targetRuleIds.Contains(a.AccessRuleId)))
-                db.RouteAccessRules.Remove(attachment);
-            for (var i = 0; i < targetRuleIds.Count; i++) {
-                var existing = currentAttachments.FirstOrDefault(a => a.AccessRuleId == targetRuleIds[i]);
-                if (existing is null) {
-                    db.RouteAccessRules.Add(new RouteAccessRule {
-                        RouteId = route.Id, AccessRuleId = targetRuleIds[i], Order = i,
-                    });
-                } else if (existing.Order != i) {
-                    existing.Order = i;
-                }
-            }
-        }
+        // Staged by the same writer proxy.updateRoute uses, so the two endpoints change a policy identically.
+        var attachedRuleIds = await RouteAccessWrite.ApplyAsync(db, route, access, ct);
 
         await db.SaveChangesAsync(ct);
 
@@ -275,41 +115,17 @@ public sealed class SetAccess(
         await proxy.ApplyAsync(ct);
 
         // Past the commit point: record the change uncancellably (CancellationToken.None inside).
-        await RecordAsync(route, command.Mode);
+        await RouteAccessAudit.RecordAsync(db, currentUser, time, route, command.Mode);
 
         return new Response(
             route.AccessMode,
             route.IdentityHeaderMode,
             route.BypassPaths,
-            [.. targetUserGrants.Order()],
-            [.. targetGroupGrants.Order()],
+            [.. access.GrantedUserIds.Order()],
+            [.. access.GrantedGroupIds.Order()],
             // Not sorted: the caller's order is the precedence, so echoing it back is what lets a form
             // round-trip what it saved. A caller that said nothing gets what the route already had, which is
             // the honest answer rather than an empty list it might then save back.
-            targetRuleIds ?? [.. currentAttachments.Select(a => a.AccessRuleId)]);
-    }
-
-    /// <summary>Renders the ids that could not be resolved for the refusal message.</summary>
-    private static string Describe(IReadOnlyList<int> missing) =>
-        missing.Count == 1
-            ? missing[0].ToString(CultureInfo.InvariantCulture)
-            : string.Join(", ", missing);
-
-    /// <summary>
-    /// Appends the audit row for a policy change: the route is the target, the acting administrator the
-    /// actor (resolved to a name; the implicit local administrator records as <c>local</c>, design.md §2.6).
-    /// </summary>
-    private async Task RecordAsync(Route route, AccessMode mode) {
-        var actorId = string.IsNullOrEmpty(currentUser.UserId) ? "unknown" : currentUser.UserId;
-        db.AuditEvents.Add(new AuditEvent {
-            Category = AuthEventKinds.CategoryOf(AuthEventKinds.RouteAccessChanged),
-            Action = AuthEventKinds.RouteAccessChanged,
-            Target = route.DisplayAddress,
-            Detail = $"actor={actorId}; route={route.DisplayAddress}#{route.Id}; mode={mode}",
-            Actor = await AuditLog.ResolveActorAsync(db, currentUser.UserId),
-            Success = true,
-            CreatedAt = time.GetUtcNow(),
-        });
-        await db.SaveChangesAsync(CancellationToken.None);
+            attachedRuleIds);
     }
 }
