@@ -28,7 +28,7 @@ export function AppsPage({ caps }: { caps: SessionCapabilities }) {
 
   return (
     <div className="min-h-dvh">
-      <header className="flex h-[var(--header-h)] items-center justify-between border-b border-border bg-surface px-4 md:px-6">
+      <header className="flex h-header pt-safe items-center justify-between border-b border-border bg-surface px-4 md:px-6">
         <span className="flex items-center gap-2.5">
           <span className="flex size-7 items-center justify-center rounded-md bg-brand-soft">
             <Eye className="size-4 text-brand" />

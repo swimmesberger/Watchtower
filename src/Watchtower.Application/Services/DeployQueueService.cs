@@ -61,6 +61,12 @@ public class DeployQueueService : IHostedService, IDisposable {
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<DeployQueueService> _logger;
 
+    /// <summary>
+    /// Told about every deploy that ends <c>failed</c> (ADR-0041); null when nothing listens — the
+    /// Notifications module is disabled, or a test constructed the queue by hand.
+    /// </summary>
+    private readonly IDeployFailureSink? _failureSink;
+
     /// <param name="scopeFactory">Creates the short-lived scopes all database access runs in.</param>
     /// <param name="git">Repository clone helper.</param>
     /// <param name="compose">Docker Compose CLI wrapper.</param>
@@ -73,6 +79,11 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// <c>MaxConcurrentDeploys</c> once here to size <see cref="_deployGate"/>.
     /// </param>
     /// <param name="logger">Logger.</param>
+    /// <param name="failureSink">
+    /// Optional listener for failed deploys (the operators' push notification). Optional rather than
+    /// required so the queue does not depend on the Notifications module being enabled — the container
+    /// fills it when the module registered one and leaves the default otherwise.
+    /// </param>
     public DeployQueueService(
         IServiceScopeFactory scopeFactory,
         GitCloneService git,
@@ -82,7 +93,8 @@ public class DeployQueueService : IHostedService, IDisposable {
         IProxyProvider proxy,
         HostGpuProbe gpuProbe,
         IOptionsMonitor<WatchtowerOptions> options,
-        ILogger<DeployQueueService> logger) {
+        ILogger<DeployQueueService> logger,
+        IDeployFailureSink? failureSink = null) {
         _scopeFactory = scopeFactory;
         _git = git;
         _compose = compose;
@@ -92,6 +104,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         _gpuProbe = gpuProbe;
         _options = options;
         _logger = logger;
+        _failureSink = failureSink;
         _maxConcurrentDeploys = options.CurrentValue.ResolveMaxConcurrentDeploys();
         _deployGate = new SemaphoreSlim(_maxConcurrentDeploys, _maxConcurrentDeploys);
     }
@@ -704,15 +717,37 @@ public class DeployQueueService : IHostedService, IDisposable {
             .ExecuteUpdate(s => s.SetProperty(e => e.Output, outputText));
     }
 
+    /// <summary>
+    /// Writes a deploy's terminal status — the one place every deploy run ends, which is why a failure is
+    /// reported to <see cref="_failureSink"/> here rather than at each of the paths that can fail.
+    /// </summary>
     private void CompleteEvent(int eventId, string status, string outputText) {
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var now = DateTimeOffset.UtcNow;
-        db.DeployEvents.Where(e => e.Id == eventId)
-            .ExecuteUpdate(s => s
-                .SetProperty(e => e.Status, status)
-                .SetProperty(e => e.Output, outputText)
-                .SetProperty(e => e.FinishedAt, now));
+        using (var scope = _scopeFactory.CreateScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            db.DeployEvents.Where(e => e.Id == eventId)
+                .ExecuteUpdate(s => s
+                    .SetProperty(e => e.Status, status)
+                    .SetProperty(e => e.Output, outputText)
+                    .SetProperty(e => e.FinishedAt, now));
+        }
+
+        // After the row is written, so the listener reads the terminal status it is being told about.
+        if (_failureSink is not null && string.Equals(status, "failed", StringComparison.Ordinal))
+            ReportFailure(eventId);
+    }
+
+    /// <summary>
+    /// Hands a failed deploy to the listener. The sink's contract is already "return at once, never
+    /// throw"; the guard is here anyway because this runs inside the deploy's own error handling, where an
+    /// escaping exception would replace the failure being recorded with a different one.
+    /// </summary>
+    private void ReportFailure(int eventId) {
+        try {
+            _failureSink!.DeployFailed(eventId);
+        } catch (Exception ex) {
+            _logger.LogWarning(ex, "Could not report failed deploy {EventId} for notification", eventId);
+        }
     }
 
     private void UpdateDeployStatus(int stackId, DeployStatus status) {

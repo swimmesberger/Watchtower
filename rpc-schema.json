@@ -6535,6 +6535,106 @@
         ]
       }
     },
+    "notifications.publicKey": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "publicKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "publicKey"
+        ]
+      }
+    },
+    "notifications.subscribe": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "p256dh": {
+            "type": "string"
+          },
+          "auth": {
+            "type": "string"
+          },
+          "userAgent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "endpoint",
+          "p256dh",
+          "auth"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "subscriptionCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "subscriptionCount"
+        ]
+      }
+    },
+    "notifications.test": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "delivered": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delivered"
+        ]
+      }
+    },
+    "notifications.unsubscribe": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ]
+      }
+    },
     "products.create": {
       "params": {
         "type": "object",
@@ -16193,6 +16293,9 @@
         ]
       },
       "Networks": {
+        "features": []
+      },
+      "Notifications": {
         "features": []
       },
       "Products": {

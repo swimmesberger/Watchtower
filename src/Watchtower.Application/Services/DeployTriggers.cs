@@ -71,4 +71,26 @@ public static class DeployTriggers {
     public static bool MayShortCircuit(string triggeredBy) =>
         string.Equals(triggeredBy, Release, StringComparison.Ordinal)
         || string.Equals(triggeredBy, ReleaseReconcile, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether nobody was watching when a deploy with this trigger started — Watchtower started it on
+    /// its own, from a poll, a schedule or a release fan-out.
+    /// </summary>
+    /// <remarks>
+    /// True for <see cref="AutoUpdate"/>, <see cref="Schedule"/>, <see cref="Release"/> and
+    /// <see cref="ReleaseReconcile"/>. The distinction exists for the failure notification (ADR-0041):
+    /// an automatic trigger <em>repeats</em> — the daily window comes round again, the reconcile asks
+    /// again every tick, the next release fans out to the same broken stack — so a stack that is failing
+    /// for a reason nobody has fixed yet would page the operator on every repetition. Automatic failures
+    /// therefore notify only on the transition into failing. The others — <see cref="Manual"/>,
+    /// <see cref="Webhook"/>, <see cref="ReleaseManual"/>, <see cref="VolumeRecreate"/> — are a person or
+    /// a pipeline asking for exactly this deploy, once, and each of them wants its own answer. Anything
+    /// not listed (a trigger added later, a legacy spelling) counts as explicit, which errs on the side
+    /// of telling someone.
+    /// </remarks>
+    public static bool IsAutomatic(string triggeredBy) =>
+        string.Equals(triggeredBy, AutoUpdate, StringComparison.Ordinal)
+        || string.Equals(triggeredBy, Schedule, StringComparison.Ordinal)
+        || string.Equals(triggeredBy, Release, StringComparison.Ordinal)
+        || string.Equals(triggeredBy, ReleaseReconcile, StringComparison.Ordinal);
 }

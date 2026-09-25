@@ -341,7 +341,9 @@ THE shared SSE viewer (A3). Owns its own EventSource. Autoscrolls only while pin
 bottom; shows a "Jump to latest ↓" pill otherwise. Header shows a "● live" chip (`wt-live`)
 while streaming, "reconnecting…" on error. aria-live is throttled (start + final status only).
 Dark terminal inset in both themes. Pass `doneEvent` for streams that end with a named event
-(the deploy stream); omit it for plain `onmessage` streams (container logs).
+(the deploy stream); omit it for plain `onmessage` streams (container logs). The header's
+expand button takes the same viewer full screen (portalled, safe-area padded, Esc to leave) without
+reopening the stream; `label` becomes its title.
 
 ---
 

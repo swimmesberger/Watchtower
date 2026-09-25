@@ -1019,6 +1019,42 @@ public sealed class RouteAccessRuleConfiguration : IEntityTypeConfiguration<Rout
     }
 }
 
+// Web Push (ADR-0041): the operators' browser subscriptions and the instance's VAPID key pair.
+
+[EntityConfiguration]
+public sealed class PushSubscriptionConfiguration : IEntityTypeConfiguration<PushSubscription> {
+    public void Configure(EntityTypeBuilder<PushSubscription> b) {
+        b.ToTable("push_subscriptions");
+        b.HasKey(x => x.Id);
+        // No foreign key to users: the no-auth operator ("local") has no row, and a subscription whose
+        // account is gone is dropped by the sender the next time it would have been notified.
+        b.Property(x => x.UserId).HasMaxLength(200).IsRequired();
+        b.HasIndex(x => x.UserId);
+        // The limits match what subscribe accepts; real endpoints are a few hundred characters.
+        b.Property(x => x.Endpoint).HasMaxLength(2048).IsRequired();
+        // Unique: a re-subscribe of the same browser updates its row (and its owner) instead of adding a
+        // second one that would receive every notification twice.
+        b.HasIndex(x => x.Endpoint).IsUnique();
+        b.Property(x => x.P256dh).HasMaxLength(200).IsRequired();
+        b.Property(x => x.Auth).HasMaxLength(100).IsRequired();
+        b.Property(x => x.UserAgent).HasMaxLength(500);
+    }
+}
+
+[EntityConfiguration]
+public sealed class VapidKeyPairConfiguration : IEntityTypeConfiguration<VapidKeyPair> {
+    public void Configure(EntityTypeBuilder<VapidKeyPair> b) {
+        b.ToTable("vapid_key_pairs");
+        b.HasKey(x => x.Id);
+        // Never generated: the one row is always id 1, which is what turns two instances' concurrent
+        // first-use generation into a primary-key conflict one of them loses instead of two pairs.
+        b.Property(x => x.Id).ValueGeneratedNever();
+        b.Property(x => x.PublicKey).HasMaxLength(200).IsRequired();
+        b.Property(x => x.PrivateKey).IsRequired();
+        b.Property(x => x.Protection).IsRequired();
+    }
+}
+
 /// <summary>
 /// PostgreSQL's <c>xmin</c> system column as an EF optimistic-concurrency token (ADR-0024 decision 3),
 /// mapped onto <see cref="IHasXmin.Xmin"/> — a real property on the entity.

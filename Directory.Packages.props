@@ -70,6 +70,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Web Push delivery (ADR-0041): RFC 8291 payload encryption and RFC 8292 VAPID signing against
+         the browsers' push services. Interim — expected to give way to an Elarion Web Push package,
+         which is why only the Notifications module's WebPush seams reference it. -->
+    <PackageVersion Include="Lib.Net.Http.WebPush" Version="3.3.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The in-process reverse proxy (ADR-0022, forthcoming). Only the direct-forwarding half is used —
          IHttpForwarder plus HttpTransformer — not YARP's own config/routing pipeline, because Watchtower
          already owns the route table and dispatches by Host itself. Referenced by Watchtower.Api alone:
