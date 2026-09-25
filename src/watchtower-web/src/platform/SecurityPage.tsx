@@ -3,6 +3,7 @@
 // (see `lib/mfa.ts`).
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useRouteContext } from '@tanstack/react-router'
 import QRCode from 'qrcode'
 import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react'
 import {
@@ -13,6 +14,7 @@ import {
   regenerateRecoveryCodes,
   type MfaEnrolment,
 } from '@/lib/mfa'
+import { DeviceNotifications } from '@/components/device-notifications'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -38,6 +40,7 @@ const STATUS_KEY = ['mfa-status']
 
 export function SecurityPage() {
   const qc = useQueryClient()
+  const { caps } = useRouteContext({ from: '__root__' })
   const { data: status, isLoading, isError, refetch } = useQuery({
     queryKey: STATUS_KEY,
     queryFn: getMfaStatus,
@@ -138,6 +141,23 @@ export function SecurityPage() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Deploy alerts are about the instance, so only the operator population gets them — a realm
+          account reaches this page too, but the notifications handlers would refuse it. */}
+      {!caps.isFlagEnabled('apps-portal') && (
+        <>
+          <SectionHeader
+            eyebrow="This device"
+            title="Notifications"
+            description="Alerts are per device: turn them on on each phone or browser that should get them."
+          />
+          <Card>
+            <CardContent>
+              <DeviceNotifications />
+            </CardContent>
+          </Card>
+        </>
       )}
 
       <SetupDialog

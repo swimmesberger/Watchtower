@@ -28,7 +28,7 @@ export function StackDetailPage() {
 
   // Tab state lives in the URL via ?tab= (F9). Default to the first contributed tab's
   // value ('overview'); navigate replace:true.
-  const { tab } = routeApi.useSearch()
+  const { tab, event: linkedEvent } = routeApi.useSearch()
   const navigateTab = routeApi.useNavigate()
   const defaultTab = tabs[0]?.value ?? 'overview'
   const activeTab = tab ?? defaultTab
@@ -46,14 +46,28 @@ export function StackDetailPage() {
   // focus/expand handler here so the "View log" action on the failure banner can scroll
   // to + expand the latest failed row. Exposed to tabs via the search context below.
   const historyControls = useRef(new Map<number, HistoryRowControls>())
+
+  // ?event=<id> (a deploy-failure notification's link) opens that row once it registers, then drops the
+  // parameter — so a reload, or Back onto this page, does not yank the reader to the log again.
+  const pendingEvent = useRef(linkedEvent)
   const registerHistoryRow = useCallback(
     (eventId: number, controls: HistoryRowControls) => {
       historyControls.current.set(eventId, controls)
+      if (pendingEvent.current === eventId) {
+        pendingEvent.current = undefined
+        // Registration happens in the row's effect; expanding from inside it would set state mid-commit.
+        queueMicrotask(() => {
+          controls.expand()
+          // Let the row render its panel before scrolling.
+          requestAnimationFrame(() => controls.scrollTo())
+          navigateTab({ search: (prev) => ({ ...prev, event: undefined }), replace: true })
+        })
+      }
       return () => {
         historyControls.current.delete(eventId)
       }
     },
-    [],
+    [navigateTab],
   )
 
   const {

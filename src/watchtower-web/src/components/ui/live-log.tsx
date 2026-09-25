@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowDown } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { ArrowDown, Maximize2, Minimize2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export interface LiveLogProps {
@@ -15,7 +16,7 @@ export interface LiveLogProps {
   doneEvent?: string
   /** Max height of the scroll region (CSS length). Default 20rem. */
   maxHeight?: string | number
-  /** Optional label announced when streaming starts (aria). */
+  /** Optional label announced when streaming starts (aria); also the full-screen view's title. */
   label?: string
   className?: string
 }
@@ -29,6 +30,9 @@ type Phase = 'connecting' | 'streaming' | 'reconnecting' | 'done'
  *
  * Works with both plain `onmessage` streams (container logs) and streams that end with
  * a named event (pass doneEvent="done" for the deploy-history stream).
+ *
+ * The header's expand button takes the same viewer full screen — same stream, same lines, no
+ * reconnect. On a phone that is the difference between reading a log and squinting at 18rem of it.
  */
 export function LiveLog({
   url,
@@ -43,6 +47,7 @@ export function LiveLog({
   const [lines, setLines] = useState<string[]>([])
   const [phase, setPhase] = useState<Phase>('connecting')
   const [pinned, setPinned] = useState(true)
+  const [fullScreen, setFullScreen] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const esRef = useRef<EventSource | null>(null)
@@ -88,12 +93,20 @@ export function LiveLog({
     }
   }, [isOpen, url, doneEvent])
 
-  // Autoscroll when pinned to the bottom.
+  // Autoscroll when pinned to the bottom — also after switching views, which remounts the scroll region.
   useLayoutEffect(() => {
     if (pinnedRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [lines])
+  }, [lines, fullScreen])
+
+  // Escape leaves full screen, like closing any other overlay.
+  useEffect(() => {
+    if (!fullScreen) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setFullScreen(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullScreen])
 
   function onScroll() {
     const el = scrollRef.current
@@ -115,10 +128,21 @@ export function LiveLog({
 
   const streaming = phase === 'streaming' || phase === 'connecting'
 
-  return (
-    <div className={cn('relative overflow-hidden rounded-md border border-border', className)}>
+  const viewer = (
+    <div
+      className={cn(
+        'relative overflow-hidden',
+        fullScreen
+          ? 'fixed inset-0 z-50 flex flex-col bg-term-bg pt-safe pb-safe'
+          : cn('rounded-md border border-border', className),
+      )}
+      role={fullScreen ? 'dialog' : undefined}
+      aria-modal={fullScreen || undefined}
+      aria-label={fullScreen ? label : undefined}
+    >
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5 text-[11px] font-medium">
+        {fullScreen && <span className="truncate text-xs font-semibold text-text">{label}</span>}
         {streaming && (
           <span className="inline-flex items-center gap-1.5 text-run">
             <span className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]" aria-hidden />
@@ -132,6 +156,18 @@ export function LiveLog({
           </span>
         )}
         {phase === 'done' && <span className="text-text-3">stream ended</span>}
+        <button
+          type="button"
+          onClick={() => setFullScreen((v) => !v)}
+          aria-label={fullScreen ? 'Exit full screen' : 'Full screen'}
+          className={cn(
+            'touch-target ml-auto inline-flex items-center justify-center rounded text-text-2 hover:text-text',
+            'focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+            fullScreen ? 'size-8' : 'size-5',
+          )}
+        >
+          {fullScreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-3.5" />}
+        </button>
       </div>
 
       {/* Throttled live region: announce start + final status only. */}
@@ -145,8 +181,11 @@ export function LiveLog({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        style={{ maxHeight }}
-        className="overflow-auto bg-term-bg p-3 font-mono text-[12.5px] leading-[1.6] text-term-fg"
+        style={fullScreen ? undefined : { maxHeight }}
+        className={cn(
+          'overflow-auto bg-term-bg p-3 font-mono text-[12.5px] leading-[1.6] text-term-fg',
+          fullScreen && 'min-h-0 flex-1 overscroll-contain',
+        )}
       >
         {lines.length === 0 ? (
           <span className="italic text-term-muted">No output yet…</span>
@@ -168,4 +207,8 @@ export function LiveLog({
       )}
     </div>
   )
+
+  // Portalled when full screen: a `fixed` element is only viewport-relative outside any transformed
+  // ancestor, and a log can sit inside one (a card, a sheet).
+  return fullScreen ? createPortal(viewer, document.body) : viewer
 }

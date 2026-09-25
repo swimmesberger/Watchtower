@@ -76,7 +76,7 @@ export function Toaster() {
         className={cn(
           'fixed z-[100] flex max-h-screen flex-col gap-2 outline-none',
           // mobile: top-center below the 56px top bar
-          'left-1/2 top-[calc(var(--header-h)+0.5rem)] w-full max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center',
+          'left-1/2 top-[calc(var(--header-h)+env(safe-area-inset-top)+0.5rem)] w-full max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center',
           // desktop: bottom-right
           'md:left-auto md:right-4 md:top-auto md:bottom-4 md:w-80 md:translate-x-0 md:items-end',
         )}
