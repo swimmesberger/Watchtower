@@ -173,6 +173,46 @@ public sealed record WatchtowerOptions {
     /// (e.g. <c>WATCHTOWER__BACKUP__ENABLED=true</c>, <c>WATCHTOWER__BACKUP__SFTP__HOST=…</c>).
     /// </summary>
     public BackupOptions Backup { get; init; } = new();
+
+    /// <summary>
+    /// Web Push (VAPID) settings for the operator notifications (ADR-0041). Bound from
+    /// <c>WATCHTOWER__WEBPUSH__*</c> (e.g. <c>WATCHTOWER__WEBPUSH__SUBJECT=mailto:ops@example.com</c>).
+    /// Nothing here is required: an unset key pair is generated on first use and kept in the database.
+    /// </summary>
+    public WebPushOptions WebPush { get; init; } = new();
+}
+
+/// <summary>
+/// VAPID configuration for Web Push (ADR-0041, RFC 8292). The subject identifies the sender to the
+/// browsers' push services — a <c>mailto:</c> or <c>https:</c> URL they may use to reach whoever runs
+/// the instance when its traffic misbehaves.
+/// </summary>
+/// <remarks>
+/// A key pair may be pinned here (both halves base64url, the public key the 65-byte uncompressed P-256
+/// point, the private key the 32-byte scalar); otherwise one is generated on first use and persisted,
+/// encrypted like every other private key the database holds. Pinning is for an operator who wants the
+/// key to outlive the database — every browser subscription is bound to the public key it was made with,
+/// so <em>changing</em> the pair silently orphans every subscribed device until it subscribes again.
+/// </remarks>
+public sealed record WebPushOptions {
+    /// <summary>The subject used when none is configured: the project's home, which is a valid https URL.</summary>
+    public const string DefaultSubject = "https://github.com/swimmesberger/Watchtower";
+
+    /// <summary>The VAPID <c>sub</c> claim — a <c>mailto:</c> or <c>https:</c> contact URL.</summary>
+    public string Subject { get; init; } = DefaultSubject;
+
+    /// <summary>Pinned VAPID public key (base64url). Only used together with <see cref="PrivateKey"/>.</summary>
+    public string? PublicKey { get; init; }
+
+    /// <summary>Pinned VAPID private key (base64url). Only used together with <see cref="PublicKey"/>.</summary>
+    public string? PrivateKey { get; init; }
+
+    /// <summary>Whether a complete key pair is pinned — half a pair is ignored rather than half-used.</summary>
+    public bool HasConfiguredKeys =>
+        !string.IsNullOrWhiteSpace(PublicKey) && !string.IsNullOrWhiteSpace(PrivateKey);
+
+    /// <summary>The subject to sign with: the configured one, or <see cref="DefaultSubject"/> when blank.</summary>
+    public string ResolveSubject() => string.IsNullOrWhiteSpace(Subject) ? DefaultSubject : Subject.Trim();
 }
 
 /// <summary>

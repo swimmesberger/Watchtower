@@ -59,3 +59,4 @@ live here.
 - [ADR-0038: The product declares the configuration contract; environment variables resolve through a ladder](0038-product-declares-the-configuration-contract.md)
 - [ADR-0039: Access rules are named, composable clause lists — provider-neutral, with portability declared](0039-access-rules-compose.md)
 - [ADR-0040: The edge projection is authoritative — Watchtower owns its apps' policy attachments, and the realm invariant travels with the grants](0040-the-edge-projection-is-authoritative.md)
+- [ADR-0041: Operators get Web Push notifications, starting with failed deploys](0041-web-push-notifications.md)
