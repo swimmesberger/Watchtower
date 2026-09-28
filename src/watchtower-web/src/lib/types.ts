@@ -956,6 +956,11 @@ export interface ProxyCloudflareConfig {
   accessGroupIds: string
   /** Comma-separated reusable Access policy ids attached to Authenticated routes' apps. */
   accessReusablePolicyIds: string
+  /**
+   * Session duration of every Watchtower-created Access application (`24h`, `30m`, `2h45m`); empty means
+   * the default, 24h. A policy's or the account's global session duration overrides it.
+   */
+  accessSessionDuration: string
 }
 
 /** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
@@ -1015,6 +1020,8 @@ export interface UpdateProxyConfigRequest {
   cloudflareAccessAllowedEmailDomains?: string | null
   cloudflareAccessGroupIds?: string | null
   cloudflareAccessReusablePolicyIds?: string | null
+  /** Empty resets to the default (24h); null leaves the stored value alone. */
+  cloudflareAccessSessionDuration?: string | null
   /**
    * The access policy new domain routes start under. Sent under every provider, like `portRoutesLanNames`;
    * null leaves the stored value alone.

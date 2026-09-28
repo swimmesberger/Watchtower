@@ -894,13 +894,16 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         // WATCHTOWER_AUTH_AUDIENCE injects on the route's next deploy, so an app behind this route can
         // check that an assertion was minted for it and not for some other application in the account.
         var auds = new Dictionary<int, string>();
+        // The application-level duration: a policy's own session duration, or the account's global one,
+        // still wins over it at the edge. Resolved once so every app in this pass gets the same answer.
+        var sessionDuration = cf.ResolveAccessSessionDuration();
         foreach (var spec in projection.Apps) {
             try {
                 var request = new CloudflareAccessAppRequest {
                     Name = spec.Name,
                     Domain = spec.Domain,
                     Type = "self_hosted",
-                    SessionDuration = "24h",
+                    SessionDuration = sessionDuration,
                     AppLauncherVisible = false,
                     // Reusable policies (the dashboard-maintained "default policy" workflow) attach on the
                     // app itself. Never on a deny or bypass app: attaching an allow-list to one would undo

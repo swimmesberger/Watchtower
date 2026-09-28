@@ -8594,6 +8594,9 @@
                   },
                   "accessReusablePolicyIds": {
                     "type": "string"
+                  },
+                  "accessSessionDuration": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -8608,7 +8611,8 @@
                   "accessAllowedEmails",
                   "accessAllowedEmailDomains",
                   "accessGroupIds",
-                  "accessReusablePolicyIds"
+                  "accessReusablePolicyIds",
+                  "accessSessionDuration"
                 ]
               },
               "pinnedPaths": {
@@ -10106,6 +10110,13 @@
               "null"
             ],
             "default": null
+          },
+          "cloudflareAccessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10248,6 +10259,9 @@
                   },
                   "accessReusablePolicyIds": {
                     "type": "string"
+                  },
+                  "accessSessionDuration": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -10262,7 +10276,8 @@
                   "accessAllowedEmails",
                   "accessAllowedEmailDomains",
                   "accessGroupIds",
-                  "accessReusablePolicyIds"
+                  "accessReusablePolicyIds",
+                  "accessSessionDuration"
                 ]
               },
               "pinnedPaths": {

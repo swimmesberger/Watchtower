@@ -723,6 +723,7 @@ interface ProxyDraft {
   cfAccessEmailDomains: string
   cfAccessGroupIds: string
   cfAccessReusablePolicyIds: string
+  cfAccessSessionDuration: string
 }
 
 function toProxyDraft(config: ProxyConfig): ProxyDraft {
@@ -753,6 +754,7 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     cfAccessEmailDomains: config.cloudflare.accessAllowedEmailDomains,
     cfAccessGroupIds: config.cloudflare.accessGroupIds,
     cfAccessReusablePolicyIds: config.cloudflare.accessReusablePolicyIds,
+    cfAccessSessionDuration: config.cloudflare.accessSessionDuration,
   }
 }
 
@@ -932,6 +934,8 @@ function ProxyCard() {
         cloudflareAccessAllowedEmailDomains: next.cfAccessEmailDomains.trim(),
         cloudflareAccessGroupIds: next.cfAccessGroupIds.trim(),
         cloudflareAccessReusablePolicyIds: next.cfAccessReusablePolicyIds.trim(),
+        // As typed, like the Access lists above: empty is the way back to the default duration.
+        cloudflareAccessSessionDuration: next.cfAccessSessionDuration.trim(),
       }),
     onSuccess: next => {
       qc.setQueryData(['proxy', 'config'], next)
@@ -1613,6 +1617,29 @@ function ProxyCard() {
                         />
                         {pinnedPath('Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds') && (
                           <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Access: session duration"
+                    hint="How long a sign-in lasts on each route's Access app before Cloudflare asks again, e.g. 30m, 8h, 730h. Empty means 24h. A session duration set on an attached policy, or your account's global one, takes precedence."
+                  >
+                    {({ id }) => (
+                      <>
+                        <Input
+                          id={id}
+                          mono
+                          placeholder="24h"
+                          value={form.cfAccessSessionDuration}
+                          onChange={e => set('cfAccessSessionDuration', e.target.value)}
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessSessionDuration')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessSessionDuration') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessSessionDuration" />
                         )}
                       </>
                     )}

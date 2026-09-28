@@ -580,6 +580,7 @@ export const api = {
         cloudflareAccessAllowedEmailDomains: data.cloudflareAccessAllowedEmailDomains ?? null,
         cloudflareAccessGroupIds: data.cloudflareAccessGroupIds ?? null,
         cloudflareAccessReusablePolicyIds: data.cloudflareAccessReusablePolicyIds ?? null,
+        cloudflareAccessSessionDuration: data.cloudflareAccessSessionDuration ?? null,
         defaultAccessMode: data.defaultAccessMode ?? null,
         primaryDomains: data.primaryDomains ?? null,
       })).config as ProxyConfig,
