@@ -64,7 +64,9 @@ public sealed class UpdateProxyConfig(
         // predates ADR-0035 omits it and keeps whatever is stored, instead of having its save rejected.
         string? DefaultAccessMode = null,
         // Appended after it for the same reason, one ADR later (ADR-0036).
-        string? PrimaryDomains = null);
+        string? PrimaryDomains = null,
+        // Appended last for the same reason again. Empty is a real value: it means the default duration.
+        string? CloudflareAccessSessionDuration = null);
 
     public sealed record Response(ProxyConfigDto Config);
 
@@ -181,6 +183,20 @@ public sealed class UpdateProxyConfig(
         var cloudflaredImage = Coalesce(command.CloudflaredImage, cf.CloudflaredImage) ?? "";
         var containerName = Coalesce(command.CloudflaredContainerName, cf.CloudflaredContainerName);
 
+        // Checked only when supplied, like the default access mode: an unreadable stored value already
+        // falls back to the default where it is sent (CloudflareProxyOptions.ResolveAccessSessionDuration),
+        // so refusing it here would only block unrelated saves. Not tied to the cloudflare provider being
+        // selected either — the value is inert until it is, and a typo is cheapest to catch while typed.
+        var accessSessionDuration = command.CloudflareAccessSessionDuration?.Trim();
+        if (!string.IsNullOrEmpty(accessSessionDuration)
+            && !CloudflareProxyOptions.IsAccessSessionDuration(accessSessionDuration)) {
+            return AppError.Validation(
+                "The Access session duration must be a Cloudflare duration such as 30m, 24h, 730h or 2h45m "
+                + "(units: ns, us, ms, s, m, h), or empty for the default "
+                + $"({CloudflareProxyOptions.DefaultAccessSessionDuration}).");
+        }
+        var accessSessionDurationAfterSave = accessSessionDuration ?? cf.AccessSessionDuration;
+
         if (command.Enabled && provider == ProxyProviderNames.Cloudflare) {
             if (string.IsNullOrWhiteSpace(accountId)) return AppError.Validation("The Cloudflare account id is required for the cloudflare provider.");
             if (string.IsNullOrWhiteSpace(apiToken)) return AppError.Validation("A Cloudflare API token is required for the cloudflare provider.");
@@ -248,6 +264,7 @@ public sealed class UpdateProxyConfig(
         Check(WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains, Changed(command.CloudflareAccessAllowedEmailDomains, cf.AccessAllowedEmailDomains));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds, Changed(command.CloudflareAccessGroupIds, cf.AccessGroupIds));
         Check(WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds, Changed(command.CloudflareAccessReusablePolicyIds, cf.AccessReusablePolicyIds));
+        Check(WatchtowerSettingPaths.ProxyCloudflareAccessSessionDuration, Changed(command.CloudflareAccessSessionDuration, cf.AccessSessionDuration));
         if (violations.Count > 0)
             return EnvironmentSettingPins.PinnedError(violations);
 
@@ -334,6 +351,8 @@ public sealed class UpdateProxyConfig(
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds, command.CloudflareAccessGroupIds.Trim(), ct);
         if (command.CloudflareAccessReusablePolicyIds is not null)
             await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds, command.CloudflareAccessReusablePolicyIds.Trim(), ct);
+        if (accessSessionDuration is not null)
+            await SetUnlessPinnedAsync(WatchtowerSettingPaths.ProxyCloudflareAccessSessionDuration, accessSessionDuration, ct);
 
         // Named, never valued: the trail says which secrets this save replaced, not what with.
         var secretsUpdated = new List<string>();
@@ -347,7 +366,10 @@ public sealed class UpdateProxyConfig(
             + $" · provider {provider}"
             + (provider switch {
                 ProxyProviderNames.Cloudflare =>
-                    $" · tunnel {tunnelName}" + (managed ? " · managed cloudflared" : ""),
+                    $" · tunnel {tunnelName}" + (managed ? " · managed cloudflared" : "")
+                    // The resolved value, which is what the edge is told — a blank field reads as the
+                    // default it means rather than as nothing.
+                    + $" · access sessions {CloudflareProxyOptions.ResolveAccessSessionDuration(accessSessionDurationAfterSave)}",
                 // The ACME host, not the whole URL: it is the part that says which CA will be asked — and
                 // the ingress ports, because changing one rebinds a listener facing the internet.
                 ProxyProviderNames.Yarp =>
@@ -400,6 +422,7 @@ public sealed class UpdateProxyConfig(
                 AccessAllowedEmailDomains = Coalesce(command.CloudflareAccessAllowedEmailDomains, cf.AccessAllowedEmailDomains) ?? "",
                 AccessGroupIds = Coalesce(command.CloudflareAccessGroupIds, cf.AccessGroupIds) ?? "",
                 AccessReusablePolicyIds = Coalesce(command.CloudflareAccessReusablePolicyIds, cf.AccessReusablePolicyIds) ?? "",
+                AccessSessionDuration = accessSessionDurationAfterSave,
             },
         };
         return new Response(ProxyConfigDto.From(echoed, pins, listener.HttpsBound));

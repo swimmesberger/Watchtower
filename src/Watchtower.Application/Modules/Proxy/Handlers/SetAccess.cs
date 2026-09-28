@@ -51,7 +51,10 @@ public sealed class SetAccess(
         // The access rules this route attaches, in precedence order (ADR-0039). Added last for the same
         // reason again: a client that predates rules omits it and keeps the instance-wide fallback. An
         // explicit empty list detaches everything, which is how a route goes back to that fallback.
-        IReadOnlyList<int>? AccessRuleIds = null);
+        IReadOnlyList<int>? AccessRuleIds = null,
+        // The route's own Cloudflare Access session duration. Null leaves it alone, empty goes back to the
+        // instance-wide one — last and optional for the reason every addition above is.
+        string? AccessSessionDuration = null);
 
     public sealed record Response(
         AccessMode Mode,
@@ -59,7 +62,8 @@ public sealed class SetAccess(
         string? BypassPaths,
         IReadOnlyList<int> GrantedUserIds,
         IReadOnlyList<int> GrantedGroupIds,
-        IReadOnlyList<int>? AccessRuleIds = null);
+        IReadOnlyList<int>? AccessRuleIds = null,
+        string? AccessSessionDuration = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         var route = await db.Routes.FirstOrDefaultAsync(r => r.Id == command.RouteId, ct);
@@ -97,7 +101,7 @@ public sealed class SetAccess(
             db,
             new RouteAccessRequest(
                 command.Mode, command.BypassPaths, command.GrantedUserIds, command.GrantedGroupIds,
-                command.AccessRuleIds, command.IdentityHeaderMode),
+                command.AccessRuleIds, command.IdentityHeaderMode, command.AccessSessionDuration),
             routeRealmId.Value,
             route.DisplayAddress,
             AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider()),
@@ -126,6 +130,7 @@ public sealed class SetAccess(
             // Not sorted: the caller's order is the precedence, so echoing it back is what lets a form
             // round-trip what it saved. A caller that said nothing gets what the route already had, which is
             // the honest answer rather than an empty list it might then save back.
-            attachedRuleIds);
+            attachedRuleIds,
+            route.AccessSessionDuration);
     }
 }

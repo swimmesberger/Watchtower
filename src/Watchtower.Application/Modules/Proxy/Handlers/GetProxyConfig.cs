@@ -49,6 +49,7 @@ public sealed class GetProxyConfig(
         WatchtowerSettingPaths.ProxyCloudflareAccessAllowedEmailDomains,
         WatchtowerSettingPaths.ProxyCloudflareAccessGroupIds,
         WatchtowerSettingPaths.ProxyCloudflareAccessReusablePolicyIds,
+        WatchtowerSettingPaths.ProxyCloudflareAccessSessionDuration,
     ];
 
     public ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
@@ -110,7 +111,8 @@ public sealed record ProxyConfigDto(
             AccessAllowedEmails: proxy.Cloudflare.AccessAllowedEmails,
             AccessAllowedEmailDomains: proxy.Cloudflare.AccessAllowedEmailDomains,
             AccessGroupIds: proxy.Cloudflare.AccessGroupIds,
-            AccessReusablePolicyIds: proxy.Cloudflare.AccessReusablePolicyIds),
+            AccessReusablePolicyIds: proxy.Cloudflare.AccessReusablePolicyIds,
+            AccessSessionDuration: proxy.Cloudflare.AccessSessionDuration),
         PinnedPaths: pins.Pinned(GetProxyConfig.ProxyPaths));
 }
 
@@ -150,6 +152,10 @@ public sealed record ProxyYarpConfigDto(
 public sealed record ProxyPortRoutesConfigDto(string LanNames);
 
 /// <summary>Cloudflare Tunnel connection values for the config surface (token reduced to a flag).</summary>
+/// <param name="AccessSessionDuration">
+/// The raw stored value, empty when unset — the edit box shows what was typed and the placeholder says
+/// what empty means, rather than the field filling itself in with a default nobody chose.
+/// </param>
 public sealed record ProxyCloudflareConfigDto(
     string? AccountId,
     string? ZoneId,
@@ -162,4 +168,5 @@ public sealed record ProxyCloudflareConfigDto(
     string AccessAllowedEmails,
     string AccessAllowedEmailDomains,
     string AccessGroupIds,
-    string AccessReusablePolicyIds);
+    string AccessReusablePolicyIds,
+    string AccessSessionDuration);

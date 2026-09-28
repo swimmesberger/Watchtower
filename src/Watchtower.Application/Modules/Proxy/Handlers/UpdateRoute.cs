@@ -67,13 +67,15 @@ public sealed class UpdateRoute(
         IReadOnlyList<int>? GrantedUserIds = null,
         IReadOnlyList<int>? GrantedGroupIds = null,
         IReadOnlyList<int>? AccessRuleIds = null,
-        IdentityHeaderMode? IdentityHeaderMode = null);
+        IdentityHeaderMode? IdentityHeaderMode = null,
+        string? AccessSessionDuration = null);
 
     /// <summary>Whether the request says anything about access at all.</summary>
     private static bool NamesAccess(Command command) =>
         command.AccessMode is not null || command.BypassPaths is not null
         || command.GrantedUserIds is { Count: > 0 } || command.GrantedGroupIds is { Count: > 0 }
-        || command.AccessRuleIds is not null || command.IdentityHeaderMode is not null;
+        || command.AccessRuleIds is not null || command.IdentityHeaderMode is not null
+        || command.AccessSessionDuration is not null;
 
     public sealed record Response(RouteDto Route);
 
@@ -164,7 +166,7 @@ public sealed class UpdateRoute(
                 db,
                 new RouteAccessRequest(
                     mode, command.BypassPaths, command.GrantedUserIds, command.GrantedGroupIds,
-                    command.AccessRuleIds, command.IdentityHeaderMode),
+                    command.AccessRuleIds, command.IdentityHeaderMode, command.AccessSessionDuration),
                 realmId.Value,
                 domain,
                 AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider()),

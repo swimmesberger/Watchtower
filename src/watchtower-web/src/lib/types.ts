@@ -956,6 +956,11 @@ export interface ProxyCloudflareConfig {
   accessGroupIds: string
   /** Comma-separated reusable Access policy ids attached to Authenticated routes' apps. */
   accessReusablePolicyIds: string
+  /**
+   * Session duration of every Watchtower-created Access application (`24h`, `30m`, `2h45m`); empty means
+   * the default, 24h. A policy's or the account's global session duration overrides it.
+   */
+  accessSessionDuration: string
 }
 
 /** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
@@ -1015,6 +1020,8 @@ export interface UpdateProxyConfigRequest {
   cloudflareAccessAllowedEmailDomains?: string | null
   cloudflareAccessGroupIds?: string | null
   cloudflareAccessReusablePolicyIds?: string | null
+  /** Empty resets to the default (24h); null leaves the stored value alone. */
+  cloudflareAccessSessionDuration?: string | null
   /**
    * The access policy new domain routes start under. Sent under every provider, like `portRoutesLanNames`;
    * null leaves the stored value alone.
@@ -1118,6 +1125,8 @@ export interface CreateRouteRequest {
   grantedGroupIds?: number[] | null
   /** `Authenticated` only: the access rules attached, in precedence order. None means the instance-wide list. */
   accessRuleIds?: number[] | null
+  /** Protected routes only: the Cloudflare Access session duration. Omitted or empty means the instance-wide one. */
+  accessSessionDuration?: string | null
 }
 
 /**
@@ -1154,6 +1163,7 @@ export interface UpdateRouteRequest {
   grantedUserIds?: number[] | null
   grantedGroupIds?: number[] | null
   accessRuleIds?: number[] | null
+  accessSessionDuration?: string | null
 }
 
 /**
@@ -1265,6 +1275,11 @@ export interface RouteAccess {
    * which is what keeps an older client from stripping a composition it knows nothing about.
    */
   accessRuleIds?: number[] | null
+  /**
+   * How long a sign-in to the route's Cloudflare Access application lasts (`8h`, `30m`, `730h`). Read back
+   * as null when the route uses the instance-wide duration; sent as `''` to go back to it, null to leave it.
+   */
+  accessSessionDuration?: string | null
 }
 
 /**

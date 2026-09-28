@@ -78,6 +78,10 @@ public sealed class CreateRoute(
     /// Protected routes only, administrators only: which plaintext identity headers reach the upstream.
     /// Omitted means the JWT only, as on <c>proxy.setAccess</c>.
     /// </param>
+    /// <param name="AccessSessionDuration">
+    /// Protected routes only, administrators only: how long a sign-in to the route's Cloudflare Access
+    /// application lasts. Omitted or empty means the instance-wide duration.
+    /// </param>
     public sealed record Command(
         int StackId,
         string? Domain,
@@ -99,7 +103,8 @@ public sealed class CreateRoute(
         IReadOnlyList<int>? GrantedUserIds = null,
         IReadOnlyList<int>? GrantedGroupIds = null,
         IReadOnlyList<int>? AccessRuleIds = null,
-        IdentityHeaderMode? IdentityHeaderMode = null);
+        IdentityHeaderMode? IdentityHeaderMode = null,
+        string? AccessSessionDuration = null);
 
     public sealed record Response(RouteDto Route);
 
@@ -111,7 +116,8 @@ public sealed class CreateRoute(
     private static bool NamesAccess(Command command) =>
         command.AccessMode is not null || command.BypassPaths is not null
         || command.GrantedUserIds is { Count: > 0 } || command.GrantedGroupIds is { Count: > 0 }
-        || command.AccessRuleIds is { Count: > 0 } || command.IdentityHeaderMode is not null;
+        || command.AccessRuleIds is { Count: > 0 } || command.IdentityHeaderMode is not null
+        || !string.IsNullOrWhiteSpace(command.AccessSessionDuration);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(command);
@@ -180,6 +186,7 @@ public sealed class CreateRoute(
             AccessMode = access.Mode,
             IdentityHeaderMode = access.IdentityHeaderMode,
             BypassPaths = access.BypassPaths,
+            AccessSessionDuration = string.IsNullOrEmpty(access.AccessSessionDuration) ? null : access.AccessSessionDuration,
             Status = RouteStatus.Pending,
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -427,7 +434,7 @@ public sealed class CreateRoute(
             db,
             new RouteAccessRequest(
                 mode, command.BypassPaths, command.GrantedUserIds, command.GrantedGroupIds,
-                command.AccessRuleIds, command.IdentityHeaderMode),
+                command.AccessRuleIds, command.IdentityHeaderMode, command.AccessSessionDuration),
             realmId,
             domain,
             AccessClauseSupport.PointFor(proxyOptions.ResolveProvider()),

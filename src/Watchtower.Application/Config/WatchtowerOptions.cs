@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Watchtower.Application.Config;
 
 /// <summary>
@@ -817,7 +819,7 @@ public sealed record PortRouteOptions {
 /// the route table into the tunnel's ingress rules (public hostname → service) and upserts a proxied
 /// CNAME per route domain; TLS terminates at Cloudflare's edge.
 /// </summary>
-public sealed record CloudflareProxyOptions {
+public sealed partial record CloudflareProxyOptions {
     /// <summary>Cloudflare account id owning the tunnel.</summary>
     public string? AccountId { get; init; }
 
@@ -898,6 +900,45 @@ public sealed record CloudflareProxyOptions {
     /// group settings above.
     /// </summary>
     public string AccessReusablePolicyIds { get; init; } = "";
+
+    /// <summary>
+    /// How long a sign-in to one of Watchtower's Access applications lasts before Cloudflare asks again —
+    /// the application's <c>session_duration</c>, in Cloudflare's duration format (<c>30m</c>, <c>24h</c>,
+    /// <c>730h</c>, <c>2h45m</c>). Empty means <see cref="DefaultAccessSessionDuration"/>. A default only: a
+    /// route's own <c>AccessSessionDuration</c> wins, and neither is Cloudflare's account-wide global duration.
+    /// </summary>
+    /// <remarks>
+    /// This is the <em>application</em> duration, the lowest of Cloudflare's three: a session duration set
+    /// on an attached policy, or the account's global session duration, overrides it. The Watchtower-owned
+    /// policy never sets one, so the value holds for every route whose reusable policies do not either.
+    /// </remarks>
+    public string AccessSessionDuration { get; init; } = "";
+
+    /// <summary>What Watchtower sent before <see cref="AccessSessionDuration"/> existed, and still does when it is empty.</summary>
+    public const string DefaultAccessSessionDuration = "24h";
+
+    /// <summary>
+    /// The session duration to send: <see cref="AccessSessionDuration"/> when it reads as one, else
+    /// <see cref="DefaultAccessSessionDuration"/>. An unreadable value (an env pin the save-time check never
+    /// saw) falls back rather than being sent, because Cloudflare would reject every application write that
+    /// carried it, and a new protected hostname would get no Access application at all.
+    /// </summary>
+    public string ResolveAccessSessionDuration() => ResolveAccessSessionDuration(AccessSessionDuration);
+
+    /// <inheritdoc cref="ResolveAccessSessionDuration()"/>
+    public static string ResolveAccessSessionDuration(string? value) =>
+        IsAccessSessionDuration(value) ? value!.Trim() : DefaultAccessSessionDuration;
+
+    /// <summary>
+    /// Whether <paramref name="value"/> is a duration Cloudflare accepts: one or more number-unit pairs in
+    /// Go's <c>time.ParseDuration</c> syntax, the units being <c>ns</c>, <c>us</c>/<c>µs</c>, <c>ms</c>,
+    /// <c>s</c>, <c>m</c> and <c>h</c>.
+    /// </summary>
+    public static bool IsAccessSessionDuration(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && AccessSessionDurationPattern().IsMatch(value.Trim());
+
+    [GeneratedRegex(@"^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$", RegexOptions.CultureInvariant)]
+    private static partial Regex AccessSessionDurationPattern();
 
     /// <summary>
     /// Whether anything at all is configured that a visitor could pass an <c>Authenticated</c> route's

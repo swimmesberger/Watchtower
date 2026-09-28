@@ -856,6 +856,15 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
     }
 
     /// <summary>
+    /// The session duration a route's Access applications get: its own when it has a readable one, else the
+    /// instance-wide <paramref name="instanceDefault"/>. An unreadable stored value — which the save-time
+    /// check makes a hand-edited row — falls back rather than being sent, because Cloudflare would reject
+    /// the application write and the hostname would keep whatever gate it had before.
+    /// </summary>
+    internal static string SessionDurationFor(string? routeDuration, string instanceDefault) =>
+        CloudflareProxyOptions.IsAccessSessionDuration(routeDuration) ? routeDuration!.Trim() : instanceDefault;
+
+    /// <summary>
     /// Makes the account's Access applications match the protected routes: create/update one
     /// <c>self_hosted</c> app per protected hostname with a single Watchtower-owned policy — allow, or
     /// deny when nothing could pass it — plus a bypass app for each route's public paths, and delete the
@@ -894,13 +903,18 @@ public class CloudflareTunnelProvider : IHostedService, IProxyProvider, IDisposa
         // WATCHTOWER_AUTH_AUDIENCE injects on the route's next deploy, so an app behind this route can
         // check that an assertion was minted for it and not for some other application in the account.
         var auds = new Dictionary<int, string>();
+        // The application-level duration: a policy's own session duration, or the account's global one,
+        // still wins over it at the edge. The instance-wide value is resolved once for the whole pass.
+        var defaultSessionDuration = cf.ResolveAccessSessionDuration();
+        var routeSessionDurations = routes.ToDictionary(r => r.Id, r => r.AccessSessionDuration);
         foreach (var spec in projection.Apps) {
             try {
                 var request = new CloudflareAccessAppRequest {
                     Name = spec.Name,
                     Domain = spec.Domain,
                     Type = "self_hosted",
-                    SessionDuration = "24h",
+                    SessionDuration = SessionDurationFor(
+                        routeSessionDurations.GetValueOrDefault(spec.RouteId), defaultSessionDuration),
                     AppLauncherVisible = false,
                     // Reusable policies (the dashboard-maintained "default policy" workflow) attach on the
                     // app itself. Never on a deny or bypass app: attaching an allow-list to one would undo

@@ -162,6 +162,7 @@ public static class WatchtowerSettingPaths {
     public const string ProxyCloudflareAccessAllowedEmailDomains = "Watchtower:Proxy:Cloudflare:AccessAllowedEmailDomains";
     public const string ProxyCloudflareAccessGroupIds = "Watchtower:Proxy:Cloudflare:AccessGroupIds";
     public const string ProxyCloudflareAccessReusablePolicyIds = "Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds";
+    public const string ProxyCloudflareAccessSessionDuration = "Watchtower:Proxy:Cloudflare:AccessSessionDuration";
 
     // ── Backups (backups.updateConfig, ADR-0016) ─────────────────────────────
     public const string BackupEnabled = "Watchtower:Backup:Enabled";

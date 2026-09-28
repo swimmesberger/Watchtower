@@ -8185,6 +8185,13 @@
               null
             ],
             "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8445,6 +8452,13 @@
               "CloudflareAccess"
             ],
             "default": "InProcess"
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8594,6 +8608,9 @@
                   },
                   "accessReusablePolicyIds": {
                     "type": "string"
+                  },
+                  "accessSessionDuration": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -8608,7 +8625,8 @@
                   "accessAllowedEmails",
                   "accessAllowedEmailDomains",
                   "accessGroupIds",
-                  "accessReusablePolicyIds"
+                  "accessReusablePolicyIds",
+                  "accessSessionDuration"
                 ]
               },
               "pinnedPaths": {
@@ -9635,6 +9653,13 @@
               "type": "integer"
             },
             "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9688,6 +9713,13 @@
             "items": {
               "type": "integer"
             },
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
             "default": null
           }
         },
@@ -10106,6 +10138,13 @@
               "null"
             ],
             "default": null
+          },
+          "cloudflareAccessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10248,6 +10287,9 @@
                   },
                   "accessReusablePolicyIds": {
                     "type": "string"
+                  },
+                  "accessSessionDuration": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -10262,7 +10304,8 @@
                   "accessAllowedEmails",
                   "accessAllowedEmailDomains",
                   "accessGroupIds",
-                  "accessReusablePolicyIds"
+                  "accessReusablePolicyIds",
+                  "accessSessionDuration"
                 ]
               },
               "pinnedPaths": {
@@ -10397,6 +10440,13 @@
               "AuthRequest",
               "Cloudflare",
               null
+            ],
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
             ],
             "default": null
           }
