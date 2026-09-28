@@ -904,7 +904,8 @@ public sealed partial record CloudflareProxyOptions {
     /// <summary>
     /// How long a sign-in to one of Watchtower's Access applications lasts before Cloudflare asks again —
     /// the application's <c>session_duration</c>, in Cloudflare's duration format (<c>30m</c>, <c>24h</c>,
-    /// <c>730h</c>, <c>2h45m</c>). Empty means <see cref="DefaultAccessSessionDuration"/>.
+    /// <c>730h</c>, <c>2h45m</c>). Empty means <see cref="DefaultAccessSessionDuration"/>. A default only: a
+    /// route's own <c>AccessSessionDuration</c> wins, and neither is Cloudflare's account-wide global duration.
     /// </summary>
     /// <remarks>
     /// This is the <em>application</em> duration, the lowest of Cloudflare's three: a session duration set

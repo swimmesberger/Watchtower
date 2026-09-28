@@ -78,12 +78,17 @@ On startup, on every route change/deploy, and on every settings change:
   byte or a `..` segment; the edge applies no such guard, so keep bypass prefixes narrow and point them
   at endpoints that authenticate their own callers.
 
-Every Watchtower-created application gets the **session duration** set under **Settings → Reverse proxy →
-Access: session duration** — how long a sign-in lasts before Cloudflare asks again, in Cloudflare's duration
-format (`30m`, `8h`, `730h`, `2h45m`). Empty means `24h`, which is what every earlier version sent. This is
-the *application* duration, the lowest of Cloudflare's three: a session duration on an attached policy or the
-account's global session duration overrides it. The Watchtower-owned policy never sets one, so the value
-holds unless a reusable policy you attach, or your account settings, say otherwise.
+Every Watchtower-created application gets a **session duration** — how long a sign-in lasts before Cloudflare
+asks again, in Cloudflare's duration format (`30m`, `8h`, `730h`, `2h45m`). A route can set its own in its
+access section (**Routes → Edit → Session duration**); a route that does not gets the default from
+**Settings → Reverse proxy → Access: default session duration**, and that default left empty is `24h`, which
+is what every earlier version sent.
+
+Both are written onto the *application*: the Settings value is a default Watchtower fills in per app, not
+Cloudflare's account-wide global session duration, which Watchtower never touches. The application duration
+is the lowest of Cloudflare's three — a session duration on an attached policy, or the account's global one,
+overrides it. The Watchtower-owned policy never sets one, so a route's value holds unless a reusable policy
+you attach, or your account settings, say otherwise.
 
 Disabling the proxy — or switching back to Caddy — stops and removes only the managed cloudflared
 container. **The tunnel and the DNS records are kept**: deleting public DNS you may still want is not

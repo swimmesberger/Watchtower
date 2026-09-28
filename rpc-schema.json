@@ -8185,6 +8185,13 @@
               null
             ],
             "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8445,6 +8452,13 @@
               "CloudflareAccess"
             ],
             "default": "InProcess"
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9639,6 +9653,13 @@
               "type": "integer"
             },
             "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9692,6 +9713,13 @@
             "items": {
               "type": "integer"
             },
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
             "default": null
           }
         },
@@ -10412,6 +10440,13 @@
               "AuthRequest",
               "Cloudflare",
               null
+            ],
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
             ],
             "default": null
           }

@@ -1625,8 +1625,8 @@ function ProxyCard() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field
-                    label="Access: session duration"
-                    hint="How long a sign-in lasts on each route's Access app before Cloudflare asks again, e.g. 30m, 8h, 730h. Empty means 24h. A session duration set on an attached policy, or your account's global one, takes precedence."
+                    label="Access: default session duration"
+                    hint="Written onto each route's Access application unless the route sets its own (Routes → Edit → Session duration), e.g. 30m, 8h, 730h. Empty means 24h. This is not Cloudflare's global session duration; a session duration on an attached Cloudflare policy, or your account's global one, still takes precedence."
                   >
                     {({ id }) => (
                       <>

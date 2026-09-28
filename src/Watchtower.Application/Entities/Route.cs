@@ -200,6 +200,18 @@ public sealed class Route : IHasXmin {
     public string? BypassPaths { get; set; }
 
     /// <summary>
+    /// How long a sign-in to this route's Cloudflare Access application lasts — the application's
+    /// <c>session_duration</c>, in Cloudflare's duration format (<c>30m</c>, <c>8h</c>, <c>730h</c>). Null
+    /// means the instance-wide <c>Proxy:Cloudflare:AccessSessionDuration</c>. Stored only for a protected
+    /// route, and read only by the Cloudflare provider: the other edges keep Watchtower's own session.
+    /// </summary>
+    /// <remarks>
+    /// The application duration, so a session duration on an attached Cloudflare policy, or the account's
+    /// global one, still overrides it at the edge.
+    /// </remarks>
+    public string? AccessSessionDuration { get; set; }
+
+    /// <summary>
     /// The <c>aud</c> claim an identity assertion reaching this route's upstream carries, when the edge
     /// mints one whose audience is not simply the hostname: the Cloudflare Access application's
     /// <b>Application Audience (AUD) tag</b>, recorded by the provider each time it reconciles the app.

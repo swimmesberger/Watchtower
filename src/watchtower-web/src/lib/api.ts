@@ -492,6 +492,7 @@ export const api = {
         grantedUserIds: data.grantedUserIds ?? null,
         grantedGroupIds: data.grantedGroupIds ?? null,
         accessRuleIds: data.accessRuleIds ?? null,
+        accessSessionDuration: data.accessSessionDuration ?? null,
       })).route as Route,
     getStackAccessContext: async (stackId: number) =>
       (await rpc('proxy.getStackAccessContext', { stackId })) as StackAccessContext,
@@ -513,6 +514,7 @@ export const api = {
         grantedUserIds: data.grantedUserIds ?? null,
         grantedGroupIds: data.grantedGroupIds ?? null,
         accessRuleIds: data.accessRuleIds ?? null,
+        accessSessionDuration: data.accessSessionDuration ?? null,
       })).route as Route,
     // Returns the server's response rather than swallowing it: deleting a realm's login host succeeds
     // and carries a `warning` the caller has to show (ADR-0023).
@@ -597,6 +599,7 @@ export const api = {
         // Sent as null when the caller has nothing to say about attachments, which the backend reads as
         // "leave them alone" rather than "detach everything" (ADR-0039).
         accessRuleIds: data.accessRuleIds ?? null,
+        accessSessionDuration: data.accessSessionDuration ?? null,
       })) as RouteAccess,
 
     listAccessRules: async (realmId?: number) =>

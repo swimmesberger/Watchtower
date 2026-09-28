@@ -169,6 +169,7 @@ const emptyForm = {
   grantedUserIds: [] as number[],
   grantedGroupIds: [] as number[],
   accessRuleIds: [] as number[],
+  accessSessionDuration: '',
   // True once the user opts out of the discovered-value dropdown to type a custom value.
   serviceManual: false,
   portManual: false,
@@ -930,6 +931,7 @@ export function RoutesPage() {
             grantedUserIds: access.grantedUserIds,
             grantedGroupIds: access.grantedGroupIds,
             accessRuleIds: access.accessRuleIds,
+            accessSessionDuration: access.accessSessionDuration,
           }),
         },
       })
@@ -942,13 +944,15 @@ export function RoutesPage() {
       grantedUserIds: form.grantedUserIds,
       grantedGroupIds: form.grantedGroupIds,
       accessRuleIds: form.accessRuleIds,
+      accessSessionDuration: form.accessSessionDuration,
     })
     const accessRuleIds = access.accessRuleIds ?? []
     const namesDetail =
       access.grantedUserIds.length > 0 ||
       access.grantedGroupIds.length > 0 ||
       accessRuleIds.length > 0 ||
-      access.identityHeaderMode !== 'None'
+      access.identityHeaderMode !== 'None' ||
+      !!access.accessSessionDuration
     create.mutate({
       target: 'service',
       stackId,
@@ -971,6 +975,7 @@ export function RoutesPage() {
       grantedUserIds: canManageAccess && access.grantedUserIds.length > 0 ? access.grantedUserIds : null,
       grantedGroupIds: canManageAccess && access.grantedGroupIds.length > 0 ? access.grantedGroupIds : null,
       accessRuleIds: canManageAccess && accessRuleIds.length > 0 ? accessRuleIds : null,
+      accessSessionDuration: canManageAccess && access.accessSessionDuration ? access.accessSessionDuration : null,
     })
   }
 
@@ -1952,6 +1957,7 @@ export function RoutesPage() {
                         grantedUserIds: form.grantedUserIds,
                         grantedGroupIds: form.grantedGroupIds,
                         accessRuleIds: form.accessRuleIds,
+                        accessSessionDuration: form.accessSessionDuration,
                       }}
                       onChange={(next) =>
                         setForm((f) => ({
@@ -1964,6 +1970,7 @@ export function RoutesPage() {
                           grantedUserIds: next.grantedUserIds,
                           grantedGroupIds: next.grantedGroupIds,
                           accessRuleIds: next.accessRuleIds,
+                          accessSessionDuration: next.accessSessionDuration,
                         }))
                       }
                       realmName={accessRealmId != null ? (realms.find((r) => r.id === accessRealmId)?.name ?? null) : null}
@@ -2472,6 +2479,8 @@ interface AccessDraft {
   grantedUserIds: number[]
   grantedGroupIds: number[]
   accessRuleIds: number[]
+  /** Empty means the instance-wide Cloudflare Access session duration. */
+  accessSessionDuration: string
 }
 
 /** The draft for an existing route's policy, as `proxy.getAccess` reported it. */
@@ -2483,6 +2492,7 @@ function accessDraftFrom(view: RouteAccess): AccessDraft {
     grantedUserIds: view.grantedUserIds,
     grantedGroupIds: view.grantedGroupIds,
     accessRuleIds: view.accessRuleIds ?? [],
+    accessSessionDuration: view.accessSessionDuration ?? '',
   }
 }
 
@@ -2500,6 +2510,9 @@ function toRouteAccess(draft: AccessDraft): RouteAccess {
     // Always an array, never null: a form that shows the attachments knows what they should be, so an
     // untick has to be sent as the empty list that detaches. Null is for clients that do not.
     accessRuleIds: draft.mode === 'Authenticated' ? draft.accessRuleIds : [],
+    // Always a string, like the rules above always an array: empty is how a route goes back to the
+    // instance-wide duration, and a Public route has no Access application for one to belong to.
+    accessSessionDuration: draft.mode === 'Public' ? '' : draft.accessSessionDuration.trim(),
   }
 }
 
@@ -2543,6 +2556,7 @@ function AccessFields({
   const setMode = (next: AccessMode) => set({ mode: next })
   const setIdentityHeaderMode = (next: IdentityHeaderMode) => set({ identityHeaderMode: next })
   const setBypassPaths = (next: string) => set({ bypassPaths: next })
+  const setAccessSessionDuration = (next: string) => set({ accessSessionDuration: next })
   const toggle = (ids: number[], id: number) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id])
   const toggleUser = (id: number) => set({ grantedUserIds: toggle(grantedUserIds, id) })
   const toggleGroup = (id: number) => set({ grantedGroupIds: toggle(grantedGroupIds, id) })
@@ -2765,6 +2779,27 @@ function AccessFields({
               value={bypassPaths}
               onChange={(e) => setBypassPaths(e.target.value)}
               placeholder={'/api/webhooks/\n/healthz'}
+              spellCheck={false}
+            />
+          )}
+        </Field>
+      )}
+
+      {/* Cloudflare only: under the built-in proxy a sign-in is a Watchtower session, which this does not
+          configure. Hidden rather than cleared there, so a stored value survives a provider switch. */}
+      {mode !== 'Public' && activeEnforcementPoint === 'CloudflareAccess' && (
+        <Field
+          label="Session duration"
+          hint="How long a sign-in to this route's Cloudflare Access application lasts, e.g. 30m, 8h, 730h. Empty uses the default from Settings. A session duration on an attached Cloudflare policy, or your account's global one, takes precedence."
+        >
+          {({ id, describedBy }) => (
+            <Input
+              id={id}
+              aria-describedby={describedBy}
+              mono
+              value={value.accessSessionDuration}
+              onChange={(e) => setAccessSessionDuration(e.target.value)}
+              placeholder="Default"
               spellCheck={false}
             />
           )}

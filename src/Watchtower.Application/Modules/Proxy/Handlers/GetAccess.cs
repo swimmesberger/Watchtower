@@ -42,7 +42,9 @@ public sealed class GetAccess(WatchtowerDbContext db, IOptionsMonitor<Watchtower
         IReadOnlyList<int>? AccessRuleIds = null,
         // Which enforcement point the active provider decides at, so a form can grey out the rules it would
         // refuse instead of letting the operator discover the refusal on save (ADR-0039 decision 4).
-        ActiveEnforcementPoint ActiveEnforcementPoint = ActiveEnforcementPoint.InProcess);
+        ActiveEnforcementPoint ActiveEnforcementPoint = ActiveEnforcementPoint.InProcess,
+        // The route's own Cloudflare Access session duration; null when it uses the instance-wide one.
+        string? AccessSessionDuration = null);
 
     public async ValueTask<Result<Response>> HandleAsync(Query query, CancellationToken ct) {
         var route = await db.Routes.AsNoTracking()
@@ -88,6 +90,7 @@ public sealed class GetAccess(WatchtowerDbContext db, IOptionsMonitor<Watchtower
             [.. grants.Where(g => g.GroupId is not null).Select(g => g.GroupId!.Value).Order()],
             realmId.Value,
             attachedRuleIds,
-            AccessRuleMapping.Active(AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider())));
+            AccessRuleMapping.Active(AccessClauseSupport.PointFor(options.CurrentValue.Proxy.ResolveProvider())),
+            route.AccessSessionDuration);
     }
 }

@@ -1125,6 +1125,8 @@ export interface CreateRouteRequest {
   grantedGroupIds?: number[] | null
   /** `Authenticated` only: the access rules attached, in precedence order. None means the instance-wide list. */
   accessRuleIds?: number[] | null
+  /** Protected routes only: the Cloudflare Access session duration. Omitted or empty means the instance-wide one. */
+  accessSessionDuration?: string | null
 }
 
 /**
@@ -1161,6 +1163,7 @@ export interface UpdateRouteRequest {
   grantedUserIds?: number[] | null
   grantedGroupIds?: number[] | null
   accessRuleIds?: number[] | null
+  accessSessionDuration?: string | null
 }
 
 /**
@@ -1272,6 +1275,11 @@ export interface RouteAccess {
    * which is what keeps an older client from stripping a composition it knows nothing about.
    */
   accessRuleIds?: number[] | null
+  /**
+   * How long a sign-in to the route's Cloudflare Access application lasts (`8h`, `30m`, `730h`). Read back
+   * as null when the route uses the instance-wide duration; sent as `''` to go back to it, null to leave it.
+   */
+  accessSessionDuration?: string | null
 }
 
 /**

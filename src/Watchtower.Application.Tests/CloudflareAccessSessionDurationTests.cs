@@ -3,6 +3,7 @@ using Elarion.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Watchtower.Application.Config;
 using Watchtower.Application.Modules.Proxy.Handlers;
+using Watchtower.Application.Services;
 using Xunit;
 
 namespace Watchtower.Application.Tests;
@@ -46,6 +47,16 @@ public sealed class CloudflareAccessSessionDurationTests {
     public void TheResolvedDuration_FallsBackToTheDefault(string configured, string expected) =>
         Assert.Equal(expected,
             new CloudflareProxyOptions { AccessSessionDuration = configured }.ResolveAccessSessionDuration());
+
+    [Theory]
+    [InlineData("8h", "8h")]
+    [InlineData(" 30m ", "30m")]
+    [InlineData(null, "12h")]
+    [InlineData("", "12h")]
+    // A hand-edited row the save-time check never saw: the instance-wide value, not a rejected write.
+    [InlineData("1d", "12h")]
+    public void ARoutesOwnDuration_WinsOverTheInstanceWideOne(string? routeDuration, string expected) =>
+        Assert.Equal(expected, CloudflareTunnelProvider.SessionDurationFor(routeDuration, "12h"));
 
     [Fact]
     public async Task AValidDuration_IsPersistedAndEchoed() {

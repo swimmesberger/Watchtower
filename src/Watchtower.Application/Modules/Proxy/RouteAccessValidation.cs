@@ -14,13 +14,18 @@ namespace Watchtower.Application.Modules.Proxy;
 /// <see langword="null"/> means "the caller said nothing about attachments", which <c>setAccess</c> reads as
 /// "leave them alone" and a create reads as "none". An explicit empty list is "none" in both.
 /// </param>
+/// <param name="AccessSessionDuration">
+/// The same null-versus-empty reading: <see langword="null"/> leaves the route's duration alone (none, on a
+/// create), empty clears it back to the instance-wide one.
+/// </param>
 internal sealed record RouteAccessRequest(
     AccessMode Mode,
     string? BypassPaths,
     IReadOnlyList<int>? GrantedUserIds,
     IReadOnlyList<int>? GrantedGroupIds,
     IReadOnlyList<int>? AccessRuleIds,
-    IdentityHeaderMode? IdentityHeaderMode);
+    IdentityHeaderMode? IdentityHeaderMode,
+    string? AccessSessionDuration = null);
 
 /// <summary>
 /// A policy that passed <see cref="RouteAccessValidation.ValidateAsync"/>: every field normalized, and only
@@ -31,13 +36,18 @@ internal sealed record RouteAccessRequest(
 /// that named no attachments at all — "leave them alone"; every other mode has an empty list, because
 /// leaving <c>Authenticated</c> is what makes attachments mean nothing.
 /// </param>
+/// <param name="AccessSessionDuration">
+/// Trimmed. <see langword="null"/> leaves the route's value alone; empty clears it — always the answer for a
+/// <see cref="AccessMode.Public"/> route, which has no Access application for a duration to belong to.
+/// </param>
 internal sealed record ValidatedRouteAccess(
     AccessMode Mode,
     IdentityHeaderMode IdentityHeaderMode,
     string? BypassPaths,
     List<int> GrantedUserIds,
     List<int> GrantedGroupIds,
-    List<int>? AccessRuleIds);
+    List<int>? AccessRuleIds,
+    string? AccessSessionDuration = null);
 
 /// <summary>
 /// The one reading of "is this a valid access policy for a route of that realm" — shared by
@@ -113,6 +123,18 @@ internal static class RouteAccessValidation {
         }
         var ruleIds = request.Mode == AccessMode.Authenticated ? requestedRuleIds : [];
 
+        // Checked whichever provider is active, like the instance-wide value: it is inert until Cloudflare
+        // serves the route, and a typo is cheapest to catch while it is typed. A Public route clears it for
+        // the reason it clears bypass paths — there is no application for it to configure.
+        var sessionDuration = request.AccessSessionDuration?.Trim();
+        if (!string.IsNullOrEmpty(sessionDuration) && request.Mode != AccessMode.Public
+            && !Config.CloudflareProxyOptions.IsAccessSessionDuration(sessionDuration)) {
+            return Fail(
+                $"Session duration '{sessionDuration}' is not a Cloudflare duration. Use a form such as 30m, 8h, "
+                + "730h or 2h45m (units: ns, us, ms, s, m, h), or leave it empty for the instance-wide default.");
+        }
+        if (request.Mode == AccessMode.Public) sessionDuration = "";
+
         // A grant naming a subject from another population would never admit anyone (RouteAccessPolicy
         // applies the same invariant at access time), so it is refused here rather than stored as a row that
         // reads like access somebody has (docs/central-auth/design.md §13).
@@ -176,7 +198,7 @@ internal static class RouteAccessValidation {
         }
 
         return new Outcome(null, new ValidatedRouteAccess(
-            request.Mode, identityHeaderMode, bypassPaths, userIds, groupIds, ruleIds));
+            request.Mode, identityHeaderMode, bypassPaths, userIds, groupIds, ruleIds, sessionDuration));
     }
 
     /// <summary>
@@ -224,6 +246,8 @@ internal static class RouteAccessWrite {
         route.AccessMode = access.Mode;
         route.IdentityHeaderMode = access.IdentityHeaderMode;
         route.BypassPaths = access.BypassPaths;
+        if (access.AccessSessionDuration is { } sessionDuration)
+            route.AccessSessionDuration = sessionDuration.Length > 0 ? sessionDuration : null;
 
         var currentGrants = await db.RouteAccessGrants
             .Where(g => g.RouteId == route.Id)
