@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Archive, ChevronDown, ChevronRight, History, Lock, Play } from 'lucide-react'
+import { Archive, ChevronDown, ChevronRight, History, Lock, Play, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { BackupEvent, BackupPolicySource, BackupQuiesceMode, Stack } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
@@ -32,6 +32,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { cn } from '@/lib/utils'
 import { BackupPlanPreviewSection } from './BackupPlanPreviewSection'
@@ -146,6 +147,22 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
   })
 
   const isRunning = events.some((e) => e.status === 'running' || e.status === 'queued')
+
+  // History pruning (#60). Only the rows go — the archives stay in the storage and remain restorable
+  // from "Restore…". A queued or running run is kept by the server either way.
+  const [confirmClear, setConfirmClear] = useState(false)
+  const finishedEvents = events.filter((e) => e.status !== 'running' && e.status !== 'queued')
+
+  const deleteEvents = useMutation({
+    mutationFn: (eventId?: number) => api.backups.deleteEvents(stack.id, eventId),
+    onSuccess: (deleted, eventId) => {
+      qc.invalidateQueries({ queryKey: ['backups', 'events', stack.id] })
+      if (eventId === undefined)
+        toast.success(`Cleared ${deleted} run${deleted === 1 ? '' : 's'} from the history`)
+    },
+    onError: (err: Error) => toast.error('Could not delete the backup history', err.message),
+    onSettled: () => setConfirmClear(false),
+  })
 
   return (
     <div className="space-y-4">
@@ -397,7 +414,16 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
 
       <BackupPlanPreviewSection stack={stack} />
 
-      <SectionHeader title="History" />
+      <SectionHeader
+        title="History"
+        action={
+          finishedEvents.length > 0 && (
+            <Button variant="ghost" size="sm" onClick={() => setConfirmClear(true)}>
+              <Trash2 /> Clear
+            </Button>
+          )
+        }
+      />
       {eventsLoading ? (
         <div className="space-y-3">
           <Skeleton variant="rect" className="h-12 w-full" />
@@ -412,10 +438,25 @@ export function StackBackupsTab({ stack }: { stack: Stack }) {
       ) : (
         <div className="space-y-2">
           {events.map((e) => (
-            <BackupHistoryRow key={e.id} event={e} />
+            <BackupHistoryRow
+              key={e.id}
+              event={e}
+              deleting={deleteEvents.isPending && deleteEvents.variables === e.id}
+              onDelete={() => deleteEvents.mutate(e.id)}
+            />
           ))}
         </div>
       )}
+      <ConfirmDialog
+        open={confirmClear}
+        onOpenChange={setConfirmClear}
+        title="Clear the backup history?"
+        description={`This deletes ${finishedEvents.length} finished run${finishedEvents.length === 1 ? '' : 's'} and their logs from the history. The archives stay in the storage and can still be restored. A run that is still queued or running is kept.`}
+        confirmLabel="Clear history"
+        tone="danger"
+        loading={deleteEvents.isPending && deleteEvents.variables === undefined}
+        onConfirm={() => deleteEvents.mutate(undefined)}
+      />
 
       {/* Step 1 — pick an archive from the storage. */}
       <RestoreSelectDialog
@@ -815,50 +856,79 @@ function RestoreSelectDialog({
   )
 }
 
-/** One expandable history row: status, trigger, age, size — expanded shows the run log. */
-function BackupHistoryRow({ event }: { event: BackupEvent }) {
+/**
+ * One expandable history row: status, trigger, age, size — expanded shows the run log. A finished row
+ * can be deleted from the history; the archive it produced is not touched.
+ */
+function BackupHistoryRow({
+  event,
+  deleting,
+  onDelete,
+}: {
+  event: BackupEvent
+  deleting: boolean
+  onDelete: () => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const isActive = event.status === 'running' || event.status === 'queued'
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-surface">
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        aria-expanded={expanded}
-        className={cn(
-          'flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left',
-          'transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
-        )}
-      >
-        {expanded ? (
-          <ChevronDown className="size-4 shrink-0 text-text-3" aria-hidden />
-        ) : (
-          <ChevronRight className="size-4 shrink-0 text-text-3" aria-hidden />
-        )}
-        <StatusBadge status={event.status} size="sm" />
-        <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
-          {event.triggeredBy}
-        </span>
-        <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>
-          {timeAgo(event.startedAt)}
-        </span>
-        {event.sizeBytes != null && (
-          <span className="tnum text-xs text-text-2">{formatBytes(event.sizeBytes)}</span>
-        )}
-        <span className="tnum ml-auto text-xs text-text-3">
-          {formatDuration(event.startedAt, event.finishedAt)}
-        </span>
-        {isActive && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-run">
-            <span
-              className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]"
-              aria-hidden
-            />
-            live
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          aria-expanded={expanded}
+          className={cn(
+            'flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left',
+            'transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+          )}
+        >
+          {expanded ? (
+            <ChevronDown className="size-4 shrink-0 text-text-3" aria-hidden />
+          ) : (
+            <ChevronRight className="size-4 shrink-0 text-text-3" aria-hidden />
+          )}
+          <StatusBadge status={event.status} size="sm" />
+          <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
+            {event.triggeredBy}
           </span>
+          <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>
+            {timeAgo(event.startedAt)}
+          </span>
+          {event.sizeBytes != null && (
+            <span className="tnum text-xs text-text-2">{formatBytes(event.sizeBytes)}</span>
+          )}
+          <span className="tnum ml-auto text-xs text-text-3">
+            {formatDuration(event.startedAt, event.finishedAt)}
+          </span>
+          {isActive && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-run">
+              <span
+                className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]"
+                aria-hidden
+              />
+              live
+            </span>
+          )}
+        </button>
+        {!isActive && (
+          <div className="flex items-center pr-2">
+            <Tooltip label="Delete from history">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Delete backup run ${event.id} from history`}
+                className="text-text-2 hover:text-danger"
+                loading={deleting}
+                onClick={onDelete}
+              >
+                {!deleting && <Trash2 />}
+              </Button>
+            </Tooltip>
+          </div>
         )}
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-border p-3">

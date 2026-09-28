@@ -525,6 +525,8 @@ public sealed record RestoreValidationDto(
 [JsonSerializable(typeof(TestBackupStorage.Response), TypeInfoPropertyName = "TestBackupStorageResponse")]
 [JsonSerializable(typeof(ListBackupEvents.Query), TypeInfoPropertyName = "ListBackupEventsQuery")]
 [JsonSerializable(typeof(ListBackupEvents.Response), TypeInfoPropertyName = "ListBackupEventsResponse")]
+[JsonSerializable(typeof(DeleteBackupEvents.Command), TypeInfoPropertyName = "DeleteBackupEventsCommand")]
+[JsonSerializable(typeof(DeleteBackupEvents.Response), TypeInfoPropertyName = "DeleteBackupEventsResponse")]
 [JsonSerializable(typeof(RunBackup.Command), TypeInfoPropertyName = "RunBackupCommand")]
 [JsonSerializable(typeof(RunBackup.Response), TypeInfoPropertyName = "RunBackupResponse")]
 [JsonSerializable(typeof(RunInstanceBackup.Command), TypeInfoPropertyName = "RunInstanceBackupCommand")]

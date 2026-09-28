@@ -342,6 +342,9 @@ export const api = {
     start: async (id: number) =>
       (await rpc('stacks.start', { id })) as { stack: Stack; started: boolean },
     events: async (id: number) => (await rpc('stacks.events', { stackId: id })).events as DeployEvent[],
+    /** Deletes one finished deploy event, or every finished one when `eventId` is omitted. */
+    deleteEvents: async (stackId: number, eventId?: number) =>
+      (await rpc('stacks.deleteEvents', { stackId, eventId: eventId ?? null })).deleted as number,
     getEnv: async (id: number) => (await rpc('stacks.getEnv', { stackId: id })).envVars as StackEnvVar[],
     getAppApi: async (id: number) =>
       (await rpc('stacks.getAppApi', { stackId: id })) as {
@@ -662,6 +665,12 @@ export const api = {
         // 'instance' for Watchtower's own runs, 'stack' for the rest; omitted returns both (ADR-0027).
         kind: kind ?? null,
       })).events as BackupEvent[],
+    /**
+     * Deletes one finished backup event of a stack, or every finished one when `eventId` is omitted.
+     * Only the history row goes — the archive stays in the storage and remains restorable.
+     */
+    deleteEvents: async (stackId: number, eventId?: number) =>
+      (await rpc('backups.deleteEvents', { stackId, eventId: eventId ?? null })).deleted as number,
     run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
 
     /** Backs up Watchtower's own database (ADR-0027). Admin-only; needs an encryption passphrase. */
