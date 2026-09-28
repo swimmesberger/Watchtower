@@ -171,7 +171,10 @@ the local snapshot, not the upload. With the switch off nothing is touched and a
 may be captured mid-write. "Back up now" works regardless of the schedule switch.
 
 Backups run one at a time through a single-flight queue, and every run is recorded in the tab's
-history (status, size, remote path, full log).
+history (status, size, remote path, full log). A finished run can be deleted from the history, or all
+of them cleared at once (`backups.deleteEvents`); that removes only the record — the archive stays in
+the storage and is still offered by **Restore…** until retention prunes it. A queued or running run is
+never deleted.
 
 ### The schedule
 

@@ -148,6 +148,37 @@
         ]
       }
     },
+    "backups.deleteEvents": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "eventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleted"
+        ]
+      }
+    },
     "backups.dismissRecovery": {
       "params": {
         "type": "object"
@@ -11628,6 +11659,37 @@
         },
         "required": [
           "id"
+        ]
+      }
+    },
+    "stacks.deleteEvents": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "eventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleted"
         ]
       }
     },

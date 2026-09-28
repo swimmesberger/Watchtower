@@ -32,6 +32,8 @@ namespace Watchtower.Application.Modules.Stacks;
 [JsonSerializable(typeof(StartStack.Response), TypeInfoPropertyName = "StartStackResponse")]
 [JsonSerializable(typeof(ListDeployEvents.Query), TypeInfoPropertyName = "ListDeployEventsQuery")]
 [JsonSerializable(typeof(ListDeployEvents.Response), TypeInfoPropertyName = "ListDeployEventsResponse")]
+[JsonSerializable(typeof(DeleteDeployEvents.Command), TypeInfoPropertyName = "DeleteDeployEventsCommand")]
+[JsonSerializable(typeof(DeleteDeployEvents.Response), TypeInfoPropertyName = "DeleteDeployEventsResponse")]
 [JsonSerializable(typeof(StackDeviceMappingDto))]
 [JsonSerializable(typeof(StackDeviceMappingInput))]
 [JsonSerializable(typeof(HostGpuDto))]
