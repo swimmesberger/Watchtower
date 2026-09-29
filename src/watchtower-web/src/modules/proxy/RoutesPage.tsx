@@ -33,6 +33,7 @@ import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
 import { Input, type InputProps, Textarea } from '@/components/ui/input'
+import { describeSessionDuration, SessionDurationField } from '@/components/session-duration-field'
 import { Label } from '@/components/ui/label'
 import { SectionHeader } from '@/components/ui/section-header'
 import {
@@ -1944,6 +1945,7 @@ export function RoutesPage() {
                         groups={accessGroups}
                         accessRules={accessRules}
                         activeEnforcementPoint={accessEnforcementPoint}
+                        defaultSessionDuration={proxyConfig?.cloudflare.accessSessionDuration}
                       />
                     ) : (
                       <p className="text-[13px] text-text-3">Loading this route's access policy…</p>
@@ -1978,6 +1980,7 @@ export function RoutesPage() {
                       groups={accessGroups}
                       accessRules={accessRules}
                       activeEnforcementPoint={accessEnforcementPoint}
+                      defaultSessionDuration={proxyConfig?.cloudflare.accessSessionDuration}
                       pickersNote={
                         createStackId == null
                           ? 'Choose a stack first — users, groups and access rules come from the realm it belongs to.'
@@ -2530,6 +2533,7 @@ function AccessFields({
   groups,
   accessRules,
   activeEnforcementPoint,
+  defaultSessionDuration,
   pickersNote = null,
 }: {
   value: AccessDraft
@@ -2550,6 +2554,8 @@ function AccessFields({
   accessRules: AccessRule[]
   /** Which enforcement point will decide the policy — what makes a rule attachable or not. */
   activeEnforcementPoint: ActiveEnforcementPoint
+  /** The instance-wide session duration as stored (empty means 24h), named in the "Default" option. */
+  defaultSessionDuration?: string
 }) {
   const { mode, identityHeaderMode, bypassPaths, grantedUserIds, grantedGroupIds, accessRuleIds } = value
   const set = (patch: Partial<AccessDraft>) => onChange({ ...value, ...patch })
@@ -2790,17 +2796,16 @@ function AccessFields({
       {mode !== 'Public' && activeEnforcementPoint === 'CloudflareAccess' && (
         <Field
           label="Session duration"
-          hint="How long a sign-in to this route's Cloudflare Access application lasts, e.g. 30m, 8h, 730h. Empty uses the default from Settings. A session duration on an attached Cloudflare policy, or your account's global one, takes precedence."
+          hint="How long a sign-in to this route's Cloudflare Access application lasts. A session duration on an attached Cloudflare policy, or your account's global one, takes precedence."
         >
           {({ id, describedBy }) => (
-            <Input
+            <SessionDurationField
               id={id}
-              aria-describedby={describedBy}
-              mono
+              describedBy={describedBy}
               value={value.accessSessionDuration}
-              onChange={(e) => setAccessSessionDuration(e.target.value)}
-              placeholder="Default"
-              spellCheck={false}
+              onChange={setAccessSessionDuration}
+              // Names what "default" resolves to, so picking it is not a guess about the Settings page.
+              defaultLabel={`Default from Settings (${describeSessionDuration(defaultSessionDuration?.trim() || '24h')})`}
             />
           )}
         </Field>

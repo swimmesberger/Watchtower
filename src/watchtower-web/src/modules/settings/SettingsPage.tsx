@@ -28,6 +28,7 @@ import { describeCron } from '@/lib/cron'
 import { lanNameKey, parseLanNames } from '@/lib/lanNames'
 import { absoluteTitle, formatBytes, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { ContainerLogs } from '@/components/container-logs'
+import { SessionDurationField } from '@/components/session-duration-field'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -1626,16 +1627,16 @@ function ProxyCard() {
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field
                     label="Access: default session duration"
-                    hint="Written onto each route's Access application unless the route sets its own (Routes → Edit → Session duration), e.g. 30m, 8h, 730h. Empty means 24h. This is not Cloudflare's global session duration; a session duration on an attached Cloudflare policy, or your account's global one, still takes precedence."
+                    hint="Written onto each route's Access application unless the route sets its own (Routes → Edit → Session duration). This is not Cloudflare's global session duration; a session duration on an attached Cloudflare policy, or your account's global one, still takes precedence."
                   >
-                    {({ id }) => (
+                    {({ id, describedBy }) => (
                       <>
-                        <Input
+                        <SessionDurationField
                           id={id}
-                          mono
-                          placeholder="24h"
+                          describedBy={describedBy}
                           value={form.cfAccessSessionDuration}
-                          onChange={e => set('cfAccessSessionDuration', e.target.value)}
+                          onChange={v => set('cfAccessSessionDuration', v)}
+                          defaultLabel="Default (24 hours)"
                           disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessSessionDuration')}
                         />
                         {pinnedPath('Watchtower:Proxy:Cloudflare:AccessSessionDuration') && (
