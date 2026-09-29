@@ -1,11 +1,15 @@
 // The app shell renders the navigation from `sidebarItems` contributions — it never imports a feature
 // module. Adding a destination is a contribution in the owning module; the shell doesn't change.
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, Outlet, useRouteContext, useRouterState } from '@tanstack/react-router'
-import { Eye, LogOut, ShieldCheck } from 'lucide-react'
+import { ChevronRight, Ellipsis, Eye, LogOut, Moon, ShieldCheck, Sun } from 'lucide-react'
 import { useContributions } from '@swimmesberger/elarion-contributions/react'
 import { cn } from '@/lib/utils'
 import { ACCOUNT_SECURITY_PATH, goToLogin, logout, LOCAL_USER_ID, LOGIN_PATH } from '@/lib/auth'
+import { refreshPushSubscription, unsubscribeFromPush } from '@/lib/push'
+import { useTheme } from '@/lib/theme'
+import { DeviceNotifications } from '@/components/device-notifications'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Toaster } from '@/components/ui/toast'
 import { ThemeToggle } from '@/components/ui/theme-toggle'
 import { Tooltip, TooltipProvider } from '@/components/ui/tooltip'
@@ -23,30 +27,41 @@ function isActive(currentPath: string, item: SidebarItem): boolean {
 }
 
 /**
- * Ends the session — globally, since the backend revokes every session the account holds. Rendered only
- * for a real account: with `Auth:Enabled` off the backend reports an implicit local administrator
- * (`LOCAL_USER_ID`) that has nothing to sign out of.
+ * Ends the session — globally, since the backend revokes every session the account holds. This device's
+ * push subscription goes first, while the session can still authorize removing it: a phone that was
+ * signed out should stop receiving deploy alerts.
  */
+async function signOut() {
+  try {
+    await unsubscribeFromPush()
+    await logout()
+  } finally {
+    // Leave regardless: if the call failed the cookie may still be good, and the login page is where
+    // the visitor finds that out — staying put with a half-signed-out shell is the worse outcome.
+    goToLogin('/')
+  }
+}
+
+/**
+ * Whether there is an account to sign out of or secure: with `Auth:Enabled` off the backend reports an
+ * implicit local administrator (`LOCAL_USER_ID`) that has neither.
+ */
+function useIsRealAccount(): boolean {
+  const { caps } = useRouteContext({ from: '__root__' })
+  return caps.user.isAuthenticated && caps.user.id !== LOCAL_USER_ID
+}
+
+/** Rendered only for a real account ({@link useIsRealAccount}). */
 function SignOutButton({ className }: { className?: string }) {
   const { caps } = useRouteContext({ from: '__root__' })
   const user = caps.user
-  if (!user.isAuthenticated || user.id === LOCAL_USER_ID) return null
-
-  async function onSignOut() {
-    try {
-      await logout()
-    } finally {
-      // Leave regardless: if the call failed the cookie may still be good, and the login page is where
-      // the visitor finds that out — staying put with a half-signed-out shell is the worse outcome.
-      goToLogin('/')
-    }
-  }
+  if (!useIsRealAccount()) return null
 
   return (
     <Tooltip label={`Sign out (${user.id})`}>
       <button
         type="button"
-        onClick={() => void onSignOut()}
+        onClick={() => void signOut()}
         aria-label="Sign out"
         className={cn(
           'touch-target inline-flex size-9 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text',
@@ -98,17 +113,18 @@ function Wordmark() {
   )
 }
 
-export function AppShell() {
-  const currentPath = useRouterState({ select: (s) => s.location.pathname })
-  const { caps } = useRouteContext({ from: '__root__' })
-  const items = useContributions(sidebarItems)
-  const mobileItems = items.filter((i) => i.mobile !== false)
+/** A sidebar entry as the contribution registry hands it out: the payload plus its contribution id. */
+type NavItem = SidebarItem & { readonly id: string }
+type NavSection = { id: string; label: string | null; items: readonly NavItem[] }
 
-  // Ungrouped entries first (header-less), then the shell's groups in declared order; `order` on a
-  // contribution ranks it within its group only. Empty groups vanish, so a user whose permissions
-  // leave a single section still gets a tidy sidebar. The mobile tab bar stays flat — grouping is
-  // desktop chrome.
-  const sections = [
+/**
+ * Ungrouped entries first (header-less), then the shell's groups in declared order; `order` on a
+ * contribution ranks it within its group only. Empty groups vanish, so a user whose permissions leave a
+ * single section still gets a tidy sidebar — and the phone's More sheet, which groups whatever the tabs
+ * leave over the same way.
+ */
+function groupSections(items: readonly NavItem[]): NavSection[] {
+  return [
     { id: 'ungrouped', label: null as string | null, items: items.filter((i) => !i.group) },
     ...sidebarGroups.map((group) => ({
       id: group.id as string,
@@ -116,6 +132,125 @@ export function AppShell() {
       items: items.filter((i) => i.group === group.id),
     })),
   ].filter((section) => section.items.length > 0)
+}
+
+/** One destination in the More sheet: the sidebar entry as a full-width row sized for a thumb. */
+function MoreLink({ item, active, onNavigate }: { item: NavItem; active: boolean; onNavigate: () => void }) {
+  const Icon = item.icon
+  const Badge = item.badge
+  return (
+    <Link
+      to={item.to}
+      onClick={onNavigate}
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'flex h-12 items-center gap-3 rounded-md px-3 text-[15px] font-medium transition-colors',
+        active ? 'bg-brand-soft text-brand' : 'text-text hover:bg-surface-2',
+      )}
+    >
+      <Icon className="size-5 shrink-0" />
+      <span className="flex-1">{item.label}</span>
+      {Badge && <Badge placement="sidebar" />}
+      <ChevronRight className="size-4 text-text-3" />
+    </Link>
+  )
+}
+
+const sheetLabelClass = 'px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-3'
+const sheetActionClass =
+  'flex h-12 w-full items-center gap-3 rounded-md px-3 text-left text-[15px] font-medium text-text transition-colors hover:bg-surface-2'
+
+/**
+ * The phone's fourth tab: every destination that is not a tab, grouped like the desktop sidebar, plus the
+ * account actions the desktop keeps at the foot of the sidebar. A bottom sheet (the shared Dialog is one
+ * on phones), so it opens over the page the operator is on and closes back onto it.
+ */
+function MoreSheet({
+  open,
+  onOpenChange,
+  sections,
+  currentPath,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  sections: NavSection[]
+  currentPath: string
+}) {
+  const { caps } = useRouteContext({ from: '__root__' })
+  const realAccount = useIsRealAccount()
+  const { resolved, toggle } = useTheme()
+  const close = () => onOpenChange(false)
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="gap-0 px-2 pt-4">
+        <div className="px-3 pb-1">
+          <DialogTitle className="text-base">More</DialogTitle>
+          <DialogDescription className="sr-only">Other destinations and account settings</DialogDescription>
+        </div>
+
+        {sections.map((section) => (
+          <div key={section.id} className="flex flex-col">
+            {section.label && <p className={sheetLabelClass}>{section.label}</p>}
+            {section.items.map((item) => (
+              <MoreLink key={item.id} item={item} active={isActive(currentPath, item)} onNavigate={close} />
+            ))}
+          </div>
+        ))}
+
+        <div className="flex flex-col">
+          <p className={sheetLabelClass}>{realAccount ? caps.user.id : 'This device'}</p>
+          <DeviceNotifications compact className="px-3 py-2.5" />
+          <button type="button" onClick={toggle} className={sheetActionClass}>
+            {resolved === 'dark' ? <Sun className="size-5 shrink-0" /> : <Moon className="size-5 shrink-0" />}
+            {resolved === 'dark' ? 'Light theme' : 'Dark theme'}
+          </button>
+          {realAccount && (
+            <>
+              <Link to={ACCOUNT_SECURITY_PATH} onClick={close} className={sheetActionClass}>
+                <ShieldCheck className="size-5 shrink-0" />
+                Account security
+              </Link>
+              <button type="button" onClick={() => void signOut()} className={sheetActionClass}>
+                <LogOut className="size-5 shrink-0" />
+                Sign out
+              </button>
+            </>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function tabClass(active: boolean) {
+  return cn(
+    'relative flex min-w-[64px] flex-1 flex-col items-center justify-center gap-0.5 pt-1 text-[10px] font-medium transition-colors',
+    active
+      ? 'text-brand before:absolute before:inset-x-3 before:top-0 before:h-0.5 before:rounded-full before:bg-brand'
+      : 'text-text-3',
+  )
+}
+
+export function AppShell() {
+  const currentPath = useRouterState({ select: (s) => s.location.pathname })
+  const { caps } = useRouteContext({ from: '__root__' })
+  const items = useContributions(sidebarItems)
+  const [moreOpen, setMoreOpen] = useState(false)
+
+  const sections = groupSections(items)
+  const tabItems = items.filter((i) => i.mobile === 'tab')
+  const moreItems = items.filter((i) => (i.mobile ?? 'more') === 'more')
+  const moreSections = groupSections(moreItems)
+  const moreActive =
+    moreItems.some((item) => isActive(currentPath, item)) || currentPath === ACCOUNT_SECURITY_PATH
+
+  // An installed app opened after days on the Home Screen may hold a subscription the push service has
+  // rotated meanwhile; re-registering it on every start is what keeps the deploy alerts arriving.
+  const operator = caps.user.isAuthenticated && !caps.isFlagEnabled('apps-portal')
+  useEffect(() => {
+    if (operator) void refreshPushSubscription()
+  }, [operator])
 
   // The login page is pre-auth: navigation to places the visitor cannot reach yet would be noise, so the
   // shell steps aside and renders the page on its own. (Toasts and tooltips stay — the form uses both.)
@@ -215,13 +350,9 @@ export function AppShell() {
         </aside>
 
         {/* ── Mobile top bar ── */}
-        <header className="sticky top-0 z-30 flex h-[var(--header-h)] items-center justify-between border-b border-border bg-surface px-4 md:hidden">
+        {/* The account actions live in the More sheet on phones; the bar is the brand and the way home. */}
+        <header className="sticky top-0 z-30 flex h-header items-center border-b border-border bg-surface px-4 pt-safe md:hidden">
           <Wordmark />
-          <div className="flex items-center gap-1">
-            <ThemeToggle />
-            <SecurityLink />
-            <SignOutButton />
-          </div>
         </header>
 
         {/* ── Content column ── */}
@@ -231,12 +362,12 @@ export function AppShell() {
           </main>
         </div>
 
-        {/* ── Mobile bottom tab bar (items with mobile !== false) ── */}
+        {/* ── Mobile bottom tab bar: the `mobile: 'tab'` destinations, then More ── */}
         <nav
           className="fixed inset-x-0 bottom-0 z-30 flex h-bottombar border-t border-border bg-surface pb-safe shadow-[var(--sh-md)] md:hidden"
           aria-label="Primary"
         >
-          {mobileItems.map((item) => {
+          {tabItems.map((item) => {
             const active = isActive(currentPath, item)
             const Icon = item.icon
             const Badge = item.badge
@@ -245,12 +376,7 @@ export function AppShell() {
                 key={item.id}
                 to={item.to}
                 aria-current={active ? 'page' : undefined}
-                className={cn(
-                  'relative flex min-w-[64px] flex-1 flex-col items-center justify-center gap-0.5 pt-1 text-[10px] font-medium transition-colors',
-                  active
-                    ? 'text-brand before:absolute before:inset-x-3 before:top-0 before:h-0.5 before:rounded-full before:bg-brand'
-                    : 'text-text-3',
-                )}
+                className={tabClass(active)}
               >
                 <span className="relative">
                   <Icon className="size-[22px]" />
@@ -260,7 +386,24 @@ export function AppShell() {
               </Link>
             )
           })}
+          <button
+            type="button"
+            onClick={() => setMoreOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={moreOpen}
+            className={tabClass(moreActive)}
+          >
+            <span className="relative">
+              <Ellipsis className="size-[22px]" />
+              {/* A badge on a destination inside the sheet (Settings' "update available") must show from
+                  the tab bar too, or only someone already looking in the sheet would ever see it. */}
+              {moreItems.map((item) => item.badge && <item.badge key={item.id} placement="tab" />)}
+            </span>
+            More
+          </button>
         </nav>
+
+        <MoreSheet open={moreOpen} onOpenChange={setMoreOpen} sections={moreSections} currentPath={currentPath} />
 
         <Toaster />
       </div>

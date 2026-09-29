@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Watchtower.Application.Config;
 
 /// <summary>
@@ -173,6 +175,46 @@ public sealed record WatchtowerOptions {
     /// (e.g. <c>WATCHTOWER__BACKUP__ENABLED=true</c>, <c>WATCHTOWER__BACKUP__SFTP__HOST=…</c>).
     /// </summary>
     public BackupOptions Backup { get; init; } = new();
+
+    /// <summary>
+    /// Web Push (VAPID) settings for the operator notifications (ADR-0041). Bound from
+    /// <c>WATCHTOWER__WEBPUSH__*</c> (e.g. <c>WATCHTOWER__WEBPUSH__SUBJECT=mailto:ops@example.com</c>).
+    /// Nothing here is required: an unset key pair is generated on first use and kept in the database.
+    /// </summary>
+    public WebPushOptions WebPush { get; init; } = new();
+}
+
+/// <summary>
+/// VAPID configuration for Web Push (ADR-0041, RFC 8292). The subject identifies the sender to the
+/// browsers' push services — a <c>mailto:</c> or <c>https:</c> URL they may use to reach whoever runs
+/// the instance when its traffic misbehaves.
+/// </summary>
+/// <remarks>
+/// A key pair may be pinned here (both halves base64url, the public key the 65-byte uncompressed P-256
+/// point, the private key the 32-byte scalar); otherwise one is generated on first use and persisted,
+/// encrypted like every other private key the database holds. Pinning is for an operator who wants the
+/// key to outlive the database — every browser subscription is bound to the public key it was made with,
+/// so <em>changing</em> the pair silently orphans every subscribed device until it subscribes again.
+/// </remarks>
+public sealed record WebPushOptions {
+    /// <summary>The subject used when none is configured: the project's home, which is a valid https URL.</summary>
+    public const string DefaultSubject = "https://github.com/swimmesberger/Watchtower";
+
+    /// <summary>The VAPID <c>sub</c> claim — a <c>mailto:</c> or <c>https:</c> contact URL.</summary>
+    public string Subject { get; init; } = DefaultSubject;
+
+    /// <summary>Pinned VAPID public key (base64url). Only used together with <see cref="PrivateKey"/>.</summary>
+    public string? PublicKey { get; init; }
+
+    /// <summary>Pinned VAPID private key (base64url). Only used together with <see cref="PublicKey"/>.</summary>
+    public string? PrivateKey { get; init; }
+
+    /// <summary>Whether a complete key pair is pinned — half a pair is ignored rather than half-used.</summary>
+    public bool HasConfiguredKeys =>
+        !string.IsNullOrWhiteSpace(PublicKey) && !string.IsNullOrWhiteSpace(PrivateKey);
+
+    /// <summary>The subject to sign with: the configured one, or <see cref="DefaultSubject"/> when blank.</summary>
+    public string ResolveSubject() => string.IsNullOrWhiteSpace(Subject) ? DefaultSubject : Subject.Trim();
 }
 
 /// <summary>
@@ -528,6 +570,28 @@ public sealed record ProxyOptions {
     public string Provider { get; init; } = "yarp";
 
     /// <summary>
+    /// The access mode <c>proxy.createRoute</c> gives a new domain route that says nothing about access:
+    /// <c>authenticated</c> (the default, ADR-0035) or <c>public</c>. Anything else — including
+    /// <c>restricted</c>, which admits nobody until grants exist — resolves to <c>authenticated</c>, so a
+    /// stored value nobody can read fails closed rather than publishing the next route to the internet.
+    /// Read under every provider, because "protected" is a property of the route table rather than of
+    /// whichever plane enforces it.
+    /// </summary>
+    /// <remarks>
+    /// Only the <em>default</em>: a route's mode is a column an administrator can change afterwards
+    /// (<c>proxy.setAccess</c>), and Watchtower-target and port routes are Public whatever this says —
+    /// their check constraints allow nothing else.
+    /// </remarks>
+    public string DefaultAccessMode { get; init; } = "authenticated";
+
+    /// <summary>
+    /// The access modes a new route may default to, in the order the Settings page offers them — the
+    /// protected one first. <see cref="Entities.AccessMode.Restricted"/> is deliberately absent: a create
+    /// carries no grants, so a route defaulting to it would admit nobody at all.
+    /// </summary>
+    public static readonly string[] DefaultAccessModeNames = ["authenticated", "public"];
+
+    /// <summary>
     /// Email registered with the ACME CA (Let's Encrypt/ZeroSSL) for expiry notices. Optional but
     /// recommended. When empty, certificates are issued without an account email. Read by both
     /// certificate-issuing providers — Caddy and the in-process proxy; ignored by Cloudflare, whose
@@ -551,6 +615,25 @@ public sealed record ProxyOptions {
     /// </summary>
     public PortRouteOptions PortRoutes { get; init; } = new();
 
+    /// <summary>
+    /// The base domains this deployment publishes under (ADR-0036) — host names separated by commas or
+    /// newlines (<c>example.com, eu.example.com</c>). They are a convenience, never a constraint: the
+    /// create form offers a subdomain box under each of them and the Routes page groups by them, while a
+    /// hostname none of them covers stays a perfectly good route.
+    /// </summary>
+    /// <remarks>
+    /// Provider-independent, like <see cref="PortRoutes"/> and for a plainer reason: this says what the
+    /// operator publishes under, which is a fact about their domains rather than about whichever plane
+    /// terminates them. Under the Cloudflare provider the zones the API token can read are merged in on
+    /// top of these (<c>proxy.listPrimaryDomains</c>), so an operator there usually needs to type nothing
+    /// here at all.
+    /// <para>
+    /// Empty by default, and empty simply means nothing is offered: the create form asks for a whole
+    /// hostname exactly as it did before ADR-0036.
+    /// </para>
+    /// </remarks>
+    public string PrimaryDomains { get; init; } = "";
+
     /// <summary>Cloudflare Tunnel settings. Only used when <see cref="Provider"/> is <c>cloudflare</c>.</summary>
     public CloudflareProxyOptions Cloudflare { get; init; } = new();
 
@@ -569,6 +652,23 @@ public sealed record ProxyOptions {
 
     /// <summary>The canonical wire name of the resolved provider — what the API surfaces and stores.</summary>
     public string ProviderName() => ProxyProviderNames.From(ResolveProvider());
+
+    /// <summary>
+    /// The access mode <see cref="DefaultAccessMode"/> resolves to (case-insensitive). Only
+    /// <c>public</c> and <c>authenticated</c> are legal; everything else — blank, a typo, or the
+    /// <c>restricted</c> nobody could pass on a fresh route — resolves to
+    /// <see cref="Entities.AccessMode.Authenticated"/>, the fail-closed answer.
+    /// </summary>
+    public Entities.AccessMode ResolveDefaultAccessMode() =>
+        string.Equals(DefaultAccessMode?.Trim(), nameof(Entities.AccessMode.Public), StringComparison.OrdinalIgnoreCase)
+            ? Entities.AccessMode.Public
+            : Entities.AccessMode.Authenticated;
+
+    /// <summary>
+    /// The canonical wire name of the resolved default access mode — what the API surfaces and stores,
+    /// the counterpart of <see cref="ProviderName"/>.
+    /// </summary>
+    public string DefaultAccessModeName() => ResolveDefaultAccessMode().ToString().ToLowerInvariant();
 }
 
 /// <summary>The reverse-proxy backends. See ADR-0015 and ADR-0022.</summary>
@@ -719,16 +819,23 @@ public sealed record PortRouteOptions {
 /// the route table into the tunnel's ingress rules (public hostname → service) and upserts a proxied
 /// CNAME per route domain; TLS terminates at Cloudflare's edge.
 /// </summary>
-public sealed record CloudflareProxyOptions {
+public sealed partial record CloudflareProxyOptions {
     /// <summary>Cloudflare account id owning the tunnel.</summary>
     public string? AccountId { get; init; }
 
-    /// <summary>Zone id of the domain the route hostnames live under (single-zone by design for now).</summary>
+    /// <summary>
+    /// Zone id of the domain the route hostnames live under. Optional since ADR-0036: Watchtower lists
+    /// the zones the token can read and writes each route's DNS into the zone whose name is the longest
+    /// suffix of its hostname, which is what makes the provider multi-zone. Set it when the token carries
+    /// no <c>Zone:Read</c>, or when more than one zone could claim a hostname and you want to say which —
+    /// it is the fallback for every domain no listed zone covers.
+    /// </summary>
     public string? ZoneId { get; init; }
 
     /// <summary>
-    /// API token with <c>Cloudflare Tunnel:Edit</c> and <c>DNS:Edit</c> (Zero Trust Access scopes come
-    /// with phase 3). Treated as a secret — never logged, never echoed to the UI.
+    /// API token with <c>Cloudflare Tunnel:Edit</c>, <c>DNS:Edit</c> and — since new routes are protected
+    /// by default (ADR-0035) — <c>Access: Apps and Policies:Edit</c>, which is what lets Watchtower gate a
+    /// route at the edge at all. Treated as a secret — never logged, never echoed to the UI.
     /// </summary>
     public string? ApiToken { get; init; }
 
@@ -765,8 +872,8 @@ public sealed record CloudflareProxyOptions {
 
     /// <summary>
     /// Comma-separated emails allowed through the Zero Trust Access application of every
-    /// <see cref="Entities.AccessMode.Authenticated"/> route (phase 3 of ADR-0015). Restricted routes
-    /// derive their allow-list from the route's grants instead. Requires the API token to also carry
+    /// <see cref="Entities.AccessMode.Authenticated"/> route (ADR-0015). Restricted routes derive their
+    /// allow-list from the route's grants instead. Requires the API token to also carry
     /// <c>Access: Apps and Policies:Edit</c>.
     /// </summary>
     public string AccessAllowedEmails { get; init; } = "";
@@ -793,6 +900,56 @@ public sealed record CloudflareProxyOptions {
     /// group settings above.
     /// </summary>
     public string AccessReusablePolicyIds { get; init; } = "";
+
+    /// <summary>
+    /// How long a sign-in to one of Watchtower's Access applications lasts before Cloudflare asks again —
+    /// the application's <c>session_duration</c>, in Cloudflare's duration format (<c>30m</c>, <c>24h</c>,
+    /// <c>730h</c>, <c>2h45m</c>). Empty means <see cref="DefaultAccessSessionDuration"/>. A default only: a
+    /// route's own <c>AccessSessionDuration</c> wins, and neither is Cloudflare's account-wide global duration.
+    /// </summary>
+    /// <remarks>
+    /// This is the <em>application</em> duration, the lowest of Cloudflare's three: a session duration set
+    /// on an attached policy, or the account's global session duration, overrides it. The Watchtower-owned
+    /// policy never sets one, so the value holds for every route whose reusable policies do not either.
+    /// </remarks>
+    public string AccessSessionDuration { get; init; } = "";
+
+    /// <summary>What Watchtower sent before <see cref="AccessSessionDuration"/> existed, and still does when it is empty.</summary>
+    public const string DefaultAccessSessionDuration = "24h";
+
+    /// <summary>
+    /// The session duration to send: <see cref="AccessSessionDuration"/> when it reads as one, else
+    /// <see cref="DefaultAccessSessionDuration"/>. An unreadable value (an env pin the save-time check never
+    /// saw) falls back rather than being sent, because Cloudflare would reject every application write that
+    /// carried it, and a new protected hostname would get no Access application at all.
+    /// </summary>
+    public string ResolveAccessSessionDuration() => ResolveAccessSessionDuration(AccessSessionDuration);
+
+    /// <inheritdoc cref="ResolveAccessSessionDuration()"/>
+    public static string ResolveAccessSessionDuration(string? value) =>
+        IsAccessSessionDuration(value) ? value!.Trim() : DefaultAccessSessionDuration;
+
+    /// <summary>
+    /// Whether <paramref name="value"/> is a duration Cloudflare accepts: one or more number-unit pairs in
+    /// Go's <c>time.ParseDuration</c> syntax, the units being <c>ns</c>, <c>us</c>/<c>µs</c>, <c>ms</c>,
+    /// <c>s</c>, <c>m</c> and <c>h</c>.
+    /// </summary>
+    public static bool IsAccessSessionDuration(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && AccessSessionDurationPattern().IsMatch(value.Trim());
+
+    [GeneratedRegex(@"^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$", RegexOptions.CultureInvariant)]
+    private static partial Regex AccessSessionDurationPattern();
+
+    /// <summary>
+    /// Whether anything at all is configured that a visitor could pass an <c>Authenticated</c> route's
+    /// Access application with. Without one the edge has nobody to admit, so the route is either a
+    /// lockout (the reconcile publishes a deny-all — ADR-0035) or, at create time, a refusal.
+    /// </summary>
+    public bool HasAccessAllowSource() =>
+        SplitList(AccessAllowedEmails).Length > 0
+        || SplitList(AccessAllowedEmailDomains).Length > 0
+        || SplitList(AccessGroupIds).Length > 0
+        || SplitList(AccessReusablePolicyIds).Length > 0;
 
     /// <summary>Parses a comma/semicolon/whitespace-separated list into trimmed, distinct entries.</summary>
     public static string[] SplitList(string? value) =>

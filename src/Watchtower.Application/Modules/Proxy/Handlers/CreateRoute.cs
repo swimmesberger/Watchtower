@@ -1,3 +1,4 @@
+using Elarion.Abstractions.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -25,7 +26,9 @@ public sealed class CreateRoute(
     IProxyProvider proxy,
     IOptionsMonitor<WatchtowerOptions> options,
     YarpListenerState listener,
-    HostPortOccupancy hostPorts)
+    HostPortOccupancy hostPorts,
+    ICurrentUser currentUser,
+    TimeProvider time)
     : IHandler<CreateRoute.Command, Result<CreateRoute.Response>> {
     /// <param name="Domain">
     /// The hostname to serve. Required for a <c>domain</c> route and refused on a <c>port</c> one, which
@@ -51,6 +54,34 @@ public sealed class CreateRoute(
     /// Port routes only: the host port this route's own TLS listener answers on. The port has to be
     /// published on Watchtower's own container as well — nothing here can do that.
     /// </param>
+    /// <param name="AccessMode">
+    /// Service domain routes only, and administrators only: the access policy the route starts under.
+    /// Left unset (together with <paramref name="BypassPaths"/>) it is the deployment's
+    /// <c>Proxy:DefaultAccessMode</c> — <c>Authenticated</c> unless an operator says otherwise (ADR-0035).
+    /// </param>
+    /// <param name="BypassPaths">
+    /// Service domain routes only, and administrators only: newline-separated rooted path prefixes that
+    /// stay reachable without signing in — the public webhook or health endpoint of an otherwise gated
+    /// app. Stored only for a protected route; a Public one has no access control to except anything from.
+    /// </param>
+    /// <param name="GrantedUserIds">
+    /// <see cref="Entities.AccessMode.Restricted"/> only, administrators only: the accounts let through. With
+    /// <paramref name="GrantedGroupIds"/> this is what makes a route creatable Restricted at all — the whole
+    /// policy is written in the one transaction that writes the route.
+    /// </param>
+    /// <param name="GrantedGroupIds">Restricted only, administrators only: the groups let through.</param>
+    /// <param name="AccessRuleIds">
+    /// <see cref="Entities.AccessMode.Authenticated"/> only, administrators only: the access rules the route
+    /// attaches, in precedence order (ADR-0039). None means the instance-wide allow sources.
+    /// </param>
+    /// <param name="IdentityHeaderMode">
+    /// Protected routes only, administrators only: which plaintext identity headers reach the upstream.
+    /// Omitted means the JWT only, as on <c>proxy.setAccess</c>.
+    /// </param>
+    /// <param name="AccessSessionDuration">
+    /// Protected routes only, administrators only: how long a sign-in to the route's Cloudflare Access
+    /// application lasts. Omitted or empty means the instance-wide duration.
+    /// </param>
     public sealed record Command(
         int StackId,
         string? Domain,
@@ -63,9 +94,30 @@ public sealed class CreateRoute(
         int? RealmId = null,
         bool? MakeLoginRoute = null,
         string? Binding = null,
-        int? ListenPort = null);
+        int? ListenPort = null,
+        AccessMode? AccessMode = null,
+        string? BypassPaths = null,
+        // The rest of a route's access policy, so a create can say everything proxy.setAccess can and a
+        // route never has to be published under one policy only to be changed to another a moment later.
+        // Optional and last, like every addition to this contract: a client that predates them omits them.
+        IReadOnlyList<int>? GrantedUserIds = null,
+        IReadOnlyList<int>? GrantedGroupIds = null,
+        IReadOnlyList<int>? AccessRuleIds = null,
+        IdentityHeaderMode? IdentityHeaderMode = null,
+        string? AccessSessionDuration = null);
 
     public sealed record Response(RouteDto Route);
+
+    /// <summary>
+    /// Whether the request states anything about access — the trigger for the Admin gate, and for refusing
+    /// the request outright on a route whose access is structural. A method rather than a property on the
+    /// command so it stays out of the wire contract.
+    /// </summary>
+    private static bool NamesAccess(Command command) =>
+        command.AccessMode is not null || command.BypassPaths is not null
+        || command.GrantedUserIds is { Count: > 0 } || command.GrantedGroupIds is { Count: > 0 }
+        || command.AccessRuleIds is { Count: > 0 } || command.IdentityHeaderMode is not null
+        || !string.IsNullOrWhiteSpace(command.AccessSessionDuration);
 
     public async ValueTask<Result<Response>> HandleAsync(Command command, CancellationToken ct) {
         ArgumentNullException.ThrowIfNull(command);
@@ -111,8 +163,16 @@ public sealed class CreateRoute(
                 "routes only.");
         }
 
-        if (!await db.Stacks.AnyAsync(s => s.Id == command.StackId, ct))
+        // The stack first, because its category is the realm every grant and rule in the policy must come
+        // from — the route has no row yet to resolve that from.
+        var realmId = await RouteAccessValidation.StackRealmIdAsync(db, command.StackId, ct);
+        if (realmId is null)
             return AppError.NotFound($"Stack {command.StackId} not found");
+
+        var resolved = await ResolveAccessAsync(command, realmId.Value, domain, ct);
+        if (resolved.Error is { } accessError)
+            return accessError;
+        var access = resolved.Access!;
 
         var route = new Route {
             Target = RouteTarget.Service,
@@ -123,14 +183,34 @@ public sealed class CreateRoute(
             TlsEnabled = command.TlsEnabled,
             IsPrimary = command.IsPrimary,
             Kind = RouteMapping.ParseKind(command.Kind),
+            AccessMode = access.Mode,
+            IdentityHeaderMode = access.IdentityHeaderMode,
+            BypassPaths = access.BypassPaths,
+            AccessSessionDuration = string.IsNullOrEmpty(access.AccessSessionDuration) ? null : access.AccessSessionDuration,
             Status = RouteStatus.Pending,
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Routes.Add(route);
+        // Through the navigation rather than the id, so the grants and attachments go in with the route in
+        // one SaveChanges: the route is never committed — and so never reconciled to the edge — under a
+        // policy other than the one asked for, which is what the old create-then-setAccess sequence did.
+        foreach (var userId in access.GrantedUserIds)
+            db.RouteAccessGrants.Add(new RouteAccessGrant { Route = route, UserId = userId });
+        foreach (var groupId in access.GrantedGroupIds)
+            db.RouteAccessGrants.Add(new RouteAccessGrant { Route = route, GroupId = groupId });
+        var ruleIds = access.AccessRuleIds ?? [];
+        for (var i = 0; i < ruleIds.Count; i++)
+            db.RouteAccessRules.Add(new RouteAccessRule { Route = route, AccessRuleId = ruleIds[i], Order = i });
         await db.SaveChangesAsync(ct);
 
         await proxy.ConnectStackAsync(command.StackId, ct);
         await proxy.ApplyAsync(ct);
+
+        // An explicitly chosen policy is an access decision, and leaves the trace proxy.setAccess would have
+        // left for the same decision made afterwards. A create that said nothing took the configured default,
+        // which is a setting and was audited when it was set.
+        if (NamesAccess(command))
+            await RouteAccessAudit.RecordAsync(db, currentUser, time, route, access.Mode, "on create");
 
         // Re-read with the stack nav for the DTO.
         var saved = await db.Routes.AsNoTracking().Include(r => r.Stack).FirstAsync(r => r.Id == route.Id, ct);
@@ -138,10 +218,12 @@ public sealed class CreateRoute(
     }
 
     /// <remarks>
-    /// <see cref="AccessMode"/> is never taken from the request and is always
-    /// <see cref="AccessMode.Public"/>: Watchtower authenticates the visitors of its own surface natively,
-    /// so route access control has nothing to add, and a login page behind the gate that redirects to it
-    /// would be a closed loop. The check constraint refuses anything else anyway.
+    /// <see cref="Route.AccessMode"/> is never taken from the request and is always
+    /// <see cref="AccessMode.Public"/> — the deployment's protected-by-default setting included
+    /// (ADR-0035): Watchtower authenticates the visitors of its own surface natively, so route access
+    /// control has nothing to add, and a login page behind the gate that redirects to it would be a
+    /// closed loop. The check constraint refuses anything else anyway. A request that <em>asked</em> for
+    /// a policy is refused rather than quietly given Public, for the same reason a stack is.
     /// </remarks>
     private async ValueTask<Result<Response>> CreateWatchtowerRouteAsync(
         Command command, string domain, CancellationToken ct) {
@@ -153,6 +235,12 @@ public sealed class CreateRoute(
         if (!string.IsNullOrWhiteSpace(command.ServiceName) || command.ContainerPort != 0) {
             return AppError.Validation(
                 "A Watchtower route forwards nowhere; leave the service name and container port unset.");
+        }
+        if (RefuseAccessFields(
+                command,
+                "Watchtower routes use Watchtower's own login; route access control does not apply — "
+                + "leave the access fields unset.") is { } accessError) {
+            return accessError;
         }
 
         var realmId = command.RealmId ?? Realm.SystemRealmId;
@@ -231,6 +319,13 @@ public sealed class CreateRoute(
                 "A port route has no hostname, so it is neither a managed subdomain nor a custom domain; "
                 + "leave the kind unset.");
         }
+        if (RefuseAccessFields(
+                command,
+                "A port route is always public. It has no hostname for a login redirect to return to, so "
+                + "route access control does not apply — leave the access fields unset.")
+            is { } accessError) {
+            return accessError;
+        }
         if (string.IsNullOrWhiteSpace(command.ServiceName))
             return AppError.Validation("Service name is required.");
         if (command.ContainerPort is < 1 or > 65535)
@@ -294,6 +389,100 @@ public sealed class CreateRoute(
         var saved = await db.Routes.AsNoTracking().Include(r => r.Stack).FirstAsync(r => r.Id == route.Id, ct);
         return new Response(RouteMapping.ToDto(saved));
     }
+
+    /// <summary>
+    /// Settles the whole access policy a new service route starts under (ADR-0035, ADR-0039): the mode,
+    /// bypass paths, identity forwarding, and the grants or access rules that decide who the mode admits.
+    /// </summary>
+    /// <remarks>
+    /// Two paths, and the split is the point. A request that says nothing about access gets the
+    /// deployment's default — <c>Authenticated</c> unless an operator changed it — which is what makes a
+    /// freshly published hostname gated rather than open to the internet. A request that says
+    /// <em>anything</em> about access is an administrative act and needs the Admin role, the same one
+    /// <c>proxy.setAccess</c> demands: the gate fires on any explicit value rather than on a "non-default"
+    /// one, because the default can change between the moment a form is rendered and the moment it is
+    /// submitted, and a rule nobody can predict is not a rule.
+    /// <para>
+    /// Everything else is <see cref="RouteAccessValidation"/>, the validation <c>proxy.setAccess</c> runs, so
+    /// a route can be created with exactly the policies it could later be changed to. The create used to be
+    /// narrower — no grants, no rules, and Restricted refused "because a create carries no grants" — which
+    /// forced a second step that published the route under the instance-wide allow-list first.
+    /// </para>
+    /// <para>
+    /// Two refusals are the create's own. A Restricted route naming nobody is refused, because publishing a
+    /// new hostname that admits no one reads as a broken deployment rather than as a policy (an existing
+    /// route may still be narrowed to nobody through <c>setAccess</c>, where it is a deliberate lockout). And
+    /// under Cloudflare, an Authenticated route with no rules is refused while no instance-wide allow source
+    /// exists, because that is the list it would be projected from — a route attaching rules is judged on
+    /// its rules instead (ADR-0039 decision 5), and a Restricted one on its grants.
+    /// </para>
+    /// </remarks>
+    private async Task<RouteAccessValidation.Outcome> ResolveAccessAsync(
+        Command command, int realmId, string domain, CancellationToken ct) {
+        var proxyOptions = options.CurrentValue.Proxy;
+
+        if (NamesAccess(command) && !currentUser.IsInRole(WatchtowerClaims.AdminRole)) {
+            return new RouteAccessValidation.Outcome(
+                AppError.Forbidden(
+                    "Only an administrator can choose a route's access policy. Leave the access fields unset "
+                    + "to create the route under the configured default."),
+                null);
+        }
+
+        var mode = command.AccessMode ?? proxyOptions.ResolveDefaultAccessMode();
+        var outcome = await RouteAccessValidation.ValidateAsync(
+            db,
+            new RouteAccessRequest(
+                mode, command.BypassPaths, command.GrantedUserIds, command.GrantedGroupIds,
+                command.AccessRuleIds, command.IdentityHeaderMode, command.AccessSessionDuration),
+            realmId,
+            domain,
+            AccessClauseSupport.PointFor(proxyOptions.ResolveProvider()),
+            ct);
+        if (outcome.Error is not null) return outcome;
+        var access = outcome.Access!;
+
+        if (access.Mode == AccessMode.Restricted
+            && access.GrantedUserIds.Count == 0 && access.GrantedGroupIds.Count == 0) {
+            return new RouteAccessValidation.Outcome(
+                AppError.Validation(
+                    "A new Restricted route has to name at least one user or group — otherwise nobody would be "
+                    + "admitted. Pick them here, or create it authenticated."),
+                null);
+        }
+
+        // Under Cloudflare the gate is an Access application, and an application nobody can pass is a route
+        // the edge denies outright (ADR-0035). Only the one case whose allow-list *is* the instance-wide
+        // settings is checked against them — better said here, while the operator is looking, than
+        // discovered as a route that answers 403 to everyone.
+        if (access.Mode == AccessMode.Authenticated
+            && access.AccessRuleIds is not { Count: > 0 }
+            && proxyOptions.Enabled
+            && proxyOptions.ResolveProvider() == ProxyProviderKind.Cloudflare
+            && !proxyOptions.Cloudflare.HasAccessAllowSource()) {
+            return new RouteAccessValidation.Outcome(
+                AppError.Validation(
+                    "Cloudflare Zero Trust has no allow source configured, so a protected route would deny "
+                    + "everyone. Attach an access rule, add allowed emails, email domains, an Access group id or "
+                    + "a reusable policy id under Settings → Reverse proxy, or create this route as public."),
+                null);
+        }
+
+        return outcome;
+    }
+
+    /// <summary>
+    /// Refuses a request that names an access policy on a route whose mode is structural, returning the
+    /// operator-facing message or <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// Refused rather than ignored, the same house rule the stack and service fields follow above: an
+    /// administrator who thought they had gated a hostname must find out that they have not. Both check
+    /// constraints (<c>ck_routes_target</c>, <c>ck_routes_binding</c>) would refuse the row anyway — as a
+    /// 500 naming a constraint instead of a sentence.
+    /// </remarks>
+    private static AppError? RefuseAccessFields(Command command, string reason) =>
+        NamesAccess(command) ? AppError.Validation(reason) : null;
 
     /// <summary>A write that lost a race on a unique index, as opposed to any other write failure.</summary>
     private static bool IsUniqueViolation(DbUpdateException exception) =>

@@ -61,6 +61,12 @@ public class DeployQueueService : IHostedService, IDisposable {
     private readonly IOptionsMonitor<WatchtowerOptions> _options;
     private readonly ILogger<DeployQueueService> _logger;
 
+    /// <summary>
+    /// Told about every deploy that ends <c>failed</c> (ADR-0041); null when nothing listens — the
+    /// Notifications module is disabled, or a test constructed the queue by hand.
+    /// </summary>
+    private readonly IDeployFailureSink? _failureSink;
+
     /// <param name="scopeFactory">Creates the short-lived scopes all database access runs in.</param>
     /// <param name="git">Repository clone helper.</param>
     /// <param name="compose">Docker Compose CLI wrapper.</param>
@@ -73,6 +79,11 @@ public class DeployQueueService : IHostedService, IDisposable {
     /// <c>MaxConcurrentDeploys</c> once here to size <see cref="_deployGate"/>.
     /// </param>
     /// <param name="logger">Logger.</param>
+    /// <param name="failureSink">
+    /// Optional listener for failed deploys (the operators' push notification). Optional rather than
+    /// required so the queue does not depend on the Notifications module being enabled — the container
+    /// fills it when the module registered one and leaves the default otherwise.
+    /// </param>
     public DeployQueueService(
         IServiceScopeFactory scopeFactory,
         GitCloneService git,
@@ -82,7 +93,8 @@ public class DeployQueueService : IHostedService, IDisposable {
         IProxyProvider proxy,
         HostGpuProbe gpuProbe,
         IOptionsMonitor<WatchtowerOptions> options,
-        ILogger<DeployQueueService> logger) {
+        ILogger<DeployQueueService> logger,
+        IDeployFailureSink? failureSink = null) {
         _scopeFactory = scopeFactory;
         _git = git;
         _compose = compose;
@@ -92,6 +104,7 @@ public class DeployQueueService : IHostedService, IDisposable {
         _gpuProbe = gpuProbe;
         _options = options;
         _logger = logger;
+        _failureSink = failureSink;
         _maxConcurrentDeploys = options.CurrentValue.ResolveMaxConcurrentDeploys();
         _deployGate = new SemaphoreSlim(_maxConcurrentDeploys, _maxConcurrentDeploys);
     }
@@ -360,9 +373,10 @@ public class DeployQueueService : IHostedService, IDisposable {
 
                 // The convergence short-circuit (design.md §Convergent fan-out): a fan-out only ever
                 // asks a stack to reach the newest release, so one that is already there has nothing to
-                // do. Restricted to the "release" trigger — every other one converges compose, env and
-                // configuration too — and to a plain deploy, because a coalesced volume recreate must
-                // never be swallowed by it.
+                // do. Restricted to the two triggers that ask only that — "release" and its safety net
+                // "release-reconcile"; every other one converges compose, env and configuration too —
+                // and to a plain deploy, because a coalesced volume recreate must never be swallowed
+                // by it.
                 //
                 // Recorded on the event and NOWHERE else — which is why it is decided before
                 // MarkRunning below. The event is terminal and successful, because "nothing to do" is a
@@ -426,36 +440,6 @@ public class DeployQueueService : IHostedService, IDisposable {
             // TrimStart ensures an accidentally absolute path is treated as relative to the cloned repo root.
             var composePath = Path.Combine(tempRepoDir, source.ComposeFilePath.TrimStart('/', '\\'));
 
-            // 2b. Volume-recreate flow: bring the stack down (keeps named volumes) then delete each
-            // selected volume before the pull/up recreates them empty. A 409 (still referenced) fails
-            // the deploy, leaving the stack down-but-not-recreated so the operator can re-run.
-            if (removeVolumes is { Count: > 0 }) {
-                WriteHeader($"[Watchtower] Stopping stack '{stack.ComposeProjectName}' to recreate {removeVolumes.Count} volume(s)");
-                UpdateOutput(eventId, output.ToString());
-                var downResult = await _compose.DownAsync(composePath, stack.ComposeProjectName, dockerConfigDir: null, ct);
-                output.Append(downResult.Output);
-                UpdateOutput(eventId, output.ToString());
-                if (downResult.ExitCode != 0) {
-                    WriteHeader("[Watchtower] compose down failed — aborting volume recreate.");
-                    CompleteEvent(eventId, "failed", output.ToString());
-                    UpdateDeployStatus(stackId, DeployStatus.Failed);
-                    return;
-                }
-
-                foreach (var volumeName in removeVolumes) {
-                    WriteHeader($"[Watchtower] Removing volume {volumeName}");
-                    UpdateOutput(eventId, output.ToString());
-                    try {
-                        await _docker.RemoveVolumeAsync(volumeName, ct);
-                    } catch (HttpRequestException ex) {
-                        WriteHeader($"[Watchtower] Failed to remove volume {volumeName}: {ex.Message}");
-                        CompleteEvent(eventId, "failed", output.ToString());
-                        UpdateDeployStatus(stackId, DeployStatus.Failed);
-                        return;
-                    }
-                }
-            }
-
             // 3. Build a scoped DOCKER_CONFIG with all configured registry credentials.
             dockerConfigDir = await CreateRegistryConfigDirAsync(ct);
 
@@ -473,7 +457,14 @@ public class DeployQueueService : IHostedService, IDisposable {
             // Which JWKS the active edge signs identity assertions with (Cloudflare Access or
             // Watchtower's own) — injected so apps verify without hard-coding an issuer.
             var authJwksUrl = AppApiTokens.ResolveJwksUrl(optionsSnapshot);
-            var reservedVars = BuildReservedEnvVars(stackId, appApiToken, publicBaseUrl, authJwksUrl);
+            // And which `aud` those assertions will carry — the stack's own protected routes, so an app
+            // can refuse an assertion minted for somebody else's application behind the same edge.
+            var routeAudiences = GetRouteAudiences(stackId);
+            var authAudience = AppApiTokens.ResolveAudience(optionsSnapshot, routeAudiences);
+            var reservedVars = AppApiTokens
+                .InjectedVariables(optionsSnapshot, stackId, appApiToken, routeAudiences)
+                .Select(v => (Key: v.Name, v.Value))
+                .ToList();
             var repoEnv = await ReadRepoEnvEntriesAsync(composePath, ct);
             foreach (var droppedKey in repoEnv.DroppedKeys)
                 WriteHeader($"[Watchtower] Warning: dropped malformed .env entry '{droppedKey}' (unterminated quote)");
@@ -519,7 +510,8 @@ public class DeployQueueService : IHostedService, IDisposable {
                 appApiToken,
                 publicBaseUrl,
                 GetTemplateTargetService(stack.TemplateId),
-                authJwksUrl));
+                authJwksUrl,
+                authAudience));
             foreach (var warning in plan.Warnings)
                 WriteHeader($"[Watchtower] {warning}");
 
@@ -586,6 +578,47 @@ public class DeployQueueService : IHostedService, IDisposable {
                         WriteHeader(
                             "[Watchtower] Reserving the host's NVIDIA GPU(s) for service "
                             + $"'{mapped.ServiceName}' through the container toolkit");
+                }
+            }
+
+            // 4f. Volume-recreate flow: bring the stack down (keeps named volumes) then delete each
+            //     selected volume before the pull/up recreates them empty. A 409 (still referenced)
+            //     fails the deploy, leaving the stack down-but-not-recreated so the operator can re-run.
+            //
+            //     Deliberately the last step before the pull rather than the first one after the clone.
+            //     Compose interpolates the compose file before it runs ANY command, `down` included, so
+            //     tearing a stack down needs the same generated --env-file the rest of the deploy uses:
+            //     a project that reads a reserved variable through the `:?` required-variable form
+            //     (WATCHTOWER_AUTH_JWKS_URL and friends) cannot even be stopped without it, which is
+            //     why a plain redeploy of such a stack worked while recreating a volume did not.
+            //     Running it here also means everything that can fail locally — clone, env file,
+            //     compose config, the rendered override — has already succeeded, so the stack is never
+            //     left down over a problem that was detectable before anything was stopped.
+            if (removeVolumes is { Count: > 0 }) {
+                WriteHeader($"[Watchtower] Stopping stack '{stack.ComposeProjectName}' to recreate {removeVolumes.Count} volume(s)");
+                UpdateOutput(eventId, output.ToString());
+                var downResult = await _compose.DownAsync(
+                    composePath, stack.ComposeProjectName, dockerConfigDir, envFilePath, ct);
+                output.Append(downResult.Output);
+                UpdateOutput(eventId, output.ToString());
+                if (downResult.ExitCode != 0) {
+                    WriteHeader("[Watchtower] compose down failed — aborting volume recreate.");
+                    CompleteEvent(eventId, "failed", output.ToString());
+                    UpdateDeployStatus(stackId, DeployStatus.Failed);
+                    return;
+                }
+
+                foreach (var volumeName in removeVolumes) {
+                    WriteHeader($"[Watchtower] Removing volume {volumeName}");
+                    UpdateOutput(eventId, output.ToString());
+                    try {
+                        await _docker.RemoveVolumeAsync(volumeName, ct);
+                    } catch (HttpRequestException ex) {
+                        WriteHeader($"[Watchtower] Failed to remove volume {volumeName}: {ex.Message}");
+                        CompleteEvent(eventId, "failed", output.ToString());
+                        UpdateDeployStatus(stackId, DeployStatus.Failed);
+                        return;
+                    }
                 }
             }
 
@@ -684,15 +717,37 @@ public class DeployQueueService : IHostedService, IDisposable {
             .ExecuteUpdate(s => s.SetProperty(e => e.Output, outputText));
     }
 
+    /// <summary>
+    /// Writes a deploy's terminal status — the one place every deploy run ends, which is why a failure is
+    /// reported to <see cref="_failureSink"/> here rather than at each of the paths that can fail.
+    /// </summary>
     private void CompleteEvent(int eventId, string status, string outputText) {
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
-        var now = DateTimeOffset.UtcNow;
-        db.DeployEvents.Where(e => e.Id == eventId)
-            .ExecuteUpdate(s => s
-                .SetProperty(e => e.Status, status)
-                .SetProperty(e => e.Output, outputText)
-                .SetProperty(e => e.FinishedAt, now));
+        using (var scope = _scopeFactory.CreateScope()) {
+            var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            db.DeployEvents.Where(e => e.Id == eventId)
+                .ExecuteUpdate(s => s
+                    .SetProperty(e => e.Status, status)
+                    .SetProperty(e => e.Output, outputText)
+                    .SetProperty(e => e.FinishedAt, now));
+        }
+
+        // After the row is written, so the listener reads the terminal status it is being told about.
+        if (_failureSink is not null && string.Equals(status, "failed", StringComparison.Ordinal))
+            ReportFailure(eventId);
+    }
+
+    /// <summary>
+    /// Hands a failed deploy to the listener. The sink's contract is already "return at once, never
+    /// throw"; the guard is here anyway because this runs inside the deploy's own error handling, where an
+    /// escaping exception would replace the failure being recorded with a different one.
+    /// </summary>
+    private void ReportFailure(int eventId) {
+        try {
+            _failureSink!.DeployFailed(eventId);
+        } catch (Exception ex) {
+            _logger.LogWarning(ex, "Could not report failed deploy {EventId} for notification", eventId);
+        }
     }
 
     private void UpdateDeployStatus(int stackId, DeployStatus status) {
@@ -732,26 +787,17 @@ public class DeployQueueService : IHostedService, IDisposable {
     }
 
     /// <summary>
-    /// The reserved variables injected into every deploy, in write order. <c>WATCHTOWER_URL</c> is
-    /// only written when a public base URL is configured.
+    /// The stack's routes, reduced to what the injected audience depends on. Read at deploy time rather
+    /// than cached: a route protected (or opened) since the last deploy changes the answer, and a deploy
+    /// is exactly the moment the container is about to be told what to trust.
     /// </summary>
-    /// <param name="stackId">The stack being deployed.</param>
-    /// <param name="appApiToken">The stack's App API bearer token.</param>
-    /// <param name="publicBaseUrl">
-    /// Configured <c>Watchtower:PublicBaseUrl</c>. Passed in rather than read here so the env file and
-    /// the compose override of one deploy cannot disagree about it.
-    /// </param>
-    private static List<(string Key, string Value)> BuildReservedEnvVars(
-        int stackId, string appApiToken, string? publicBaseUrl, string? authJwksUrl) {
-        var vars = new List<(string Key, string Value)> {
-            (AppApiTokens.TokenVariable, appApiToken),
-            (AppApiTokens.StackIdVariable, stackId.ToString(CultureInfo.InvariantCulture)),
-        };
-        if (!string.IsNullOrWhiteSpace(publicBaseUrl))
-            vars.Add((AppApiTokens.BaseUrlVariable, publicBaseUrl.Trim()));
-        if (!string.IsNullOrWhiteSpace(authJwksUrl))
-            vars.Add((AppApiTokens.JwksUrlVariable, authJwksUrl.Trim()));
-        return vars;
+    private List<AppApiTokens.RouteAudience> GetRouteAudiences(int stackId) {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        return db.Routes.AsNoTracking()
+            .Where(r => r.StackId == stackId)
+            .Select(r => new AppApiTokens.RouteAudience(r.Domain, r.AccessMode, r.AccessAud))
+            .ToList();
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Watchtower.Application.Config;
 using Watchtower.Application.Entities;
 using Watchtower.Application.Persistence;
 using Xunit;
@@ -160,6 +161,22 @@ public sealed class RouteAccessModeTests {
             // string would not read back as the enum.
             Assert.Equal(IdentityHeaderMode.None, route.IdentityHeaderMode);
         }
+    }
+
+    /// <summary>
+    /// The entity default and the <c>proxy.createRoute</c> default differ on purpose (ADR-0035). The
+    /// column stays <see cref="AccessMode.Public"/> because it is what every writer that is not the
+    /// create handler means — the tenant provisioner, stack adoption, a hand-written INSERT — and
+    /// because flipping it would have rewritten the meaning of every existing row. "Protected by
+    /// default" is a decision about what an operator publishes, so it lives in the handler that
+    /// publishes, over a setting an operator can see.
+    /// </summary>
+    [Fact]
+    public void TheEntityDefaultIsPublic_WhileTheHandlerDefaultIsAuthenticated() {
+        Assert.Equal(AccessMode.Public, new Route {
+            Domain = "demo.example.invalid", ServiceName = "web", ContainerPort = 8080,
+        }.AccessMode);
+        Assert.Equal(AccessMode.Authenticated, new ProxyOptions().ResolveDefaultAccessMode());
     }
 
     /// <summary>A stack that satisfies the entity's required members; a route needs one to hang off.</summary>

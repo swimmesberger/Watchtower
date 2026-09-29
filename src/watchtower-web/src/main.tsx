@@ -34,3 +34,13 @@ async function bootstrap() {
 }
 
 void bootstrap()
+
+// The service worker makes the home-screen install an app (offline shell) and receives Web Push. Production
+// only: in the Vite dev server it would cache modules that hot reload is about to replace.
+if ('serviceWorker' in navigator && !import.meta.env.DEV) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // An installable shell is an enhancement; the app works without it.
+    })
+  })
+}

@@ -183,3 +183,19 @@ export function rosterVersion(state: VersionState, newestId: number | null): {
     behind: newestId != null && current != null && newestId > current.id,
   }
 }
+
+/**
+ * How many updates a stack has waiting — the one count every "update available" surface shows.
+ *
+ * `hasUpdates` means different things in the two modes and is the only field that is right in both
+ * (StacksContracts.cs): in Releases mode it means "a newer release exists", while `outdatedImages` is
+ * empty by construction and `newCommitSha` is informational — unreleased commits on the branch, which
+ * no redeploy would pick up. Counting those badged an up-to-date release-mode stack "1 update".
+ */
+export function stackUpdateCount(stack: Stack): number {
+  return usesReleases(stack)
+    ? stack.hasUpdates
+      ? 1
+      : 0
+    : (stack.outdatedImages?.length ?? 0) + (stack.newCommitSha ? 1 : 0)
+}

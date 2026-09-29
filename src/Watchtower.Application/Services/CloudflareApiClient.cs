@@ -16,14 +16,32 @@ namespace Watchtower.Application.Services;
 /// Follows the <see cref="GitHubApiClient"/> pattern: hand-rolled <see cref="HttpClient"/>,
 /// source-generated JSON, errors surfaced as <see cref="HttpRequestException"/> carrying Cloudflare's
 /// own error messages so reconcile logs say what the API actually objected to.
+/// <para>
+/// Open rather than sealed, and the calls a test needs to answer for are <c>virtual</c>: the seam for
+/// "what would Watchtower do if Cloudflare said this" is a subclass, the same shape
+/// <c>StubDnsPreflight</c> uses. A test that is about the wire itself — the URL asked for, the envelope
+/// parsed — takes the <see cref="HttpClient"/> constructor instead.
+/// </para>
 /// </remarks>
-public sealed class CloudflareApiClient : IDisposable {
+public class CloudflareApiClient : IDisposable {
     private readonly HttpClient _client;
 
     public CloudflareApiClient() {
         _client = new HttpClient { BaseAddress = new Uri("https://api.cloudflare.com/client/v4/") };
         _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         _client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("watchtower-proxy", "1.0"));
+    }
+
+    /// <summary>
+    /// Wire-test seam: the client speaks to <paramref name="client"/> instead of to Cloudflare. Its base
+    /// address is filled in only when it has none, so a handler under test can be pointed at a loopback
+    /// server while a bare <see cref="HttpClient"/> over a fake message handler still resolves the
+    /// relative URLs every call below builds.
+    /// </summary>
+    internal CloudflareApiClient(HttpClient client) {
+        ArgumentNullException.ThrowIfNull(client);
+        _client = client;
+        _client.BaseAddress ??= new Uri("https://api.cloudflare.com/client/v4/");
     }
 
     /// <summary>Finds a non-deleted tunnel by exact name; null when none exists.</summary>
@@ -80,6 +98,37 @@ public sealed class CloudflareApiClient : IDisposable {
         var result = await SendAsync(HttpMethod.Get, $"accounts/{accountId}/cfd_tunnel/{tunnelId}/configurations",
             token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeCloudflareTunnelConfigurationResult, ct);
         return result.Config?.Ingress ?? [];
+    }
+
+    /// <summary>
+    /// The active zones this token can read (ADR-0036) — what makes the provider multi-zone: each route
+    /// domain's DNS record goes into the zone whose name is the longest suffix of it.
+    /// </summary>
+    /// <remarks>
+    /// Requires <c>Zone → Zone → Read</c>, which a token predating ADR-0036 does not carry; every caller
+    /// therefore treats a failure as "nothing discovered" and falls back to the configured Zone ID.
+    /// Active zones only, because a pending one serves no DNS. One page of 50: an account with more zones
+    /// than that is well past the point where naming the zone explicitly is the clearer configuration,
+    /// and paging through hundreds of zones on a cache miss would not make the answer better.
+    /// </remarks>
+    public virtual async Task<IReadOnlyList<CloudflareZone>> ListZonesAsync(
+        string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, "zones?status=active&per_page=50", token, body: null,
+            CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareZone, ct);
+    }
+
+    /// <summary>
+    /// The name of one zone, read from a DNS record in it rather than from the zone endpoint — the
+    /// fallback for a token that can write a zone's records but not list zones at all
+    /// (<c>Zone:Read</c> is a separate permission from <c>DNS:Edit</c>). Null when the zone has no
+    /// records to ask, which is the empty-zone case and not an error.
+    /// </summary>
+    public virtual async Task<string?> GetZoneNameAsync(
+        string zoneId, string token, CancellationToken ct = default) {
+        var records = await SendAsync(HttpMethod.Get, $"zones/{zoneId}/dns_records?per_page=1", token,
+            body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareDnsRecord, ct);
+        var name = records.FirstOrDefault()?.ZoneName;
+        return string.IsNullOrWhiteSpace(name) ? null : name;
     }
 
     /// <summary>Deletes one DNS record — the route-removal path, for a CNAME Watchtower itself pointed at the tunnel.</summary>
@@ -157,6 +206,23 @@ public sealed class CloudflareApiClient : IDisposable {
             token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareAccessPolicy, ct);
     }
 
+    /// <summary>
+    /// The account's <b>reusable</b> Access policies — the ones that exist independently of any application
+    /// and are attached by id (ADR-0039). The roster an <c>ExternalPolicy</c> clause is picked from, so an
+    /// operator chooses a policy by the name they gave it rather than pasting a UUID.
+    /// </summary>
+    /// <remarks>
+    /// A different endpoint from <see cref="ListAccessPoliciesAsync"/>, which is app-scoped: this one is
+    /// account-scoped and is the only way to learn a reusable policy's name. Asks for the first 100 and does
+    /// not paginate, the same limitation (and the same reason) as the zone listing — an account with more
+    /// than that gets an arbitrary subset in the picker and can still type an id in full.
+    /// </remarks>
+    public async Task<IReadOnlyList<CloudflareAccessPolicy>> ListReusableAccessPoliciesAsync(
+        string accountId, string token, CancellationToken ct = default) {
+        return await SendAsync(HttpMethod.Get, $"accounts/{accountId}/access/policies?per_page=100",
+            token, body: null, CloudflareJsonContext.Default.CloudflareEnvelopeListCloudflareAccessPolicy, ct);
+    }
+
     /// <summary>Creates an app-scoped allow policy.</summary>
     public async Task CreateAccessPolicyAsync(
         string accountId, string appId, CloudflareAccessPolicyRequest policy, string token, CancellationToken ct = default) {
@@ -185,7 +251,7 @@ public sealed class CloudflareApiClient : IDisposable {
     /// Cheap credential probe for the settings surface: verifies the token can read the account's
     /// tunnels. Returns null on success, else a human-readable reason.
     /// </summary>
-    public async Task<string?> ValidateAccessAsync(string accountId, string token, CancellationToken ct = default) =>
+    public virtual async Task<string?> ValidateAccessAsync(string accountId, string token, CancellationToken ct = default) =>
         await ProbeAsync($"accounts/{accountId}/cfd_tunnel?per_page=1", token, ct);
 
     /// <summary>
@@ -194,7 +260,7 @@ public sealed class CloudflareApiClient : IDisposable {
     /// CNAME upsert with <c>10000: Authentication error</c> in a reconcile nobody is watching — this is
     /// the same failure surfaced at save time, with Cloudflare's own words. Null when readable.
     /// </summary>
-    public async Task<string?> ValidateZoneAccessAsync(string zoneId, string token, CancellationToken ct = default) =>
+    public virtual async Task<string?> ValidateZoneAccessAsync(string zoneId, string token, CancellationToken ct = default) =>
         await ProbeAsync($"zones/{zoneId}/dns_records?per_page=1", token, ct);
 
     private async Task<string?> ProbeAsync(string url, string token, CancellationToken ct) {
@@ -247,6 +313,25 @@ public enum CloudflareDnsUpsert {
 }
 
 // ── Wire types (Cloudflare API v4) ───────────────────────────────────────────
+//
+// Response types state their nullability honestly, which takes some care: a record whose members are
+// all `init` properties is treated by JsonSourceGenerator as having a parameterized constructor, so it
+// emits an ObjectWithParameterizedConstructorCreator that assigns *every* property from the parsed
+// arguments. A field the response omits therefore arrives as null and a property initializer never
+// runs — `= ""` on one of these is decorative, and worse than decorative, because it makes the
+// non-null annotation a promise the deserializer does not keep and the compiler stops warning at the
+// use sites. (Verifiable in obj/…/CloudflareJsonContext.CloudflareAccessApp.g.cs; pinned by
+// CloudflareAccessWireTests.) So each response property below is one of two things:
+//
+//   `required` — Cloudflare always sends it *and* we would do something wrong without it, typically
+//                building a URL or a DNS target around it. The source generator enforces `required`
+//                on the wire, so an absent field throws a JsonException naming the member instead of
+//                flowing on as null.
+//   `string?`  — everything else. We only compare, log or ignore it, and failing an entire reconcile
+//                because Cloudflare omitted a cosmetic field would be the worse outcome of the two.
+//
+// Request types are unaffected: we construct those ourselves, so `required` there is a compile-time
+// check and the initializers do run.
 
 /// <summary>The standard Cloudflare v4 response envelope.</summary>
 public sealed record CloudflareEnvelope<T> {
@@ -255,14 +340,26 @@ public sealed record CloudflareEnvelope<T> {
     [JsonPropertyName("result")] public T? Result { get; init; }
 }
 
+/// <summary>
+/// One error from a failed v4 response. Every member is optional on purpose: this type is only ever
+/// read while reporting somebody else's failure, and a strictness that threw here would replace the
+/// error the operator needs to see with a deserialization error about the error.
+/// </summary>
 public sealed record CloudflareApiError {
     [JsonPropertyName("code")] public long Code { get; init; }
-    [JsonPropertyName("message")] public string Message { get; init; } = "";
+    [JsonPropertyName("message")] public string? Message { get; init; }
 }
 
 public sealed record CloudflareTunnel {
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    /// <summary>
+    /// Required: it addresses every subsequent call, and it is also the CNAME target every route's DNS
+    /// record points at (<c>{id}.cfargotunnel.com</c>). A null would publish the whole route table at
+    /// <c>.cfargotunnel.com</c> without anything noticing.
+    /// </summary>
+    [JsonPropertyName("id")] public required string Id { get; init; }
+
+    /// <summary>Compared when finding the tunnel by name, and named in logs and the audit trail.</summary>
+    [JsonPropertyName("name")] public string? Name { get; init; }
 }
 
 public sealed record CloudflareCreateTunnelRequest {
@@ -273,6 +370,12 @@ public sealed record CloudflareCreateTunnelRequest {
 /// <summary>One tunnel ingress rule: requests for <see cref="Hostname"/> (optionally narrowed by
 /// <see cref="Path"/>) go to <see cref="Service"/>. The final rule must be a catch-all
 /// (<c>Hostname</c> null, e.g. <c>http_status:404</c>).</summary>
+/// <remarks>
+/// The one type that is read <em>and</em> written, so it answers to both sets of rules above at once,
+/// and already did: <see cref="Service"/> is <c>required</c> because a rule that routes nowhere is not
+/// a rule Cloudflare can store or this code could round-trip, and the other two are nullable because
+/// the catch-all has no hostname and Watchtower never writes a path.
+/// </remarks>
 public sealed record CloudflareIngressRule {
     [JsonPropertyName("hostname")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -306,11 +409,51 @@ public sealed record CloudflareTunnelConfigRead {
 }
 
 public sealed record CloudflareDnsRecord {
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("type")] public string Type { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("content")] public string Content { get; init; } = "";
+    /// <summary>
+    /// Required: the update and delete paths are built around it
+    /// (<c>zones/{zone}/dns_records/{id}</c>), and a null would address the collection rather than the
+    /// record — a PUT that creates where it meant to replace.
+    /// </summary>
+    [JsonPropertyName("id")] public required string Id { get; init; }
+
+    /// <summary>Compared against <c>CNAME</c> when picking the record to upsert.</summary>
+    [JsonPropertyName("type")] public string? Type { get; init; }
+
+    /// <summary>The record's hostname. Read for logs; the lookup filters server-side by name already.</summary>
+    [JsonPropertyName("name")] public string? Name { get; init; }
+
+    /// <summary>Compared against the desired tunnel target to decide whether the upsert has work to do.</summary>
+    [JsonPropertyName("content")] public string? Content { get; init; }
+
     [JsonPropertyName("proxied")] public bool? Proxied { get; init; }
+
+    /// <summary>
+    /// The name of the zone the record lives in, which Cloudflare returns on every record. Read only by
+    /// <see cref="CloudflareApiClient.GetZoneNameAsync"/>, to name a zone a token cannot list — which
+    /// already treats a blank answer as "no name to be had", so nothing here depends on it arriving.
+    /// </summary>
+    [JsonPropertyName("zone_name")] public string? ZoneName { get; init; }
+}
+
+/// <summary>One DNS zone the API token can see (ADR-0036).</summary>
+public sealed record CloudflareZone {
+    /// <summary>Required: it is the answer the catalog exists to produce, and it addresses every DNS write.</summary>
+    [JsonPropertyName("id")] public required string Id { get; init; }
+
+    /// <summary>
+    /// The zone's apex domain, e.g. <c>example.com</c>; punycode for an internationalised one. Required
+    /// because matching a hostname against it is the whole of what a discovered zone is for — a zone
+    /// with no name could never be selected, and would only reach <c>PrimaryDomains.BestMatch</c> as a
+    /// null in the middle of the candidate list.
+    /// </summary>
+    [JsonPropertyName("name")] public required string Name { get; init; }
+
+    /// <summary>
+    /// <c>active</c>, <c>pending</c>, … Nothing reads it: the listing asks for
+    /// <c>?status=active</c>, so the filtering happens at Cloudflare and this is documentation of that
+    /// query rather than a second check. Optional accordingly.
+    /// </summary>
+    [JsonPropertyName("status")] public string? Status { get; init; }
 }
 
 public sealed record CloudflareDnsRecordRequest {
@@ -324,10 +467,40 @@ public sealed record CloudflareDnsRecordRequest {
 
 /// <summary>A Zero Trust Access application (only the fields the reconcile reads).</summary>
 public sealed record CloudflareAccessApp {
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("domain")] public string Domain { get; init; } = "";
-    [JsonPropertyName("type")] public string Type { get; init; } = "";
+    /// <summary>
+    /// Required: the policy endpoints and the delete path are built around it
+    /// (<c>access/apps/{id}/policies</c>), so a null would send a policy write to the account's whole
+    /// application collection.
+    /// </summary>
+    [JsonPropertyName("id")] public required string Id { get; init; }
+
+    /// <summary>
+    /// The application's name, which for Watchtower-owned ones carries the <c>watchtower: </c> prefix
+    /// that <c>CloudflareTunnelProvider.StaleApps</c> reads to decide what it may delete. Optional
+    /// rather than required because a nameless application is simply not one of ours — which is the
+    /// answer a missing name should produce, not a failed reconcile and not a deleted app.
+    /// </summary>
+    [JsonPropertyName("name")] public string? Name { get; init; }
+
+    /// <summary>The hostname the application covers; compared when matching the projection to the edge.</summary>
+    [JsonPropertyName("domain")] public string? Domain { get; init; }
+
+    /// <summary><c>self_hosted</c> for everything Watchtower creates. Never read back.</summary>
+    [JsonPropertyName("type")] public string? Type { get; init; }
+
+    /// <summary>
+    /// The application's <b>Application Audience (AUD) tag</b> — the <c>aud</c> claim Cloudflare stamps
+    /// into every <c>Cf-Access-Jwt-Assertion</c> it mints for this application. Cloudflare assigns it
+    /// once, at creation, and never changes it, so an update returns the same value the create did.
+    /// </summary>
+    /// <remarks>
+    /// Nullable, unlike its siblings above, and that is the accurate declaration rather than a looser
+    /// one: <c>JsonSourceGenerator</c> treats a record of <c>init</c> properties as having a
+    /// parameterized constructor and assigns <em>every</em> property from the parsed arguments, so a
+    /// field absent from the response arrives as null and a property initializer never runs. A caller
+    /// reads this as "not known" and injects no audience at all, which is the fail-closed answer.
+    /// </remarks>
+    [JsonPropertyName("aud")] public string? Aud { get; init; }
 }
 
 public sealed record CloudflareAccessAppRequest {
@@ -342,12 +515,43 @@ public sealed record CloudflareAccessAppRequest {
     /// leaves existing attachments untouched; a non-empty array replaces them.
     /// </summary>
     [JsonPropertyName("policies")] public string[]? Policies { get; init; }
+
+    /// <summary>
+    /// Every hostname (and path) this application covers, beyond the single <see cref="Domain"/>. What a
+    /// bypass application needs: one app naming <c>app.example.com/webhooks</c> and
+    /// <c>app.example.com/healthz</c> rather than one app per public path. Null omits the field, which is
+    /// what an ordinary whole-hostname application wants.
+    /// </summary>
+    /// <remarks>
+    /// This replaces the <c>self_hosted_domains</c> string array, which Cloudflare deprecated in favour of
+    /// <c>destinations</c> and stopped supporting on 21 November 2025.
+    /// </remarks>
+    [JsonPropertyName("destinations")] public CloudflareAccessDestination[]? Destinations { get; init; }
+}
+
+/// <summary>One destination of a self-hosted Access application: a <c>host</c> or <c>host/path</c>.</summary>
+public sealed record CloudflareAccessDestination {
+    /// <summary><c>public</c> — the only kind Watchtower publishes; the others are private-network ones.</summary>
+    [JsonPropertyName("type")] public required string Type { get; init; }
+
+    [JsonPropertyName("uri")] public required string Uri { get; init; }
+
+    /// <summary>A public destination for <paramref name="uri"/> (<c>host</c> or <c>host/path</c>).</summary>
+    public static CloudflareAccessDestination Public(string uri) => new() { Type = "public", Uri = uri };
 }
 
 public sealed record CloudflareAccessPolicy {
-    [JsonPropertyName("id")] public string Id { get; init; } = "";
-    [JsonPropertyName("name")] public string Name { get; init; } = "";
-    [JsonPropertyName("decision")] public string Decision { get; init; } = "";
+    /// <summary>Required: the update and delete paths address the policy by it.</summary>
+    [JsonPropertyName("id")] public required string Id { get; init; }
+
+    /// <summary>
+    /// Compared against <c>watchtower</c> to find the app-scoped policy Watchtower owns. A null is not
+    /// that policy, which is the right reading of a response that did not name one.
+    /// </summary>
+    [JsonPropertyName("name")] public string? Name { get; init; }
+
+    /// <summary><c>allow</c>/<c>deny</c>/<c>bypass</c>. Written, never read back — the projection decides it.</summary>
+    [JsonPropertyName("decision")] public string? Decision { get; init; }
 }
 
 public sealed record CloudflareAccessPolicyRequest {
@@ -365,11 +569,22 @@ public sealed record CloudflareAccessRule {
     [JsonPropertyName("email")] public CloudflareEmailRule? Email { get; init; }
     [JsonPropertyName("email_domain")] public CloudflareEmailDomainRule? EmailDomain { get; init; }
     [JsonPropertyName("group")] public CloudflareGroupRule? Group { get; init; }
+    [JsonPropertyName("everyone")] public CloudflareEveryoneRule? Everyone { get; init; }
 
     public static CloudflareAccessRule ForEmail(string email) => new() { Email = new CloudflareEmailRule { Email = email } };
     public static CloudflareAccessRule ForEmailDomain(string domain) => new() { EmailDomain = new CloudflareEmailDomainRule { Domain = domain } };
     public static CloudflareAccessRule ForGroup(string groupId) => new() { Group = new CloudflareGroupRule { Id = groupId } };
+
+    /// <summary>
+    /// The rule every visitor matches. It is the subject of both policies that are not allow-lists: the
+    /// <c>deny</c> a protected route with no allow source gets, and the <c>bypass</c> that lets a route's
+    /// public paths through — in either case the decision, not the rule, is what does the work.
+    /// </summary>
+    public static CloudflareAccessRule ForEveryone() => new() { Everyone = new CloudflareEveryoneRule() };
 }
+
+/// <summary>Matches every visitor. Cloudflare spells it as an empty object, so this record has no members.</summary>
+public sealed record CloudflareEveryoneRule;
 
 public sealed record CloudflareEmailRule {
     [JsonPropertyName("email")] public required string Email { get; init; }
@@ -389,6 +604,7 @@ public sealed record CloudflareGroupRule {
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareTunnel>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<string>))]
 [JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareDnsRecord>>))]
+[JsonSerializable(typeof(CloudflareEnvelope<List<CloudflareZone>>))]
 [JsonSerializable(typeof(CloudflareEnvelope<JsonElement>))]
 [JsonSerializable(typeof(CloudflareEnvelope<CloudflareTunnelConfigurationResult>))]
 [JsonSerializable(typeof(CloudflareEnvelope<CloudflareAccessApp>))]

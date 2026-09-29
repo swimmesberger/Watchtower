@@ -491,6 +491,18 @@ export interface StackEnvVar {
   value: string
 }
 
+/**
+ * One variable Watchtower injects itself on every deploy, previewed for the settings page.
+ * Read-only by nature: the value is resolved from the settings and the stack's routes at deploy
+ * time, so there is nothing here for an operator to edit. `secret` is true only for the App API
+ * token; the rest identify or locate the stack and are safe to show.
+ */
+export interface InjectedEnvVar {
+  name: string
+  value: string
+  secret: boolean
+}
+
 export interface StackEnvVarInput {
   key: string
   value: string
@@ -880,6 +892,48 @@ export interface ProxyPortRoutesConfig {
   lanNames: string
 }
 
+/**
+ * One address the server thinks this deployment answers on, offered under the LAN names field as a chip
+ * (the LAN names setting of ADR-0033 decision 6). Advisory only: nothing is saved until the operator
+ * clicks one and then saves.
+ *
+ * Every rule about what may be offered is the server's — the exclusions, the certificate's own parser,
+ * the deduplication — including for the address this page was reached on, which is sent up as a hint and
+ * comes back as a candidate like any other. So this list is rendered as received.
+ */
+export interface LanNameCandidate {
+  /** The value to append to the setting, verbatim — already in a spelling the Save accepts. */
+  value: string
+  kind: 'hostname' | 'ip'
+  /**
+   * Where it was learned: `browser` (the address this page was reached on, always offered first),
+   * `reverse-dns`, `forward-dns`, `docker-host` or `docker-search-domain`.
+   */
+  source: string
+  /**
+   * Whether the address is confirmed. For `browser` that is a certainty — a page was served over it —
+   * and for the rest it means forward and reverse resolution agree.
+   */
+  verified: boolean
+  /** One sentence saying where it came from — the chip's tooltip. */
+  detail: string
+}
+
+/**
+ * A base domain routes live under (ADR-0036). Derived, never persisted as a list: the server merges what
+ * `Watchtower:Proxy:PrimaryDomains` holds with the zones the Cloudflare token can see, so a domain can be
+ * offered here without anybody having typed it. `proxy.listPrimaryDomains` sorts by name and never errors.
+ */
+export interface PrimaryDomain {
+  name: string
+  /** Where it was learned: the setting, or a zone discovered through the Cloudflare API. */
+  source: 'configured' | 'cloudflare-zone'
+  /** The Cloudflare zone id, when it came from one. Null for a configured entry. */
+  zoneId: string | null
+  /** One sentence saying where it came from — shown as a group subtitle for discovered zones. */
+  detail: string
+}
+
 /** Cloudflare Tunnel connection values (the API token never leaves the server). */
 export interface ProxyCloudflareConfig {
   accountId: string | null
@@ -902,6 +956,11 @@ export interface ProxyCloudflareConfig {
   accessGroupIds: string
   /** Comma-separated reusable Access policy ids attached to Authenticated routes' apps. */
   accessReusablePolicyIds: string
+  /**
+   * Session duration of every Watchtower-created Access application (`24h`, `30m`, `2h45m`); empty means
+   * the default, 24h. A policy's or the account's global session duration overrides it.
+   */
+  accessSessionDuration: string
 }
 
 /** `proxy.getConfig` / `proxy.updateConfig` payload. Fully runtime-switchable (no restart). */
@@ -914,9 +973,22 @@ export interface ProxyConfig {
   yarp: ProxyYarpConfig
   portRoutes: ProxyPortRoutesConfig
   cloudflare: ProxyCloudflareConfig
+  /** The resolved access policy a new domain route starts under (ADR-0035). */
+  defaultAccessMode: DefaultAccessMode
+  /**
+   * The primary-domains setting exactly as it was typed — comma- or newline-separated, not a parsed list.
+   * The parsed, merged view is what `proxy.listPrimaryDomains` answers with.
+   */
+  primaryDomains: string
   /** Config paths pinned by `WATCHTOWER__*` env vars (env wins) — those fields are read-only. */
   pinnedPaths: string[]
 }
+
+/**
+ * What `Watchtower:Proxy:DefaultAccessMode` may hold. `Restricted` is not offered: a create carries no
+ * grants, so a route starting restricted would admit nobody.
+ */
+export type DefaultAccessMode = 'authenticated' | 'public'
 
 /** `proxy.updateConfig` request. Null provider fields keep the stored values (secrets included). */
 export interface UpdateProxyConfigRequest {
@@ -948,6 +1020,18 @@ export interface UpdateProxyConfigRequest {
   cloudflareAccessAllowedEmailDomains?: string | null
   cloudflareAccessGroupIds?: string | null
   cloudflareAccessReusablePolicyIds?: string | null
+  /** Empty resets to the default (24h); null leaves the stored value alone. */
+  cloudflareAccessSessionDuration?: string | null
+  /**
+   * The access policy new domain routes start under. Sent under every provider, like `portRoutesLanNames`;
+   * null leaves the stored value alone.
+   */
+  defaultAccessMode?: DefaultAccessMode | null
+  /**
+   * Comma- or newline-separated base domains routes live under (ADR-0036). Sent under every provider,
+   * like `portRoutesLanNames`; null leaves the stored value alone.
+   */
+  primaryDomains?: string | null
 }
 
 // ── Reverse proxy (routes) ──────────────────────────────────────────────────
@@ -997,7 +1081,12 @@ export interface Route {
   binding: RouteBinding
   /** The host port a `port` route's own TLS listener answers on; null on a `domain` route. */
   listenPort: number | null
+  /** The route's access policy. Lowercase on the wire, unlike the `AccessMode` `proxy.setAccess` speaks. */
+  accessMode: RouteAccessModeWire
 }
+
+/** `RouteDto.accessMode` — the same policy as `AccessMode`, spelled the way the route list reports it. */
+export type RouteAccessModeWire = 'public' | 'authenticated' | 'restricted'
 
 export interface CreateRouteRequest {
   stackId: number
@@ -1018,6 +1107,35 @@ export interface CreateRouteRequest {
   binding?: RouteBinding | null
   /** `port` routes only: the host port to listen on. Must also be published on Watchtower's container. */
   listenPort?: number | null
+  /**
+   * The access policy the route starts under. Omitted means the configured default (ADR-0035); naming any
+   * part of the policy is admin-only. `Restricted` needs at least one granted user or group.
+   */
+  accessMode?: AccessMode | null
+  /** Newline-separated request-path prefixes left anonymous on a protected route; null when none. */
+  bypassPaths?: string | null
+  /**
+   * The rest of the policy, so a route is created with everything `proxy.setAccess` could give it and is
+   * never published under one policy only to be changed to another (ADR-0039, decision 5 as amended).
+   */
+  identityHeaderMode?: IdentityHeaderMode | null
+  /** `Restricted` only: the accounts let through. */
+  grantedUserIds?: number[] | null
+  /** `Restricted` only: the groups let through. */
+  grantedGroupIds?: number[] | null
+  /** `Authenticated` only: the access rules attached, in precedence order. None means the instance-wide list. */
+  accessRuleIds?: number[] | null
+  /** Protected routes only: the Cloudflare Access session duration. Omitted or empty means the instance-wide one. */
+  accessSessionDuration?: string | null
+}
+
+/**
+ * What a policy for a *new* route on a stack may name — the create-form counterpart of {@link RouteAccessView}'s
+ * `realmId` and `activeEnforcementPoint`, resolved exactly as `proxy.createRoute` validates.
+ */
+export interface StackAccessContext {
+  realmId: number
+  activeEnforcementPoint: ActiveEnforcementPoint
 }
 
 export interface UpdateRouteRequest {
@@ -1034,6 +1152,18 @@ export interface UpdateRouteRequest {
   binding?: RouteBinding | null
   /** `port` routes only: move the route to another host port. Omitted keeps the current one. */
   listenPort?: number | null
+  /**
+   * The route's whole access policy, saved in the same write as the fields above. Omitted (null) leaves
+   * access alone — what a non-administrator's edit sends. When named, the rest means what it means on
+   * `proxy.setAccess`; admin-only, and service domain routes only.
+   */
+  accessMode?: AccessMode | null
+  bypassPaths?: string | null
+  identityHeaderMode?: IdentityHeaderMode | null
+  grantedUserIds?: number[] | null
+  grantedGroupIds?: number[] | null
+  accessRuleIds?: number[] | null
+  accessSessionDuration?: string | null
 }
 
 /**
@@ -1052,6 +1182,79 @@ export type AccessMode = 'Public' | 'Authenticated' | 'Restricted'
  */
 export type IdentityHeaderMode = 'None' | 'Remote' | 'AuthRequest' | 'Cloudflare'
 
+/**
+ * What one clause of an access rule names (ADR-0039). `user` and `group` are Watchtower's own subjects and
+ * mean the same thing wherever a route is served; `email` and `emailDomain` are enforceable only at the
+ * Cloudflare edge, which verifies an address before asserting it where Watchtower does not; `externalGroup`
+ * and `externalPolicy` are ids for allow-lists Cloudflare owns and Watchtower only references.
+ */
+export type AccessClauseKind =
+  | 'User'
+  | 'Group'
+  | 'Email'
+  | 'EmailDomain'
+  | 'ExternalGroup'
+  | 'ExternalPolicy'
+
+/** Which enforcement point the active proxy provider decides a route's access at (ADR-0039). */
+export type ActiveEnforcementPoint = 'InProcess' | 'CloudflareAccess'
+
+/**
+ * One clause of an access rule. Exactly one of `userId`, `groupId` and `value` carries the subject, decided
+ * by `kind` — the same shape the database's CHECK constraint enforces.
+ */
+export interface AccessRuleClause {
+  kind: AccessClauseKind
+  userId?: number | null
+  groupId?: number | null
+  /** An address, an email domain, or Cloudflare's own id — for the three value-carrying kinds. */
+  value?: string | null
+  /** What to render for this clause: the account's username, the group's name, or the value itself. */
+  subjectLabel?: string | null
+}
+
+/**
+ * A named, reusable allow-list that routes attach instead of restating who gets in (ADR-0039). The two
+ * portability flags are the intersection over its clauses: a rule is attachable only to a route whose active
+ * provider can honour every one of them, so the UI can grey out the rest rather than letting the refusal
+ * happen on save.
+ */
+export interface AccessRule {
+  id: number
+  name: string
+  realmId: number
+  description: string | null
+  clauses: AccessRuleClause[]
+  enforceableInProcess: boolean
+  enforceableByCloudflareAccess: boolean
+  /** How many routes name this rule — what makes a delete refusable and an edit's blast radius visible. */
+  attachedRouteCount: number
+}
+
+/**
+ * A reusable Access policy that already exists in the operator's Cloudflare account — the roster an
+ * `externalPolicy` clause is picked from, so a rule names *friends* rather than carrying a UUID.
+ */
+export interface ExternalAccessPolicy {
+  id: string
+  name: string
+  /** Cloudflare's own decision word. Shown because attaching a `deny` policy should be a knowing choice. */
+  decision: string | null
+}
+
+/**
+ * What `proxy.setAccessRule` takes. An upsert: omitting `id` creates, supplying it replaces that rule's name,
+ * description and whole clause list. `realmId` is ignored on an update — a rule's population is immutable,
+ * because changing it would invalidate every clause and every attachment at once.
+ */
+export interface SetAccessRuleRequest {
+  id?: number | null
+  name: string
+  description?: string | null
+  realmId?: number | null
+  clauses: AccessRuleClause[]
+}
+
 /** The shape `proxy.setAccess` both accepts and returns — the policy itself, with nothing derived. */
 export interface RouteAccess {
   mode: AccessMode
@@ -1066,6 +1269,17 @@ export interface RouteAccess {
    * granted group is let through, evaluated per request — so membership changes take effect immediately.
    */
   grantedGroupIds: number[]
+  /**
+   * Ids of the access rules this route attaches, in precedence order; only meaningful for `Authenticated`
+   * (ADR-0039). An empty array is the instance-wide fallback — `null`/omitted means "leave them as they are",
+   * which is what keeps an older client from stripping a composition it knows nothing about.
+   */
+  accessRuleIds?: number[] | null
+  /**
+   * How long a sign-in to the route's Cloudflare Access application lasts (`8h`, `30m`, `730h`). Read back
+   * as null when the route uses the instance-wide duration; sent as `''` to go back to it, null to leave it.
+   */
+  accessSessionDuration?: string | null
 }
 
 /**
@@ -1076,6 +1290,8 @@ export interface RouteAccess {
  */
 export interface RouteAccessView extends RouteAccess {
   realmId: number
+  /** Which enforcement point is live, so the form knows which of a rule's two portability flags applies. */
+  activeEnforcementPoint: ActiveEnforcementPoint
 }
 
 export interface DnsCheckResult {

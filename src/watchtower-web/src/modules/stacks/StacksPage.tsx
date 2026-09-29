@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { Boxes, Play, Plus, Square, Trash2, X } from 'lucide-react'
 import { api } from '@/lib/api'
-import { deployTargetVersion, usesReleases } from '@/lib/release'
+import { deployTargetVersion, stackUpdateCount, usesReleases } from '@/lib/release'
 import type { Stack } from '@/lib/types'
 import { absoluteTitle, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -16,18 +16,25 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
+import type { StacksFilter } from './module'
 
 const stacksApi = getRouteApi('/stacks')
 
-const FILTER_LABEL: Record<'ok' | 'failed', string> = {
+const FILTER_LABEL: Record<StacksFilter, string> = {
   ok: 'Status: healthy',
   failed: 'Status: failed',
+  updates: 'Updates available',
 }
 
-function matchesFilter(stack: Stack, status: 'ok' | 'failed'): boolean {
-  return status === 'ok'
-    ? stack.lastDeployStatus === 'success'
-    : stack.lastDeployStatus === 'failed'
+function matchesFilter(stack: Stack, status: StacksFilter): boolean {
+  switch (status) {
+    case 'ok':
+      return stack.lastDeployStatus === 'success'
+    case 'failed':
+      return stack.lastDeployStatus === 'failed'
+    case 'updates':
+      return stackUpdateCount(stack) > 0
+  }
 }
 
 function isDeploying(stack: Stack): boolean {
@@ -182,7 +189,13 @@ export function StacksPage() {
    * all; the row then shows nothing rather than a made-up value.
    */
   function VersionCell({ stack }: { stack: Stack }) {
-    if (!usesReleases(stack)) return <Badge tone="neutral">{stack.branch}</Badge>
+    if (!usesReleases(stack))
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <Badge tone="neutral">{stack.branch}</Badge>
+          <UpdatesBadge stack={stack} />
+        </span>
+      )
     const target = deployTargetVersion(stack)
     if (!target) return <span className="text-text-3">—</span>
     return (
@@ -193,6 +206,7 @@ export function StacksPage() {
             pinned
           </Badge>
         )}
+        <UpdatesBadge stack={stack} />
       </span>
     )
   }
@@ -334,7 +348,8 @@ export function StacksPage() {
               pinned
             </Badge>
           </>
-        )}
+        )}{' '}
+        <UpdatesBadge stack={s} />
       </p>
 
       <p className="text-[13px] text-text-2">
@@ -475,6 +490,17 @@ export function StacksPage() {
         }}
       />
     </div>
+  )
+}
+
+/** "N updates" when the last update check found something a Deploy would pick up; nothing otherwise. */
+function UpdatesBadge({ stack }: { stack: Stack }) {
+  const count = stackUpdateCount(stack)
+  if (count === 0) return null
+  return (
+    <Badge tone="warn" size="sm">
+      {count} update{count === 1 ? '' : 's'}
+    </Badge>
   )
 }
 

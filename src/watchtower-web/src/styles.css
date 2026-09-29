@@ -194,9 +194,23 @@ body {
 .mb-bottombar { margin-bottom: calc(var(--bottombar-h) + env(safe-area-inset-bottom)); }
 .pb-bottombar { padding-bottom: calc(var(--bottombar-h) + env(safe-area-inset-bottom)); }
 .bottom-bottombar { bottom: calc(var(--bottombar-h) + env(safe-area-inset-bottom)); }
+/* The installed iOS app draws under a translucent status bar (index.html), so the top bar grows by the
+   notch inset instead of sliding under it. Zero everywhere else. */
+.h-header { height: calc(var(--header-h) + env(safe-area-inset-top)); }
+.top-header { top: calc(var(--header-h) + env(safe-area-inset-top)); }
+
+/* ── Installed app (home screen) ── */
+@media (display-mode: standalone) {
+  /* No rubber-band past the top: in a standalone app it drags the whole shell, header and tab bar
+     included, which reads as the app coming loose rather than as scrolling. */
+  html, body { overscroll-behavior-y: none; }
+}
 
 /* ── Touch targets on coarse pointers (A10) ── */
 @media (pointer: coarse) {
+  /* iOS Safari zooms the page into any focused field whose text is under 16px, and does not zoom back
+     out — which on the login form means signing in to a sideways-scrolling page. */
+  input, select, textarea { font-size: max(16px, 1em); }
   .touch-target { position: relative; }
   .touch-target::after {
     content: '';

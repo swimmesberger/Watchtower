@@ -23,7 +23,14 @@ export const sidebarGroups = [
 
 export type SidebarGroupId = (typeof sidebarGroups)[number]['id']
 
-/** Primary navigation. Rendered in the desktop sidebar and (unless `mobile === false`) the mobile tab bar. */
+/**
+ * Where a destination lives on a phone. The tab bar holds the few places a phone is for — checking status,
+ * deploying, reading logs — and everything else sits one tap further, in the "More" sheet, grouped like the
+ * sidebar. `false` hides a desktop-only destination from the phone's navigation entirely.
+ */
+export type MobilePlacement = 'tab' | 'more' | false
+
+/** Primary navigation. Rendered in the desktop sidebar and, per {@link SidebarItem.mobile}, on phones. */
 export interface SidebarItem {
   readonly label: string
   readonly icon: LucideIcon
@@ -32,8 +39,11 @@ export interface SidebarItem {
   readonly group?: SidebarGroupId
   /** Exact path match for active state (index route); otherwise prefix match. */
   readonly exact?: boolean
-  /** Show in the mobile bottom tab bar. Defaults to true; set false for desktop-only destinations. */
-  readonly mobile?: boolean
+  /**
+   * Placement on phones: a bottom tab (`'tab'`, keep it to three — the fourth slot is "More"), the More
+   * sheet (`'more'`, the default) or nowhere (`false`, desktop-only destinations).
+   */
+  readonly mobile?: MobilePlacement
   /** Optional dynamic indicator (e.g. an "update available" dot) rendered by the owning module. */
   readonly badge?: ComponentType<{ placement: 'sidebar' | 'tab' }>
 }

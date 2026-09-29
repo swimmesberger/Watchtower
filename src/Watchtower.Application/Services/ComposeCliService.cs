@@ -103,10 +103,22 @@ public class ComposeCliService {
     /// Runs <c>docker compose down</c> for the given compose file and project.
     /// Useful for full stack teardown before re-creating containers.
     /// </summary>
+    /// <remarks>
+    /// Takes the deploy's generated .env like every other file-based call: Compose interpolates the
+    /// compose file before it does anything with it, so a project whose services reference a reserved
+    /// variable with the <c>:?</c> required-variable form fails to come DOWN, not just up, when the
+    /// file is missing. See the volume-recreate step in DeployQueueService.
+    /// </remarks>
+    /// <param name="composeFilePath">Absolute path to the docker-compose.yml file.</param>
+    /// <param name="projectName">Value passed to --project-name.</param>
+    /// <param name="dockerConfigDir">Directory containing a config.json with registry credentials. Null to use the default config.</param>
+    /// <param name="envFilePath">Path to a .env file for compose variable substitution. Null to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
     public Task<(int ExitCode, string Output)> DownAsync(
-        string composeFilePath, string projectName, string? dockerConfigDir, CancellationToken ct) {
+        string composeFilePath, string projectName, string? dockerConfigDir, string? envFilePath,
+        CancellationToken ct) {
         var args = BuildComposeArgs(
-            composeFilePath, projectName, envFilePath: null, overrideFilePath: null, "down");
+            composeFilePath, projectName, envFilePath, overrideFilePath: null, "down");
         return RunAsync(args, dockerConfigDir, onLine: null, ct);
     }
 

@@ -11,7 +11,7 @@ export const stacksManifest = defineModule({
   when: { module: 'Stacks' },
   contributes: [
     contribute(sidebarItems, [
-      { id: 'stacks', label: 'Stacks', icon: Boxes, to: '/stacks', group: 'deploy', order: 20 },
+      { id: 'stacks', label: 'Stacks', icon: Boxes, to: '/stacks', group: 'deploy', order: 20, mobile: 'tab' },
     ]),
     contribute(stackDetailTabs, [
       {
@@ -34,8 +34,11 @@ export const stacksManifest = defineModule({
   ],
 })
 
+/** The stack-list filters: last deploy healthy, last deploy failed, or an update waiting to be deployed. */
+export type StacksFilter = 'ok' | 'failed' | 'updates'
+
 interface StacksSearch {
-  status?: 'ok' | 'failed'
+  status?: StacksFilter
 }
 
 export const stacksRoute = createRoute({
@@ -45,7 +48,7 @@ export const stacksRoute = createRoute({
   component: lazyRouteComponent(() => import('./StacksPage'), 'StacksPage'),
   validateSearch: (search: Record<string, unknown>): StacksSearch => {
     const status = search.status
-    return status === 'ok' || status === 'failed' ? { status } : {}
+    return status === 'ok' || status === 'failed' || status === 'updates' ? { status } : {}
   },
 })
 
@@ -69,6 +72,11 @@ interface StackDetailSearch {
   // Tab values are open — any module may contribute a stack-detail tab — so this is `string`, not a
   // closed union of the tabs this module happens to know about.
   tab?: string
+  /**
+   * A deploy event to open on arrival: its history row expands with the log streaming. The target of a
+   * deploy-failure push notification, so a tap on the phone lands on the log that explains it.
+   */
+  event?: number
 }
 
 export const stackDetailRoute = createRoute({
@@ -76,6 +84,11 @@ export const stackDetailRoute = createRoute({
   path: '/stacks/$id',
   beforeLoad: redirectUnless({ module: 'Stacks' }, '/'),
   component: lazyRouteComponent(() => import('./StackDetailPage'), 'StackDetailPage'),
-  validateSearch: (search: Record<string, unknown>): StackDetailSearch =>
-    typeof search.tab === 'string' ? { tab: search.tab } : {},
+  validateSearch: (search: Record<string, unknown>): StackDetailSearch => {
+    const event = Number(search.event)
+    return {
+      ...(typeof search.tab === 'string' ? { tab: search.tab } : {}),
+      ...(Number.isInteger(event) && event > 0 ? { event } : {}),
+    }
+  },
 })

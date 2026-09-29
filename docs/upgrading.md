@@ -143,3 +143,98 @@ warn: WATCHTOWER__PROXY__YARP__LANNAMES is set but no longer has any effect: the
 Rename the variable in your compose file (or drop it and set the LAN names under **Settings → Reverse
 proxy → LAN port routes**). Until you do, the internal CA has no names to issue for and every port route
 reports `Error`.
+
+## New routes are protected by default (ADR-0035, ADR-0036)
+
+**Read this before upgrading if you use the Cloudflare provider.** One change in this release alters the
+behaviour of routes you already have, and it is the kind that locks people out rather than the kind that
+lets them in.
+
+**A protected route with no allow source is now denied at the edge.** Until now, a route stored as
+`Authenticated` or `Restricted` whose allow-list came out empty — no allowed emails, no email domains,
+no Access group ids, no reusable policy ids, or grants that resolve to no address Cloudflare can match —
+was *skipped* by the reconcile: no Access application was published and any existing one was left alone.
+The Routes page said the route was protected; the edge served it to everyone. From this image on, the
+reconcile publishes an explicit **deny-all** Access application for such a route and sets the row to
+`Error`. Nobody reaches it until you act.
+
+That happens on the **first reconcile after the upgrade**, which is at startup. There is no migration
+that softens it, deliberately: flipping those routes to Public would silently confirm the exposure, and
+flipping them anywhere else would be Watchtower deciding your access policy for you
+([ADR-0035](decisions/0035-new-routes-are-protected-by-default.md)).
+
+**Before you upgrade**, go through **Routes** and, for every route showing *Authenticated* or
+*Restricted* under the Cloudflare provider, either:
+
+- configure an allow source under **Settings → Reverse proxy** — allowed emails, email domains, an
+  Access group id, or a reusable Access policy id — which is almost certainly what you meant the route
+  to have; or
+- set the route **Public** if it was in fact meant to be open. It is open today; this makes the row say
+  so.
+
+**Routes already stored as Public are untouched**, under every provider. Nothing re-evaluates the access
+mode of an existing route.
+
+**New routes created from now on are Authenticated by default**, under every provider, and creating a
+protected route is refused while Cloudflare has no allow source configured. The default is a setting —
+**Settings → Reverse proxy → Default access for new routes** (`authenticated` or `public`,
+env-pinnable as `WATCHTOWER__PROXY__DEFAULTACCESSMODE`) — so a deployment that genuinely wants open
+routes sets it once. Watchtower's own routes and LAN port routes stay Public and are unaffected.
+
+**Add `Zone: Read` to your Cloudflare API token.** It is not required — an install with a zone id set
+keeps working exactly as it does today — but with it Watchtower discovers the zones your token can see,
+the zone id becomes optional, and routes can live under more than one domain in the same account
+([ADR-0036](decisions/0036-routes-live-under-primary-domains.md)). See
+[docs/reverse-proxy/cloudflare.md → Zone discovery](reverse-proxy/cloudflare.md#zone-discovery).
+
+## Access rules compose per route (ADR-0039, ADR-0040)
+
+A protected route can now attach **named access rules** instead of taking the instance-wide allow sources,
+so two hostnames in one instance can admit different sets of people — *family* on the internal ones,
+*family and friends* on the shared one ([ADR-0039](decisions/0039-access-rules-compose.md)). Manage them
+under **Routes → Access rules**, and tick them per route in the route form (**New route**, or **Edit**).
+
+**Nothing changes until you create one.** A protected route with no rules attached resolves exactly as it
+does today: `Authenticated` admits the four instance-wide allow sources, `Restricted` admits its grants.
+No migration, no backfill, no behaviour change on upgrade.
+
+**One workflow does break, and only on routes you opt in.** If you attached a reusable Access policy *by
+hand* to a `watchtower: {host}` application in the Cloudflare dashboard, that attachment stops surviving
+reconciles **once you attach access rules to that route** — Watchtower then owns the application's policy
+list ([ADR-0040](decisions/0040-the-edge-projection-is-authoritative.md)). Two ways forward, and the first
+is better:
+
+- Express it as a **Cloudflare reusable policy** clause on a rule. The picker lists your account's policies
+  by name, so this is two clicks and the attachment becomes visible in Watchtower instead of only in the
+  dashboard.
+- Or keep it as an **app-scoped policy** under any name other than the reserved `watchtower`. Those are
+  never touched by a reconcile, and that is now a documented guarantee rather than an implementation
+  detail.
+
+Routes you never attach a rule to keep today's behaviour, hand-made attachments included.
+
+**One access-control fix lands with this, unconditionally.** Under the Cloudflare provider, a `Restricted`
+route's grants were flattened to email addresses without applying the realm invariant, so a grant left
+behind by a **realm change** could still admit at the edge although Watchtower's own forward-auth refuses
+it ([ADR-0040](decisions/0040-the-edge-projection-is-authoritative.md) decision 3). The projection now
+applies the route's realm, as the in-process path always has. It **removes** access rather than granting
+it, and only in that one situation — if a tenant stack has moved between categories and you expect
+somebody to reach it, re-grant them in the route's current realm.
+
+## One form creates and edits a route, access included (ADR-0039, decision 5 as amended)
+
+Routes now have an **Edit** action, and the separate access (lock) button is gone — the route form is where
+a route's access is set, when it is created and whenever it is changed. Two things behave differently:
+
+- **A route is created with its whole access policy.** The new-route form offers `Restricted` with its
+  users and groups, access rules, identity forwarding and bypass paths, and writes them together with the
+  route. There is no longer a moment where a new route is served under the instance-wide allow-list before
+  being narrowed.
+- **Under Cloudflare, a route with access rules no longer needs a global allow source.** Creating an
+  `Authenticated` route is still refused while no instance-wide allow source is configured — but only when
+  it attaches no rules, since only then are those settings its allow-list. A `Restricted` route is judged
+  on its grants.
+
+For API clients: `proxy.createRoute` and `proxy.updateRoute` accept the same optional access fields as
+`proxy.setAccess`, validated by the same code. Omitting them keeps today's behaviour — the configured
+default on a create, the route's current access on an edit — and `proxy.setAccess` is unchanged.

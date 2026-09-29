@@ -256,15 +256,22 @@ public sealed class ReleaseDeployTests {
     /// A fan-out deploy of a stack that already converged onto the same release does nothing — no clone,
     /// no compose, and a success saying so.
     /// </summary>
-    [Fact]
-    public async Task Deploy_TriggeredByARelease_ShortCircuitsWhenTheStackIsAlreadyOnIt() {
+    /// <remarks>
+    /// The reconcile trigger is here for the same reason it may short-circuit at all: it asks the one
+    /// question a fan-out asks, so when it turns out to have been racing a fan-out that was not lost
+    /// after all, "already there" is the answer it wants.
+    /// </remarks>
+    [Theory]
+    [InlineData(DeployTriggers.Release)]
+    [InlineData(DeployTriggers.ReleaseReconcile)]
+    public async Task Deploy_TriggeredByARelease_ShortCircuitsWhenTheStackIsAlreadyOnIt(string trigger) {
         using var host = AuthTestHost.Start();
         var productId = await host.AddProductAsync("shop");
         var releaseId = await host.AddReleaseAsync(productId, "v1");
         var stackId = await host.AddProductStackAsync("shop-prod", productId);
         await host.SetDeployedReleaseAsync(stackId, releaseId);
 
-        var run = await RunDeployAsync(host, stackId, SingleService, DeployTriggers.Release);
+        var run = await RunDeployAsync(host, stackId, SingleService, trigger);
 
         Assert.Equal("success", run.Status);
         Assert.Contains("[Watchtower] Already on v1 — nothing to do.", run.Output, StringComparison.Ordinal);
@@ -330,6 +337,33 @@ public sealed class ReleaseDeployTests {
 
         Assert.Single(run.Clones);
         Assert.Contains("down", run.Compose.Invocations.Select(i => i.Command));
+    }
+
+    /// <summary>
+    /// The teardown half of a volume recreate runs against the deploy's generated .env, like every
+    /// other compose call. Compose interpolates the project before it runs any command, so a stack
+    /// whose services read an injected variable through the `:?` required-variable form could not be
+    /// brought DOWN at all while `down` was the one call that passed no --env-file — the recreate died
+    /// on "required variable WATCHTOWER_AUTH_JWKS_URL is missing a value" even though a plain
+    /// redeploy of the same stack succeeded.
+    /// </summary>
+    [Fact]
+    public async Task Deploy_RecreatingVolumes_BringsTheStackDownWithTheGeneratedEnvFile() {
+        using var host = AuthTestHost.Start();
+        var productId = await host.AddProductAsync("shop");
+        await host.AddReleaseAsync(productId, "v1");
+        var stackId = await host.AddProductStackAsync("shop-prod", productId);
+
+        var run = await RunDeployAsync(
+            host, stackId, SingleService, DeployTriggers.Manual, removeVolumes: ["shop_data"]);
+
+        var down = run.Compose.Invocation("down");
+        Assert.NotNull(down.EnvFilePath);
+        // The same file the deploy interpolates everything else with, so the teardown and the
+        // pull/up that follows it can never disagree about what a variable resolves to. (This deploy
+        // stops at the volume removal — the test host has no Docker daemon — so `config`, which the
+        // recreate now runs after, is the invocation to compare against.)
+        Assert.Equal(run.Compose.Invocation("config").EnvFilePath, down.EnvFilePath);
     }
 
     /// <summary>A newer release is not "already on it", so the fan-out deploy runs.</summary>

@@ -164,4 +164,19 @@ public sealed class StubDnsPreflight : DnsPreflight {
         lock (Queried) Queried.Add(host);
         return Task.FromResult<IReadOnlyList<string>>(_unresolvable.Contains(host) ? [] : [Address]);
     }
+
+    /// <summary>
+    /// Makes <paramref name="address"/> reverse-resolve to <paramref name="names"/>. Nothing has a
+    /// reverse name unless a test says so — the opposite default from the forward direction, because a
+    /// LAN with no reverse zone is the ordinary case rather than the exceptional one.
+    /// </summary>
+    public void ReverseTo(string address, params string[] names) => _reverse[address] = names;
+
+    public override Task<IReadOnlyList<string>> ResolveNamesAsync(IPAddress address, CancellationToken ct) {
+        lock (Queried) Queried.Add(address.ToString());
+        return Task.FromResult<IReadOnlyList<string>>(
+            _reverse.TryGetValue(address.ToString(), out var names) ? names : []);
+    }
+
+    private readonly Dictionary<string, string[]> _reverse = new(StringComparer.OrdinalIgnoreCase);
 }

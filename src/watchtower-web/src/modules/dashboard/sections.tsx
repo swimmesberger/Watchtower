@@ -13,7 +13,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import { deployTargetVersion, usesReleases, versionRollup } from '@/lib/release'
+import { deployTargetVersion, stackUpdateCount, usesReleases, versionRollup } from '@/lib/release'
 import type { ActiveDeployment, Product, Stack } from '@/lib/types'
 import { absoluteTitle, timeAgo, useElapsed } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -86,9 +86,10 @@ export function SummarySection() {
 
   const healthy = stacks.filter((s) => s.lastDeployStatus === 'success').length
   const failed = stacks.filter((s) => s.lastDeployStatus === 'failed').length
+  const outdated = stacks.filter((s) => stackUpdateCount(s) > 0).length
 
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
       <StatCard label="Total stacks" value={stacks.length} accent="brand" to="/stacks" />
       <StatCard
         label="Healthy"
@@ -107,10 +108,20 @@ export function SummarySection() {
         search={{ status: 'failed' }}
       />
       <StatCard
+        label="Updates"
+        value={outdated}
+        accent="warn"
+        dotTone="warn"
+        to="/stacks"
+        search={{ status: 'updates' }}
+      />
+      <StatCard
         label="Containers"
         value={containers.length}
         accent="neutral"
         icon={ContainerIcon}
+        // Fifth of five: full width on the two-column phone grid rather than a lone half.
+        className="col-span-2 md:col-span-1"
       />
     </div>
   )
@@ -118,8 +129,8 @@ export function SummarySection() {
 
 function SummarySkeleton() {
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-      {Array.from({ length: 4 }).map((_, i) => (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+      {Array.from({ length: 5 }).map((_, i) => (
         <Card key={i} className="p-4">
           <Skeleton variant="line" className="h-3 w-16" />
           <Skeleton variant="line" className="mt-3 h-7 w-10" />
@@ -536,16 +547,7 @@ function StackCard({
   deploying: boolean
 }) {
   const dotTone = describeDot(stack.lastDeployStatus)
-  // `hasUpdates` means different things in the two modes and is the only field that is right in
-  // both (StacksContracts.cs): in Releases mode it means "a newer release exists", while
-  // `outdatedImages` is empty by construction and `newCommitSha` is informational — unreleased
-  // commits on the branch, which no redeploy would pick up. Counting those here badged an
-  // up-to-date release-mode stack "1 update".
-  const updateCount = usesReleases(stack)
-    ? stack.hasUpdates
-      ? 1
-      : 0
-    : (stack.outdatedImages?.length ?? 0) + (stack.newCommitSha ? 1 : 0)
+  const updateCount = stackUpdateCount(stack)
   // Invariant 6: this card offers a Deploy, so it names its target. From the list DTO alone — the
   // dashboard makes no per-stack request.
   const deployTarget = usesReleases(stack) ? deployTargetVersion(stack) : null

@@ -10,11 +10,18 @@ same things you would otherwise click together under
 
 ## Setup
 
-1. Create an API token with **Cloudflare Tunnel: Edit**, **DNS: Edit**, and — for Access-protected
-   routes — **Access: Apps and Policies: Edit** (scoped to the account and the zone your domains
-   live under).
+1. Create an API token with **Cloudflare Tunnel: Edit**, **DNS: Edit**, **Zone: Read** (so Watchtower
+   can discover the zones your routes live under), and **Access: Apps and Policies: Edit** — the last
+   one is effectively required now that every new route is protected by default (see below), not just
+   for routes you protect deliberately. Scope it to the account and the zones your domains live under.
 2. In **Settings → Reverse proxy**, select the **Cloudflare Tunnel** provider and fill in the account
-   id, zone id, API token (validated on save), and a tunnel name (default `watchtower`).
+   id, API token (validated on save), and a tunnel name (default `watchtower`). The **zone id is
+   optional**, and there are two ways to fill it in:
+   - **Leave it blank** and let Watchtower discover your zones from the token. This is the one that
+     serves routes across more than one domain, and it needs `Zone:Read`; the save is refused if the
+     token cannot list a single zone.
+   - **Paste a zone id** as before. Nothing about your setup changes, `Zone:Read` is not required, and
+     every route whose domain no discovered zone covers falls back to that zone.
 3. Choose who runs `cloudflared`:
    - **Managed (default):** Watchtower finds or creates the remotely-managed tunnel, fetches its run
      token, and supervises a `watchtower-cloudflared` container over the Docker socket — the same way
@@ -34,26 +41,179 @@ On startup, on every route change/deploy, and on every settings change:
 - one ingress rule per route — `https://{domain}` → `http://{project}-{service}:{containerPort}`
   (plain HTTP inside the private per-stack ingress network; the public leg is TLS at the edge),
   terminated by the mandatory `http_status:404` catch-all;
-- one **proxied CNAME** per route domain → `{tunnelId}.cfargotunnel.com`;
+- one **proxied CNAME** per route domain → `{tunnelId}.cfargotunnel.com`, written **in the zone whose
+  name is the longest suffix of that domain** (falling back to the configured zone id — see
+  *Zone discovery* below);
 - the cloudflared container (managed mode) and its ingress-network memberships;
 - one **Zero Trust Access application** (`self_hosted`, named `watchtower: {domain}`) per protected
   route, with a single Watchtower-owned allow policy:
-  - **Authenticated** routes admit the instance-wide allow sources configured on the Settings page:
-    *allowed emails*, *email domains*, **Access group ids** (the natural fit when your allow-list
-    already lives in an Access group — e.g. your Entra ID users), and/or **reusable Access policy
-    ids** (your dashboard-maintained default policy, attached on the app rather than recreated);
+  - **Authenticated** routes with no **access rules** attached admit the instance-wide allow sources
+    configured on the Settings page: *allowed emails*, *email domains*, **Access group ids** (the natural
+    fit when your allow-list already lives in an Access group — e.g. your Entra ID users), and/or
+    **reusable Access policy ids** (your dashboard-maintained default policy, attached on the app rather
+    than recreated). These apply to **every** protected hostname alike, which is what
+    [access rules](#access-rules-different-people-per-hostname) exist to vary;
+  - **Authenticated** routes **with** access rules attached admit exactly what those rules resolve to,
+    and the instance-wide sources do not apply to them at all;
   - **Restricted** routes admit exactly the emails behind the route's grants — granted users plus
-    members of granted groups (accounts without an email address cannot be matched by Cloudflare and
-    are effectively excluded);
-  - a protected route whose allow-list comes out **empty is skipped with a warning** rather than
-    published as a deny-all app, and any existing app is left untouched — a silent total lockout is
-    the worse failure;
+    members of granted groups, **of the route's own realm** (accounts without an email address cannot be
+    matched by Cloudflare and are effectively excluded, and a grant left behind by a realm change admits
+    nobody here just as it admits nobody in process —
+    [ADR-0040](../decisions/0040-the-edge-projection-is-authoritative.md));
+  - a protected route whose allow-list comes out **empty gets an explicit deny-all app** and its row
+    is set to `Error` saying so. Nobody reaches it until you configure an allow source or set the
+    route Public. This is deliberate and it reverses what earlier versions did: a lockout tells you
+    about itself the moment anyone tries to sign in, while a route that says *Authenticated* on the
+    Routes page and is served to everyone tells you nothing
+    ([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md));
   - a route flipped back to **Public** gets its Watchtower-created app deleted. Only apps carrying
     the `watchtower: ` name prefix are ever deleted; dashboard-made apps are never touched.
+- a second Access application, `watchtower: {host} (public paths)`, for a protected route that has
+  **bypass paths** — the anonymous allow-list you set in a route's access section for webhooks and OAuth
+  callbacks. It carries `{host}{path}` for each path with a single `bypass` policy for Everyone, and
+  Cloudflare's most-specific-application rule is what makes it win on those paths while the route's own
+  app keeps everything else. It is published for a denied-out route too — a webhook has no identity to
+  present, and the lockout above is about people. Note that the edge matches by **path segment** while
+  Watchtower's own in-process check matches a raw prefix and refuses any path carrying a percent-encoded
+  byte or a `..` segment; the edge applies no such guard, so keep bypass prefixes narrow and point them
+  at endpoints that authenticate their own callers.
+
+Every Watchtower-created application gets a **session duration** — how long a sign-in lasts before Cloudflare
+asks again, in Cloudflare's duration format (`30m`, `8h`, `730h`, `2h45m`). A route can set its own in its
+access section (**Routes → Edit → Session duration**); a route that does not gets the default from
+**Settings → Reverse proxy → Access: default session duration**, and that default left empty is `24h`, which
+is what every earlier version sent.
+
+Both are written onto the *application*: the Settings value is a default Watchtower fills in per app, not
+Cloudflare's account-wide global session duration, which Watchtower never touches. The application duration
+is the lowest of Cloudflare's three — a session duration on an attached policy, or the account's global one,
+overrides it. The Watchtower-owned policy never sets one, so a route's value holds unless a reusable policy
+you attach, or your account settings, say otherwise.
 
 Disabling the proxy — or switching back to Caddy — stops and removes only the managed cloudflared
 container. **The tunnel and the DNS records are kept**: deleting public DNS you may still want is not
 a toggle's job, and re-enabling reuses both.
+
+### Access rules: different people per hostname
+
+The four settings above are **instance-wide** — every `Authenticated` route in the deployment gets the same
+allow-list. When one hostname should admit more people than the others (your own apps for your household,
+one shared app for friends too), that is what **access rules** are for
+([ADR-0039](../decisions/0039-access-rules-compose.md)).
+
+A rule is a **name** and a list of **clauses**, managed under **Routes → Access rules**. It admits anyone
+matching any clause, and a route attaches it by name in its access section (**Routes → New route**, or **Edit** on an existing one). The composition you
+probably came here for is two rules and two attachments:
+
+```
+Access rule "family"    →  Cloudflare reusable policy: family
+Access rule "friends"   →  Cloudflare reusable policy: friends
+
+internal.example.com    →  [ family ]
+shared.example.com      →  [ family, friends ]
+```
+
+`shared.example.com`'s application gets **both** policies attached, in that order; `internal.example.com`
+gets only the first. Before rules, both hostnames necessarily got the identical instance-wide list.
+
+**Six clause kinds**, and the two columns matter as much as the list:
+
+| Clause | Cloudflare Access | Built-in proxy (`yarp`) |
+| --- | --- | --- |
+| **Watchtower group** | member email addresses, resolved at each reconcile | evaluated per request |
+| **Watchtower user** | that account's email address | evaluated per request |
+| **Email address** | an `email` include | not enforceable |
+| **Email domain** | an `email_domain` include | not enforceable |
+| **Cloudflare Access group** | an Access-group include | not enforceable |
+| **Cloudflare reusable policy** | attached to the app by id, never edited | not enforceable |
+
+The right-hand column is **enforced, not advisory**: attaching a rule the active provider cannot honour is
+**refused when you save it**, naming the clause and the provider, rather than being accepted and then
+quietly ignored at the next reconcile. The route form greys out those rules so you can see it before
+saving, and each rule carries a badge saying where it can be enforced. A rule may still be *created* with
+clauses the current provider cannot honour — that is how you stage a move between edges, keeping both
+spellings on one rule while the cutover happens.
+
+Two consequences worth knowing:
+
+- **A group's members are flattened at reconcile time** under this provider, so removing somebody from a
+  group takes effect on the next reconcile rather than on their next request. Under the built-in proxy it is
+  immediate. Same declaration, different revocation latency.
+- **The email kinds are edge-only on purpose.** Cloudflare's identity provider verifies an address before
+  asserting it; Watchtower does not (an account's email is optional and not unique), so matching a
+  Watchtower session on an address would make an unverified field an authorization key.
+
+**Rules replace the instance-wide settings for the route that attaches them** — they do not add to them. So
+an internal hostname can be narrower than the default, which "extend" could never express. Attach no rules
+and the route keeps the instance-wide list; tick none again and it goes back to it.
+
+**A rule that resolves to nobody locks its route out**, exactly as an empty instance-wide list does
+(see below) — with the rule named in the warning and on the route's row, because the remedy is in the rule
+rather than on the Settings page.
+
+Rules belong to `Authenticated` routes. **Restricted** means "exactly the users and groups granted on this
+route", so attaching a rule to one is refused rather than merged — the two are separate axes, not a
+combination.
+
+**Picking a policy by name.** The clause editor lists your account's reusable Access policies so you choose
+*friends* rather than pasting a UUID. It asks for the first 100 and does not paginate; a larger account gets
+a subset in the picker and you can always type the id in full.
+
+**Watchtower owns the `policies` array of a route that attaches rules.** If you previously attached a
+reusable policy by hand to a `watchtower: {host}` application, that attachment stops surviving reconciles
+once you attach rules to that route ([ADR-0040](../decisions/0040-the-edge-projection-is-authoritative.md)).
+Express it as a *Cloudflare reusable policy* clause instead — or keep it as an **app-scoped** policy under
+any name except the reserved `watchtower`, which no reconcile ever touches. Routes with no rules attached
+keep today's behaviour, hand-made attachments included.
+
+### New routes are protected by default
+
+A route you create with a domain is **Authenticated** unless you say otherwise, so a service is never
+published to the internet as the side effect of adding a route
+([ADR-0035](../decisions/0035-new-routes-are-protected-by-default.md)). The default is a setting —
+**Settings → Reverse proxy → Default access for new routes**, `authenticated` or `public` — and the
+new-route form lets an admin set the route's **whole** access policy as it is created: the mode, access
+rules, users and groups for a `Restricted` route, identity forwarding and bypass paths. The route and its
+policy are written together, so a route is never published under the instance-wide allow-list first and
+narrowed afterwards. **Edit** on an existing route offers the same fields, saved in the same write as the
+route's other changes.
+
+Under this provider a protected route needs Cloudflare to have somebody to let in, so **creating an
+`Authenticated` route with no access rules is refused while no instance-wide allow source is configured**
+— allowed emails, email domains, Access group ids or reusable policy ids, any one of them — because those
+settings are exactly its allow-list. A route that attaches access rules is judged on its rules instead, and
+a `Restricted` one on its grants, so a deployment built entirely from access rules needs no global allow
+source at all. A new `Restricted` route must name at least one user or group.
+
+Watchtower's own routes ([ADR-0023](../decisions/0023-login-hosts-are-watchtower-self-routes.md)) and
+LAN port routes ([ADR-0033](../decisions/0033-port-routes-and-internal-ca.md)) stay Public — a login
+page that needs a session is a login page nobody can use, and a `host:port` address is not somewhere a
+login redirect can return anyone to.
+
+### Zone discovery
+
+Watchtower assembles the list of domains it will offer you — under **Settings → Reverse proxy →
+Primary domains** and in the new-route form — from up to three sources
+([ADR-0036](../decisions/0036-routes-live-under-primary-domains.md)):
+
+- the domains you configured yourself in **Primary domains** (any provider);
+- the zones your API token can list, which needs `Zone:Read` (this provider only);
+- the configured zone id, when there is one — its name is read off any DNS record in it, so a token
+  without `Zone:Read` still gets its one zone.
+
+A domain you configured wins over a zone of the same name. Discovery is **cached for about five
+minutes**, keyed by your credentials, so changing the token takes effect without a restart. It also
+**fails open**: if the listing errors, you get fewer domains rather than an error page, and you can
+always type a hostname in full.
+
+The same list decides where a DNS record goes: the zone whose name is the **longest suffix** of the
+route's domain, so an account holding both `example.com` and `apps.example.com` sends
+`web.apps.example.com` to the more specific one. A domain no zone covers — and no configured zone id to
+fall back to — leaves its route at `Error` naming both remedies.
+
+**Beyond 50 zones, set the zone id.** The listing asks for the first 50 and does not paginate yet, so a
+larger account gets an arbitrary subset; a route under one of the others then relies on the configured
+zone id.
 
 ## Pre-existing tunnel hostnames (merge & import)
 
@@ -105,8 +265,6 @@ The full walkthrough — LAN names, publishing the host port, importing the root
   Cloudflare Access exists to do properly, so expose Watchtower through the Cloudflare dashboard and
   gate it there. The row is still worth keeping: it is where the realm's login address is written down,
   and that is what its protected apps redirect to.
-- **Single zone:** all route domains must live under the configured zone id. A domain outside it
-  fails its DNS upsert (logged, best-effort) while the rest proceed.
 - **Access control:** Watchtower's forward-auth (central-auth) does not run in front of tunneled
   routes — protection is Cloudflare Access, projected from `Route.AccessMode` as described above.
   Apps behind a protected route see Cloudflare's `Cf-Access-Jwt-Assertion`, not the
@@ -118,5 +276,14 @@ The full walkthrough — LAN names, publishing the host port, importing the root
   `/cdn-cgi/access/certs` here, Watchtower's `/api/auth/jwks` under integrated auth), so a
   JWT-verifying app reads its JWKS location from the environment and the edge switch needs no app
   configuration at all — see docs/public-app-api.md.
+- **The application audience is injected too.** Each reconcile records the Access application's
+  **AUD tag** on the route, and the stack's next deploy injects it as `WATCHTOWER_AUTH_AUDIENCE`
+  (comma-separated when the stack has several protected hostnames; the route's own hostname instead
+  under integrated auth). Apps should check it —
+  [ADR-0037](../decisions/0037-assertions-carry-an-injected-audience.md). Every application in your
+  account is signed by the same team key and published under the same JWKS, so an app that verifies
+  the signature and ignores `aud` will accept an assertion minted for *any* of them, including ones
+  with a far wider allow-list than this route's. A newly created route has no AUD tag until its first
+  reconcile, so the variable appears on the deploy after it.
 - **TLS mode:** upstream connections from cloudflared to your services are plain HTTP on the private
   ingress network, like Caddy's; the route's `TlsEnabled` flag is not consulted by this provider.

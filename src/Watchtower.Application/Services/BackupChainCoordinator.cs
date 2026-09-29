@@ -80,10 +80,15 @@ public sealed record BackupChainStep(
 /// <param name="deployQueue">The deploy queue a successful pre-deploy backup releases work onto.</param>
 /// <param name="scopeFactory">Creates the scopes the teardown and the event writes run in.</param>
 /// <param name="logger">Logger.</param>
+/// <param name="failureSink">
+/// Told about a deploy the failed backup blocked, exactly as <see cref="DeployQueueService"/> tells it
+/// about one that ran and failed; null when the Notifications module is off.
+/// </param>
 public sealed class BackupChainCoordinator(
     DeployQueueService deployQueue,
     IServiceScopeFactory scopeFactory,
-    ILogger<BackupChainCoordinator> logger) {
+    ILogger<BackupChainCoordinator> logger,
+    IDeployFailureSink? failureSink = null) {
     private readonly ConcurrentDictionary<int, List<BackupChainStep>> _steps = new();
 
     /// <summary>Attaches <paramref name="step"/> to the backup tracked by <paramref name="backupEventId"/>.</summary>
@@ -177,7 +182,7 @@ public sealed class BackupChainCoordinator(
                 // A real, failed deploy event: the operator asked for a deploy, no deploy happened, and
                 // the deploy history is where that belongs. The trigger is the one the deploy would have
                 // carried, so the row sits in the history reading as the deploy that was refused.
-                db.DeployEvents.Add(new DeployEvent {
+                var blocked = new DeployEvent {
                     StackId = step.StackId,
                     TriggeredBy = step.DeployTrigger ?? DeployTriggers.Manual,
                     Status = "failed",
@@ -185,8 +190,12 @@ public sealed class BackupChainCoordinator(
                     FinishedAt = now,
                     Output = "[Watchtower] The pre-deploy backup failed, so this deploy did not run. "
                         + $"See backup run #{backupEventId} for the reason. Nothing was changed on this stack.",
-                });
+                };
+                db.DeployEvents.Add(blocked);
                 await db.SaveChangesAsync(CancellationToken.None);
+                // A refused deploy is a failed deploy to whoever asked for it, so it pages like one
+                // (ADR-0041). The sink never throws and returns at once.
+                failureSink?.DeployFailed(blocked.Id);
                 logger.LogWarning(
                     "Pre-deploy backup {EventId} failed; the deploy of stack {StackId} was blocked",
                     backupEventId, step.StackId);

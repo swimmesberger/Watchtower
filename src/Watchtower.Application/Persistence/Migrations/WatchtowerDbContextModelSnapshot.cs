@@ -133,6 +133,120 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("data_protection_keys", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.AccessRule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("normalized_name");
+
+                    b.Property<int>("RealmId")
+                        .HasColumnType("integer")
+                        .HasColumnName("realm_id");
+
+                    b.Property<uint>("Xmin")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id")
+                        .HasName("pk_access_rules");
+
+                    b.HasIndex("RealmId", "NormalizedName")
+                        .IsUnique()
+                        .HasDatabaseName("ix_access_rules_realm_id_normalized_name");
+
+                    b.ToTable("access_rules", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AccessRuleClause", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AccessRuleId")
+                        .HasColumnType("integer")
+                        .HasColumnName("access_rule_id");
+
+                    b.Property<int?>("GroupId")
+                        .HasColumnType("integer")
+                        .HasColumnName("group_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<int>("Order")
+                        .HasColumnType("integer")
+                        .HasColumnName("order");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("Value")
+                        .HasColumnType("text")
+                        .HasColumnName("value");
+
+                    b.HasKey("Id")
+                        .HasName("pk_access_rule_clauses");
+
+                    b.HasIndex("GroupId")
+                        .HasDatabaseName("ix_access_rule_clauses_group_id");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_access_rule_clauses_user_id");
+
+                    b.HasIndex("AccessRuleId", "GroupId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_access_rule_clauses_access_rule_id_group_id")
+                        .HasFilter("\"group_id\" IS NOT NULL");
+
+                    b.HasIndex("AccessRuleId", "Order")
+                        .HasDatabaseName("ix_access_rule_clauses_access_rule_id_order");
+
+                    b.HasIndex("AccessRuleId", "UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_access_rule_clauses_access_rule_id_user_id")
+                        .HasFilter("\"user_id\" IS NOT NULL");
+
+                    b.HasIndex("AccessRuleId", "Kind", "Value")
+                        .IsUnique()
+                        .HasDatabaseName("ix_access_rule_clauses_access_rule_id_kind_value")
+                        .HasFilter("\"value\" IS NOT NULL");
+
+                    b.ToTable("access_rule_clauses", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_access_rule_clauses_subject", "(\"kind\" = 'User' AND \"user_id\" IS NOT NULL AND \"group_id\" IS NULL AND \"value\" IS NULL) OR (\"kind\" = 'Group' AND \"group_id\" IS NOT NULL AND \"user_id\" IS NULL AND \"value\" IS NULL) OR (\"kind\" IN ('Email', 'EmailDomain', 'ExternalGroup', 'ExternalPolicy') AND \"value\" IS NOT NULL AND \"user_id\" IS NULL AND \"group_id\" IS NULL)");
+                        });
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.AcmeAccount", b =>
                 {
                     b.Property<int>("Id")
@@ -1071,6 +1185,62 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("proxy_certificates", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.PushSubscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Auth")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("auth");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Endpoint")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("endpoint");
+
+                    b.Property<DateTimeOffset>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("P256dh")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("p256dh");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_push_subscriptions");
+
+                    b.HasIndex("Endpoint")
+                        .IsUnique()
+                        .HasDatabaseName("ix_push_subscriptions_endpoint");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_push_subscriptions_user_id");
+
+                    b.ToTable("push_subscriptions", (string)null);
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Realm", b =>
                 {
                     b.Property<int>("Id")
@@ -1289,12 +1459,20 @@ namespace Watchtower.Application.Persistence.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AccessAud")
+                        .HasColumnType("text")
+                        .HasColumnName("access_aud");
+
                     b.Property<string>("AccessMode")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("text")
                         .HasDefaultValue("Public")
                         .HasColumnName("access_mode");
+
+                    b.Property<string>("AccessSessionDuration")
+                        .HasColumnType("text")
+                        .HasColumnName("access_session_duration");
 
                     b.Property<string>("Binding")
                         .IsRequired()
@@ -1453,6 +1631,43 @@ namespace Watchtower.Application.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_route_access_grants_subject", "(\"user_id\" IS NOT NULL) <> (\"group_id\" IS NOT NULL)");
                         });
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.RouteAccessRule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AccessRuleId")
+                        .HasColumnType("integer")
+                        .HasColumnName("access_rule_id");
+
+                    b.Property<int>("Order")
+                        .HasColumnType("integer")
+                        .HasColumnName("order");
+
+                    b.Property<int>("RouteId")
+                        .HasColumnType("integer")
+                        .HasColumnName("route_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_route_access_rules");
+
+                    b.HasIndex("AccessRuleId")
+                        .HasDatabaseName("ix_route_access_rules_access_rule_id");
+
+                    b.HasIndex("RouteId", "AccessRuleId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_route_access_rules_route_id_access_rule_id");
+
+                    b.HasIndex("RouteId", "Order")
+                        .HasDatabaseName("ix_route_access_rules_route_id_order");
+
+                    b.ToTable("route_access_rules", (string)null);
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.SigningKey", b =>
@@ -2131,6 +2346,78 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.ToTable("user_recovery_codes", (string)null);
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.VapidKeyPair", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<byte[]>("PrivateKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("private_key");
+
+                    b.Property<string>("Protection")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("protection");
+
+                    b.Property<string>("PublicKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("public_key");
+
+                    b.HasKey("Id")
+                        .HasName("pk_vapid_key_pairs");
+
+                    b.ToTable("vapid_key_pairs", (string)null);
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AccessRule", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.Realm", "Realm")
+                        .WithMany()
+                        .HasForeignKey("RealmId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_access_rules_realms_realm_id");
+
+                    b.Navigation("Realm");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AccessRuleClause", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.AccessRule", "AccessRule")
+                        .WithMany("Clauses")
+                        .HasForeignKey("AccessRuleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_access_rule_clauses_access_rules_access_rule_id");
+
+                    b.HasOne("Watchtower.Application.Entities.Group", "Group")
+                        .WithMany()
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_access_rule_clauses_groups_group_id");
+
+                    b.HasOne("Watchtower.Application.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_access_rule_clauses_users_user_id");
+
+                    b.Navigation("AccessRule");
+
+                    b.Navigation("Group");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.AuthSession", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Route", "Route")
@@ -2360,6 +2647,27 @@ namespace Watchtower.Application.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Watchtower.Application.Entities.RouteAccessRule", b =>
+                {
+                    b.HasOne("Watchtower.Application.Entities.AccessRule", "AccessRule")
+                        .WithMany()
+                        .HasForeignKey("AccessRuleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_route_access_rules_access_rules_access_rule_id");
+
+                    b.HasOne("Watchtower.Application.Entities.Route", "Route")
+                        .WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_route_access_rules_routes_route_id");
+
+                    b.Navigation("AccessRule");
+
+                    b.Navigation("Route");
+                });
+
             modelBuilder.Entity("Watchtower.Application.Entities.Stack", b =>
                 {
                     b.HasOne("Watchtower.Application.Entities.Release", "LastDeployedRelease")
@@ -2552,6 +2860,11 @@ namespace Watchtower.Application.Persistence.Migrations
                         .HasConstraintName("fk_user_recovery_codes_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Watchtower.Application.Entities.AccessRule", b =>
+                {
+                    b.Navigation("Clauses");
                 });
 
             modelBuilder.Entity("Watchtower.Application.Entities.Product", b =>

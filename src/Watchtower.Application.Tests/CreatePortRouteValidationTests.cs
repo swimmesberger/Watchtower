@@ -101,6 +101,39 @@ public sealed class CreatePortRouteValidationTests {
         Assert.Contains("already served on its management port", result.Error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The protected-by-default setting (ADR-0035) does not reach a port route: it has no hostname for a
+    /// login redirect to return to, and <c>ck_routes_binding</c> stores nothing but Public.
+    /// </summary>
+    [Fact]
+    public async Task APortRoute_StaysPublic_UnderTheProtectedDefault() {
+        using var host = LanHost(("Watchtower:Proxy:DefaultAccessMode", "authenticated"));
+        var stackId = await host.AddStackAsync("media");
+
+        var result = await CreateAsync(host, PortCommand(stackId, 9001));
+
+        Assert.True(result.IsSuccess, Describe(result));
+        Assert.Equal("public", result.Value.Route.AccessMode);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var row = await db.Routes.AsNoTracking().SingleAsync(r => r.Id == result.Value.Route.Id, Ct);
+        Assert.Equal(AccessMode.Public, row.AccessMode);
+    }
+
+    /// <summary>Refused rather than ignored, the same house rule the realm and kind fields follow.</summary>
+    [Fact]
+    public async Task APortRouteCarryingAnAccessPolicy_IsRefused() {
+        using var host = LanHost();
+        var stackId = await host.AddStackAsync("media");
+
+        var result = await CreateAsync(
+            host, PortCommand(stackId, 9001) with { AccessMode = AccessMode.Authenticated });
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("always public", result.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task APortRouteWithAHostname_IsRefused() {
         using var host = LanHost();

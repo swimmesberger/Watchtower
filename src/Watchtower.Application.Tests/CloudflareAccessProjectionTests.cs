@@ -7,17 +7,19 @@ namespace Watchtower.Application.Tests;
 
 /// <summary>
 /// Covers <c>CloudflareTunnelProvider.ProjectAccessApps</c> — which routes get a Zero Trust Access
-/// application and who its allow policy admits. The skip rule is the security-relevant part in both
-/// directions: an empty allow-list must not publish a deny-all app (silent total lockout), and a
-/// skipped route must not count as "unprotected" for the deletion sweep.
+/// application, what its policy decides, and which of them get a second application for the paths that
+/// stay public. The lockout rule is the security-relevant part: since new routes are protected by
+/// default (ADR-0035), a protected route whose allow-list is empty must publish a deny-all rather than
+/// be skipped, or an operator who believes a hostname is gated is serving it to the internet.
 /// </summary>
 public sealed class CloudflareAccessProjectionTests {
-    private static Route NewRoute(int id, string domain, AccessMode mode) => new() {
+    private static Route NewRoute(int id, string domain, AccessMode mode, string? bypassPaths = null) => new() {
         Id = id,
         Domain = domain,
         ServiceName = "web",
         ContainerPort = 80,
         AccessMode = mode,
+        BypassPaths = bypassPaths,
     };
 
     private static readonly CloudflareProxyOptions NoDefaults = new();
@@ -63,8 +65,13 @@ public sealed class CloudflareAccessProjectionTests {
         Assert.Empty(app.EmailDomains);
     }
 
+    /// <summary>
+    /// Both flavours of "nobody could pass this": an Authenticated route with nothing configured
+    /// instance-wide, and a Restricted one whose grants name nobody with an email. Each gets a deny-all app,
+    /// so the hostname is closed rather than quietly open, and each keeps its warning.
+    /// </summary>
     [Fact]
-    public void EmptyAllowList_SkipsWithAWarning_InsteadOfPublishingDenyAll() {
+    public void EmptyAllowList_PublishesDenyAll_RatherThanLeavingTheRouteOpen() {
         var projection = CloudflareTunnelProvider.ProjectAccessApps(
             [
                 NewRoute(1, "auth.example.com", AccessMode.Authenticated),
@@ -73,10 +80,121 @@ public sealed class CloudflareAccessProjectionTests {
             new Dictionary<int, string[]>(),
             NoDefaults);
 
-        Assert.Empty(projection.Apps);
+        Assert.Equal(2, projection.Apps.Count);
+        Assert.All(projection.Apps, app => {
+            Assert.Equal(CloudflareTunnelProvider.AccessDecisionDeny, app.Decision);
+            Assert.True(app.IsLockout);
+            Assert.False(app.HasInlineRules);
+        });
+        Assert.Equal([1, 2], projection.Apps.Select(a => a.RouteId));
+
         Assert.Equal(2, projection.Warnings.Count);
         Assert.Contains(projection.Warnings, w => w.Contains("auth.example.com"));
         Assert.Contains(projection.Warnings, w => w.Contains("granted.example.com"));
+        Assert.All(projection.Warnings, w => Assert.Contains("denying everyone", w, StringComparison.Ordinal));
+    }
+
+    /// <summary>An app that admits somebody is an allow, and says nothing about lockouts.</summary>
+    [Fact]
+    public void AnAllowListedRoute_IsAnAllowApp_AndNoLockout() {
+        var cf = new CloudflareProxyOptions { AccessAllowedEmailDomains = "example.com" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "app.example.com", AccessMode.Authenticated)],
+            new Dictionary<int, string[]>(),
+            cf);
+
+        var app = Assert.Single(projection.Apps);
+        Assert.Equal(CloudflareTunnelProvider.AccessDecisionAllow, app.Decision);
+        Assert.False(app.IsLockout);
+        Assert.Null(app.Destinations);
+        Assert.Empty(projection.Warnings);
+    }
+
+    // ── Bypass applications (the public paths of a protected route) ───────────
+
+    /// <summary>
+    /// The second app names every public path of the route; the first path is its primary hostname and
+    /// the rest ride along as destinations, because an application has one domain and many destinations.
+    /// </summary>
+    [Fact]
+    public void AProtectedRouteWithBypassPaths_GetsASecondBypassApp() {
+        var cf = new CloudflareProxyOptions { AccessAllowedEmailDomains = "example.com" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "app.example.com", AccessMode.Authenticated, "/webhooks/\n/healthz")],
+            new Dictionary<int, string[]>(),
+            cf);
+
+        Assert.Equal(2, projection.Apps.Count);
+        var bypass = projection.Apps[1];
+        Assert.Equal(CloudflareTunnelProvider.AccessDecisionBypass, bypass.Decision);
+        Assert.Equal("watchtower: app.example.com (public paths)", bypass.Name);
+        Assert.Equal("app.example.com/healthz", bypass.Domain);
+        Assert.Equal(["app.example.com/healthz", "app.example.com/webhooks"], bypass.Destinations!);
+        Assert.Equal(1, bypass.RouteId);
+        Assert.False(bypass.HasInlineRules);
+    }
+
+    /// <summary>
+    /// Cloudflare matches path segments, so <c>/webhooks</c> and <c>/webhooks/</c> are one destination —
+    /// and a line that is nothing but slashes would name the hostname itself, colliding with the route's
+    /// own app, so it is dropped.
+    /// </summary>
+    [Fact]
+    public void BypassPaths_AreStrippedOfTrailingSlashes_Deduplicated_AndSorted() {
+        var cf = new CloudflareProxyOptions { AccessAllowedEmailDomains = "example.com" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "app.example.com", AccessMode.Authenticated, "/b/\n/a\n/b\n/\n/a/")],
+            new Dictionary<int, string[]>(),
+            cf);
+
+        var bypass = projection.Apps[1];
+        Assert.Equal(["app.example.com/a", "app.example.com/b"], bypass.Destinations!);
+    }
+
+    /// <summary>
+    /// A public webhook has to keep working while the operator sorts the allow list out, so the deny
+    /// route still gets its bypass app — Cloudflare applies the most specific application.
+    /// </summary>
+    [Fact]
+    public void ADenyAllRoute_StillGetsItsBypassApp() {
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "app.example.com", AccessMode.Authenticated, "/webhooks/")],
+            new Dictionary<int, string[]>(),
+            NoDefaults);
+
+        Assert.Equal(
+            [CloudflareTunnelProvider.AccessDecisionDeny, CloudflareTunnelProvider.AccessDecisionBypass],
+            projection.Apps.Select(a => a.Decision));
+    }
+
+    /// <summary>A Public route has no access control for anything to be excepted from.</summary>
+    [Fact]
+    public void APublicRouteWithBypassPaths_GetsNoAppAtAll() {
+        var cf = new CloudflareProxyOptions { AccessAllowedEmailDomains = "example.com" };
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [NewRoute(1, "open.example.com", AccessMode.Public, "/webhooks/")],
+            new Dictionary<int, string[]>(),
+            cf);
+
+        Assert.Empty(projection.Apps);
+    }
+
+    /// <summary>
+    /// Every projected name carries the prefix, because that prefix is the only thing keeping the
+    /// deletion sweep away from applications somebody made in the dashboard.
+    /// </summary>
+    [Fact]
+    public void EveryProjectedName_CarriesTheWatchtowerPrefix() {
+        var projection = CloudflareTunnelProvider.ProjectAccessApps(
+            [
+                NewRoute(1, "auth.example.com", AccessMode.Authenticated, "/webhooks/"),
+                NewRoute(2, "granted.example.com", AccessMode.Restricted),
+            ],
+            new Dictionary<int, string[]>(),
+            NoDefaults);
+
+        Assert.Equal(3, projection.Apps.Count);
+        Assert.All(projection.Apps, app => Assert.StartsWith("watchtower: ", app.Name, StringComparison.Ordinal));
     }
 
     [Fact]

@@ -57,12 +57,14 @@ import type {
   Group,
   HostMetrics,
   InternalCaInfo,
+  LanNameCandidate,
   MetricsConfig,
   MetricsRange,
   NetworkInfo,
   NetworkPortsResult,
   PortBindingsApplied,
   PortBindingsStatus,
+  PrimaryDomain,
   Product,
   ProductDetail,
   CreateReleaseRequest,
@@ -76,6 +78,10 @@ import type {
   Realm,
   Registry,
   Route,
+  AccessRule,
+  ExternalAccessPolicy,
+  SetAccessRuleRequest,
+  StackAccessContext,
   RouteAccess,
   RouteAccessView,
   SelfUpdateStatus,
@@ -89,6 +95,7 @@ import type {
   HostGpus,
   StackDeviceMappingInput,
   StackDevices,
+  InjectedEnvVar,
   StackEnvVar,
   StackEnvVarInput,
   StackMetricsResult,
@@ -335,7 +342,16 @@ export const api = {
     start: async (id: number) =>
       (await rpc('stacks.start', { id })) as { stack: Stack; started: boolean },
     events: async (id: number) => (await rpc('stacks.events', { stackId: id })).events as DeployEvent[],
+    /** Deletes one finished deploy event, or every finished one when `eventId` is omitted. */
+    deleteEvents: async (stackId: number, eventId?: number) =>
+      (await rpc('stacks.deleteEvents', { stackId, eventId: eventId ?? null })).deleted as number,
     getEnv: async (id: number) => (await rpc('stacks.getEnv', { stackId: id })).envVars as StackEnvVar[],
+    getAppApi: async (id: number) =>
+      (await rpc('stacks.getAppApi', { stackId: id })) as {
+        enabled: boolean
+        token: string
+        injectedVariables: InjectedEnvVar[]
+      },
     setEnv: async (id: number, vars: StackEnvVarInput[]) =>
       (await rpc('stacks.setEnv', { stackId: id, vars })).envVars as StackEnvVar[],
     getDevices: async (id: number) =>
@@ -473,7 +489,16 @@ export const api = {
         makeLoginRoute: data.makeLoginRoute ?? null,
         binding: data.binding ?? null,
         listenPort: data.listenPort ?? null,
+        accessMode: data.accessMode ?? null,
+        bypassPaths: data.bypassPaths ?? null,
+        identityHeaderMode: data.identityHeaderMode ?? null,
+        grantedUserIds: data.grantedUserIds ?? null,
+        grantedGroupIds: data.grantedGroupIds ?? null,
+        accessRuleIds: data.accessRuleIds ?? null,
+        accessSessionDuration: data.accessSessionDuration ?? null,
       })).route as Route,
+    getStackAccessContext: async (stackId: number) =>
+      (await rpc('proxy.getStackAccessContext', { stackId })) as StackAccessContext,
     updateRoute: async (id: number, data: UpdateRouteRequest) =>
       (await rpc('proxy.updateRoute', {
         id,
@@ -486,6 +511,13 @@ export const api = {
         makeLoginRoute: data.makeLoginRoute ?? null,
         binding: data.binding ?? null,
         listenPort: data.listenPort ?? null,
+        accessMode: data.accessMode ?? null,
+        bypassPaths: data.bypassPaths ?? null,
+        identityHeaderMode: data.identityHeaderMode ?? null,
+        grantedUserIds: data.grantedUserIds ?? null,
+        grantedGroupIds: data.grantedGroupIds ?? null,
+        accessRuleIds: data.accessRuleIds ?? null,
+        accessSessionDuration: data.accessSessionDuration ?? null,
       })).route as Route,
     // Returns the server's response rather than swallowing it: deleting a realm's login host succeeds
     // and carries a `warning` the caller has to show (ADR-0023).
@@ -500,6 +532,19 @@ export const api = {
     // Read-only in the strong sense: asking never mints a root. `present: false` means nothing has
     // needed a LAN certificate yet, which is why the Routes page shows the block only once it is there.
     getInternalCa: async () => (await rpc('proxy.getInternalCa', {})).ca as InternalCaInfo,
+    // The LAN names this deployment looks like it answers on (the LAN names setting of ADR-0033
+    // decision 6). Advisory and read-only: the server never writes the setting. `hint` is the address
+    // the browser reached this page with — the one thing this side knows and the server cannot find out
+    // for itself — and it comes back as a candidate like any other, held to the same rules.
+    suggestLanNames: async (hint: string | null) =>
+      (await rpc('proxy.suggestLanNames', { hint })).candidates as LanNameCandidate[],
+    // The base domains routes live under (ADR-0036) — the configured list merged with the Cloudflare
+    // zones the token can see. Same principle as the LAN-name suggestions above: every rule about what
+    // counts as a primary domain lives on the server, this side renders what it is sent. Never errors
+    // and answers `[]` when nothing is configured or discovered, so a failed discovery costs a shorter
+    // list rather than a broken page.
+    listPrimaryDomains: async () =>
+      (await rpc('proxy.listPrimaryDomains', {})).domains as PrimaryDomain[],
     // Whether each port route's host port is actually published on Watchtower's container (ADR-0033).
     // Its own call rather than part of getStatus: answering it inspects the Docker daemon, and the
     // status badge is polled from every page.
@@ -540,6 +585,9 @@ export const api = {
         cloudflareAccessAllowedEmailDomains: data.cloudflareAccessAllowedEmailDomains ?? null,
         cloudflareAccessGroupIds: data.cloudflareAccessGroupIds ?? null,
         cloudflareAccessReusablePolicyIds: data.cloudflareAccessReusablePolicyIds ?? null,
+        cloudflareAccessSessionDuration: data.cloudflareAccessSessionDuration ?? null,
+        defaultAccessMode: data.defaultAccessMode ?? null,
+        primaryDomains: data.primaryDomains ?? null,
       })).config as ProxyConfig,
     getAccess: async (routeId: number) =>
       (await rpc('proxy.getAccess', { routeId })) as RouteAccessView,
@@ -551,7 +599,37 @@ export const api = {
         bypassPaths: data.bypassPaths ?? null,
         grantedUserIds: data.grantedUserIds,
         grantedGroupIds: data.grantedGroupIds,
+        // Sent as null when the caller has nothing to say about attachments, which the backend reads as
+        // "leave them alone" rather than "detach everything" (ADR-0039).
+        accessRuleIds: data.accessRuleIds ?? null,
+        accessSessionDuration: data.accessSessionDuration ?? null,
       })) as RouteAccess,
+
+    listAccessRules: async (realmId?: number) =>
+      ((await rpc('proxy.listAccessRules', { realmId: realmId ?? null })).rules ?? []) as AccessRule[],
+    setAccessRule: async (data: SetAccessRuleRequest) =>
+      (await rpc('proxy.setAccessRule', {
+        id: data.id ?? null,
+        name: data.name,
+        description: data.description ?? null,
+        realmId: data.realmId ?? null,
+        clauses: data.clauses.map(c => ({
+          kind: c.kind,
+          userId: c.userId ?? null,
+          groupId: c.groupId ?? null,
+          value: c.value ?? null,
+        })),
+      })).rule as AccessRule,
+    deleteAccessRule: async (id: number) => {
+      await rpc('proxy.deleteAccessRule', { id })
+    },
+    listExternalAccessPolicies: async () => {
+      const data = await rpc('proxy.listExternalAccessPolicies', {})
+      return {
+        policies: (data.policies ?? []) as ExternalAccessPolicy[],
+        warning: (data.warning ?? null) as string | null,
+      }
+    },
   },
 
   backups: {
@@ -587,6 +665,12 @@ export const api = {
         // 'instance' for Watchtower's own runs, 'stack' for the rest; omitted returns both (ADR-0027).
         kind: kind ?? null,
       })).events as BackupEvent[],
+    /**
+     * Deletes one finished backup event of a stack, or every finished one when `eventId` is omitted.
+     * Only the history row goes — the archive stays in the storage and remains restorable.
+     */
+    deleteEvents: async (stackId: number, eventId?: number) =>
+      (await rpc('backups.deleteEvents', { stackId, eventId: eventId ?? null })).deleted as number,
     run: async (stackId: number) => (await rpc('backups.run', { stackId })).backup as BackupRunAccepted,
 
     /** Backs up Watchtower's own database (ADR-0027). Admin-only; needs an encryption passphrase. */

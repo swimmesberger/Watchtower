@@ -148,6 +148,37 @@
         ]
       }
     },
+    "backups.deleteEvents": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "eventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleted"
+        ]
+      }
+    },
     "backups.dismissRecovery": {
       "params": {
         "type": "object"
@@ -6535,6 +6566,106 @@
         ]
       }
     },
+    "notifications.publicKey": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "publicKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "publicKey"
+        ]
+      }
+    },
+    "notifications.subscribe": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "p256dh": {
+            "type": "string"
+          },
+          "auth": {
+            "type": "string"
+          },
+          "userAgent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "endpoint",
+          "p256dh",
+          "auth"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "subscriptionCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "subscriptionCount"
+        ]
+      }
+    },
+    "notifications.test": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "delivered": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delivered"
+        ]
+      }
+    },
+    "notifications.unsubscribe": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ]
+      }
+    },
     "products.create": {
       "params": {
         "type": "object",
@@ -8029,6 +8160,69 @@
               "null"
             ],
             "default": null
+          },
+          "accessMode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted",
+              null
+            ],
+            "default": null
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "grantedUserIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "grantedGroupIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest",
+              "Cloudflare",
+              null
+            ],
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8129,6 +8323,9 @@
                   "integer",
                   "null"
                 ]
+              },
+              "accessMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -8150,12 +8347,37 @@
               "realmSlug",
               "isLoginRoute",
               "binding",
-              "listenPort"
+              "listenPort",
+              "accessMode"
             ]
           }
         },
         "required": [
           "route"
+        ]
+      }
+    },
+    "proxy.deleteAccessRule": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
         ]
       }
     },
@@ -8244,6 +8466,30 @@
           },
           "realmId": {
             "type": "integer"
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "activeEnforcementPoint": {
+            "enum": [
+              "InProcess",
+              "CloudflareAccess"
+            ],
+            "default": "InProcess"
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -8270,6 +8516,12 @@
                 "type": "boolean"
               },
               "provider": {
+                "type": "string"
+              },
+              "defaultAccessMode": {
+                "type": "string"
+              },
+              "primaryDomains": {
                 "type": "string"
               },
               "adminEmail": {
@@ -8387,6 +8639,9 @@
                   },
                   "accessReusablePolicyIds": {
                     "type": "string"
+                  },
+                  "accessSessionDuration": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -8401,7 +8656,8 @@
                   "accessAllowedEmails",
                   "accessAllowedEmailDomains",
                   "accessGroupIds",
-                  "accessReusablePolicyIds"
+                  "accessReusablePolicyIds",
+                  "accessSessionDuration"
                 ]
               },
               "pinnedPaths": {
@@ -8414,6 +8670,8 @@
             "required": [
               "enabled",
               "provider",
+              "defaultAccessMode",
+              "primaryDomains",
               "adminEmail",
               "caddyImage",
               "yarp",
@@ -8676,6 +8934,9 @@
                   "integer",
                   "null"
                 ]
+              },
+              "accessMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -8697,12 +8958,44 @@
               "realmSlug",
               "isLoginRoute",
               "binding",
-              "listenPort"
+              "listenPort",
+              "accessMode"
             ]
           }
         },
         "required": [
           "route"
+        ]
+      }
+    },
+    "proxy.getStackAccessContext": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "realmId": {
+            "type": "integer"
+          },
+          "activeEnforcementPoint": {
+            "enum": [
+              "InProcess",
+              "CloudflareAccess"
+            ]
+          }
+        },
+        "required": [
+          "realmId",
+          "activeEnforcementPoint"
         ]
       }
     },
@@ -8738,6 +9031,119 @@
           "routeCount",
           "provider",
           "providerDetail"
+        ]
+      }
+    },
+    "proxy.listAccessRules": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "realmId": {
+                  "type": "integer"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "clauses": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "User",
+                          "Group",
+                          "Email",
+                          "EmailDomain",
+                          "ExternalGroup",
+                          "ExternalPolicy"
+                        ]
+                      },
+                      "userId": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "groupId": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "value": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      },
+                      "subjectLabel": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                },
+                "enforceableInProcess": {
+                  "type": "boolean"
+                },
+                "enforceableByCloudflareAccess": {
+                  "type": "boolean"
+                },
+                "attachedRouteCount": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "realmId",
+                "description",
+                "clauses",
+                "enforceableInProcess",
+                "enforceableByCloudflareAccess",
+                "attachedRouteCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "rules"
         ]
       }
     },
@@ -8910,6 +9316,93 @@
         ]
       }
     },
+    "proxy.listExternalAccessPolicies": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "policies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "decision": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "decision"
+              ]
+            }
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "policies"
+        ]
+      }
+    },
+    "proxy.listPrimaryDomains": {
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "zoneId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "source",
+                "zoneId",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "domains"
+        ]
+      }
+    },
     "proxy.listRoutes": {
       "params": {
         "type": "object"
@@ -9004,6 +9497,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "accessMode": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -9025,7 +9521,8 @@
                 "realmSlug",
                 "isLoginRoute",
                 "binding",
-                "listenPort"
+                "listenPort",
+                "accessMode"
               ]
             }
           }
@@ -9177,6 +9674,23 @@
               "type": "integer"
             },
             "default": null
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9221,6 +9735,23 @@
             "items": {
               "type": "integer"
             }
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9229,6 +9760,240 @@
           "bypassPaths",
           "grantedUserIds",
           "grantedGroupIds"
+        ]
+      }
+    },
+    "proxy.setAccessRule": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "clauses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "User",
+                    "Group",
+                    "Email",
+                    "EmailDomain",
+                    "ExternalGroup",
+                    "ExternalPolicy"
+                  ]
+                },
+                "userId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "groupId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "value": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "subjectLabel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          },
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "realmId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "clauses"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "realmId": {
+                "type": "integer"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "clauses": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "User",
+                        "Group",
+                        "Email",
+                        "EmailDomain",
+                        "ExternalGroup",
+                        "ExternalPolicy"
+                      ]
+                    },
+                    "userId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "groupId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "value": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "subjectLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              },
+              "enforceableInProcess": {
+                "type": "boolean"
+              },
+              "enforceableByCloudflareAccess": {
+                "type": "boolean"
+              },
+              "attachedRouteCount": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "realmId",
+              "description",
+              "clauses",
+              "enforceableInProcess",
+              "enforceableByCloudflareAccess",
+              "attachedRouteCount"
+            ]
+          }
+        },
+        "required": [
+          "rule"
+        ]
+      }
+    },
+    "proxy.suggestLanNames": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "hint"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "verified": {
+                  "type": "boolean"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "kind",
+                "source",
+                "verified",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "candidates"
         ]
       }
     },
@@ -9390,6 +10155,27 @@
               "null"
             ],
             "default": null
+          },
+          "defaultAccessMode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "primaryDomains": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "cloudflareAccessSessionDuration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9409,6 +10195,12 @@
                 "type": "boolean"
               },
               "provider": {
+                "type": "string"
+              },
+              "defaultAccessMode": {
+                "type": "string"
+              },
+              "primaryDomains": {
                 "type": "string"
               },
               "adminEmail": {
@@ -9526,6 +10318,9 @@
                   },
                   "accessReusablePolicyIds": {
                     "type": "string"
+                  },
+                  "accessSessionDuration": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -9540,7 +10335,8 @@
                   "accessAllowedEmails",
                   "accessAllowedEmailDomains",
                   "accessGroupIds",
-                  "accessReusablePolicyIds"
+                  "accessReusablePolicyIds",
+                  "accessSessionDuration"
                 ]
               },
               "pinnedPaths": {
@@ -9553,6 +10349,8 @@
             "required": [
               "enabled",
               "provider",
+              "defaultAccessMode",
+              "primaryDomains",
               "adminEmail",
               "caddyImage",
               "yarp",
@@ -9616,6 +10414,69 @@
           "listenPort": {
             "type": [
               "integer",
+              "null"
+            ],
+            "default": null
+          },
+          "accessMode": {
+            "enum": [
+              "Public",
+              "Authenticated",
+              "Restricted",
+              null
+            ],
+            "default": null
+          },
+          "bypassPaths": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "grantedUserIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "grantedGroupIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "accessRuleIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            },
+            "default": null
+          },
+          "identityHeaderMode": {
+            "enum": [
+              "None",
+              "Remote",
+              "AuthRequest",
+              "Cloudflare",
+              null
+            ],
+            "default": null
+          },
+          "accessSessionDuration": {
+            "type": [
+              "string",
               "null"
             ],
             "default": null
@@ -9718,6 +10579,9 @@
                   "integer",
                   "null"
                 ]
+              },
+              "accessMode": {
+                "type": "string"
               }
             },
             "required": [
@@ -9739,7 +10603,8 @@
               "realmSlug",
               "isLoginRoute",
               "binding",
-              "listenPort"
+              "listenPort",
+              "accessMode"
             ]
           }
         },
@@ -10847,6 +11712,37 @@
         ]
       }
     },
+    "stacks.deleteEvents": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "stackId": {
+            "type": "integer"
+          },
+          "eventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "stackId"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleted"
+        ]
+      }
+    },
     "stacks.deploy": {
       "params": {
         "type": "object",
@@ -11214,17 +12110,33 @@
           "token": {
             "type": "string"
           },
-          "injectedVarNames": {
+          "injectedVariables": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "secret": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ]
             }
           }
         },
         "required": [
           "enabled",
           "token",
-          "injectedVarNames"
+          "injectedVariables"
         ]
       }
     },
@@ -11688,17 +12600,33 @@
           "token": {
             "type": "string"
           },
-          "injectedVarNames": {
+          "injectedVariables": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "secret": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "required": [
+                "name",
+                "value"
+              ]
             }
           }
         },
         "required": [
           "enabled",
           "token",
-          "injectedVarNames"
+          "injectedVariables"
         ]
       }
     },
@@ -15477,6 +16405,9 @@
         ]
       },
       "Networks": {
+        "features": []
+      },
+      "Notifications": {
         "features": []
       },
       "Products": {

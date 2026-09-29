@@ -42,6 +42,9 @@
     <!-- SFTP backup storage provider (ADR-0016). -->
     <PackageReference Include="SSH.NET" />
     <PackageReference Include="Sodium.Core" />
+    <!-- Web Push (ADR-0041): encrypts and VAPID-signs the operator notifications. Interim until Elarion
+         ships Web Push support. -->
+    <PackageReference Include="Lib.Net.Http.WebPush" />
   </ItemGroup>
 
   <ItemGroup>

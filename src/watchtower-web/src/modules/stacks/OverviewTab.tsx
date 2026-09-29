@@ -89,6 +89,22 @@ export function OverviewTab({
     onError: (err: Error) => toast.error('Deploy failed', err.message),
   })
 
+  // History pruning (#60). Finished events only: the server keeps a queued or running deploy either
+  // way, so "Clear" is offered only when there is something it would actually remove.
+  const [confirmClear, setConfirmClear] = useState(false)
+  const finishedEvents = events.filter((e) => e.status !== 'running' && e.status !== 'queued')
+
+  const deleteEvents = useMutation({
+    mutationFn: (eventId?: number) => api.stacks.deleteEvents(stackId, eventId),
+    onSuccess: (deleted, eventId) => {
+      qc.invalidateQueries({ queryKey: ['stacks', stackId, 'events'] })
+      if (eventId === undefined)
+        toast.success(`Cleared ${deleted} deploy${deleted === 1 ? '' : 's'} from the history`)
+    },
+    onError: (err: Error) => toast.error('Could not delete the deploy history', err.message),
+    onSettled: () => setConfirmClear(false),
+  })
+
   const stackContainers = containers.filter((c) => c.stackName === stack.composeProjectName)
 
   // Invariant 6: the empty state offers a Deploy of its own, so it names its target too. Same shared
@@ -157,17 +173,42 @@ export function OverviewTab({
       <section>
         <SectionHeader
           title="Deploy history"
-          action={<span className="tnum text-sm text-text-2">{events.length}</span>}
+          action={
+            <div className="flex items-center gap-2">
+              <span className="tnum text-sm text-text-2">{events.length}</span>
+              {finishedEvents.length > 0 && (
+                <Button variant="ghost" size="sm" onClick={() => setConfirmClear(true)}>
+                  <Trash2 /> Clear
+                </Button>
+              )}
+            </div>
+          }
         />
         {events.length === 0 ? (
           <p className="text-sm text-text-3">No deployments yet</p>
         ) : (
           <div className="space-y-2">
             {events.map((event) => (
-              <DeployEventRow key={event.id} event={event} register={registerHistoryRow} />
+              <DeployEventRow
+                key={event.id}
+                event={event}
+                register={registerHistoryRow}
+                deleting={deleteEvents.isPending && deleteEvents.variables === event.id}
+                onDelete={() => deleteEvents.mutate(event.id)}
+              />
             ))}
           </div>
         )}
+        <ConfirmDialog
+          open={confirmClear}
+          onOpenChange={setConfirmClear}
+          title="Clear the deploy history?"
+          description={`This deletes ${finishedEvents.length} finished deploy${finishedEvents.length === 1 ? '' : 's'} and their logs. A deploy that is still queued or running is kept, and the stack itself is not affected.`}
+          confirmLabel="Clear history"
+          tone="danger"
+          loading={deleteEvents.isPending && deleteEvents.variables === undefined}
+          onConfirm={() => deleteEvents.mutate(undefined)}
+        />
       </section>
     </div>
   )
@@ -482,9 +523,13 @@ function WebhookCard({ stackId, token }: { stackId: number; token: string | null
 function DeployEventRow({
   event,
   register,
+  deleting,
+  onDelete,
 }: {
   event: DeployEvent
   register: RegisterHistoryRow
+  deleting: boolean
+  onDelete: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -509,52 +554,72 @@ function DeployEventRow({
 
   return (
     <div ref={setNode} className="overflow-hidden rounded-lg border border-border bg-surface">
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        aria-expanded={expanded}
-        className={cn(
-          'flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left',
-          'transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
-        )}
-      >
-        {expanded ? (
-          <ChevronDown className="size-4 shrink-0 text-text-3" aria-hidden />
-        ) : (
-          <ChevronRight className="size-4 shrink-0 text-text-3" aria-hidden />
-        )}
-        <StatusBadge status={event.status} size="sm" />
-        {event.triggeredBy === 'volume-recreate' ? (
-          // Data-wipe deploys read distinctly in history (§3.3): a warn-toned trigger chip.
-          <Badge tone="warn" size="sm">
-            volume-recreate
-          </Badge>
-        ) : (
-          <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
-            {event.triggeredBy}
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          aria-expanded={expanded}
+          className={cn(
+            'flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 text-left',
+            'transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:shadow-[var(--sh-focus)]',
+          )}
+        >
+          {expanded ? (
+            <ChevronDown className="size-4 shrink-0 text-text-3" aria-hidden />
+          ) : (
+            <ChevronRight className="size-4 shrink-0 text-text-3" aria-hidden />
+          )}
+          <StatusBadge status={event.status} size="sm" />
+          {event.triggeredBy === 'volume-recreate' ? (
+            // Data-wipe deploys read distinctly in history (§3.3): a warn-toned trigger chip.
+            <Badge tone="warn" size="sm">
+              volume-recreate
+            </Badge>
+          ) : (
+            <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-2">
+              {event.triggeredBy}
+            </span>
+          )}
+          {event.releaseVersion && (
+            <span className="font-mono text-xs text-text-2" title="Release this deploy applied">
+              {event.releaseVersion}
+            </span>
+          )}
+          <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>
+            {timeAgo(event.startedAt)}
           </span>
-        )}
-        {event.releaseVersion && (
-          <span className="font-mono text-xs text-text-2" title="Release this deploy applied">
-            {event.releaseVersion}
+          <span className="tnum ml-auto text-xs text-text-3">
+            {formatDuration(event.startedAt, event.finishedAt)}
           </span>
+          {isActive && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-run">
+              <span
+                className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]"
+                aria-hidden
+              />
+              live
+            </span>
+          )}
+        </button>
+        {/* A queued or running deploy is still being written to, so it has no delete (the server
+            refuses it too). */}
+        {!isActive && (
+          <div className="flex items-center pr-2">
+            <Tooltip label="Delete from history">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Delete deploy ${event.id} from history`}
+                className="text-text-2 hover:text-danger"
+                loading={deleting}
+                onClick={onDelete}
+              >
+                {!deleting && <Trash2 />}
+              </Button>
+            </Tooltip>
+          </div>
         )}
-        <span className="tnum text-xs text-text-2" title={absoluteTitle(event.startedAt)}>
-          {timeAgo(event.startedAt)}
-        </span>
-        <span className="tnum ml-auto text-xs text-text-3">
-          {formatDuration(event.startedAt, event.finishedAt)}
-        </span>
-        {isActive && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-run">
-            <span
-              className="size-1.5 rounded-full bg-current motion-safe:animate-[wt-live_1.4s_ease-in-out_infinite]"
-              aria-hidden
-            />
-            live
-          </span>
-        )}
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-border p-3">

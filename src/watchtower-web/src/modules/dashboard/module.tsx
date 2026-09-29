@@ -17,7 +17,7 @@ export const dashboardManifest = defineModule({
   name: 'dashboard',
   contributes: [
     contribute(sidebarItems, [
-      { id: 'dashboard', label: 'Home', icon: LayoutDashboard, to: '/', exact: true, order: 10 },
+      { id: 'dashboard', label: 'Home', icon: LayoutDashboard, to: '/', exact: true, order: 10, mobile: 'tab' },
     ]),
     // The dashboard-owned sections. These interleave with the sibling metrics module's
     // host-health strip (order 10) and resource-usage ranking (order 40) →

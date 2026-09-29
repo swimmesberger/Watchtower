@@ -235,6 +235,96 @@ internal static class AccessTestEstate {
     }
 
     /// <summary>
+    /// Gives an account an email address. Separate from <see cref="AddUserAsync"/> because most access tests
+    /// do not need one — an address only matters where an allow-list is projected to an edge that matches on
+    /// it (ADR-0039), and <c>User.Email</c> being optional is exactly why those clause kinds are edge-only.
+    /// </summary>
+    public static async Task SetEmailAsync(this AuthTestHost host, int userId, string email) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
+        var user = await db.Users.SingleAsync(u => u.Id == userId, ct);
+        user.Email = email;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Disables an account, the way an administrator suspending one does.</summary>
+    public static async Task DisableUserAsync(this AuthTestHost host, int userId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
+        var user = await db.Users.SingleAsync(u => u.Id == userId, ct);
+        user.Disabled = true;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Moves a route's population by moving its stack into a category of <paramref name="realmId"/> — the one
+    /// way an existing grant or clause can end up naming a subject of a foreign realm, since every write path
+    /// refuses to create one (design.md §13).
+    /// </summary>
+    /// <remarks>
+    /// A route carries no realm column: its realm is its stack's category's. So this reassigns the stack's
+    /// template rather than touching the route, which is exactly what an operator re-categorising a tenant
+    /// stack does.
+    /// </remarks>
+    public static async Task MoveRouteToRealmAsync(this AuthTestHost host, int routeId, int realmId) {
+        var templateId = await host.AddRealmTemplateAsync($"moved-{realmId}", realmId);
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
+        var route = await db.Routes.SingleAsync(r => r.Id == routeId, ct);
+        var stack = await db.Stacks.SingleAsync(s => s.Id == route.StackId, ct);
+        stack.TemplateId = templateId;
+        stack.TenantSlug ??= stack.Name;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Adds a named access rule holding <paramref name="clauses"/> and returns its id (ADR-0039). Written
+    /// directly rather than through <c>proxy.setAccessRule</c> for the reason groups and grants are: this is
+    /// a precondition of the code under test, not its subject.
+    /// </summary>
+    public static async Task<int> AddAccessRuleAsync(
+        this AuthTestHost host,
+        string name,
+        IReadOnlyList<AccessRuleClause> clauses,
+        int realmId = Realm.SystemRealmId) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        var ct = TestContext.Current.CancellationToken;
+
+        var rule = new AccessRule {
+            RealmId = realmId,
+            Name = name,
+            NormalizedName = name.ToUpperInvariant(),
+            CreatedAt = host.Time.GetUtcNow(),
+        };
+        db.AccessRules.Add(rule);
+        await db.SaveChangesAsync(ct);
+
+        for (var i = 0; i < clauses.Count; i++) {
+            var clause = clauses[i];
+            clause.AccessRuleId = rule.Id;
+            clause.Order = i;
+            db.AccessRuleClauses.Add(clause);
+        }
+        await db.SaveChangesAsync(ct);
+        return rule.Id;
+    }
+
+    /// <summary>Attaches an access rule to a route at <paramref name="order"/> — its edge precedence.</summary>
+    public static async Task AttachAccessRuleAsync(
+        this AuthTestHost host, int routeId, int accessRuleId, int order = 0) {
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<WatchtowerDbContext>();
+        db.RouteAccessRules.Add(new RouteAccessRule {
+            RouteId = routeId, AccessRuleId = accessRuleId, Order = order,
+        });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
     /// The product a tenant stack must reference: its template's, since ADR-0026 links rather than
     /// copies. A standalone stack gets one of its own, named after it.
     /// </summary>

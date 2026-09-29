@@ -71,7 +71,11 @@ public sealed class ListCloudflareForeignRoutes(
         try {
             tunnels = await api.ListTunnelsAsync(cf.AccountId!, cf.ApiToken!, ct);
             foreach (var tunnel in tunnels)
-                rulesByTunnel.Add((tunnel.Name, await api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct)));
+                // The response does not promise a name; the DTO this ends up in does. Falling back to the
+                // id keeps the column filled with something the operator can match against the dashboard.
+                rulesByTunnel.Add((
+                    tunnel.Name ?? tunnel.Id,
+                    await api.GetTunnelConfigurationAsync(cf.AccountId!, tunnel.Id, cf.ApiToken!, ct)));
         } catch (HttpRequestException ex) {
             return AppError.Internal($"Could not read the tunnel configuration from Cloudflare: {ex.Message}");
         }

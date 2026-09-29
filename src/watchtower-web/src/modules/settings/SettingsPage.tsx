@@ -16,6 +16,7 @@ import type {
   BackupConfig,
   BackupEvent,
   BackupProvider,
+  DefaultAccessMode,
   MetricsBackend,
   MetricsConfig,
   ProxyConfig,
@@ -24,8 +25,10 @@ import type {
   UpdateSelfConfigRequest,
 } from '@/lib/types'
 import { describeCron } from '@/lib/cron'
+import { lanNameKey, parseLanNames } from '@/lib/lanNames'
 import { absoluteTitle, formatBytes, formatUptime, shortDigest, timeAgo } from '@/lib/format'
 import { ContainerLogs } from '@/components/container-logs'
+import { SessionDurationField } from '@/components/session-duration-field'
 import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
@@ -43,6 +46,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
 import { RecoveryChecklistCard } from './RecoveryChecklist'
 
@@ -666,6 +670,15 @@ const PROVIDER_LABELS: Record<ProxyProvider, string> = {
 /** What the picker offers, default first — the same order the backend accepts them in. */
 const SELECTABLE_PROVIDERS: ProxyProvider[] = ['yarp', 'caddy', 'cloudflare']
 
+/**
+ * The two policies a new route may start under, protected first. `Restricted` is deliberately absent:
+ * a create carries no grants, so a route starting restricted would admit nobody.
+ */
+const DEFAULT_ACCESS_MODES: { value: DefaultAccessMode; label: string }[] = [
+  { value: 'authenticated', label: 'Protected — any signed-in user may enter' },
+  { value: 'public', label: 'Public — no access control' },
+]
+
 interface ProxyDraft {
   enabled: boolean
   provider: ProxyProvider
@@ -686,6 +699,18 @@ interface ProxyDraft {
    * terminates the public domains (ADR-0033 addendum), so it is sent under every provider.
    */
   portRoutesLanNames: string
+  /**
+   * The access policy a new domain route starts under (ADR-0035). Like the LAN names, not a provider
+   * field: routes are protected by Watchtower's own gate whichever provider terminates them, so it is
+   * sent under every provider.
+   */
+  defaultAccessMode: DefaultAccessMode
+  /**
+   * Comma- or newline-separated base domains routes live under (ADR-0036). Sent under every provider for
+   * the same reason as the two above: which domains an operator publishes under is theirs to say, and the
+   * Routes page groups by them whichever provider terminates them.
+   */
+  primaryDomains: string
   cfAccountId: string
   cfZoneId: string
   /** Only sent when non-empty — an empty field keeps the stored token. */
@@ -699,6 +724,7 @@ interface ProxyDraft {
   cfAccessEmailDomains: string
   cfAccessGroupIds: string
   cfAccessReusablePolicyIds: string
+  cfAccessSessionDuration: string
 }
 
 function toProxyDraft(config: ProxyConfig): ProxyDraft {
@@ -715,6 +741,8 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     yarpAcmeEabHmacKey: '',
     yarpRedirectHttpToHttps: config.yarp.redirectHttpToHttps,
     portRoutesLanNames: config.portRoutes.lanNames,
+    defaultAccessMode: config.defaultAccessMode,
+    primaryDomains: config.primaryDomains,
     cfAccountId: config.cloudflare.accountId ?? '',
     cfZoneId: config.cloudflare.zoneId ?? '',
     cfApiToken: '',
@@ -727,7 +755,109 @@ function toProxyDraft(config: ProxyConfig): ProxyDraft {
     cfAccessEmailDomains: config.cloudflare.accessAllowedEmailDomains,
     cfAccessGroupIds: config.cloudflare.accessGroupIds,
     cfAccessReusablePolicyIds: config.cloudflare.accessReusablePolicyIds,
+    cfAccessSessionDuration: config.cloudflare.accessSessionDuration,
   }
+}
+
+// ── LAN name suggestions ──────────────────────────────────────────────────────
+// A comma-separated list of addresses is a thing an operator has to know before they can type it, and
+// on a home LAN the answer is sitting in places nobody thinks to look. So they are offered as chips
+// for the LAN names setting of ADR-0033 decision 6. Nothing is ever saved by a click — the value lands
+// in the field and the ordinary Save writes it.
+//
+// Every rule about what may be suggested lives on the server, this side renders what it is sent. That
+// includes the address in the address bar: it is sent up as the hint and comes back as a candidate, so
+// a browser holding `host.docker.internal` or `my_nas` — both legal there, neither nameable by a
+// certificate — produces no chip rather than one whose click makes the Save fail.
+
+/** Appends one name to the field, comma-separated, leaving what is already typed exactly as typed. */
+function appendLanName(raw: string, name: string): string {
+  const existing = raw.trim().replace(/,+$/, '').trim()
+  return existing.length === 0 ? name : `${existing}, ${name}`
+}
+
+/**
+ * The host in the address bar, without the brackets an IPv6 authority is written in — the hint the
+ * server turns into candidates. Host only: a port is not part of any name a certificate carries.
+ */
+function browserHost(): string {
+  const host = typeof window === 'undefined' ? '' : window.location.hostname
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+}
+
+/**
+ * The suggestion chips under the LAN names field. Renders nothing at all while the query is in flight
+ * or after it fails: this is a convenience, and a convenience that could not be computed has nothing to
+ * say — least of all a banner over a field somebody is typing in.
+ */
+function LanNameSuggestionChips({
+  value,
+  onAdd,
+}: {
+  value: string
+  onAdd: (name: string) => void
+}) {
+  const hint = browserHost()
+  // Mounted only inside the proxy-enabled block, which is what gates the call. Kept a long time and
+  // not refetched on focus — the answer is about the shape of a LAN, which does not move while
+  // somebody edits a text field.
+  const { data } = useQuery({
+    queryKey: ['proxy', 'lan-name-suggestions', hint],
+    queryFn: () => api.proxy.suggestLanNames(hint || null),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  // The server excludes what the *saved* setting holds; this drops what the operator has typed since,
+  // so a chip disappears the moment it is clicked rather than at the next save.
+  const listed = new Set(parseLanNames(value).map(lanNameKey))
+  const chips = (data ?? []).filter(candidate => !listed.has(lanNameKey(candidate.value)))
+  if (chips.length === 0) return null
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[13px] text-text-2">Suggestions:</span>
+      {chips.map(chip => (
+        <Tooltip key={chip.value} label={chip.detail}>
+          <button
+            type="button"
+            onClick={() => onAdd(chip.value)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-text-2 hover:bg-surface-3 hover:text-text"
+          >
+            {chip.verified && <CheckCircle2 className="size-3 text-ok" aria-hidden />}
+            {chip.value}
+          </button>
+        </Tooltip>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The Cloudflare zones the token can already see, listed under the primary-domains field (ADR-0036).
+ * Deliberately not chips: a discovered zone is offered to the create form and grouped in the route list
+ * whether or not anybody clicks it, so a click would only add a duplicate of something already working.
+ * Renders nothing while the query is in flight, after it fails, or when the token found no zones — the
+ * same rule as the suggestion chips above, for the same reason.
+ */
+function DiscoveredZoneNote() {
+  const { data } = useQuery({
+    queryKey: ['proxy', 'primary-domains'],
+    queryFn: api.proxy.listPrimaryDomains,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const zones = (data ?? []).filter(domain => domain.source === 'cloudflare-zone')
+  if (zones.length === 0) return null
+
+  return (
+    <p className="mt-1.5 text-[13px] text-text-2">
+      Also available from your Cloudflare token:{' '}
+      <span className="font-mono">{zones.map(zone => zone.name).join(', ')}</span> — you do not need to
+      list these.
+    </p>
+  )
 }
 
 /** A port field on the wire: an empty or unparseable field is the listener turned off. */
@@ -787,6 +917,12 @@ function ProxyCard() {
         // terminates the domains. Empty is a real value here — it means the internal CA is unused — so
         // the field is sent as typed rather than coalesced away, and clearing it is a save like any other.
         portRoutesLanNames: next.portRoutesLanNames.trim(),
+        // Sent under every provider for the same reason as the LAN names above: what a new route starts
+        // under is Watchtower's own policy, not something the selected provider has a say in.
+        defaultAccessMode: next.defaultAccessMode,
+        // Sent under every provider too, and as typed rather than coalesced away: empty is a real value
+        // here — it means every route names its hostname in full — so clearing the list is an ordinary save.
+        primaryDomains: next.primaryDomains.trim(),
         cloudflareAccountId: next.cfAccountId.trim() || null,
         cloudflareZoneId: next.cfZoneId.trim() || null,
         cloudflareApiToken: next.cfApiToken.trim() || null,
@@ -799,6 +935,8 @@ function ProxyCard() {
         cloudflareAccessAllowedEmailDomains: next.cfAccessEmailDomains.trim(),
         cloudflareAccessGroupIds: next.cfAccessGroupIds.trim(),
         cloudflareAccessReusablePolicyIds: next.cfAccessReusablePolicyIds.trim(),
+        // As typed, like the Access lists above: empty is the way back to the default duration.
+        cloudflareAccessSessionDuration: next.cfAccessSessionDuration.trim(),
       }),
     onSuccess: next => {
       qc.setQueryData(['proxy', 'config'], next)
@@ -895,6 +1033,37 @@ function ProxyCard() {
                   </Select>
                   {pinnedPath('Watchtower:Proxy:Provider') && (
                     <PinnedNote path="Watchtower:Proxy:Provider" />
+                  )}
+                </>
+              )}
+            </Field>
+
+            {/* Only the starting point: this changes nothing about the routes that already exist, and
+                an administrator can still choose a mode per route in the create form. */}
+            <Field
+              label="Default access for new routes"
+              hint="What a new domain route starts under. Watchtower's own hostnames and LAN port routes are always public."
+            >
+              {({ id }) => (
+                <>
+                  <Select
+                    value={form.defaultAccessMode}
+                    onValueChange={v => set('defaultAccessMode', v as DefaultAccessMode)}
+                    disabled={isPinned('Watchtower:Proxy:DefaultAccessMode')}
+                  >
+                    <SelectTrigger id={id}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DEFAULT_ACCESS_MODES.map(m => (
+                        <SelectItem key={m.value} value={m.value}>
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {pinnedPath('Watchtower:Proxy:DefaultAccessMode') && (
+                    <PinnedNote path="Watchtower:Proxy:DefaultAccessMode" />
                   )}
                 </>
               )}
@@ -1156,6 +1325,35 @@ function ProxyCard() {
               </div>
             )}
 
+            {/* Outside every provider block for the same reason as the LAN names below: which base
+                domains an operator publishes under is theirs to say, and it shapes the create form and
+                the route list whichever provider terminates them (ADR-0036). Not behind the enable
+                switch either, unlike the LAN names: routes are created and grouped while the proxy is
+                still off, so the domains they are composed from have to be settable then too. */}
+            <Field
+              label="Primary domains"
+              hint="The base domains your routes live under (e.g. wimmesberger.dev). New routes offer them as a dropdown so you only type the subdomain, and the Routes page groups by them. Comma- or newline-separated; leave empty to type every hostname in full."
+            >
+              {({ id }) => (
+                <>
+                  <Input
+                    id={id}
+                    mono
+                    placeholder="wimmesberger.dev, example.com"
+                    value={form.primaryDomains}
+                    onChange={e => set('primaryDomains', e.target.value)}
+                    disabled={isPinned('Watchtower:Proxy:PrimaryDomains')}
+                  />
+                  {pinnedPath('Watchtower:Proxy:PrimaryDomains') && (
+                    <PinnedNote path="Watchtower:Proxy:PrimaryDomains" />
+                  )}
+                  {/* Only under Cloudflare, which is the one provider that can discover zones by
+                      itself — under the others the setting is the whole list. */}
+                  {form.provider === 'cloudflare' && <DiscoveredZoneNote />}
+                </>
+              )}
+            </Field>
+
             {/* Its own section, and outside every provider block: a port route is a TLS listener on
                 Watchtower's own container, so it is served alongside Caddy and the tunnel exactly as it
                 is under the built-in provider (ADR-0033 addendum). Only the proxy being on gates it. */}
@@ -1186,6 +1384,16 @@ function ProxyCard() {
                       {pinnedPath('Watchtower:Proxy:PortRoutes:LanNames') && (
                         <PinnedNote path="Watchtower:Proxy:PortRoutes:LanNames" />
                       )}
+                      {/* Not offered when an environment variable pins the field: a chip whose click
+                          the input would refuse is an invitation to a dead end. */}
+                      {!isPinned('Watchtower:Proxy:PortRoutes:LanNames') && (
+                        <LanNameSuggestionChips
+                          value={form.portRoutesLanNames}
+                          onAdd={name =>
+                            set('portRoutesLanNames', appendLanName(form.portRoutesLanNames, name))
+                          }
+                        />
+                      )}
                       {/* Only once the CA exists, which is the moment there is something to download:
                           the root is minted on the first port route's behalf, and the endpoint 404s
                           until then. */}
@@ -1212,8 +1420,10 @@ function ProxyCard() {
                 <p className="text-[13px] text-text-2">
                   Watchtower configures a remotely-managed tunnel: it pushes one public hostname per
                   route and creates the matching proxied DNS records in your zone. The API token needs
-                  the <span className="font-mono">Cloudflare Tunnel:Edit</span> and{' '}
-                  <span className="font-mono">DNS:Edit</span> permissions.
+                  the <span className="font-mono">Cloudflare Tunnel:Edit</span>,{' '}
+                  <span className="font-mono">DNS:Edit</span> and{' '}
+                  <span className="font-mono">Zone:Read</span> permissions — the last lets Watchtower
+                  find the zone each route's domain belongs to.
                 </p>
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field
@@ -1237,8 +1447,8 @@ function ProxyCard() {
                     )}
                   </Field>
                   <Field
-                    label="Zone ID"
-                    hint="32 hex characters, in the same “API” panel — open the domain your routes live under, since every domain (zone) has its own ID."
+                    label="Zone ID (optional)"
+                    hint="Only needed when the token has no Zone:Read. With it, Watchtower discovers every zone the token can see and writes each route's DNS record into the one that covers it."
                   >
                     {({ id }) => (
                       <>
@@ -1264,7 +1474,7 @@ function ProxyCard() {
                       ? 'The token is set via the environment and cannot be changed here.'
                       : data?.cloudflare.hasApiToken
                         ? 'A token is stored. Leave blank to keep it; enter a new one to replace it.'
-                        : 'Token with Cloudflare Tunnel:Edit and DNS:Edit. Validated against the API on save.'
+                        : 'Token with Cloudflare Tunnel:Edit, DNS:Edit and Zone:Read. Validated against the API on save.'
                   }
                 >
                   {() => (
@@ -1408,6 +1618,29 @@ function ProxyCard() {
                         />
                         {pinnedPath('Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds') && (
                           <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessReusablePolicyIds" />
+                        )}
+                      </>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field
+                    label="Access: default session duration"
+                    hint="Written onto each route's Access application unless the route sets its own (Routes → Edit → Session duration). This is not Cloudflare's global session duration; a session duration on an attached Cloudflare policy, or your account's global one, still takes precedence."
+                  >
+                    {({ id, describedBy }) => (
+                      <>
+                        <SessionDurationField
+                          id={id}
+                          describedBy={describedBy}
+                          value={form.cfAccessSessionDuration}
+                          onChange={v => set('cfAccessSessionDuration', v)}
+                          defaultLabel="Default (24 hours)"
+                          disabled={isPinned('Watchtower:Proxy:Cloudflare:AccessSessionDuration')}
+                        />
+                        {pinnedPath('Watchtower:Proxy:Cloudflare:AccessSessionDuration') && (
+                          <PinnedNote path="Watchtower:Proxy:Cloudflare:AccessSessionDuration" />
                         )}
                       </>
                     )}

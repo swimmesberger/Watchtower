@@ -184,6 +184,10 @@ public static class WatchtowerServiceCollectionExtensions {
         services.AddSingleton<CaddyManager>();
         services.AddHostedService(sp => sp.GetRequiredService<CaddyManager>());
         services.AddSingleton<CloudflareApiClient>();
+        // The discovered-zone cache (ADR-0036). A singleton because the cache is the point: the create
+        // form asks on every visit and every reconcile asks again, while zones change about as often as
+        // someone buys a domain.
+        services.AddSingleton<CloudflareZoneCatalog>();
         services.AddSingleton<CloudflareTunnelProvider>();
         services.AddHostedService(sp => sp.GetRequiredService<CloudflareTunnelProvider>());
         // In-process provider: the routing table and the listener outcome are process state the request
@@ -223,6 +227,10 @@ public static class WatchtowerServiceCollectionExtensions {
         // and ProxyProviderRouter drives it in addition to whichever one is selected.
         services.AddSingleton<PortRoutePlane>();
         services.AddHostedService(sp => sp.GetRequiredService<PortRoutePlane>());
+        // What the Settings page offers as LAN-name chips. Beside the plane because it answers a question
+        // about the same setting, and a singleton because it holds nothing per request — it asks the
+        // resolver and the daemon and forgets.
+        services.AddSingleton<LanNameSuggestions>();
         services.AddSingleton<IProxyProvider, ProxyProviderRouter>();
         // The one-time "an existing Caddy install keeps Caddy" upgrade step (ADR-0022). Scoped because it
         // reads the routes table; run once from Program.InitializeDatabaseAsync, before the providers start.

@@ -6,6 +6,16 @@
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0c0d10" media="(prefers-color-scheme: dark)" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Installable app (Add to Home Screen). `use-credentials` so the manifest request carries cookies
+         when an auth proxy (e.g. Cloudflare Access) sits in front of Watchtower. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
+    <!-- iOS ignores the manifest's icons and needs its own; full-bleed, iOS rounds the corners itself. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Watchtower" />
+    <!-- Content runs under the status bar; the mobile header pads itself by the safe-area inset. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Watchtower</title>
     <script>
       // Pre-paint theme boot — sets .dark on <html> before first paint (no FOUC).

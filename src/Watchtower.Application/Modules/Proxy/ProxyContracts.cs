@@ -32,6 +32,11 @@ namespace Watchtower.Application.Modules.Proxy;
 /// address a client types is that port together with one of the deployment's LAN names, which is why the
 /// client renders it from this and the configured names rather than storing a URL.
 /// </param>
+/// <param name="AccessMode">
+/// <c>public</c>, <c>authenticated</c> or <c>restricted</c> — who this hostname admits (ADR-0035). On the
+/// listing so a client can say which routes are gated without a <c>proxy.getAccess</c> call per row; the
+/// grants behind a <c>restricted</c> route still need that call.
+/// </param>
 public sealed record RouteDto(
     int Id,
     int? StackId,
@@ -51,7 +56,8 @@ public sealed record RouteDto(
     string? RealmSlug,
     bool IsLoginRoute,
     string Binding,
-    int? ListenPort);
+    int? ListenPort,
+    string AccessMode);
 
 /// <summary>In-memory projection + validation helpers (not translatable to SQL).</summary>
 public static class RouteMapping {
@@ -73,7 +79,8 @@ public static class RouteMapping {
             r.Realm?.Slug,
             isLoginRoute,
             r.Binding.ToString().ToLowerInvariant(),
-            r.ListenPort);
+            r.ListenPort,
+            r.AccessMode.ToString().ToLowerInvariant());
     }
 
     /// <summary>Normalizes a domain: trimmed and lowercased. Returns null when blank/whitespace.</summary>

@@ -53,3 +53,10 @@ live here.
 - [ADR-0032: NVIDIA GPUs resolve the same intent through the container toolkit](0032-nvidia-gpu-passthrough.md)
 - [ADR-0033: A route can be bound to a port, and Watchtower is its own CA for those](0033-port-routes-and-internal-ca.md)
 - [ADR-0034: A supervisor owns Watchtower's deployment — Watchtower declares, the supervisor reconciles](0034-supervisor-owns-the-deployment.md) — *proposed*
+- [ADR-0035: New domain routes are protected by default](0035-new-routes-are-protected-by-default.md)
+- [ADR-0036: Routes live under primary domains, and Cloudflare zones are discovered](0036-routes-live-under-primary-domains.md)
+- [ADR-0037: Deploys inject the audience an app must check, not just the JWKS to check it against](0037-assertions-carry-an-injected-audience.md)
+- [ADR-0038: The product declares the configuration contract; environment variables resolve through a ladder](0038-product-declares-the-configuration-contract.md)
+- [ADR-0039: Access rules are named, composable clause lists — provider-neutral, with portability declared](0039-access-rules-compose.md)
+- [ADR-0040: The edge projection is authoritative — Watchtower owns its apps' policy attachments, and the realm invariant travels with the grants](0040-the-edge-projection-is-authoritative.md)
+- [ADR-0041: Operators get Web Push notifications, starting with failed deploys](0041-web-push-notifications.md)

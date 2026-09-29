@@ -173,6 +173,10 @@ public sealed class TenantProvisioningService(
             foreach (var v in TenancyMapping.MergeEnv(template.BaseEnvVars, envOverrides))
                 db.StackEnvVars.Add(new StackEnvVar { StackId = stack.Id, Key = v.Key, Value = v.Value });
 
+            // The tenant's route starts Public — the entity default, not the protected-by-default rule
+            // proxy.createRoute applies (ADR-0035). What access a tenant's subdomain should have is a
+            // question about the tenancy model (ADR-0026, still proposed), not about route creation, and
+            // is recorded there as a follow-up rather than settled here as a side effect.
             db.Routes.Add(new Route {
                 StackId = stack.Id,
                 Domain = domain,

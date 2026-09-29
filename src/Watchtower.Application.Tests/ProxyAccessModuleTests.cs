@@ -485,7 +485,86 @@ public sealed class ProxyAccessModuleTests {
         Assert.Empty(await host.AuditKindsAsync());
     }
 
+    // -- Session duration (the route's own Cloudflare Access application) -------------------------
+
+    [Fact]
+    public async Task SetAccess_ASessionDuration_RoundTripsThroughGetAccess() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteIdAsync(host);
+
+        var saved = await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, " 8h ");
+        Assert.True(saved.IsSuccess, Describe(saved));
+        Assert.Equal("8h", saved.Value.AccessSessionDuration);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var read = await SendAsync<GetAccess.Query, GetAccess.Response>(
+            scope.ServiceProvider, new GetAccess.Query(routeId));
+        Assert.True(read.IsSuccess, Describe(read));
+        Assert.Equal("8h", read.Value.AccessSessionDuration);
+    }
+
+    /// <summary>A client that predates the field omits it, and must not wipe a duration it cannot show.</summary>
+    [Fact]
+    public async Task SetAccess_AnOmittedSessionDuration_KeepsTheRoutesOwn() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteIdAsync(host);
+        Assert.True((await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, "8h")).IsSuccess);
+
+        var saved = await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, null);
+
+        Assert.True(saved.IsSuccess, Describe(saved));
+        Assert.Equal("8h", saved.Value.AccessSessionDuration);
+    }
+
+    [Fact]
+    public async Task SetAccess_AnEmptySessionDuration_GoesBackToTheInstanceWideOne() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteIdAsync(host);
+        Assert.True((await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, "8h")).IsSuccess);
+
+        var saved = await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, "");
+
+        Assert.True(saved.IsSuccess, Describe(saved));
+        Assert.Null(saved.Value.AccessSessionDuration);
+    }
+
+    /// <summary>A Public route has no Access application, so a duration on it would be dead state.</summary>
+    [Fact]
+    public async Task SetAccess_GoingPublic_ClearsTheSessionDuration() {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteIdAsync(host);
+        Assert.True((await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, "8h")).IsSuccess);
+
+        var saved = await SetSessionDurationAsync(host, routeId, AccessMode.Public, null);
+
+        Assert.True(saved.IsSuccess, Describe(saved));
+        Assert.Null(saved.Value.AccessSessionDuration);
+    }
+
+    [Theory]
+    [InlineData("1d")]
+    [InlineData("8")]
+    public async Task SetAccess_AnUnreadableSessionDuration_IsRefused_AndNothingIsWritten(string value) {
+        using var host = AuthTestHost.Start(WithAccessHandlers);
+        var routeId = await SeedRouteIdAsync(host);
+
+        var saved = await SetSessionDurationAsync(host, routeId, AccessMode.Authenticated, value);
+
+        Assert.False(saved.IsSuccess);
+        Assert.Equal(ErrorKind.Validation, saved.Error.Kind);
+        Assert.Contains($"'{value}'", saved.Error.Message, StringComparison.Ordinal);
+        await AssertUnchangedSeededPolicyAsync(host, routeId);
+    }
+
     // -- Helpers ---------------------------------------------------------------------------------
+
+    private static async Task<Result<SetAccess.Response>> SetSessionDurationAsync(
+        AuthTestHost host, int routeId, AccessMode mode, string? sessionDuration) {
+        await using var scope = host.Services.CreateAsyncScope();
+        return await SendAsync<SetAccess.Command, SetAccess.Response>(
+            scope.ServiceProvider,
+            new SetAccess.Command(routeId, mode, null, []) { AccessSessionDuration = sessionDuration });
+    }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
