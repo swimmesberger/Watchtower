@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, CloudDownload, Download, ExternalLink, Globe, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
+import { CloudDownload, Download, ExternalLink, Globe, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
 import { api, INTERNAL_CA_DOWNLOAD_URL } from '@/lib/api'
 import type {
   AccessMode,
@@ -29,6 +29,13 @@ import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { DataList, type DataListColumn } from '@/components/ui/data-list'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Field } from '@/components/ui/field'
@@ -43,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip } from '@/components/ui/tooltip'
 import { toast } from '@/components/ui/use-toast'
@@ -260,9 +268,6 @@ function accessNote(r: Route): string | null {
   return null
 }
 
-/** localStorage key for the "Found in Cloudflare" card's collapsed state. */
-const FOREIGN_COLLAPSED_KEY = 'watchtower:routes:foreign-collapsed'
-
 /**
  * A select populated from discovered values with a manual-entry escape hatch. Renders a plain text
  * input when there's nothing to choose from (no live containers) or the user opts to type a custom
@@ -442,9 +447,11 @@ export function RoutesPage() {
   const firstPrimaryName = primaryNames[0] ?? ''
 
   // Public hostnames configured on the tunnel in the Cloudflare dashboard that the route table
-  // doesn't know. The reconcile preserves them; this surfaces them for one-click adoption. Failures
-  // and "the tunnel cannot be seen" both render as a banner — a silently empty list here reads as
-  // "my Cloudflare routes are not showing up".
+  // doesn't know. The reconcile preserves them; the import dialog offers them for one-click adoption.
+  // They live behind a button rather than on the page: most of them are deliberately not Watchtower's
+  // (other tunnels, other machines), so a standing list of them is noise once the operator has
+  // imported the ones they wanted. Failures and "the tunnel cannot be seen" render inside the dialog
+  // — a silently empty list there reads as "my Cloudflare routes are not showing up".
   const foreignQuery = useQuery({
     queryKey: ['cloudflare-foreign-routes'],
     queryFn: api.proxy.listCloudflareForeignRoutes,
@@ -452,17 +459,7 @@ export function RoutesPage() {
     staleTime: 60_000,
   })
   const foreignRoutes = foreignQuery.data?.routes ?? []
-  // Collapsed state persists across visits: once the operator has imported what they wanted, the
-  // remaining dashboard hostnames are reference, not a to-do, and should not fill the screen each time.
-  const [foreignCollapsed, setForeignCollapsed] = useState(
-    () => localStorage.getItem(FOREIGN_COLLAPSED_KEY) === '1',
-  )
-  function toggleForeign() {
-    setForeignCollapsed((collapsed) => {
-      localStorage.setItem(FOREIGN_COLLAPSED_KEY, collapsed ? '0' : '1')
-      return !collapsed
-    })
-  }
+  const [showImport, setShowImport] = useState(false)
   const foreignWarning = foreignQuery.isError
     ? ((foreignQuery.error as Error)?.message ?? 'Could not read the tunnel configuration from Cloudflare.')
     : (foreignQuery.data?.warning ?? null)
@@ -770,6 +767,7 @@ export function RoutesPage() {
       serviceManual: true,
       portManual: true,
     })
+    setShowImport(false)
     setShowForm(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -1302,11 +1300,21 @@ export function RoutesPage() {
             </>
           )}
         </div>
-        {/* No longer gated on there being a stack: a Watchtower route has none, and the very first route
-            an operator creates is often the one that exposes Watchtower itself. */}
-        <Button variant="primary" onClick={() => (showForm ? closeForm() : openCreate())}>
-          {showForm ? <X /> : <Plus />} {showForm ? 'Cancel' : 'New route'}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Only under Cloudflare, where the dashboard is a second place routes get made. The count
+              is a hint, not a to-do: it stays there for hostnames that will never be imported. */}
+          {isCloudflare && status?.enabled === true && (
+            <Button variant="secondary" onClick={() => setShowImport(true)}>
+              <CloudDownload /> Import from Cloudflare
+              {foreignRoutes.length > 0 ? ` (${foreignRoutes.length})` : ''}
+            </Button>
+          )}
+          {/* No longer gated on there being a stack: a Watchtower route has none, and the very first route
+              an operator creates is often the one that exposes Watchtower itself. */}
+          <Button variant="primary" onClick={() => (showForm ? closeForm() : openCreate())}>
+            {showForm ? <X /> : <Plus />} {showForm ? 'Cancel' : 'New route'}
+          </Button>
+        </div>
       </div>
 
       {status && !status.enabled && (
@@ -1398,68 +1406,6 @@ export function RoutesPage() {
             </>
           )}
         </Banner>
-      )}
-
-      {foreignWarning && (
-        <Banner tone="warn" title="Cloudflare hostnames not visible">
-          {foreignWarning}
-        </Banner>
-      )}
-
-      {foreignRoutes.length > 0 && (
-        <Card>
-          <CardContent>
-            <SectionHeader
-              title={`Found in Cloudflare (${foreignRoutes.length})`}
-              description={
-                foreignCollapsed
-                  ? undefined
-                  : "Public hostnames configured in the Cloudflare dashboard, across all of the account's tunnels. Watchtower leaves them untouched — import one to manage it as a route (served from Watchtower's tunnel, with access control, per-stack networking and cleanup on stack removal)."
-              }
-              className={foreignCollapsed ? 'mb-0 border-b-0 pb-0' : undefined}
-              action={
-                <Button size="sm" variant="ghost" onClick={toggleForeign}>
-                  {foreignCollapsed ? (
-                    <>
-                      <ChevronDown /> Show
-                    </>
-                  ) : (
-                    <>
-                      <ChevronUp /> Hide
-                    </>
-                  )}
-                </Button>
-              }
-            />
-            {!foreignCollapsed && (
-            <ul className="divide-y divide-border">
-              {foreignRoutes.map((f) => (
-                <li key={`${f.tunnelName}/${f.hostname}`} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
-                  <div className="min-w-0">
-                    <span className="block truncate font-medium text-text">{f.hostname}</span>
-                    <span className="block truncate font-mono text-[13px] text-text-2">
-                      → {f.service}
-                      {f.path ? ` (path ${f.path})` : ''}
-                    </span>
-                    <span className="block text-xs text-text-3">
-                      on tunnel “{f.tunnelName}”
-                      {f.suggestedStackName && (
-                        <>
-                          {' '}· looks like stack “{f.suggestedStackName}”, service{' '}
-                          <span className="font-mono">{f.suggestedServiceName}:{f.suggestedContainerPort}</span>
-                        </>
-                      )}
-                    </span>
-                  </div>
-                  <Button size="sm" variant="secondary" onClick={() => startImport(f)}>
-                    <CloudDownload /> Import
-                  </Button>
-                </li>
-              ))}
-            </ul>
-            )}
-          </CardContent>
-        </Card>
       )}
 
       {showForm && (
@@ -2169,7 +2115,7 @@ export function RoutesPage() {
                 <p className="mt-1 text-xs text-text-3">
                   Deletes the tunnel's ingress rule and the DNS record Watchtower created for this
                   hostname. Off, the hostname stays in Cloudflare as it is and shows up again under
-                  “Found in Cloudflare”.
+                  “Import from Cloudflare”.
                 </p>
               </div>
               <Switch
@@ -2216,6 +2162,68 @@ export function RoutesPage() {
         loading={publishPorts.isPending}
         onConfirm={() => publishPorts.mutate()}
       />
+
+      <Dialog open={showImport} onOpenChange={setShowImport}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Import from Cloudflare</DialogTitle>
+            <DialogDescription>
+              Public hostnames configured in the Cloudflare dashboard, across all of the account's
+              tunnels. Watchtower leaves them untouched — import one to manage it as a route, served
+              from Watchtower's tunnel with access control, per-stack networking and cleanup on stack
+              removal.
+            </DialogDescription>
+          </DialogHeader>
+          {foreignWarning && (
+            <Banner tone="warn" title="Cloudflare hostnames not visible">
+              {foreignWarning}
+            </Banner>
+          )}
+          {foreignQuery.isLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          ) : foreignRoutes.length === 0 ? (
+            !foreignWarning && (
+              <p className="text-sm text-text-2">
+                Nothing to import — every public hostname on the tunnel is already a Watchtower route.
+              </p>
+            )
+          ) : (
+            <ul className="divide-y divide-border">
+              {foreignRoutes.map((f) => (
+                <li
+                  key={`${f.tunnelName}/${f.hostname}`}
+                  className="flex flex-wrap items-center justify-between gap-2 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <span className="block truncate font-medium text-text">{f.hostname}</span>
+                    <span className="block truncate font-mono text-[13px] text-text-2">
+                      → {f.service}
+                      {f.path ? ` (path ${f.path})` : ''}
+                    </span>
+                    <span className="block text-xs text-text-3">
+                      on tunnel “{f.tunnelName}”
+                      {f.suggestedStackName && (
+                        <>
+                          {' '}· looks like stack “{f.suggestedStackName}”, service{' '}
+                          <span className="font-mono">
+                            {f.suggestedServiceName}:{f.suggestedContainerPort}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <Button size="sm" variant="secondary" onClick={() => startImport(f)}>
+                    <CloudDownload /> Import
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
